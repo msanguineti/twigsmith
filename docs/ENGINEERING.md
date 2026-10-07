@@ -43,9 +43,15 @@
 - Keep Rust development tools and caches inside the repository and use `./dev`.
   This provides a contained, reproducible development environment without
   permanent shell changes.
-- Focus the application on OneFlow workflow intent rather than general Git
-  command wrapping. A Git execution layer is supporting infrastructure, not a
-  decision to expose arbitrary Git commands.
+- Focus the application on a small set of Git workflow/lifecycle intents
+  rather than general Git command wrapping. OneFlow informs the design; it is
+  not the only flow the tool may accommodate. A Git execution layer is
+  supporting infrastructure, not a decision to expose arbitrary Git commands.
+- The tool should accommodate several flows, including OneFlow, without
+  locking projects into every part of Ruka's published procedure. Neither trunk tagging nor the classic
+  release-branch procedure has been selected as the product default. The
+  supported variations, detailed release policies, default release behaviour,
+  and any workflow-profile selection remain open. Historical presets do not commit the rewrite to their named flows.
 - Preserve the intention to continue the `git-oneflow` npm identity and both
   `gof` and `git-oneflow` executable aliases, maintaining recognizable project
   and invocation names. Native distribution mechanics remain undecided.
@@ -101,3 +107,18 @@ Recover details with `git show c6c9f70:package.json`,
 `git show c6c9f70:README.md`, and the source/tests at that commit. The current
 Rust development version does not represent a new npm release; the license
 text is unchanged from the baseline.
+
+Historical configuration experiments were inspected without checking out or
+executing the legacy branches on 2026-10-08. `next-gen` at `56b0e7e` has
+`src/presets.js` with `classic`, `ci`, and `prWorkflow` settings.
+`task/task-command` at `adb52f7` has `src/config/presets.js` with OneFlow,
+GitFlow, GitHub Flow, trunk/CI, mainline, feature-branching, and
+environment-driven presets, selected through `init`. These are bundles of
+configuration values, not separately implemented branching strategies.
+At that tip, OneFlow inherits defaults that do not enforce prefixes;
+`start` validates optional prefix policy, and `finish` uses an explicit
+`--tag` rather than dispatching release behaviour by branch prefix.
+Its PR path prints manual instructions. Treat this as design reference,
+not verified full support for the strategies named by the presets.
+Reusing the legacy preset
+list or configuration API is not an accepted implementation commitment.
