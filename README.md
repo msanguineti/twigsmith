@@ -6,8 +6,8 @@ On Linux, you need a POSIX shell, standard Unix utilities, `curl` with HTTPS
 support, and a C compiler/linker driver available as `cc`, with system headers
 and libc development files. Bootstrap requires internet access.
 On Debian/Ubuntu, install the native prerequisites with
-`sudo apt-get install build-essential curl ca-certificates` (and `git` to clone
-the repository).
+`sudo apt-get install build-essential curl ca-certificates git`.
+Git must be available on PATH for the integration tests.
 
 From the repository root:
 

@@ -3,7 +3,9 @@
 ## Implementation
 
 - [Cargo.toml](../Cargo.toml): package `git-oneflow`, version `0.0.0-dev`,
-  edition 2024, MIT, `publish = false`, and no dependencies. `Cargo.lock` is tracked.
+  edition 2024, MIT, `publish = false`, and no runtime dependencies. `tempfile`
+  is a development-only dependency for safely created, automatically cleaned
+  test directories; its resolved dependencies are tracked in `Cargo.lock`.
 - [src/main.rs](../src/main.rs): no arguments, `--help`/`-h`, and
   `--version`/`-V` succeed; unsupported arguments exit 2. No Git execution,
   repository inspection, configuration, or workflow commands exist. The current
@@ -15,6 +17,22 @@
   [README](../README.md) for prerequisites and command usage.
 - [Foundation CI](../.github/workflows/foundation.yml): pushes and pull requests
   on Ubuntu 24.04 run `./dev bootstrap` then `./dev check`.
+- [src/git.rs](../src/git.rs), exposed by [src/lib.rs](../src/lib.rs):
+  `git::run(directory, arguments) -> io::Result<Output>` invokes installed `git`
+  directly through `Command`, with explicit cwd and separate `OsStr` arguments.
+  `Ok` preserves raw stdout/stderr and `ExitStatus` even on unsuccessful exit;
+  `Err` preserves the I/O error when execution cannot start or output collection
+  fails. Callers decide presentation and application exit; this helper does
+  neither. CLI help/version do not invoke Git.
+- [tests/support/mod.rs](../tests/support/mod.rs): fixtures re-execute each test
+  in a child with a cleared environment, controlled Git config files, temporary
+  HOME/XDG directories, and no inherited repository-selection variables. Real
+  repositories use explicit branch/template, local identity, and empty hooks.
+  Tests do not change global environment or the project's Git state.
+- An additional `./dev test` run passed with inherited hostile system/global
+  configuration (commit signing, hooks, template), empty author/committer
+  identity, injected config, and repository/worktree/index/object overrides.
+  The hostile hook marker and unrelated index were not created.
 
 ## Design constraints
 
@@ -31,6 +49,14 @@
 - Preserve the intention to continue the `git-oneflow` npm identity and both
   `gof` and `git-oneflow` executable aliases, maintaining recognizable project
   and invocation names. Native distribution mechanics remain undecided.
+- The Git boundary uses standard-library process results rather than a custom error or
+  subprocess framework. Git failures are completed processes, distinct from
+  execution errors; stdout/stderr remain bytes and status retains OS termination
+  information. The application boundary intentionally inherits normal Git
+  environment/configuration; isolation is a test-fixture responsibility.
+- Runtime assumption: installed Git is resolved through PATH. Development
+  tests require Git; CLI help/version continue to work without it. No Git version
+  compatibility policy or new public workflow behaviour is established.
 
 ## Historical baseline
 
