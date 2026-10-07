@@ -1,0 +1,106 @@
+#!/bin/sh
+# Execute this file; do not source it. All environment changes are process-local.
+set -eu
+
+repo_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+cd "$repo_dir"
+
+# rust-toolchain.toml is the single source of the compiler version pin.
+toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
+if [ -z "$toolchain" ]; then
+    echo "error: missing channel in rust-toolchain.toml" >&2
+    exit 1
+fi
+
+export RUSTUP_HOME="$repo_dir/.dev/rustup"
+export CARGO_HOME="$repo_dir/.dev/cargo"
+export CARGO_INSTALL_ROOT="$CARGO_HOME"
+export CARGO_TARGET_DIR="$repo_dir/target"
+export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
+export RUSTUP_TOOLCHAIN="$toolchain"
+export PATH="$CARGO_HOME/bin:${PATH:-/usr/bin:/bin}"
+export TMPDIR="$repo_dir/.dev/tmp"
+export XDG_CACHE_HOME="$repo_dir/.dev/cache"
+
+# Prevent inherited compiler/tool overrides from selecting a global installation
+# or putting wrapper caches outside the repository.
+export RUSTC="$CARGO_HOME/bin/rustc"
+export RUSTDOC="$CARGO_HOME/bin/rustdoc"
+export RUSTFMT="$CARGO_HOME/bin/rustfmt"
+export RUSTC_WRAPPER=""
+export RUSTC_WORKSPACE_WRAPPER=""
+export CARGO_BUILD_RUSTC_WRAPPER=""
+export CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
+unset CLIPPY_DRIVER_PATH
+
+usage() {
+    cat <<'EOF'
+Usage: ./dev COMMAND [ARGS]
+
+  bootstrap       Install the pinned Rust toolchain, rustfmt, and Clippy locally
+  build [ARGS]    Build the native executable (pass --release for optimization)
+  test [ARGS]     Run the CLI smoke checks
+  fmt [ARGS]      Format Rust source (pass --check to verify without changes)
+  lint [ARGS]     Run Clippy on all targets with warnings treated as errors
+  check           Verify formatting, build, tests, and linting
+  cargo [ARGS]    Invoke repository-local Cargo (e.g. cargo run -- --help)
+  rustc [ARGS]    Invoke the pinned repository-local compiler
+  help            Show these development commands
+EOF
+}
+
+command=${1:-help}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$command" in
+    help|-h|--help) usage; exit 0 ;;
+    bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+mkdir -p "$TMPDIR" "$XDG_CACHE_HOME"
+rustup="$CARGO_HOME/bin/rustup"
+cargo="$CARGO_HOME/bin/cargo"
+
+if [ "$command" = bootstrap ]; then
+    for prerequisite in curl cc; do
+        if ! command -v "$prerequisite" >/dev/null 2>&1; then
+            echo "error: bootstrap requires $prerequisite (cc must be a C compiler/linker driver with system headers and libc development files)" >&2
+            exit 1
+        fi
+    done
+    if [ ! -x "$rustup" ]; then
+        curl --proto '=https' --tlsv1.2 --fail --show-error --location \
+            https://sh.rustup.rs --output "$TMPDIR/rustup-init.sh"
+        # Rustup's installer may coexist with a global Rust installation, but
+        # never uses it. --no-modify-path leaves shell profiles untouched.
+        RUSTUP_INIT_SKIP_PATH_CHECK=yes sh "$TMPDIR/rustup-init.sh" \
+            -y --no-modify-path --profile minimal --default-toolchain none
+        rm -f "$TMPDIR/rustup-init.sh"
+    fi
+    "$rustup" set auto-self-update disable
+    "$rustup" toolchain install "$toolchain" --profile minimal \
+        --component rustfmt --component clippy --no-self-update
+    "$CARGO_HOME/bin/rustc" --version
+    "$cargo" --version
+    exit 0
+fi
+
+if [ ! -x "$rustup" ]; then
+    echo "error: repository-local Rust is missing; run ./dev bootstrap first" >&2
+    exit 1
+fi
+
+case "$command" in
+    build) exec "$cargo" build --locked "$@" ;;
+    test) exec "$cargo" test --locked "$@" ;;
+    fmt) exec "$cargo" fmt --all "$@" ;;
+    lint) exec "$cargo" clippy --locked --all-targets "$@" -- -D warnings ;;
+    check)
+        "$cargo" fmt --all --check
+        "$cargo" build --locked
+        "$cargo" test --locked
+        exec "$cargo" clippy --locked --all-targets -- -D warnings
+        ;;
+    cargo) exec "$cargo" "$@" ;;
+    rustc) exec "$CARGO_HOME/bin/rustc" "$@" ;;
+esac

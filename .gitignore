@@ -3,5 +3,8 @@
 .vscode/
 *.log
 
-# Rust build output
+# Repository-local Rust tools, dependency caches, and temporary files
+/.dev/
+
+# Rust build output (Cargo.lock is intentionally tracked)
 /target/
