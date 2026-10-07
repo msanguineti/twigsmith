@@ -44,6 +44,9 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
         .env("GIT_CONFIG_SYSTEM", &empty_config)
         .env("GIT_CONFIG_GLOBAL", &empty_config)
         .env("GIT_ATTR_NOSYSTEM", "1")
+        // ./dev puts temporary directories inside the project checkout. Stop
+        // discovery at the fixture parent instead of inspecting that checkout.
+        .env("GIT_CEILING_DIRECTORIES", root.path().parent().unwrap())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
         .env("TZ", "UTC")

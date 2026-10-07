@@ -7,7 +7,8 @@ support, and a C compiler/linker driver available as `cc`, with system headers
 and libc development files. Bootstrap requires internet access.
 On Debian/Ubuntu, install the native prerequisites with
 `sudo apt-get install build-essential curl ca-certificates git`.
-Git must be available on PATH for the integration tests.
+The integration tests require Git on PATH with `--no-lazy-fetch` support
+(Git 2.45 or newer). Check your installed version with `git --version`.
 
 From the repository root:
 
