@@ -1,7 +1,4 @@
-# ![git-OneFlow](g1-logo.png)
-
-git-oneflow is a native Rust CLI project for the
-[OneFlow branching model](https://www.endoflineblog.com/oneflow-a-git-branching-model-and-workflow).
+# git-oneflow
 
 ## Setup
 
@@ -22,8 +19,7 @@ From the repository root:
 Bootstrap installs Rust **1.99.0**, rustfmt, and Clippy, pinned in
 `rust-toolchain.toml`. It is safe to repeat.
 
-Use `./dev` for development commands. It uses repository-local tools without
-changing shell profiles or your permanent PATH.
+Use `./dev` for development commands.
 
 Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 `target/`. Both directories are ignored by Git.
@@ -31,7 +27,7 @@ Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 ## Development
 
 Run `./dev check` before handing off changes. This is also the CI entry point:
-it checks formatting, builds the executable, runs tests and CLI smoke checks,
+it checks formatting, builds the executable, runs tests,
 and runs Clippy with warnings treated as errors.
 
 | Command | Purpose |
@@ -45,9 +41,7 @@ and runs Clippy with warnings treated as errors.
 | `./dev cargo <args>` | Run Cargo in the local environment |
 | `./dev rustc --version` | Show the compiler version |
 
-Build, test, and lint use the committed `Cargo.lock`. When changing dependencies,
-update and commit the lockfile alongside `Cargo.toml`. To change the toolchain,
-edit `rust-toolchain.toml`, then run `./dev bootstrap` and `./dev check`.
+Build, test, and lint use the committed `Cargo.lock`.
 
 ## Run
 
@@ -87,5 +81,3 @@ Running without arguments shows help. Available options are `--help` and
   then rerun `./dev check`.
 - **Corrupt local tools or stale build outputs:** remove `.dev/` and `target/`
   from the repository root, then repeat bootstrap, build, and checks.
-
-Created by Mirco Sanguineti. Released under the [MIT License](LICENSE).
