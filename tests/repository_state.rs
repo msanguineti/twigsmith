@@ -1,11 +1,9 @@
+#[path = "support/snapshot.rs"]
+mod preservation;
 mod support;
+use preservation::snapshot;
 
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{fs, path::Path, time::SystemTime};
 
 use git_oneflow::{
     git,
@@ -45,49 +43,6 @@ fn divergence(state: &RepositoryState) -> Divergence {
         } => *counts,
         other => panic!("expected available divergence: {other:?}"),
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct FileState {
-    file_type: fs::FileType,
-    content: Vec<u8>,
-    modified: SystemTime,
-    permissions: fs::Permissions,
-}
-
-fn snapshot(root: &Path) -> BTreeMap<PathBuf, FileState> {
-    fn visit(root: &Path, path: &Path, result: &mut BTreeMap<PathBuf, FileState>) {
-        let metadata = fs::symlink_metadata(path).unwrap();
-        let content = if metadata.is_file() {
-            fs::read(path).unwrap()
-        } else if metadata.file_type().is_symlink() {
-            fs::read_link(path)
-                .unwrap()
-                .as_os_str()
-                .as_encoded_bytes()
-                .to_vec()
-        } else {
-            assert!(metadata.is_dir());
-            Vec::new()
-        };
-        result.insert(
-            path.strip_prefix(root).unwrap().to_owned(),
-            FileState {
-                file_type: metadata.file_type(),
-                content,
-                modified: metadata.modified().unwrap(),
-                permissions: metadata.permissions(),
-            },
-        );
-        if metadata.is_dir() {
-            for entry in fs::read_dir(path).unwrap() {
-                visit(root, &entry.unwrap().path(), result);
-            }
-        }
-    }
-    let mut result = BTreeMap::new();
-    visit(root, root, &mut result);
-    result
 }
 
 fn preserved(root: &Path, directory: &Path) -> RepositoryState {

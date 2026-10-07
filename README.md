@@ -7,8 +7,8 @@ support, and a C compiler/linker driver available as `cc`, with system headers
 and libc development files. Bootstrap requires internet access.
 On Debian/Ubuntu, install the native prerequisites with
 `sudo apt-get install build-essential curl ca-certificates git`.
-The integration tests require Git on PATH with `--no-lazy-fetch` support
-(Git 2.45 or newer). Check your installed version with `git --version`.
+Git on PATH with `--no-lazy-fetch` support is required (Git 2.45 or newer).
+Check your installed version with `git --version`.
 
 From the repository root:
 
@@ -49,6 +49,7 @@ Build, test, and lint use the committed `Cargo.lock`.
 ```sh
 ./target/debug/git-oneflow --help
 ./target/debug/git-oneflow --version
+./target/debug/git-oneflow status
 ```
 
 Or build and run through Cargo:
@@ -56,6 +57,7 @@ Or build and run through Cargo:
 ```sh
 ./dev cargo run --locked -- --help
 ./dev cargo run --locked -- --version
+./dev cargo run --locked -- status
 ```
 
 To build and run the optimized executable:
@@ -67,7 +69,27 @@ To build and run the optimized executable:
 ```
 
 Running without arguments shows help. Available options are `--help` and
-`--version` (also `-h` and `-V`).
+`--version` (also `-h` and `-V`). Use `status --help` for command help.
+
+Run `git-oneflow status` from a repository root or nested directory to summarize
+branch/HEAD state, staged and unstaged path counts, conflicts, untracked paths,
+submodule changes, detected operations, and upstream information. Counts can
+overlap: a path can have both staged and unstaged changes. Ignored paths are
+excluded. Bare repositories are identified as having no working tree.
+
+Status is read-only and does not fetch or contact remotes. Upstream comparisons
+use locally available references and history (including shallow-history limits);
+absent configuration or unavailable comparison data is distinct from zero
+ahead/behind counts. Observations do not establish current remote state or
+workflow readiness. Output is intended for people, with no machine-readable
+format contract.
+
+Dirty trees, detached HEAD, unborn branches, and detected operations are successful
+observations (exit 0). Missing Git, locations outside Git, unsupported working-tree
+contexts such as a non-bare `.git` directory, and inspection failures exit 1 with
+a diagnostic. Invalid syntax exits 2. Help and version require no Git installation.
+Use the built executable to inspect another checkout; `./dev cargo run` always
+runs from this project's root.
 
 ## Troubleshooting
 
@@ -78,6 +100,9 @@ Running without arguments shows help. Available options are `--help` and
   `static.rust-lang.org`; retry after restoring access.
 - **`cc` missing or linker errors:** install the native compiler, linker, system
   headers, and libc development files (on Debian/Ubuntu, `build-essential`).
+- **Status fails:** ensure Git 2.45 or newer is on PATH and invoke the executable
+  from a repository working tree or a bare repository. Git diagnostics identify
+  inspection problems such as corrupt metadata or ownership restrictions.
 - **Formatting or lint failures:** run `./dev fmt`, address Clippy diagnostics,
   then rerun `./dev check`.
 - **Corrupt local tools or stale build outputs:** remove `.dev/` and `target/`
