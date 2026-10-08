@@ -9,8 +9,9 @@ workflow invariants are in the [start](START.md), [save](SAVE.md), and
 ## Current implementation
 
 The native Rust CLI is invoked as `git-oneflow` or `gof`. It provides `start`,
-`save`, `status`, and `config`. The finish library provides read-only assessment
-and revalidation; finish execution and a finish CLI are not implemented.
+`save`, `status`, and `config`. The finish library provides read-only assessment,
+controlled remote refresh, branch preparation, and verified durable rebase
+recovery. Finish publication and a finish CLI remain deferred.
 
 The application separates repository observation and planning from effects and
 command presentation. Plans are revalidated before mutations. Multi-step
@@ -26,7 +27,7 @@ contract.
 | Git process boundary and repository observation | `src/git.rs`, `src/repository.rs` |
 | Start | `src/start.rs`, `src/start/workflow.rs` |
 | Save and publication | `src/save.rs`, `src/save/execution.rs`, `src/save/publication.rs` |
-| Finish planning | `src/finish.rs` |
+| Finish planning, preparation, and recovery | `src/finish.rs`, `src/finish/preparation.rs`, `src/finish/recovery.rs` |
 | Isolated Git and terminal fixtures | `tests/support/` |
 
 ## Cross-cutting decisions
@@ -53,13 +54,27 @@ technical specifications here.
 
 ## Finish architecture and limits
 
-Finish settings and read-only planning are implemented. Later work may add fresh
-remote observation, branch preparation, safe publication, retry evidence, and a
-CLI. These are future capabilities, not current command behavior. The accepted
-direction is to prepare and publish work first; submission to a code review
-provider is a separate, explicitly configured integration. Without one, a
-successful publication hands the next submission step to the developer. The
-finish contract records executor obligations and the limits of current planning.
+Finish preparation is a library API separate from the CLI. Refresh observes the
+configured remote base and exact push destinations, fetches the observed objects
+without changing branch/tag refs, and supplies evidence to assessment. Preparation
+revalidates a resolved plan, repeats remote observation, and rebases or merges
+against the observed base. Effective settings and committed configuration changes
+stop subsequent execution pending fresh assessment.
+
+Private per-worktree rebase records bind original incorporation to Git reflog
+anchors and verified operation outcomes. Assessment reads these records; only
+preparation writes them. They carry recovery/publication evidence, not branch
+roles, reusable permission, or a workflow database. Missing, expired, or changed
+history cannot authorize replacement. The finish contract defines the precise
+verification and retry boundaries.
+
+Publication and CLI interaction remain future work. Publication must consume the
+prepared graph and exact per-destination observations, use explicit leases for
+replacement and creation, and distinguish confirmed from uncertain effects.
+Finish-specific continuation/abort commands are deferred; developers recover with
+Git and reassess finish. The accepted delivery direction is preparation and
+publication followed by a manual submission handoff, unless an explicitly
+configured provider integration handles that step.
 
 Provider adapters and their settings remain undecided. Configurable checks,
 integration into the base branch, tagging, cleanup, workflow profiles, release

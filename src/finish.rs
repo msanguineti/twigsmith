@@ -1,5 +1,5 @@
-//! Read-only finish assessment. Remote evidence is supplied by an executor;
-//! local tracking refs are hints, never fresh destination observations.
+//! Finish assessment and preparation. Local tracking refs are hints, never
+//! fresh destination observations. Assessment corroborates durable retry data.
 use crate::{
     git, repository,
     repository::InspectionError,
@@ -7,6 +7,10 @@ use crate::{
     settings::{FinishRewrite, FinishUpdate, SettingSource, Settings},
 };
 use std::{ffi::OsString, fmt, fs, io, path::Path};
+
+pub mod preparation;
+mod recovery;
+pub use recovery::{Recovery, VerifiedRewrite};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
@@ -26,7 +30,7 @@ pub enum RequiredInput {
     Update,
     Rewrite,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RefObservation {
     Absent,
     /// An exact full object ID, not a revision expression. Objects may still
@@ -35,16 +39,16 @@ pub enum RefObservation {
     Unavailable,
     Ambiguous,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DestinationEvidence {
     /// Exact resolved push URL from the plan, not the fetch URL or upstream.
     pub destination: Vec<u8>,
     pub branch: RefObservation,
 }
-/// Operation-scoped fresh observations supplied by the future execution layer.
+/// Operation-scoped fresh observations supplied by the execution layer.
 /// The caller must observe the exact base/branch refs at the named destinations.
 /// This module validates the binding and local history, not network freshness.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RemoteEvidence {
     pub remote: String,
     pub base_ref: Vec<u8>,
@@ -100,6 +104,9 @@ pub enum PublicationMode {
     /// Rebase may change published commits. The final graph must be checked
     /// again; allow is permission, never proof of incorporation or push success.
     RecheckAfterRebase,
+    /// A verified finish rewrite incorporates the exact observed remote work.
+    /// Publication still requires an explicit lease and resolved authorization.
+    VerifiedRewrite,
     Blocked,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,15 +134,17 @@ pub struct Plan {
     pub required_input: Vec<RequiredInput>,
     pub constraints: Vec<Constraint>,
     pub destinations: Vec<DestinationPlan>,
+    pub recovery: Recovery,
     request: Request,
     /// Reuse save's existing eligibility, upstream and preservation snapshot.
     local: save::Plan,
     git_config: Vec<u8>,
     shallow: Option<Vec<u8>>,
     grafts: Option<Vec<u8>>,
+    committed_settings: Vec<u8>,
 }
 impl Plan {
-    /// Ready for a later executor to prepare and then reassess publication.
+    /// Ready for preparation and subsequent publication assessment.
     /// This is neither an execution result nor permission to force-push.
     pub fn is_ready(&self) -> bool {
         self.required_input.is_empty() && self.constraints.is_empty()
@@ -382,6 +391,9 @@ pub fn assess(
     let git_config = read(directory, &["config", "--null", "--list"])?;
     let shallow = metadata(directory, "shallow")?;
     let grafts = metadata(directory, "info/grafts")?;
+    let mut config_args = vec!["ls-tree", "--full-tree", "-z", "HEAD", "--"];
+    config_args.extend(crate::settings::CONFIG_FILES);
+    let committed_settings = read(directory, &config_args)?;
     let mut plan = Plan {
         repository: local.repository.clone(),
         settings: settings.clone(),
@@ -404,11 +416,13 @@ pub fn assess(
         required_input: vec![],
         constraints: vec![],
         destinations: vec![],
+        recovery: Recovery::Absent,
         request: request.clone(),
         local,
         git_config,
         shallow,
         grafts,
+        committed_settings,
     };
     if plan.grafts.as_ref().is_some_and(|bytes| !bytes.is_empty()) {
         plan.constraints.push(Constraint::GraftedHistory);
@@ -527,6 +541,7 @@ pub fn assess(
             mode,
         });
     }
+    recovery::apply(directory, &mut plan)?;
     Ok(plan)
 }
 

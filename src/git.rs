@@ -47,7 +47,25 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    Command::new("git")
+    workflow_with_reflog(directory, arguments, None)
+}
+
+/// A finish rebase records a unique start action in HEAD's reflog. Ordinary
+/// Git continuation can use its own action; recovery verifies the whole interval.
+pub(crate) fn workflow_with_reflog<I, S>(
+    directory: &Path,
+    arguments: I,
+    action: Option<&str>,
+) -> io::Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut command = Command::new("git");
+    if let Some(action) = action {
+        command.env("GIT_REFLOG_ACTION", action);
+    }
+    command
         .current_dir(directory)
         .args(["--no-lazy-fetch", "-c", "core.fsmonitor=false"])
         .args(arguments)
