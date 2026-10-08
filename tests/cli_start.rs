@@ -383,9 +383,9 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                 cli.start(&repo, "work"),
                 1,
                 &[
-                    "invalid oneflow.conf",
+                    "invalid settings:",
                     "duplicate key",
-                    "check oneflow.conf",
+                    "check git-oneflow.config",
                 ],
             );
             assert_eq!(snapshot(root), before);

@@ -16,7 +16,7 @@
 | --- | --- |
 | Native entry points | `src/main.rs`, `src/bin/gof.rs`: shared CLI entry |
 | CLI/UI | `src/cli.rs`, `start_cli.rs`, `save_cli.rs`, `status.rs`: parsing, interaction, presentation |
-| Configuration | `src/settings.rs`: shared strict common-directory settings |
+| Configuration | `src/settings.rs`: sparse layered configuration, schema, sources, legacy boundary |
 | Git/process boundary | `src/git.rs`: literal arguments, explicit cwd, raw output/status |
 | Repository observation | `src/repository.rs`: HEAD, changes, operations, upstream/local history |
 | Start | `src/start.rs`, `start/workflow.rs`: prepare, select create/resume intent, execute |
@@ -25,7 +25,9 @@
 
 Rust 1.99.0 is pinned; use `./dev`. Tools/caches/temp files are local to `.dev/`,
 builds to `target/`. Cargo lockfile is committed. Runtime dependencies are the two
-Unicode crates; dev dependencies are tempfile and Linux-only rustix for PTYs.
+Unicode crates plus Serde, serde_json, toml, and serde-saphyr. Parsing dependencies
+use only the required deserialization features; YAML import/property/expression
+features are disabled. Dev dependencies are tempfile and Linux-only rustix for PTYs.
 CI bootstrap/check targets Ubuntu 24.04. Package version is `0.0.0-dev`,
 `publish = false`, edition 2024, MIT.
 
@@ -69,6 +71,44 @@ CI bootstrap/check targets Ubuntu 24.04. Package version is `0.0.0-dev`,
   reports the refusal; save uses an exact full ref for that branch.
 - Status compares locally available history, including shallow boundaries. Missing
   comparison data is reported as unavailable; human text has no machine-output contract.
+
+## Configuration implementation
+
+Configuration uses one flat string schema for `remote`, `base`, and `save-action`
+in every supported format. Each layer accepts at most one recognized file, without
+extension priority. Legacy/new local coexistence is a migration error, including
+empty files. Omitted legacy keys inherit shared settings and then defaults.
+Every present value is validated even when overridden. Loading remains local and
+read-only, with remote availability left to the workflow. Shared configuration
+is worktree-specific; local overrides are common to linked worktrees. Parent/home
+inheritance, custom paths, and external imports are absent.
+
+Routine implementation choices: use [Serde](https://serde.rs/),
+[serde_json](https://docs.rs/serde_json/), [toml](https://docs.rs/toml/), and the
+maintained [serde-saphyr](https://github.com/bourumir-wyngs/serde-saphyr) parser.
+Deserialize directly into one sparse schema so duplicate keys cannot disappear
+into an intermediate map. Preserve scalar types rather than YAML string coercion;
+empty YAML/JSON mappings are valid, while null/empty YAML documents fail the
+mapping contract. YAML follows 1.2 boolean spelling, rejects merge keys and
+unsupported tags, and keeps parser resource limits. Revalidation compares effective
+values and their source paths; formatting alone does not change the settings
+snapshot. Save action provenance distinguishes explicit Request selection,
+configuration/defaults, and the clean-tree rule. Shared files remain ordinary Git
+content: a stash or hook changing effective settings stops subsequent operations,
+with completed preservation retained and reported.
+
+Workflow research: [Ruka's 2021 hosted-provider OneFlow description](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab)
+allows either merge or rebase for updating ordinary work and prefers squash PR
+integration. It distinguishes upstream from fork publication and defines release/
+hotfix tagging and merge-back procedures. A OneFlow bundle must not conflate branch
+update policy, review submission, and final integration. Bundle selection is still
+open; release/hotfix implementation remains deferred. The current single-remote
+setting does not model separate upstream and fork roles.
+
+Explicit starting references, release/hotfix operations, tagging policy, workflow
+profiles, shell completion, extra aliases, installers, platform support, and npm
+distribution remain deferred. A tagged starting point alone does not determine hotfix intent; releasing
+may operate on an existing reference rather than a new branch.
 
 ## Historical reference
 

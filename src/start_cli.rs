@@ -96,9 +96,12 @@ Details:
   Active operations and targets occupied by another worktree block start.
 
 Settings:
-  <Git common directory>/oneflow.conf (usually .git/oneflow.conf)
+  git-oneflow.config.toml, .yaml, .yml, or .json: one file per layer
+  Shared: working-tree root; local overrides: Git common directory
+  Precedence: local > shared > defaults
+  Legacy local oneflow.conf remains supported when no new local file exists
   remote = origin; base = main (defaults)
-  Linked worktrees share this file.
+  Linked worktrees have separate shared files and common local overrides.
 
 Exit status:
   0  Created, resumed, or already current
@@ -132,7 +135,7 @@ fn resolve_guidance(error: &ResolveError) {
         ResolveError::OutsideRepository => eprintln!("enter a Git working tree and retry"),
         ResolveError::SettingsIo { .. } | ResolveError::InvalidSettings(_) => {
             eprintln!(
-                "check oneflow.conf in the Git common directory; supported keys: remote, base, save-action"
+                "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, base, save-action"
             );
         }
         ResolveError::UnusablePhrase
@@ -154,7 +157,7 @@ fn failure_error(failure: &Failure, target: &str) {
             eprintln!("ensure Git is installed on PATH and repository paths are accessible")
         }
         StartError::Git { .. } => eprintln!(
-            "check Git diagnostics, repository access, and the configured remote/base in oneflow.conf"
+            "check Git diagnostics, repository access, and the configured remote/base in repository settings"
         ),
         _ => {}
     }

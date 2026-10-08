@@ -47,7 +47,7 @@ impl fmt::Display for ResolveError {
                 write!(f, "cannot read settings {}: {source}", path.display())
             }
             Self::InvalidSettings(reason) => {
-                write!(f, "invalid {SETTINGS_FILE} settings: {reason}")
+                write!(f, "invalid settings: {reason}")
             }
             Self::UnusablePhrase => write!(f, "phrase contains no usable letters or numbers"),
             Self::InvalidTarget(name) => write!(f, "invalid target branch name: {name:?}"),

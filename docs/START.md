@@ -57,39 +57,41 @@ unusable phrases are operational input failures (exit 1).
 
 ## Repository settings
 
-The only source is `<Git common directory>/oneflow.conf`, discovered by Git
-from the caller's directory. In a usual checkout this is `.git/oneflow.conf`;
-linked worktrees share the main repository's common directory file. Bare
-repositories use `oneflow.conf` in the bare directory. No worktree-private,
-working-tree-root, global, environment-specific, profile, or legacy settings
-file is consulted. Git's normal repository-selection environment is honored.
-The file is repository metadata, not tracked project content.
+`settings::load` supplies the same sparse model to start and save. Git discovers
+the current working-tree root and common directory from the caller's directory;
+its normal repository-selection environment is honored. Shared configuration
+lives at that root. Local overrides live in the common directory and apply across
+linked worktrees. Bare repositories have no shared layer. Parent/home inheritance,
+custom paths, environment-specific settings, and external imports are absent.
+See the [user guide](USAGE.md#repository-settings) for format examples and migration.
 
-The format is a small, strict UTF-8 line format:
+Each layer recognizes `git-oneflow.config.toml`, `git-oneflow.config.yaml`,
+`git-oneflow.config.yml`, and `git-oneflow.config.json`, independently. At most one
+recognized file may exist per layer; extensions have no priority. Local legacy
+`oneflow.conf` is a fallback only when no new local file exists. Coexistence is an
+error with explicit migration guidance. Legacy values remain literal unquoted
+`key = value` lines, split at the first `=`, with whitespace trimmed, LF/CRLF,
+blank lines, and whole-line `#` comments accepted.
 
-```text
-# Optional repository overrides
-remote = upstream
-base = trunk
-```
-
-- Case-sensitive `remote`, `base`, and `save-action` keys are supported, at most
-  once each. `save-action` is shared with save planning and does not alter start.
-- Each setting is `key = value`, split at the first `=`. Surrounding whitespace
-  on the line, key, and value is trimmed. LF and CRLF are supported.
-- Blank lines and whole-line `#` comments are ignored. Values are literal:
-  no quoting, escapes, inline comments, expansion, includes, or execution.
-- An absent file, empty/comment-only file, or absent individual key uses the
-  corresponding default: `remote = origin`, `base = main`, `save-action = ask`.
-- `save-action` accepts exactly `ask`, `publish-only`, `staged`, `wip`, or `stash`;
-  see the [save contract](SAVE.md#assessment-and-effects).
-- Empty values, unknown/duplicate keys, malformed lines, invalid UTF-8, and
-  unreadable existing files fail. A dangling symlink fails rather than defaulting.
-- `base` is a branch name and uses the same syntax validation as targets.
-- `remote` is a named remote, validated as the component in
-  `refs/remotes/<remote>/base`; it cannot be empty, start with `-`, or be `.`.
-  URLs, paths such as `../repo`, and invalid ref characters are rejected.
-  Names containing valid slash-separated components are allowed.
+- New formats require a flat mapping of string values under case-sensitive
+  `remote`, `base`, and `save-action` keys, each at most once. YAML uses scalar
+  types rather than coercing numbers/booleans/null to strings; merge keys and
+  unsupported tags are rejected. Parser import/expression features are disabled.
+- Keys resolve individually: explicit existing flags > local > shared > built-in
+  defaults (`origin`, `main`, `ask`). Start has no settings flags. `save-action`
+  accepts `ask`, `publish-only`, `staged`, `wip`, or `stash` and does not alter start.
+- Every present layer is parsed and validated, including overridden values.
+  Unknown/duplicate keys, invalid types, malformed syntax, empty/invalid values,
+  invalid UTF-8, and unreadable files fail. Only absent files default; dangling
+  symlinks fail. Empty TOML or empty YAML/JSON mappings inherit all keys.
+- `base` uses the same branch-name validation as targets. `remote` is validated
+  as the component in `refs/remotes/<remote>/base`; it cannot be empty, start
+  with `-`, or be `.`. URLs, paths such as `../repo`, and invalid ref characters
+  fail. Valid slash-separated remote names remain supported.
+- Resolved settings retain a source per key: built-in default, shared file path,
+  or local file path (including legacy). Prepared requests carry this information.
+  Revalidation compares resolved values and sources; comments/formatting changes
+  with identical values and sources do not change the settings snapshot.
 
 Settings syntax validation does not require the remote to exist or the base
 branch to be present locally. Those checks need fresh remote information and
@@ -100,7 +102,7 @@ context fails discovery, matching the existing inspection boundary.
 
 ## Read-only boundary and errors
 
-Preparation discovers repository paths, reads the settings file, and invokes
+Preparation discovers repository paths, reads configuration layers, and invokes
 Git's local ref-syntax checks. It does not read the index, fetch, inspect remote
 availability, create/switch/publish branches, or edit repository files. It uses
 the existing no-optional-locks, no-lazy-fetch, fsmonitor-disabled Git executor.

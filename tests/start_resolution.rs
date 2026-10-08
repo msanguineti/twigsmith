@@ -183,6 +183,11 @@ fn settings_overrides_and_errors() {
             Settings {
                 remote: "team/upstream".into(),
                 base: "Feature/École".into(),
+                sources: git_oneflow::settings::SettingSources {
+                    remote: git_oneflow::settings::SettingSource::Local(path.clone()),
+                    base: git_oneflow::settings::SettingSource::Local(path.clone()),
+                    ..Default::default()
+                },
                 ..Settings::default()
             }
         );

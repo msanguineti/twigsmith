@@ -11,9 +11,16 @@ changing save or designing adjacent lifecycle commands.
 | Publication | `save::publication::publish(directory, &Plan)`: publish a resolved plan with no pending local steps |
 | CLI | `src/save_cli.rs`: resolve input and present typed reports |
 
-`settings::load` is shared with start. The strict common-directory `oneflow.conf`
-format is specified in the [start contract](START.md#repository-settings).
-`save-action` defaults to `ask`; invalid settings fail even with an explicit action.
+`settings::load` is shared with start. The layered, multi-format configuration
+contract is specified in the [start contract](START.md#repository-settings).
+`save-action` defaults to `ask`; invalid settings in either layer fail even with
+an explicit action. Plans retain settings sources and distinguish action selection
+by explicit selection (flag or interactive choice), resolved setting, or the
+existing clean-tree publication rule.
+Revalidation reloads both layers and compares resolved settings and their sources
+before affected operations. Local preservation can itself change shared settings
+(for example, stashing a changed configuration); changed settings stop subsequent
+operations while preserving and reporting completed effects.
 
 ## Assessment and effects
 

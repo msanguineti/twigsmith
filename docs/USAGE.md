@@ -142,25 +142,76 @@ observation. Its text is intended for people.
 ## Repository settings
 
 Defaults are `remote = origin`, `base = main`, and `save-action = ask`.
-To override them, create `oneflow.conf` in the Git common directory, usually
-`.git/oneflow.conf`:
+Commit shared settings at the Git working-tree root. Keep private overrides in
+the Git common directory, usually `.git`. Each directory accepts one of:
 
-```text
-remote = upstream
-base = trunk
-save-action = ask
+- `git-oneflow.config.toml`
+- `git-oneflow.config.yaml`
+- `git-oneflow.config.yml`
+- `git-oneflow.config.json`
+
+Choose one file per layer. Multiple recognized files in the same directory fail
+with a diagnostic listing the conflicting paths; extensions have equal priority.
+The two layers can use different formats. Resolve the directories with
+`git rev-parse --show-toplevel` and `git rev-parse --git-common-dir`.
+Commands find the same shared file from any subdirectory. Linked worktrees use
+their own shared root files and the same private common-directory overrides.
+Bare repositories have the local layer and defaults available; start/save still
+require a working tree for their operations.
+
+Each key resolves independently: **explicit command flags > local overrides >
+shared settings > defaults**. Save's existing action flags override `save-action`.
+Start has no setting override flags. Parent directories and the home directory
+supply no additional settings.
+
+Use a flat mapping of case-sensitive keys with string values. These examples
+are equivalent; save each under its matching filename:
+
+```toml
+remote = "upstream"
+base = "trunk"
+save-action = "ask"
 ```
 
-Find the directory with `git rev-parse --git-common-dir`. Linked worktrees share
-this local metadata file. The remote must be configured in Git. Its base branch
-must exist remotely when creating new work. Write `base` as a branch name such
-as `trunk`.
+```yaml
+remote: "upstream"
+base: "trunk"
+save-action: "ask"
+```
 
+```json
+{"remote": "upstream", "base": "trunk", "save-action": "ask"}
+```
+
+`remote` is a Git remote name. Configure it in Git; its base branch must exist
+remotely when creating new work. `base` is a branch name such as `trunk`.
 `save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
-The UTF-8 file uses one `key = value` per line. Surrounding whitespace is trimmed;
-blank lines and whole-line `#` comments are accepted. Values are literal. Use each
-supported key once. Malformed, unknown, duplicate, invalid, or unreadable settings
-fail with a diagnostic. Missing files or keys use defaults.
+Omit keys to inherit them from the next layer. An empty TOML document or an empty
+mapping (`{}`) in YAML/JSON inherits every key. Quote YAML values that could be
+interpreted as another type, such as `"true"` or `"123"`.
+
+All present files must be valid UTF-8 and satisfy the same validation rules.
+Malformed syntax, unknown or duplicate keys, non-string values (including null),
+invalid names/actions, and unreadable files fail even when another layer or an
+explicit action overrides their values. Configuration is read locally as data;
+remote availability is checked by the workflow that needs it. Save rechecks
+settings before affected operations, including after local preservation. If a
+stash or hook changes effective settings, save stops with completed effects
+retained; inspect the report and current settings before retrying.
+
+### Legacy migration
+
+`<Git common directory>/oneflow.conf` continues to work as local overrides when
+that directory has no new-format file, including alongside shared configuration.
+It uses literal, unquoted `key = value` lines, with surrounding whitespace trimmed,
+blank lines and whole-line `#` comments accepted. Omitted keys inherit shared
+settings and defaults.
+
+To migrate, copy its settings into one new-format file in the Git common
+directory, using the matching format's string syntax, then remove or rename
+`oneflow.conf`. Coexisting legacy and new-format local files fail with migration
+guidance. Keep shared project settings in the working-tree root file and private
+values in the local file.
 
 ## Recovery
 
@@ -169,8 +220,8 @@ fail with a diagnostic. Missing files or keys use defaults.
   reported Git operation. Use the reported worktree if another checkout owns
   the target. For detached or unborn HEAD, attach a branch or create an initial
   commit before starting.
-- **Remote/settings failure:** inspect `oneflow.conf`, `git remote -v`, the remote
-  base, push destinations, and access credentials.
+- **Remote/settings failure:** inspect the reported configuration files,
+  `git remote -v`, the remote base, push destinations, and access credentials.
 - **Save needs input:** select an action explicitly or configure `save-action`.
   Supply a nonblank `--message` for an unattended staged checkpoint.
 - **Scope changed:** inspect the branch, index, files, upstream, and settings,

@@ -93,7 +93,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 }
             );
             eprintln!(
-                "select --publish-only, --staged --message <message>, --wip, or --stash; or configure save-action in oneflow.conf"
+                "select --publish-only, --staged --message <message>, --wip, or --stash; or configure save-action in git-oneflow.config.toml"
             );
             return ExitCode::FAILURE;
         }
@@ -248,7 +248,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             inspection_diagnostics(error);
         }
         SaveError::Settings(_) => eprintln!(
-            "check oneflow.conf in the Git common directory; supported keys: remote, base, save-action"
+            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, base, save-action"
         ),
         SaveError::NoStagedChanges => eprintln!(
             "stage the intended selection yourself, or select --publish-only, --wip, or --stash"
@@ -260,7 +260,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             "inspect the changed branch/settings/index/work and rerun save to approve its current scope"
         ),
         SaveError::InvalidUpstream => eprintln!(
-            "inspect branch upstream configuration and oneflow.conf; save will not overwrite conflicting tracking settings"
+            "inspect branch upstream configuration and repository settings; save will not overwrite conflicting tracking settings"
         ),
         _ => eprintln!(
             "inspect repository state with status and resolve the reported blocker before retrying"
@@ -578,7 +578,10 @@ Details:
   Failures retain completed effects; inspect the report before retrying.
 
 Settings:
-  <Git common directory>/oneflow.conf (usually .git/oneflow.conf)
+  git-oneflow.config.toml, .yaml, .yml, or .json: one file per layer
+  Shared: working-tree root; local overrides: Git common directory
+  Precedence: explicit action flag > local > shared > defaults
+  Legacy local oneflow.conf remains supported when no new local file exists
   remote = origin; base = main; save-action = ask (defaults)
   save-action: ask, publish-only, staged, wip, stash
 

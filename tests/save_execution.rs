@@ -1082,6 +1082,8 @@ fn changed_scope_or_context_from_commit_hooks_stops_before_next_mutation() {
                 "printf 'new scope\\n' > new-file",
                 "git config branch.work.remote other",
                 "printf 'save-action = stash\\n' > .git/oneflow.conf",
+                "printf '{\"save-action\":\"stash\"}' > .git/git-oneflow.config.json",
+                "printf 'save-action = \"stash\"\\n' > git-oneflow.config.toml",
                 "git switch -c other",
                 "git config remote.origin.fetch '+refs/heads/*:refs/heads/*'",
             ] {

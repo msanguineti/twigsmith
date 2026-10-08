@@ -7,7 +7,7 @@ use crate::{
         self, Change, ChangeKind, Head, InspectionError, Observation, RepositoryContext,
         RepositoryKind, RepositoryState,
     },
-    settings::{self, SaveAction, Settings, SettingsError},
+    settings::{self, SaveAction, SettingSource, Settings, SettingsError},
 };
 use std::{
     ffi::OsString,
@@ -80,6 +80,14 @@ pub struct Publication {
     /// Local tracking may be established only after confirmed publication.
     pub establish_upstream: bool,
 }
+/// Source of the planned action, including save's existing clean-tree rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionSource {
+    /// An explicit Request action, supplied by a flag or interactive choice.
+    ExplicitSelection,
+    Setting(SettingSource),
+    CleanTree,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub repository: RepositoryContext,
@@ -88,6 +96,7 @@ pub struct Plan {
     pub commit: Vec<u8>,
     pub scope: Scope,
     pub action: SaveAction,
+    pub action_source: ActionSource,
     pub required_input: RequiredInput,
     /// Empty while input is unresolved. No effects are permitted then.
     pub local_steps: Vec<LocalStep>,
@@ -364,6 +373,13 @@ fn assess_with_upstream(
     } else {
         selected
     };
+    let action_source = if scope.tree_state() == TreeState::Clean {
+        ActionSource::CleanTree
+    } else if request.action.is_some() {
+        ActionSource::ExplicitSelection
+    } else {
+        ActionSource::Setting(settings.sources.save_action.clone())
+    };
     let mut applicable_actions = vec![SaveAction::PublishOnly];
     if scope.tree_state() != TreeState::Clean {
         if !scope.staged.is_empty() {
@@ -463,6 +479,7 @@ fn assess_with_upstream(
         commit,
         scope,
         action,
+        action_source,
         required_input,
         local_steps,
         publication,
