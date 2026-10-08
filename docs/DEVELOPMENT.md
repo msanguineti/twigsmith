@@ -77,8 +77,9 @@ For optimized executables:
 - **Corrupt tools/build outputs:** remove `.dev/` and `target/` from the project
   root, then bootstrap, build, and check again.
 
-## Contributor reference
+## Contributing
 
-Read [AGENTS.md](../AGENTS.md) and the [engineering handoff](ENGINEERING.md)
-before starting a task. Detailed implementation contracts are organised by
-workflow: [start](START.md) and [save](SAVE.md).
+Use `./dev check` before handing off changes. The [engineering reference](ENGINEERING.md)
+summarizes the architecture and current implementation boundaries. Detailed
+workflow invariants are documented in the [start](START.md), [save](SAVE.md),
+and [finish](FINISH.md) contracts.

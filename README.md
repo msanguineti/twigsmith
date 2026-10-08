@@ -32,7 +32,9 @@ Use `gof --help` or `gof <command> --help` for a quick reference.
 ## Documentation
 
 - [User guide](docs/USAGE.md): commands, settings, automation, and recovery.
-- [Development guide](docs/DEVELOPMENT.md): setup, builds, checks, and troubleshooting.
-- [Engineering handoff](docs/ENGINEERING.md): current phase, decisions, and open questions.
+- [Contributor guide](docs/DEVELOPMENT.md): setup, builds, checks, and
+  troubleshooting.
+- [Architecture and design](docs/ENGINEERING.md): project structure, decisions,
+  and current implementation boundaries.
 
 Licensed under [MIT](LICENSE).

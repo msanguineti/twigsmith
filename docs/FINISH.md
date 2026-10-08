@@ -1,9 +1,9 @@
 # Finish contract
 
 Finish prepares and publishes the current working branch for delivery. This
-contract is implemented through read-only assessment/revalidation in Task #18.
+contract is currently implemented through read-only assessment/revalidation.
 Execution, fetches, branch updates, publication, durable retry evidence, the CLI,
-and additional setup questions belong to subsequent tasks. Configurable checks,
+and additional setup questions remain future work. Configurable checks,
 provider submission, integration into the base, tagging, and cleanup are deferred.
 
 ## Configuration and choices
@@ -150,20 +150,32 @@ Later execution must preserve merge structure during rebase, limit tool-initiate
 branch changes to the working branch, and reassess after preparation. Replacement
 requires both resolved authorization and proof that the originally observed remote
 work was incorporated before rewriting. Verified durable recovery evidence may
-supply that proof in later tasks; Task #18 reads or writes none. Replacement must
-use a lease for the exact observed commit at the exact destination. Git's
-[git-push documentation](https://git-scm.com/docs/git-push) explains explicit lease
-expectations. A lease protects against later destination changes; it establishes
-no incorporation of earlier remote work. Creation must likewise protect the
-observed absence in the future publication implementation.
+supply that proof in future execution; the current planner reads or writes none.
+Replacement must use a lease for the exact observed commit at the exact
+destination. Git's [git-push documentation](https://git-scm.com/docs/git-push)
+explains explicit lease expectations. A lease protects against later destination
+changes; it establishes no incorporation of earlier remote work. Creation must
+likewise protect the observed absence in the future publication implementation.
+
+The accepted delivery direction is publication to the configured remote by
+default, followed by a clear handoff to the developer for any submission step.
+Provider submission is opt-in through configuration that explicitly selects a
+supported CLI. Do not require or automatically invoke `gh`, infer a provider from
+the remote URL, or ask about provider integration during ordinary publication.
+Keep integrations to a small curated set; the supported set and selection settings
+remain undecided. Do not add an arbitrary executable/plugin mechanism. If guided
+setup later offers provider submission, manual submission is the default. These
+are design constraints for future work; no provider adapter or setup flow is
+implemented by the read-only planning phase.
 
 Publication results must distinguish confirmation per actual destination,
 rejection, unconfirmed responses, partial effects, and tracking establishment.
 Preparation can leave conflicts or interrupted Git operations for the developer
 to continue/abort with Git. No automatic rollback is implied. After confirmed
 publication, report branch/destination/commit and hand off the project's manual
-submission step unless an explicitly configured future provider adapter handles it.
-These are subsequent executor obligations, not Task #18 result types or effects.
+submission step unless an explicitly configured future provider adapter handles
+it.
+These are future executor obligations, not current result types or effects.
 
 ## Revalidation and read-only invariants
 
@@ -190,5 +202,5 @@ across successful/failed assessment and revalidation, including Git metadata.
 Observation is several reads, not an atomic snapshot or cross-process lock.
 Revalidation with the same supplied evidence cannot detect remote-only changes.
 Future execution must acquire fresh evidence where needed, revalidate before
-mutations, and use exact publication guards. Task #18 introduces no general
-workflow engine or long-lived approval/recovery store.
+mutations, and use exact publication guards. The current planning model introduces
+no general workflow engine or long-lived approval/recovery store.
