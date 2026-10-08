@@ -315,7 +315,7 @@ fn submodule_policy(directory: &Path) -> Result<&'static str, SaveError> {
 
 // Shared read-only local guards. Checkpoint execution uses these before writes;
 // publication repeats them because hooks/configuration can change in between.
-pub(super) fn preflight(directory: &Path, plan: &Plan) -> Result<Vec<Vec<u8>>, PublishError> {
+pub(crate) fn preflight(directory: &Path, plan: &Plan) -> Result<Vec<Vec<u8>>, PublishError> {
     let urls = plan
         .snapshot
         .push_urls

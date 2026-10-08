@@ -21,6 +21,57 @@ pub enum SaveAction {
     Stash,
 }
 
+/// Update policy is independent of permission to replace published history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishUpdate {
+    Ask,
+    Rebase,
+    Merge,
+    None,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishRewrite {
+    Ask,
+    Allow,
+    Deny,
+}
+impl FinishUpdate {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Rebase => "rebase",
+            Self::Merge => "merge",
+            Self::None => "none",
+        }
+    }
+}
+impl FinishRewrite {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+        }
+    }
+}
+fn parse_update(value: &str) -> Result<FinishUpdate, String> {
+    match value {
+        "ask" => Ok(FinishUpdate::Ask),
+        "rebase" => Ok(FinishUpdate::Rebase),
+        "merge" => Ok(FinishUpdate::Merge),
+        "none" => Ok(FinishUpdate::None),
+        _ => Err("finish-update must be ask, rebase, merge, or none".into()),
+    }
+}
+fn parse_rewrite(value: &str) -> Result<FinishRewrite, String> {
+    match value {
+        "ask" => Ok(FinishRewrite::Ask),
+        "allow" => Ok(FinishRewrite::Allow),
+        "deny" => Ok(FinishRewrite::Deny),
+        _ => Err("finish-rewrite must be ask, allow, or deny".into()),
+    }
+}
+
 #[derive(Debug)]
 pub enum SettingsError {
     Repository(InspectionError),
@@ -76,6 +127,8 @@ pub struct SettingSources {
     pub remote: SettingSource,
     pub base: SettingSource,
     pub save_action: SettingSource,
+    pub finish_update: SettingSource,
+    pub finish_rewrite: SettingSource,
 }
 impl Default for SettingSources {
     fn default() -> Self {
@@ -83,6 +136,8 @@ impl Default for SettingSources {
             remote: SettingSource::BuiltIn,
             base: SettingSource::BuiltIn,
             save_action: SettingSource::BuiltIn,
+            finish_update: SettingSource::BuiltIn,
+            finish_rewrite: SettingSource::BuiltIn,
         }
     }
 }
@@ -92,6 +147,8 @@ pub struct Settings {
     pub remote: String,
     pub base: String,
     pub save_action: SaveAction,
+    pub finish_update: FinishUpdate,
+    pub finish_rewrite: FinishRewrite,
     pub sources: SettingSources,
 }
 impl Default for Settings {
@@ -100,6 +157,8 @@ impl Default for Settings {
             remote: "origin".into(),
             base: "main".into(),
             save_action: SaveAction::Ask,
+            finish_update: FinishUpdate::Ask,
+            finish_rewrite: FinishRewrite::Ask,
             sources: SettingSources::default(),
         }
     }
@@ -111,6 +170,8 @@ struct Layer {
     remote: Option<String>,
     base: Option<String>,
     save_action: Option<String>,
+    finish_update: Option<String>,
+    finish_rewrite: Option<String>,
 }
 impl Layer {
     fn slot(&mut self, key: &str) -> Result<&mut Option<String>, String> {
@@ -118,8 +179,10 @@ impl Layer {
             "remote" => Ok(&mut self.remote),
             "base" => Ok(&mut self.base),
             "save-action" => Ok(&mut self.save_action),
+            "finish-update" => Ok(&mut self.finish_update),
+            "finish-rewrite" => Ok(&mut self.finish_rewrite),
             _ => Err(format!(
-                "unknown key {key:?} (supported keys: remote, base, save-action)"
+                "unknown key {key:?} (supported keys: remote, base, save-action, finish-update, finish-rewrite)"
             )),
         }
     }
@@ -137,6 +200,12 @@ impl Layer {
         if let Some(action) = &self.save_action {
             parse_action(action).map_err(|e| invalid(path, e))?;
         }
+        if let Some(update) = &self.finish_update {
+            parse_update(update).map_err(|e| invalid(path, e))?;
+        }
+        if let Some(rewrite) = &self.finish_rewrite {
+            parse_rewrite(rewrite).map_err(|e| invalid(path, e))?;
+        }
         Ok(())
     }
     fn apply(self, settings: &mut Settings, source: SettingSource) {
@@ -150,7 +219,15 @@ impl Layer {
         }
         if let Some(action) = self.save_action {
             settings.save_action = parse_action(&action).expect("validated layer");
-            settings.sources.save_action = source;
+            settings.sources.save_action = source.clone();
+        }
+        if let Some(update) = self.finish_update {
+            settings.finish_update = parse_update(&update).expect("validated layer");
+            settings.sources.finish_update = source.clone();
+        }
+        if let Some(rewrite) = self.finish_rewrite {
+            settings.finish_rewrite = parse_rewrite(&rewrite).expect("validated layer");
+            settings.sources.finish_rewrite = source;
         }
     }
 }
@@ -204,7 +281,7 @@ impl<'de> Deserialize<'de> for Layer {
         impl<'de> Visitor<'de> for LayerVisitor {
             type Value = Layer;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a flat mapping of remote, base, and save-action strings")
+                f.write_str("a flat mapping of remote, base, save-action, finish-update, and finish-rewrite strings")
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Layer, M::Error> {
                 let mut layer = Layer::default();

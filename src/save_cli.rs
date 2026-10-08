@@ -248,7 +248,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             inspection_diagnostics(error);
         }
         SaveError::Settings(_) => eprintln!(
-            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, base, save-action"
+            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, base, save-action, finish-update, finish-rewrite"
         ),
         SaveError::NoStagedChanges => eprintln!(
             "stage the intended selection yourself, or select --publish-only, --wip, or --stash"

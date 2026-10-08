@@ -5,7 +5,10 @@ mod support;
 use git_oneflow::{
     git, repository,
     save::{self, ActionSource, Request, SaveError, execution},
-    settings::{self, CONFIG_FILES, SaveAction, SettingSource, Settings, SettingsError},
+    settings::{
+        self, CONFIG_FILES, FinishRewrite, FinishUpdate, SaveAction, SettingSource, Settings,
+        SettingsError,
+    },
     start,
 };
 use preservation::snapshot;
@@ -677,6 +680,171 @@ fn stashing_changed_shared_settings_stops_before_publication() {
                     .code()
                     .is_some_and(|code| code != 0)
             );
+        },
+    );
+}
+
+#[test]
+fn finish_settings_sparse_layers_legacy_and_sources() {
+    isolated(
+        "finish_settings_sparse_layers_legacy_and_sources",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let defaults = load(repo.path()).unwrap();
+            assert_eq!(defaults.finish_update, FinishUpdate::Ask);
+            assert_eq!(defaults.finish_rewrite, FinishRewrite::Ask);
+            assert_eq!(defaults.sources.finish_update, SettingSource::BuiltIn);
+            assert_eq!(defaults.sources.finish_rewrite, SettingSource::BuiltIn);
+            for (shared, shared_file) in CONFIG_FILES.iter().enumerate() {
+                write(
+                    repo.path(),
+                    shared,
+                    &[("finish-update", "merge"), ("finish-rewrite", "deny")],
+                );
+                for (local, local_file) in CONFIG_FILES.iter().enumerate() {
+                    let common = repo.path().join(".git");
+                    write(&common, local, &[("finish-update", "rebase")]);
+                    let before = snapshot(root);
+                    let resolved = load(repo.path()).unwrap();
+                    assert_eq!(snapshot(root), before);
+                    assert_eq!(resolved.finish_update, FinishUpdate::Rebase);
+                    assert_eq!(resolved.finish_rewrite, FinishRewrite::Deny);
+                    assert_eq!(
+                        resolved.sources.finish_update,
+                        SettingSource::Local(common.join(local_file))
+                    );
+                    assert_eq!(
+                        resolved.sources.finish_rewrite,
+                        SettingSource::Shared(repo.path().join(shared_file))
+                    );
+                    write(&common, local, &[("finish-rewrite", "allow")]);
+                    let resolved = load(repo.path()).unwrap();
+                    assert_eq!(resolved.finish_update, FinishUpdate::Merge);
+                    assert_eq!(resolved.finish_rewrite, FinishRewrite::Allow);
+                    assert_eq!(
+                        resolved.sources.finish_update,
+                        SettingSource::Shared(repo.path().join(shared_file))
+                    );
+                    assert_eq!(
+                        resolved.sources.finish_rewrite,
+                        SettingSource::Local(common.join(local_file))
+                    );
+                    fs::remove_file(common.join(local_file)).unwrap();
+                }
+                let legacy = repo.path().join(".git/oneflow.conf");
+                fs::write(&legacy, "finish-update=none\n").unwrap();
+                let resolved = load(repo.path()).unwrap();
+                assert_eq!(resolved.finish_update, FinishUpdate::None);
+                assert_eq!(
+                    resolved.sources.finish_update,
+                    SettingSource::Local(legacy.clone())
+                );
+                assert_eq!(resolved.finish_rewrite, FinishRewrite::Deny);
+                fs::write(&legacy, "finish-rewrite=ask\n").unwrap();
+                let resolved = load(repo.path()).unwrap();
+                assert_eq!(resolved.finish_update, FinishUpdate::Merge);
+                assert_eq!(resolved.finish_rewrite, FinishRewrite::Ask);
+                assert_eq!(
+                    resolved.sources.finish_rewrite,
+                    SettingSource::Local(legacy.clone())
+                );
+                fs::remove_file(legacy).unwrap();
+                fs::remove_file(repo.path().join(shared_file)).unwrap();
+            }
+            for (format, filename) in CONFIG_FILES.iter().enumerate() {
+                for update in ["ask", "rebase", "merge", "none"] {
+                    for rewrite in ["ask", "allow", "deny"] {
+                        write(
+                            repo.path(),
+                            format,
+                            &[("finish-update", update), ("finish-rewrite", rewrite)],
+                        );
+                        let resolved = load(repo.path()).unwrap();
+                        assert_eq!(resolved.finish_update.as_str(), update);
+                        assert_eq!(resolved.finish_rewrite.as_str(), rewrite);
+                    }
+                }
+                fs::remove_file(repo.path().join(filename)).unwrap();
+            }
+            let legacy = repo.path().join(".git/oneflow.conf");
+            for update in ["ask", "rebase", "merge", "none"] {
+                for rewrite in ["ask", "allow", "deny"] {
+                    fs::write(
+                        &legacy,
+                        format!("finish-update={update}\nfinish-rewrite={rewrite}\n"),
+                    )
+                    .unwrap();
+                    let resolved = load(repo.path()).unwrap();
+                    assert_eq!(resolved.finish_update.as_str(), update);
+                    assert_eq!(resolved.finish_rewrite.as_str(), rewrite);
+                }
+            }
+            fs::remove_file(legacy).unwrap();
+        },
+    );
+}
+
+#[test]
+fn finish_settings_strict_validation_in_every_layer() {
+    isolated(
+        "finish_settings_strict_validation_in_every_layer",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            for (format, filename) in CONFIG_FILES.iter().enumerate() {
+                for key in ["finish-update", "finish-rewrite"] {
+                    for value in ["", "ASK", "true", "squash", "allow # comment"] {
+                        for local in [false, true] {
+                            let directory = if local {
+                                repo.path().join(".git")
+                            } else {
+                                repo.path().to_owned()
+                            };
+                            write(&directory, format, &[(key, value)]);
+                            // A valid higher-precedence layer does not hide invalid values.
+                            if !local {
+                                write(&repo.path().join(".git"), format, &[(key, "ask")]);
+                            }
+                            let before = snapshot(root);
+                            let error = load(repo.path()).unwrap_err().to_string();
+                            assert_eq!(snapshot(root), before);
+                            assert!(error.contains(key) && error.contains(filename), "{error}");
+                            fs::remove_file(directory.join(filename)).unwrap();
+                            if !local {
+                                fs::remove_file(repo.path().join(".git").join(filename)).unwrap();
+                            }
+                        }
+                    }
+                    for duplicate in [true, false] {
+                        let invalid = match (format, duplicate) {
+                            (0, true) => format!("{key}='ask'\n{key}='ask'\n"),
+                            (0, false) => format!("{key}=false\n"),
+                            (1 | 2, true) => format!("{key}: ask\n{key}: ask\n"),
+                            (1 | 2, false) => format!("{key}: false\n"),
+                            (3, true) => format!("{{{key:?}:\"ask\",{key:?}:\"ask\"}}"),
+                            (3, false) => format!("{{{key:?}:false}}"),
+                            _ => unreachable!(),
+                        };
+                        for directory in [repo.path().to_owned(), repo.path().join(".git")] {
+                            let path = directory.join(filename);
+                            fs::write(&path, &invalid).unwrap();
+                            assert!(load(repo.path()).is_err(), "{invalid}");
+                            fs::remove_file(path).unwrap();
+                        }
+                    }
+                    let legacy = repo.path().join(".git/oneflow.conf");
+                    for invalid in [
+                        format!("{key}=ASK\n"),
+                        format!("{key}=ask\n{key}=ask\n"),
+                        format!("{key}=\n"),
+                    ] {
+                        fs::write(&legacy, invalid).unwrap();
+                        assert!(load(repo.path()).is_err());
+                    }
+                    fs::remove_file(legacy).unwrap();
+                }
+            }
         },
     );
 }

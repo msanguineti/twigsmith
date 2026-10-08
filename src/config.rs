@@ -37,6 +37,8 @@ pub fn render(format: Format, proposed: &settings::Settings) -> String {
         ("remote", proposed.remote.as_str()),
         ("base", proposed.base.as_str()),
         ("save-action", proposed.save_action.as_str()),
+        ("finish-update", proposed.finish_update.as_str()),
+        ("finish-rewrite", proposed.finish_rewrite.as_str()),
     ];
     // Valid ref names exclude controls/backslashes; JSON string quoting also
     // serves TOML and YAML for all accepted setting values.

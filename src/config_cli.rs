@@ -269,6 +269,16 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
                 effective.save_action.as_str(),
                 &effective.sources.save_action,
             ),
+            (
+                "finish-update",
+                effective.finish_update.as_str(),
+                &effective.sources.finish_update,
+            ),
+            (
+                "finish-rewrite",
+                effective.finish_rewrite.as_str(),
+                &effective.sources.finish_rewrite,
+            ),
         ] {
             if matches!(origin, SettingSource::Local(_)) {
                 eprintln!("  Effective {key}: {} ({})", text(value), source(origin));
@@ -328,6 +338,20 @@ fn show(inspection: &config::Inspection) {
         settings.save_action.as_str(),
         source(&settings.sources.save_action)
     );
+    for (key, value, origin) in [
+        (
+            "finish-update",
+            settings.finish_update.as_str(),
+            &settings.sources.finish_update,
+        ),
+        (
+            "finish-rewrite",
+            settings.finish_rewrite.as_str(),
+            &settings.sources.finish_rewrite,
+        ),
+    ] {
+        println!("  {key}: {value} ({})", source(origin));
+    }
     layer(
         "Shared file",
         loaded.shared.as_deref(),
@@ -351,7 +375,7 @@ Usage: git-oneflow config show
        git-oneflow config [--format <toml|yaml|json>]
 
 Arguments:
-  show             Display effective remote, base, save-action, and their sources
+  show             Display effective settings and their sources
 
 Options:
   -y, --yes        Create shared defaults without interactive input
@@ -372,6 +396,7 @@ Details:
   Run from the root or any nested directory. Bare repositories support inspection.
   Generation creates git-oneflow.config.toml, .yaml, or .json at the working-tree root.
   Built-in defaults: remote = origin; base = main; save-action = ask.
+  Finish planning defaults: finish-update = ask; finish-rewrite = ask.
   Private overrides take precedence; guided review shows their effective values.
   Guided setup validates private files; --yes reports their locations without parsing.
   Every recognized shared file or symlink, including .yml, prevents generation.

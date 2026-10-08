@@ -9,6 +9,7 @@
 | [Development guide](DEVELOPMENT.md) | Local setup, builds, checks, troubleshooting |
 | [Start contract](START.md) | Naming, settings validation, create/resume invariants |
 | [Save contract](SAVE.md) | Planning, local preservation, publication, failure semantics |
+| [Finish contract](FINISH.md) | Read-only readiness, evidence, choices, publication constraints |
 
 ## Implementation map
 
@@ -21,6 +22,7 @@
 | Repository observation | `src/repository.rs`: HEAD, changes, operations, upstream/local history |
 | Start | `src/start.rs`, `start/workflow.rs`: prepare, select create/resume intent, execute |
 | Save | `src/save.rs`, `save/execution.rs`, `save/publication.rs`: assess/revalidate, preserve, publish |
+| Finish | `src/finish.rs`: read-only assessment, evidence binding, choices, constraints, revalidation |
 | Test fixtures | `tests/support/`: isolated real Git, preservation snapshots, Linux PTYs |
 
 Rust 1.99.0 is pinned; use `./dev`. Tools/caches/temp files are local to `.dev/`,
@@ -81,9 +83,9 @@ CI bootstrap/check targets Ubuntu 24.04. Package version is `0.0.0-dev`,
 
 ## Configuration implementation
 
-Configuration uses one flat string schema for `remote`, `base`, and `save-action`
-in every supported format. Each layer accepts at most one recognized file, without
-extension priority. Legacy/new local coexistence is a migration error, including
+Configuration uses one flat string schema for `remote`, `base`, `save-action`,
+`finish-update`, and `finish-rewrite` in every supported format. Each layer accepts
+at most one recognized file, without extension priority. Legacy/new local coexistence is a migration error, including
 empty files. Omitted legacy keys inherit shared settings and then defaults.
 Every present value is validated even when overridden. Loading remains local and
 read-only, with remote availability left to the workflow. Shared configuration
@@ -111,7 +113,8 @@ generation are syntax errors. Standalone `--help`/`-h` needs no Git/repository.
 Show's human output has no machine-format contract. Empty/sparse file locations
 remain visible even when they supply no values.
 
-Guided setup selects only the implemented remote, base, and save-action settings.
+Guided setup selects remote, base, and save-action. Generated files also include
+the finish defaults without additional questions.
 All save actions are described through preservation/publication consequences;
 `ask` remains the default. Valid names need not exist. The proposals are independent
 of private settings. Review shows explicit local values even when equal to proposed

@@ -151,7 +151,8 @@ gof config -y --format yaml
 gof config --yes --format json
 ```
 
-`config show` displays the effective `remote`, `base`, and `save-action`, identifying
+`config show` displays the effective `remote`, `base`, `save-action`,
+`finish-update`, and `finish-rewrite`, identifying
 each value's shared file, local file, or built-in default. It lists discovered
 files and the directories searched when a layer is absent. Each key resolves
 from local overrides, shared settings, then defaults. Save's action flags take
@@ -223,7 +224,8 @@ configuration is either absent or complete.
 
 ## Repository settings
 
-Defaults are `remote = origin`, `base = main`, and `save-action = ask`.
+Defaults are `remote = origin`, `base = main`, `save-action = ask`,
+`finish-update = ask`, and `finish-rewrite = ask`.
 Commit shared settings at the Git working-tree root. Keep private overrides in
 the Git common directory, usually `.git`. Each directory accepts one of:
 
@@ -253,21 +255,33 @@ are equivalent; save each under its matching filename:
 remote = "upstream"
 base = "trunk"
 save-action = "ask"
+finish-update = "ask"
+finish-rewrite = "ask"
 ```
 
 ```yaml
 remote: "upstream"
 base: "trunk"
 save-action: "ask"
+finish-update: "ask"
+finish-rewrite: "ask"
 ```
 
 ```json
-{"remote": "upstream", "base": "trunk", "save-action": "ask"}
+{"remote": "upstream", "base": "trunk", "save-action": "ask", "finish-update": "ask", "finish-rewrite": "ask"}
 ```
 
 `remote` is a Git remote name. Configure it in Git; its base branch must exist
 remotely when creating new work. `base` is a branch name such as `trunk`.
 `save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
+`finish-update` accepts `ask`, `rebase`, `merge`, or `none`. `finish-rewrite`
+accepts `ask`, `allow`, or `deny`. These settings support finish planning;
+finish execution and its command are planned for subsequent increments. Update
+selects how to prepare history against the remote base. Rewrite selects permission
+to replace published history, with incorporated remote work and an exact lease
+required separately. Guided setup asks about remote, base, and save action and
+includes both finish defaults in its generated file. Edit finish preferences in
+that file or a private override. See the [finish contract](FINISH.md).
 Omit keys to inherit them from the next layer. An empty TOML document or an empty
 mapping (`{}`) in YAML/JSON inherits every key. Quote YAML values that could be
 interpreted as another type, such as `"true"` or `"123"`.

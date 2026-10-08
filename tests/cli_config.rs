@@ -67,10 +67,14 @@ fn assert_defaults(directory: &Path, filename: &str) {
     assert_eq!(loaded.remote, defaults.remote);
     assert_eq!(loaded.base, defaults.base);
     assert_eq!(loaded.save_action, defaults.save_action);
+    assert_eq!(loaded.finish_update, defaults.finish_update);
+    assert_eq!(loaded.finish_rewrite, defaults.finish_rewrite);
     let source = SettingSource::Shared(directory.join(filename));
     assert_eq!(loaded.sources.remote, source);
     assert_eq!(loaded.sources.base, source);
     assert_eq!(loaded.sources.save_action, source);
+    assert_eq!(loaded.sources.finish_update, source);
+    assert_eq!(loaded.sources.finish_rewrite, source);
 }
 
 #[test]
@@ -188,6 +192,8 @@ fn inspection_reports_sources_and_locations_read_only() {
                     "remote: origin (built-in default)",
                     "base: main (built-in default)",
                     "save-action: ask (built-in default)",
+                    "finish-update: ask (built-in default)",
+                    "finish-rewrite: ask (built-in default)",
                     "Shared file: none",
                     "Local file: none",
                     &repo.path().display().to_string(),
@@ -211,6 +217,8 @@ fn inspection_reports_sources_and_locations_read_only() {
                     "remote: private (local:",
                     "base: trunk (shared:",
                     "save-action: ask (built-in default)",
+                    "finish-update: ask (built-in default)",
+                    "finish-rewrite: ask (built-in default)",
                     &local.display().to_string(),
                     CONFIG_FILES[2],
                 ],
@@ -1031,6 +1039,45 @@ fn guided_existing_files_fail_before_prompt_and_yes_never_prompts() {
             assert!(!terminal.output.contains("Remote used"));
             assert!(!terminal.output.contains("Create this file?"));
             assert_defaults(repo.path(), CONFIG_FILES[0]);
+        },
+    );
+}
+
+#[test]
+fn config_show_reports_effective_finish_values_and_sources() {
+    cases(
+        "config_show_reports_effective_finish_values_and_sources",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            fs::write(
+                repo.path().join(CONFIG_FILES[0]),
+                "finish-update='merge'\nfinish-rewrite='deny'\n",
+            )
+            .unwrap();
+            for filename in [CONFIG_FILES[3], "oneflow.conf"] {
+                let local = repo.path().join(".git").join(filename);
+                let contents = if filename == "oneflow.conf" {
+                    "finish-rewrite=allow\n"
+                } else {
+                    "{\"finish-rewrite\":\"allow\"}"
+                };
+                fs::write(&local, contents).unwrap();
+                let before = snapshot(root);
+                let text = check(
+                    run(exe, repo.path(), &["config", "show"]),
+                    0,
+                    &[
+                        "finish-update: merge (shared:",
+                        "finish-rewrite: allow (local:",
+                        filename,
+                    ],
+                );
+                assert!(text.contains(&repo.path().join(CONFIG_FILES[0]).display().to_string()));
+                assert!(text.contains(&local.display().to_string()));
+                assert_eq!(snapshot(root), before);
+                fs::remove_file(local).unwrap();
+            }
         },
     );
 }

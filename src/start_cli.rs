@@ -135,7 +135,7 @@ fn resolve_guidance(error: &ResolveError) {
         ResolveError::OutsideRepository => eprintln!("enter a Git working tree and retry"),
         ResolveError::SettingsIo { .. } | ResolveError::InvalidSettings(_) => {
             eprintln!(
-                "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, base, save-action"
+                "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, base, save-action, finish-update, finish-rewrite"
             );
         }
         ResolveError::UnusablePhrase
