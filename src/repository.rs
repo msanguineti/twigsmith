@@ -113,6 +113,14 @@ pub struct Operations {
     pub rebase: bool,
     pub cherry_pick: bool,
     pub revert: bool,
+    pub am: bool,
+    pub bisect: bool,
+}
+
+impl Operations {
+    pub fn is_active(&self) -> bool {
+        self.merge || self.rebase || self.cherry_pick || self.revert || self.am || self.bisect
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,6 +393,8 @@ impl Inspector<'_> {
             rebase: self.present("rebase-merge")? || self.present("rebase-apply/rebasing")?,
             cherry_pick: self.present("CHERRY_PICK_HEAD")?,
             revert: self.present("REVERT_HEAD")?,
+            am: self.present("rebase-apply/applying")?,
+            bisect: self.present("BISECT_START")?,
         };
         let todo = self.path(&[
             "rev-parse",

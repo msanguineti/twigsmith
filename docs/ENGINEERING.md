@@ -10,7 +10,7 @@
   runtime diagnostics. [src/status.rs](../src/status.rs) renders the repository
   observation types; inspection and workflow policy remain separate. Status
   reports repository kind, attached/detached/unborn HEAD, path-category counts,
-  submodule dirtiness, operation markers, and configured upstream/local counts.
+  submodule dirtiness, operation markers (including `am` and bisect), and configured upstream/local counts.
   Missing or unavailable upstream information never becomes zero divergence.
   Control characters in displayed Git names are escaped; invalid UTF-8 is
   replaced for display. No paths, diffs, logs, JSON, or eligibility assessment
@@ -25,7 +25,7 @@
   Inspection adds `--no-optional-locks`, `--no-lazy-fetch`, `core.fsmonitor=false`,
   noninteractive transport, and C locale. Unsupported safeguards remain errors.
 - [src/repository.rs](../src/repository.rs), exported by [src/lib.rs](../src/lib.rs),
-  now shares lightweight `repository::discover(directory)` with request
+  shares lightweight `repository::discover(directory)` with request
   preparation. `repository::inspect(directory)` still returns observations
   or distinct Git/I/O/parse errors. Git-resolved paths support linked and bare
   repositories. Porcelain v2/NUL status retains raw path bytes, excludes ignored
@@ -49,7 +49,34 @@
   provides one repository-wide source for nested invocation and linked worktrees,
   without includes or executable configuration. Missing keys/file default to
   `origin`/`main`; malformed, unreadable, duplicate, unknown, or invalid values
-  fail. Remote names and base syntax are checked; existence/freshness belongs to execution. Bare/detached/unborn eligibility also remains workflow policy.
+  fail. Remote names and base syntax are checked; existence/freshness and bare/detached/unborn eligibility are enforced by
+  the workflow rather than preparation.
+- [Workflow contract](START_WORKFLOW.md) and
+  [src/start/workflow.rs](../src/start/workflow.rs): `start::execute(directory,
+  &PreparedRequest)` revalidates prepared names/settings/context and returns
+  typed actions, completed effects, and either an observed outcome or failure
+  with remaining repository/target/fetched-ref/upstream observations. No CLI
+  wiring was added. Git refusals retain literal arguments and raw process
+  output; no rollback disguises partially completed work.
+- Start blocks outside/bare/detached/unborn contexts, all six operation families,
+  protected bases, other-worktree occupation, and dirtiness before switching.
+  Exact-current requests are read-only no-ops even when dirty. Local resume
+  neither contacts remotes nor alters branch history/configuration. Remote paths
+  discover exact heads afresh and fetch only the selected full branch ref,
+  overriding restrictive/negative refmaps; new branches use `--no-track` and
+  remote counterparts receive their exact remote/merge pair. Local base refs,
+  unrelated refs/tags, and remote fetch mappings remain untouched.
+- Engineering choices: recheck safety and expected HEAD/target before each
+  mutation; execute from the verified working-tree root so removal of a nested
+  caller directory does not lose state reporting; reject orphan upstream
+  configuration on an absent local target rather than reusing/overwriting it.
+  A restricted remote fetch mapping can leave local upstream comparison
+  unavailable, while counterpart remote/merge configuration remains exact.
+  Snapshots are not cross-process locks; normal Git hooks/configuration apply.
+- Known Git compatibility limitation: on tested Git 2.47.3, `git switch @`
+  interprets the valid literal branch name as HEAD and refuses. The workflow
+  preserves and surfaces that refusal; preparation's naming contract is unchanged.
+  A workaround would need a separately reviewed safe switching design.
 
 ## Design constraints
 

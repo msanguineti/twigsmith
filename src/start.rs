@@ -1,4 +1,10 @@
-//! Read-only preparation for ordinary-work start requests. No CLI or workflow.
+//! Preparation and safe create/resume for ordinary work, independent of CLI.
+
+mod workflow;
+pub use workflow::{
+    Action, Effect, Failure, Outcome, ReferenceState, RemainingState, StartError, TargetUpstream,
+    execute,
+};
 
 use std::{fmt, fs, io, path::Path};
 

@@ -3,8 +3,9 @@
 Task #7 supplies `start::prepare(directory, description, name)` as a library
 boundary for ordinary work. It returns a `PreparedRequest` with a literal target
 branch, resolved remote/base settings, and Git-discovered repository paths.
-The executable does **not** expose `start` yet. CLI grammar/presentation and
-create/resume workflow are subsequent tasks.
+The executable does **not** expose `start` yet. CLI grammar/presentation remains
+task #9; task #8 supplies the separate
+[create/resume workflow](START_WORKFLOW.md).
 
 ## Generated names
 

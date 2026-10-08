@@ -76,6 +76,8 @@ pub fn print(state: &RepositoryState) {
         (state.operations.rebase, "rebase"),
         (state.operations.cherry_pick, "cherry-pick"),
         (state.operations.revert, "revert"),
+        (state.operations.am, "am"),
+        (state.operations.bisect, "bisect"),
     ]
     .into_iter()
     .filter_map(|(present, name)| present.then_some(name))
