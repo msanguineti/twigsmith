@@ -3,7 +3,7 @@
 A Git workflow CLI for starting workstreams, saving progress, and inspecting
 repository state. Invoke it as `git-oneflow` or `gof`.
 
-The native Rust version is under development. It currently provides `start`, `save`, and `status`. Build it from this repository using
+The native Rust version is under development. It currently provides `start`, `save`, `status`, and `config`. Build it from this repository using
 the [development guide](docs/DEVELOPMENT.md).
 
 ## Quick start
@@ -25,6 +25,7 @@ checkpoint choices for uncommitted work. `status` summarizes the current checkou
 | `start <branch-name-or-phrase>` | `s` | Create or resume a workstream |
 | `save [options]` | `v` | Preserve progress and publish the branch |
 | `status` | | Inspect repository state |
+| `config show` / `config --yes` | | Inspect settings or create shared defaults |
 
 Use `gof --help` or `gof <command> --help` for a quick reference.
 

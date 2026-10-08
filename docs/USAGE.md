@@ -13,6 +13,7 @@ gof --version
 gof start --help
 gof save --help
 gof status --help
+gof config --help
 ```
 
 Running with no arguments shows help. Help and version are available anywhere,
@@ -139,6 +140,58 @@ are excluded. Upstream comparisons use locally available references and history;
 unavailable comparisons are identified explicitly. Status is a read-only local
 observation. Its text is intended for people.
 
+## Inspect and generate configuration
+
+```sh
+gof config show
+gof config --yes
+gof config -y --format yaml
+gof config --yes --format json
+```
+
+`config show` displays the effective `remote`, `base`, and `save-action`, identifying
+each value's shared file, local file, or built-in default. It lists discovered
+files and the directories searched when a layer is absent. Each key resolves
+from local overrides, shared settings, then defaults. Save's action flags take
+precedence over `save-action` when saving. Inspection uses the same validation
+and diagnostics as start/save. Its output is intended for people.
+
+`config --yes` (or `-y`) creates a shared configuration containing explicit
+built-in defaults: `remote = origin`, `base = main`, and `save-action = ask`.
+The default format is TOML. Select a format with `--format toml`, `--format yaml`,
+or `--format json`; generation creates `git-oneflow.config.toml`,
+`git-oneflow.config.yaml`, or `git-oneflow.config.json`, respectively. The loader
+also accepts `.yml`. Options can appear in either order.
+
+Both commands work from nested directories. Generation writes at the current
+working-tree root, including in linked worktrees. It works without a terminal
+or network access, with uncommitted work, detached HEAD, or an unborn branch.
+It creates valid defaults even when `origin` or `main` is absent. Existing work,
+the index, refs, and Git configuration stay unchanged. Success reports the full
+file path; the new file is ready to review, edit, and commit using Git.
+
+Every recognized shared configuration entry prevents generation, including a
+file with another supported extension, an empty or invalid file, a directory,
+or a dangling symlink. `--yes` permits unattended creation and preserves existing
+entries. Private override files permit shared generation. Their paths are reported
+because their present keys take precedence over generated values. Generation
+writes built-in defaults independently of private values and Git settings.
+Run `config show` afterward to validate private files and inspect effective settings.
+
+Bare repositories support `config show` using local settings and defaults.
+Generation requires a working tree. Running `config` with no options displays
+inspection and generation guidance and leaves files unchanged; guided setup is
+not available yet. Use `config --help` or `config -h` anywhere, including without Git.
+
+Generation stages and syncs complete content before publishing the recognized
+filename. It rechecks the repository and shared filenames before publication,
+and protects the destination against concurrent replacement. Coordinate other
+configuration writers: a different supported filename can appear after the final
+check, resulting in multiple shared files that the loader will report. After
+interruption, an unrecognized `.git-oneflow-config-*.tmp` file may remain at the
+root; inspect and remove that leftover file before retrying. The recognized
+configuration is either absent or complete.
+
 ## Repository settings
 
 Defaults are `remote = origin`, `base = main`, and `save-action = ask`.
@@ -156,8 +209,8 @@ The two layers can use different formats. Resolve the directories with
 `git rev-parse --show-toplevel` and `git rev-parse --git-common-dir`.
 Commands find the same shared file from any subdirectory. Linked worktrees use
 their own shared root files and the same private common-directory overrides.
-Bare repositories have the local layer and defaults available; start/save still
-require a working tree for their operations.
+Bare repositories have the local layer and defaults available for `config show`;
+start/save and configuration generation require a working tree.
 
 Each key resolves independently: **explicit command flags > local overrides >
 shared settings > defaults**. Save's existing action flags override `save-action`.
@@ -222,6 +275,9 @@ values in the local file.
   commit before starting.
 - **Remote/settings failure:** inspect the reported configuration files,
   `git remote -v`, the remote base, push destinations, and access credentials.
+- **Configuration creation blocked:** use `config show` to inspect existing settings.
+  Keep or edit the reported shared file; select one recognized file per layer.
+  For a write failure, check the reported working-tree path and directory access.
 - **Save needs input:** select an action explicitly or configure `save-action`.
   Supply a nonblank `--message` for an unattended staged checkpoint.
 - **Scope changed:** inspect the branch, index, files, upstream, and settings,

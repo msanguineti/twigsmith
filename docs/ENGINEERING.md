@@ -15,8 +15,8 @@
 | Area | Modules and responsibility |
 | --- | --- |
 | Native entry points | `src/main.rs`, `src/bin/gof.rs`: shared CLI entry |
-| CLI/UI | `src/cli.rs`, `start_cli.rs`, `save_cli.rs`, `status.rs`: parsing, interaction, presentation |
-| Configuration | `src/settings.rs`: sparse layered configuration, schema, sources, legacy boundary |
+| CLI/UI | `src/cli.rs`, `start_cli.rs`, `save_cli.rs`, `config_cli.rs`, `status.rs`: parsing, interaction, presentation |
+| Configuration | `src/settings.rs`: sparse layered configuration, schema, sources, legacy boundary; `src/config.rs`: inspection, defaults rendering, safe create-only publication |
 | Git/process boundary | `src/git.rs`: literal arguments, explicit cwd, raw output/status |
 | Repository observation | `src/repository.rs`: HEAD, changes, operations, upstream/local history |
 | Start | `src/start.rs`, `start/workflow.rs`: prepare, select create/resume intent, execute |
@@ -25,9 +25,11 @@
 
 Rust 1.99.0 is pinned; use `./dev`. Tools/caches/temp files are local to `.dev/`,
 builds to `target/`. Cargo lockfile is committed. Runtime dependencies are the two
-Unicode crates plus Serde, serde_json, toml, and serde-saphyr. Parsing dependencies
-use only the required deserialization features; YAML import/property/expression
-features are disabled. Dev dependencies are tempfile and Linux-only rustix for PTYs.
+Unicode crates plus Serde, serde_json, toml, serde-saphyr, and tempfile. Parsing
+dependencies use only the required deserialization features; YAML
+import/property/expression features are disabled. The Linux-only dev dependency
+is rustix for PTYs. Tempfile moved from dev to runtime for same-directory,
+create-only configuration publication; the lockfile is unchanged.
 CI bootstrap/check targets Ubuntu 24.04. Package version is `0.0.0-dev`,
 `publish = false`, edition 2024, MIT.
 
@@ -96,6 +98,43 @@ snapshot. Save action provenance distinguishes explicit Request selection,
 configuration/defaults, and the clean-tree rule. Shared files remain ordinary Git
 content: a stash or hook changing effective settings stops subsequent operations,
 with completed preservation retained and reported.
+
+Configuration command behavior: `config show`, `config --yes`/`-y` with optional
+`--format <toml|yaml|json>`, and bare `config` guidance. Option ordering is flexible;
+duplicated options, unsupported formats (including generation spelling `yml`),
+combined inspection/generation, and format without --yes are syntax errors. Help
+uses the existing standalone `--help`/`-h` convention and needs no Git/repository.
+Bare `config` guidance succeeds and leaves files unchanged. Show's human output
+has no machine-format contract; save action flags override the displayed preference
+when saving. Empty/sparse file locations remain visible even when they supply no
+resolved values.
+
+Generation is independent of private values: it recognizes and reports local files
+(including legacy files) without parsing or copying them. Invalid private files
+therefore permit shared generation; `config show` and workflows still diagnose them
+through the unchanged loader. Generated defaults never consult Git settings or
+require remote/base availability. Existing shared entries are rejected by
+symlink-aware metadata checks before any temporary file is created.
+
+Safety implementation: stage complete bytes in a random hidden temporary file at
+the root, sync its contents, rediscover and compare the Git context, recheck all
+recognized shared filenames, then use `tempfile::NamedTempFile::persist_noclobber`.
+The pinned tempfile 3.27.0 Unix implementation uses no-replace rename where supported,
+with create-only hard-link publication as fallback; both protect the destination
+including dangling symlinks. Ordinary errors drop the temporary file. Signal
+termination or fallback unlink failure can retain an unrecognized temporary file,
+while the recognized destination is absent or complete. The tests inject changes
+at post-staging Git discovery and interruption before publication, and exercise
+file/symlink creation after the final check directly at the publication boundary.
+No staging, commits, ref/config writes, hooks, or remote commands are invoked.
+
+Material limits: no cross-process transaction or shared locking protocol exists.
+An arbitrary external writer can create another supported filename after the final
+scan, causing a loader ambiguity; the existing destination remains protected.
+Repository/path observations are successive reads, with the existing repository
+selection environment honored. File sync precedes publication; power-loss durability
+of the directory entry is not promised. New temporary/generated files use tempfile's
+private default permissions. Platform validation remains Linux only.
 
 Workflow research: [Ruka's 2021 hosted-provider OneFlow description](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab)
 allows either merge or rebase for updating ordinary work and prefers squash PR

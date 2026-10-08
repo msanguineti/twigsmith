@@ -1,6 +1,7 @@
 use std::{env, process::ExitCode};
 
 use crate::{
+    config_cli,
     repository::{self, InspectionError, Observation},
     save_cli, start_cli, status,
 };
@@ -24,6 +25,9 @@ pub fn run() -> ExitCode {
         [command, rest @ ..] if command == "save" || command == "v" => {
             return save_cli::run(rest);
         }
+        [command, rest @ ..] if command == "config" => {
+            return config_cli::run(rest);
+        }
         _ => {
             eprintln!("error: unsupported arguments; use --help for available options");
             return ExitCode::from(2);
@@ -44,6 +48,7 @@ Commands:
   start, s         Create or resume a workstream
   save, v          Preserve progress and publish the current branch
   status           Summarize local repository state
+  config           Inspect settings or generate shared defaults
 
 Options:
   -h, --help       Show help
@@ -53,6 +58,7 @@ Examples:
   gof start \"add user avatars\"
   gof save
   gof status
+  gof config show
 
 The gof executable accepts the same commands and options.
 Use <command> --help for command details. See docs/USAGE.md for the user guide."

@@ -1,4 +1,4 @@
-//! Strict, local, read-only configuration shared by start and save.
+//! Strict, local, read-only configuration shared by workflows and inspection.
 use crate::{
     git,
     repository::{InspectionError, RepositoryContext},
@@ -154,6 +154,18 @@ impl Layer {
         }
     }
 }
+impl SaveAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::PublishOnly => "publish-only",
+            Self::Staged => "staged",
+            Self::Wip => "wip",
+            Self::Stash => "stash",
+        }
+    }
+}
+
 fn parse_action(value: &str) -> Result<SaveAction, String> {
     match value {
         "ask" => Ok(SaveAction::Ask),
@@ -224,7 +236,7 @@ fn exists(path: &Path) -> Result<bool, SettingsError> {
         }),
     }
 }
-fn discover_layer(root: &Path, local: bool) -> Result<Option<PathBuf>, SettingsError> {
+pub(crate) fn recognized_paths(root: &Path, local: bool) -> Result<Vec<PathBuf>, SettingsError> {
     let mut paths = Vec::new();
     for name in CONFIG_FILES {
         let path = root.join(name);
@@ -238,6 +250,10 @@ fn discover_layer(root: &Path, local: bool) -> Result<Option<PathBuf>, SettingsE
             paths.push(legacy);
         }
     }
+    Ok(paths)
+}
+fn discover_layer(root: &Path, local: bool) -> Result<Option<PathBuf>, SettingsError> {
+    let mut paths = recognized_paths(root, local)?;
     if paths.len() > 1 {
         let files = paths
             .iter()
@@ -306,6 +322,21 @@ fn parse_legacy(contents: &str) -> Result<Layer, String> {
 /// Validate every present file before sparse merging. Remote availability is
 /// deliberately left to the workflow. Git-discovered paths avoid inheritance.
 pub fn load(directory: &Path, repository: &RepositoryContext) -> Result<Settings, SettingsError> {
+    Ok(load_with_files(directory, repository)?.settings)
+}
+
+/// Validated settings and the files inspected, including empty/sparse layers.
+#[derive(Debug)]
+pub struct LoadedSettings {
+    pub settings: Settings,
+    pub shared: Option<PathBuf>,
+    pub local: Option<PathBuf>,
+}
+
+pub fn load_with_files(
+    directory: &Path,
+    repository: &RepositoryContext,
+) -> Result<LoadedSettings, SettingsError> {
     let shared = repository
         .working_tree_root
         .as_deref()
@@ -314,7 +345,7 @@ pub fn load(directory: &Path, repository: &RepositoryContext) -> Result<Settings
         .flatten();
     let local = discover_layer(&repository.common_dir, true)?;
     let mut settings = Settings::default();
-    for (path, is_local) in [(shared, false), (local, true)] {
+    for (path, is_local) in [(shared.clone(), false), (local.clone(), true)] {
         if let Some(path) = path {
             let layer = read_layer(&path)?;
             layer.validate(directory, &path)?;
@@ -326,7 +357,11 @@ pub fn load(directory: &Path, repository: &RepositoryContext) -> Result<Settings
             layer.apply(&mut settings, source);
         }
     }
-    Ok(settings)
+    Ok(LoadedSettings {
+        settings,
+        shared,
+        local,
+    })
 }
 
 pub(crate) fn valid_branch(directory: &Path, name: &str) -> Result<bool, InspectionError> {

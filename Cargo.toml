@@ -7,13 +7,11 @@ default-run = "git-oneflow"
 license = "MIT"
 description = "Development skeleton for the native git-oneflow CLI"
 
-[dev-dependencies]
-tempfile = "3"
-
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { version = "1.1", features = ["pty", "process"] }
 
 [dependencies]
+tempfile = "3"
 serde = "1.0.229"
 serde-saphyr = { version = "1.3.0", default-features = false, features = ["deserialize"] }
 serde_json = "1.0.151"
