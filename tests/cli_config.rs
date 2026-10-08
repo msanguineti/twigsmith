@@ -1,6 +1,9 @@
 #[path = "support/snapshot.rs"]
 mod preservation;
 mod support;
+#[cfg(target_os = "linux")]
+#[path = "support/terminal.rs"]
+mod terminal;
 
 use git_oneflow::{
     config::{self, ConfigError, Format},
@@ -71,9 +74,9 @@ fn assert_defaults(directory: &Path, filename: &str) {
 }
 
 #[test]
-fn config_help_guidance_and_syntax_need_no_git() {
+fn config_help_terminal_requirement_and_syntax_need_no_git() {
     cases(
-        "config_help_guidance_and_syntax_need_no_git",
+        "config_help_terminal_requirement_and_syntax_need_no_git",
         false,
         |root, exe| {
             let before = snapshot(root);
@@ -95,11 +98,10 @@ fn config_help_guidance_and_syntax_need_no_git() {
             }
             check(
                 run(exe, root, &["config"]),
-                0,
-                &["config show", "config --yes", "Guided setup"],
+                1,
+                &["terminal", "config --yes"],
             );
             for args in [
-                vec!["config", "--format", "yaml"],
                 vec!["config", "--yes", "--format"],
                 vec!["config", "--yes", "--format", "yml"],
                 vec!["config", "--yes", "--format", "TOML"],
@@ -213,7 +215,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                     CONFIG_FILES[2],
                 ],
             );
-            check(run(exe, &nested, &["config"]), 0, &["config --yes"]);
+            check(run(exe, &nested, &["config"]), 1, &["config --yes"]);
             assert_eq!(snapshot(repo.path()), before);
             fs::write(&local, "save-action = invalid\n").unwrap();
             check(
@@ -617,7 +619,10 @@ fn generation_rechecks_after_staging_and_cleans_up_on_failure() {
                 .unwrap()
                 .lines()
             {
-                assert!(call.contains(" rev-parse "), "unexpected Git call: {call}");
+                assert!(
+                    call.contains(" rev-parse ") || call.contains(" check-ref-format "),
+                    "unexpected Git call: {call}"
+                );
                 assert!(
                     call.starts_with(
                         "--no-optional-locks --no-lazy-fetch -c core.fsmonitor=false "
@@ -728,6 +733,304 @@ fn unwritable_root_reports_write_failure_without_changing_existing_files() {
                 ],
             );
             assert_eq!(after, before);
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_formats_defaults_custom_values_and_private_precedence() {
+    cases(
+        "guided_formats_defaults_custom_values_and_private_precedence",
+        true,
+        |root, exe| {
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                for custom in [false, true] {
+                    let repo = Repository::new(root);
+                    repo.success(&["remote", "add", "hint-only", "/unreachable/offline"]);
+                    let private = repo.path().join(".git/oneflow.conf");
+                    fs::write(&private, "remote = private\nsave-action = stash\n").unwrap();
+                    let before_git = snapshot(&repo.path().join(".git"));
+                    let mut terminal = terminal::Terminal::start(
+                        exe,
+                        repo.path(),
+                        &["config", "--format", format],
+                    );
+                    terminal.until("Remote used");
+                    assert!(terminal.output.contains("hint-only"));
+                    terminal.send(if custom {
+                        b"future-remote\nfuture/base\nwip\n"
+                    } else {
+                        b"\n\n\n"
+                    });
+                    terminal.until("Create this file?");
+                    assert!(!repo.path().join(filename).exists());
+                    assert!(terminal.output.contains("Effective remote: private"));
+                    assert!(terminal.output.contains("Effective save-action: stash"));
+                    let proposed = Settings {
+                        remote: if custom { "future-remote" } else { "origin" }.into(),
+                        base: if custom { "future/base" } else { "main" }.into(),
+                        save_action: if custom {
+                            SaveAction::Wip
+                        } else {
+                            SaveAction::Ask
+                        },
+                        ..Settings::default()
+                    };
+                    let contents = config::render(
+                        match format {
+                            "toml" => Format::Toml,
+                            "yaml" => Format::Yaml,
+                            _ => Format::Json,
+                        },
+                        &proposed,
+                    );
+                    assert!(terminal.output.replace('\r', "").contains(&contents));
+                    terminal.send(b"yes\n");
+                    assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+                    assert_eq!(
+                        fs::read_to_string(repo.path().join(filename)).unwrap(),
+                        contents
+                    );
+                    assert_eq!(snapshot(&repo.path().join(".git")), before_git);
+                    let effective = load(repo.path());
+                    assert_eq!(effective.remote, "private");
+                    assert_eq!(effective.base, proposed.base);
+                    assert_eq!(effective.save_action, SaveAction::Stash);
+                    assert_eq!(
+                        git_oneflow::start::prepare(repo.path(), "work")
+                            .unwrap()
+                            .settings,
+                        effective
+                    );
+                    commit(&repo);
+                    repo.success(&["switch", "-c", "work"]);
+                    repo.success(&["remote", "add", "private", "/offline"]);
+                    let save = git_oneflow::save::assess(repo.path(), &Default::default()).unwrap();
+                    assert_eq!(save.settings, effective);
+                    assert_eq!(save.action, SaveAction::Stash);
+                    fs::remove_file(private).unwrap();
+                    let effective = load(repo.path());
+                    assert_eq!(effective.remote, proposed.remote);
+                    assert_eq!(effective.save_action, proposed.save_action);
+                    repo.success(&["remote", "add", &proposed.remote, "/offline"]);
+                    let save = git_oneflow::save::assess(repo.path(), &Default::default()).unwrap();
+                    assert_eq!(save.settings, effective);
+                    assert_eq!(save.action, proposed.save_action);
+                    assert!(matches!(
+                        git_oneflow::start::prepare(repo.path(), &proposed.base),
+                        Err(git_oneflow::start::ResolveError::ProtectedBase(_))
+                    ));
+                }
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
+    cases(
+        "guided_invalid_answers_retry_and_confirmation_is_explicit",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            terminal.until("Remote used");
+            terminal.send(b"bad remote\n");
+            terminal.until("Use a valid named Git remote");
+            terminal.send(b"upstream\nHEAD\n");
+            terminal.until("Use a valid literal Git branch");
+            terminal.send(b"trunk\nunknown\n");
+            terminal.until("save-action must be");
+            terminal.send(b"staged\n");
+            terminal.until("Create this file?");
+            terminal.send(b"y\n");
+            terminal.until("Enter yes to create");
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            terminal.send(b"yes\n");
+            assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+            let settings = load(repo.path());
+            assert_eq!(settings.remote, "upstream");
+            assert_eq!(settings.base, "trunk");
+            assert_eq!(settings.save_action, SaveAction::Staged);
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
+    cases(
+        "guided_cancel_eof_and_declined_confirmation_preserve_repository",
+        true,
+        |root, exe| {
+            for (answers, prompt) in [
+                ("", "Remote used"),
+                ("\n", "Base branch"),
+                ("\n\n", "Default save action"),
+                ("\n\n\n", "Create this file?"),
+            ] {
+                for cancel in [b"cancel\n".as_slice(), b"\x04", b"partial\x04\x04"] {
+                    let repo = Repository::new(root);
+                    let before = snapshot(repo.path());
+                    let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                    terminal.until("Remote used");
+                    terminal.send(answers.as_bytes());
+                    terminal.until(prompt);
+                    terminal.send(cancel);
+                    assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+                    assert!(terminal.output.contains("Setup cancelled"));
+                    assert_eq!(snapshot(repo.path()), before);
+                }
+            }
+            let repo = Repository::new(root);
+            let before = snapshot(repo.path());
+            let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            terminal.until("Remote used");
+            terminal.interrupt();
+            assert!(!terminal.finish().success());
+            assert_eq!(snapshot(repo.path()), before);
+            for answer in [b"no\n".as_slice(), b"\n"] {
+                let repo = Repository::new(root);
+                let before = snapshot(repo.path());
+                let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                terminal.until("Remote used");
+                terminal.send(b"\n\n\n");
+                terminal.until("Create this file?");
+                terminal.send(answer);
+                assert_eq!(terminal.finish().code(), Some(0));
+                assert_eq!(snapshot(repo.path()), before);
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_rechecks_changes_during_answers_and_confirmation() {
+    cases(
+        "guided_rechecks_changes_during_answers_and_confirmation",
+        true,
+        |root, exe| {
+            for confirmation in [false, true] {
+                for mutation in [
+                    "shared",
+                    "private",
+                    "private-change",
+                    "private-invalid",
+                    "private-remove",
+                    "remote",
+                    "branch",
+                    "context",
+                ] {
+                    let repo = Repository::new(root);
+                    commit(&repo);
+                    if mutation.starts_with("private-") {
+                        fs::write(repo.path().join(".git/oneflow.conf"), "base = main\n").unwrap();
+                    }
+                    let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                    terminal.until("Remote used");
+                    if confirmation {
+                        terminal.send(b"\n\n\n");
+                        terminal.until("Create this file?");
+                    }
+                    match mutation {
+                        "shared" => {
+                            fs::write(repo.path().join(CONFIG_FILES[2]), "base: trunk\n").unwrap()
+                        }
+                        "private" => {
+                            fs::write(repo.path().join(".git/oneflow.conf"), "base = trunk\n")
+                                .unwrap()
+                        }
+                        "private-change" => {
+                            fs::write(repo.path().join(".git/oneflow.conf"), "base = trunk\n")
+                                .unwrap();
+                        }
+                        "private-invalid" => {
+                            fs::write(repo.path().join(".git/oneflow.conf"), "unknown = value\n")
+                                .unwrap();
+                        }
+                        "private-remove" => {
+                            fs::remove_file(repo.path().join(".git/oneflow.conf")).unwrap();
+                        }
+                        "remote" => {
+                            repo.success(&["remote", "add", "new", "/offline"]);
+                        }
+                        "branch" => {
+                            repo.success(&["branch", "new"]);
+                        }
+                        "context" => {
+                            let other = root.join("other-worktree");
+                            fs::create_dir_all(&other).unwrap();
+                            repo.success(&["config", "core.worktree", other.to_str().unwrap()]);
+                        }
+                        _ => unreachable!(),
+                    }
+                    let before = snapshot(repo.path());
+                    terminal.send(if confirmation { b"yes\n" } else { b"\n\n\n" });
+                    assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
+                    assert_eq!(snapshot(repo.path()), before);
+                    assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn piped_answers_cannot_approve_guided_setup() {
+    use std::io::Write;
+    cases(
+        "piped_answers_cannot_approve_guided_setup",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let before = snapshot(repo.path());
+            for args in [vec!["config"], vec!["config", "--format", "yaml"]] {
+                let mut child = Command::new(exe)
+                    .current_dir(repo.path())
+                    .args(args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let _ = child.stdin.take().unwrap().write_all(b"\n\n\nyes\n");
+                check(child.wait_with_output().unwrap(), 1, &["terminal", "--yes"]);
+                assert_eq!(snapshot(repo.path()), before);
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_existing_files_fail_before_prompt_and_yes_never_prompts() {
+    cases(
+        "guided_existing_files_fail_before_prompt_and_yes_never_prompts",
+        true,
+        |root, exe| {
+            for filename in CONFIG_FILES {
+                let repo = Repository::new(root);
+                fs::write(repo.path().join(filename), "existing").unwrap();
+                let before = snapshot(repo.path());
+                let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                assert_eq!(terminal.finish().code(), Some(1));
+                assert!(terminal.output.contains("config show"));
+                assert!(!terminal.output.contains("Remote used"));
+                assert_eq!(snapshot(repo.path()), before);
+            }
+            let repo = Repository::new(root);
+            let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config", "--yes"]);
+            assert_eq!(terminal.finish().code(), Some(0));
+            assert!(!terminal.output.contains("Remote used"));
+            assert!(!terminal.output.contains("Create this file?"));
+            assert_defaults(repo.path(), CONFIG_FILES[0]);
         },
     );
 }

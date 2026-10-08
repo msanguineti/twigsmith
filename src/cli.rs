@@ -48,7 +48,7 @@ Commands:
   start, s         Create or resume a workstream
   save, v          Preserve progress and publish the current branch
   status           Summarize local repository state
-  config           Inspect settings or generate shared defaults
+  config           Set up or inspect shared settings
 
 Options:
   -h, --help       Show help

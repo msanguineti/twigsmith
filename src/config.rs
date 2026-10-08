@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    git,
     repository::{self, InspectionError, RepositoryContext},
     settings::{self, LoadedSettings, SettingsError},
 };
@@ -28,13 +29,17 @@ impl Format {
 
 /// Render explicit built-in defaults, independent of Git and private settings.
 pub fn render_defaults(format: Format) -> String {
-    let defaults = settings::Settings::default();
+    render(format, &settings::Settings::default())
+}
+
+pub fn render(format: Format, proposed: &settings::Settings) -> String {
     let pairs = [
-        ("remote", defaults.remote.as_str()),
-        ("base", defaults.base.as_str()),
-        ("save-action", defaults.save_action.as_str()),
+        ("remote", proposed.remote.as_str()),
+        ("base", proposed.base.as_str()),
+        ("save-action", proposed.save_action.as_str()),
     ];
-    // Built-in values are plain strings; JSON quoting also serves TOML and YAML.
+    // Valid ref names exclude controls/backslashes; JSON string quoting also
+    // serves TOML and YAML for all accepted setting values.
     let quote = |s: &str| serde_json::to_string(s).expect("string serialization");
     match format {
         Format::Toml => pairs
@@ -64,6 +69,8 @@ pub enum ConfigError {
     NoWorkingTree,
     ExistingShared(Vec<PathBuf>),
     ContextChanged,
+    ReviewChanged,
+    Input(io::Error),
     Write { path: PathBuf, source: io::Error },
 }
 impl fmt::Display for ConfigError {
@@ -73,8 +80,10 @@ impl fmt::Display for ConfigError {
             Self::Settings(e) => write!(f, "{e}"),
             Self::OutsideRepository => f.write_str("current directory is outside a Git repository"),
             Self::NoWorkingTree => f.write_str("configuration generation requires a Git working tree; bare repositories have no shared configuration root"),
-            Self::ExistingShared(paths) => write!(f, "shared configuration already exists: {}; keep or edit the existing file", paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")),
-            Self::ContextChanged => f.write_str("repository context changed before configuration publication; retry from the intended working tree"),
+            Self::ExistingShared(paths) => write!(f, "shared configuration already exists: {}; use gof config show to inspect, or edit the existing file", paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")),
+            Self::ContextChanged => f.write_str("repository context changed before configuration publication; rerun setup from the intended working tree"),
+            Self::ReviewChanged => f.write_str("reviewed repository hints or private overrides changed; rerun setup before creating configuration"),
+            Self::Input(e) => write!(f, "cannot read terminal input: {e}"),
             Self::Write { path, source } => write!(f, "cannot create configuration {}: {source}", path.display()),
         }
     }
@@ -85,6 +94,7 @@ impl std::error::Error for ConfigError {
             Self::Repository(e) => Some(e),
             Self::Settings(e) => Some(e),
             Self::Write { source, .. } => Some(source),
+            Self::Input(e) => Some(e),
             _ => None,
         }
     }
@@ -119,6 +129,8 @@ pub fn inspect(directory: &Path) -> Result<Inspection, ConfigError> {
 pub struct GenerationPlan {
     repository: RepositoryContext,
     format: Format,
+    pub proposed: settings::Settings,
+    review: Option<Review>,
 }
 #[derive(Debug)]
 pub struct Generated {
@@ -142,7 +154,106 @@ pub fn prepare(directory: &Path, format: Format) -> Result<GenerationPlan, Confi
         .as_deref()
         .ok_or(ConfigError::NoWorkingTree)?;
     require_absent(root)?;
-    Ok(GenerationPlan { repository, format })
+    Ok(GenerationPlan {
+        repository,
+        format,
+        proposed: settings::Settings::default(),
+        review: None,
+    })
+}
+
+/// Locally observed hints and validated override values, never proposed defaults.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Review {
+    pub overrides: settings::Settings,
+    pub local: Option<PathBuf>,
+    pub remotes: Vec<u8>,
+    remote_config: Vec<u8>,
+    pub branches: Vec<u8>,
+}
+fn observation(directory: &Path, args: &[&str], empty_ok: bool) -> Result<Vec<u8>, ConfigError> {
+    let output = git::inspect(directory, args).map_err(InspectionError::Io)?;
+    if output.status.success()
+        || (empty_ok && output.status.code() == Some(1) && output.stderr.is_empty())
+    {
+        Ok(output.stdout)
+    } else {
+        Err(InspectionError::Git {
+            arguments: args.iter().map(std::ffi::OsString::from).collect(),
+            output,
+        }
+        .into())
+    }
+}
+fn review(directory: &Path, plan: &GenerationPlan) -> Result<Review, ConfigError> {
+    if discover(directory)? != plan.repository {
+        return Err(ConfigError::ContextChanged);
+    }
+    require_absent(
+        plan.repository
+            .working_tree_root
+            .as_deref()
+            .ok_or(ConfigError::NoWorkingTree)?,
+    )?;
+    let loaded = settings::load_with_files(directory, &plan.repository)?;
+    Ok(Review {
+        overrides: loaded.settings,
+        local: loaded.local,
+        remotes: observation(directory, &["remote"], false)?,
+        remote_config: observation(directory, &["config", "--get-regexp", "^remote\\."], true)?,
+        branches: observation(
+            directory,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/heads/",
+                "refs/remotes/",
+            ],
+            false,
+        )?,
+    })
+}
+pub fn prepare_guided(directory: &Path, format: Format) -> Result<GenerationPlan, ConfigError> {
+    let mut plan = prepare(directory, format)?;
+    plan.review = Some(review(directory, &plan)?);
+    Ok(plan)
+}
+impl GenerationPlan {
+    pub fn destination(&self) -> PathBuf {
+        self.repository
+            .working_tree_root
+            .as_ref()
+            .expect("prepared working tree")
+            .join(self.format.filename())
+    }
+    pub fn contents(&self) -> String {
+        render(self.format, &self.proposed)
+    }
+    pub fn review(&self) -> &Review {
+        self.review.as_ref().expect("guided plan")
+    }
+}
+pub fn revalidate_review(directory: &Path, plan: &GenerationPlan) -> Result<(), ConfigError> {
+    if let Some(expected) = &plan.review {
+        let current = review(directory, plan).map_err(|e| match e {
+            ConfigError::Settings(_) => ConfigError::ReviewChanged,
+            other => other,
+        })?;
+        if &current != expected {
+            return Err(ConfigError::ReviewChanged);
+        }
+    }
+    Ok(())
+}
+fn validate(directory: &Path, proposed: &settings::Settings) -> Result<(), ConfigError> {
+    if !settings::valid_remote(directory, &proposed.remote)?
+        || !settings::valid_branch(directory, &proposed.base)?
+    {
+        return Err(
+            SettingsError::InvalidSettings("invalid proposed remote or base name".into()).into(),
+        );
+    }
+    Ok(())
 }
 
 /// Stage complete bytes in the destination directory. No recognized filename is
@@ -188,11 +299,14 @@ pub fn generate(directory: &Path, plan: &GenerationPlan) -> Result<Generated, Co
         return Err(ConfigError::ContextChanged);
     }
     require_absent(root)?;
-    let file = stage(root, &path, render_defaults(plan.format).as_bytes())?;
+    revalidate_review(directory, plan)?;
+    validate(directory, &plan.proposed)?;
+    let file = stage(root, &path, plan.contents().as_bytes())?;
     if discover(directory)? != plan.repository {
         return Err(ConfigError::ContextChanged);
     }
     require_absent(root)?;
+    revalidate_review(directory, plan)?;
     let local_files = settings::recognized_paths(&plan.repository.common_dir, true)?;
     publish(file, &path)?;
     Ok(Generated { path, local_files })

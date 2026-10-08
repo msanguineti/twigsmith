@@ -140,9 +140,11 @@ are excluded. Upstream comparisons use locally available references and history;
 unavailable comparisons are identified explicitly. Status is a read-only local
 observation. Its text is intended for people.
 
-## Inspect and generate configuration
+## Inspect and set up configuration
 
 ```sh
+gof config
+gof config --format yaml
 gof config show
 gof config --yes
 gof config -y --format yaml
@@ -156,32 +158,59 @@ from local overrides, shared settings, then defaults. Save's action flags take
 precedence over `save-action` when saving. Inspection uses the same validation
 and diagnostics as start/save. Its output is intended for people.
 
-`config --yes` (or `-y`) creates a shared configuration containing explicit
-built-in defaults: `remote = origin`, `base = main`, and `save-action = ask`.
-The default format is TOML. Select a format with `--format toml`, `--format yaml`,
-or `--format json`; generation creates `git-oneflow.config.toml`,
-`git-oneflow.config.yaml`, or `git-oneflow.config.json`, respectively. The loader
-also accepts `.yml`. Options can appear in either order.
+`config` guides you through the remote used by start/save, the base branch for
+new work, and the default save action for uncommitted changes. Each proposal starts
+with the built-in default: `origin`, `main`, and `ask`. Press Enter to keep it, or
+enter a replacement. Local remote configuration and branch references provide
+offline hints; they never change the defaults. Valid names can be configured before
+the remote or branch exists.
 
-Both commands work from nested directories. Generation writes at the current
-working-tree root, including in linked worktrees. It works without a terminal
-or network access, with uncommitted work, detached HEAD, or an unborn branch.
-It creates valid defaults even when `origin` or `main` is absent. Existing work,
-the index, refs, and Git configuration stay unchanged. Success reports the full
-file path; the new file is ready to review, edit, and commit using Git.
+Save action choices describe what will happen:
 
-Every recognized shared configuration entry prevents generation, including a
-file with another supported extension, an empty or invalid file, a directory,
-or a dangling symlink. `--yes` permits unattended creation and preserves existing
-entries. Private override files permit shared generation. Their paths are reported
-because their present keys take precedence over generated values. Generation
-writes built-in defaults independently of private values and Git settings.
+| Value | Save with uncommitted changes |
+| --- | --- |
+| `ask` | Choose an action each time at a terminal |
+| `publish-only` | Publish existing commits; keep uncommitted work local |
+| `staged` | Commit exactly the selected staged work with a message, then publish; keep unstaged/untracked work local |
+| `wip` | Create separate WIP commits for staged and remaining work, then publish |
+| `stash` | Retain work, including untracked files, in a local stash; publish existing commits |
+
+WIP and stash exclude ignored files. A stash stays local. Clean trees publish
+existing commits directly; explicit save flags override the configured preference.
+
+Setup shows the destination, exact proposed file, and effective private overrides
+before asking for confirmation. Enter `yes` to create it. Enter `no`, leave the
+confirmation blank, type `cancel` at any prompt, or end input to stop without
+creating a file. Invalid answers receive guidance and can be corrected. Guided
+setup requires terminal input and stderr; piped answers cannot approve creation.
+Changes to the repository selection, observed remote configuration/branch names,
+shared file presence, or effective private override values/sources stop creation.
+Inspect the reported change and rerun setup.
+
+`config --yes` (or `-y`) creates explicit built-in defaults without any prompts,
+independently of private values and Git settings. Use it for unattended generation.
+The default format is TOML. Both guided and unattended setup accept `--format toml`,
+`--format yaml`, or `--format json`, creating `git-oneflow.config.toml`,
+`git-oneflow.config.yaml`, or `git-oneflow.config.json`. The loader also accepts
+`.yml`. Options can appear in either order.
+
+All config commands work from nested directories. Generation writes at the current
+working-tree root, including linked worktrees. It works offline with uncommitted
+work, detached HEAD, or an unborn branch. Existing work, the index, refs, and Git
+configuration stay unchanged. Success reports the full file path; the file is
+ready to edit and commit using Git.
+
+Every recognized shared entry prevents generation, including another supported
+extension, an empty/invalid file, a directory, or a dangling symlink. Use
+`config show` to inspect existing settings or edit that file. Private values are
+never implicitly copied into shared settings. Guided setup validates private files
+and shows their effective overrides during review; repair invalid private files
+before rerunning. `--yes` reports private file locations without parsing them.
 Run `config show` afterward to validate private files and inspect effective settings.
 
-Bare repositories support `config show` using local settings and defaults.
-Generation requires a working tree. Running `config` with no options displays
-inspection and generation guidance and leaves files unchanged; guided setup is
-not available yet. Use `config --help` or `config -h` anywhere, including without Git.
+Bare repositories support `config show` using local settings and defaults;
+generation requires a working tree. Use `config --help` or `config -h` anywhere,
+including without Git.
 
 Generation stages and syncs complete content before publishing the recognized
 filename. It rechecks the repository and shared filenames before publication,

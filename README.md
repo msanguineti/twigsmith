@@ -25,7 +25,7 @@ checkpoint choices for uncommitted work. `status` summarizes the current checkou
 | `start <branch-name-or-phrase>` | `s` | Create or resume a workstream |
 | `save [options]` | `v` | Preserve progress and publish the branch |
 | `status` | | Inspect repository state |
-| `config show` / `config --yes` | | Inspect settings or create shared defaults |
+| `config` / `config show` / `config --yes` | | Set up or inspect shared settings |
 
 Use `gof --help` or `gof <command> --help` for a quick reference.
 

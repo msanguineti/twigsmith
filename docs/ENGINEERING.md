@@ -99,22 +99,29 @@ configuration/defaults, and the clean-tree rule. Shared files remain ordinary Gi
 content: a stash or hook changing effective settings stops subsequent operations,
 with completed preservation retained and reported.
 
-Configuration command behavior: `config show`, `config --yes`/`-y` with optional
-`--format <toml|yaml|json>`, and bare `config` guidance. Option ordering is flexible;
-duplicated options, unsupported formats (including generation spelling `yml`),
-combined inspection/generation, and format without --yes are syntax errors. Help
-uses the existing standalone `--help`/`-h` convention and needs no Git/repository.
-Bare `config` guidance succeeds and leaves files unchanged. Show's human output
-has no machine-format contract; save action flags override the displayed preference
-when saving. Empty/sparse file locations remain visible even when they supply no
-resolved values.
+Configuration command grammar: `config show`, `config [--yes|-y]` with optional
+`--format <toml|yaml|json>`. Option ordering is flexible; duplicated options,
+unsupported formats (including generation spelling `yml`), and combined inspection/
+generation are syntax errors. Standalone `--help`/`-h` needs no Git/repository.
+Show's human output has no machine-format contract. Empty/sparse file locations
+remain visible even when they supply no values.
 
-Generation is independent of private values: it recognizes and reports local files
-(including legacy files) without parsing or copying them. Invalid private files
-therefore permit shared generation; `config show` and workflows still diagnose them
-through the unchanged loader. Generated defaults never consult Git settings or
-require remote/base availability. Existing shared entries are rejected by
-symlink-aware metadata checks before any temporary file is created.
+Guided setup selects only the implemented remote, base, and save-action settings.
+All save actions are described through preservation/publication consequences;
+`ask` remains the default. Valid names need not exist. The proposals are independent
+of private settings. Review shows explicit local values even when equal to proposed
+shared values. Guided review uses the strict loader so malformed/ambiguous overrides
+cannot be reviewed as valid effective settings; unattended defaults generation keeps
+the ability to create independently of invalid private files.
+
+Routine interaction choices: exact action spellings; Enter accepts a proposal;
+`cancel` at any prompt and EOF cancel; only a full submitted `yes` approves; blank
+or `no` at confirmation cancels. Invalid answers retry without creating temporary
+files. Cancellation exits successfully. Input requires stdin and stderr terminals,
+matching save's terminal convention. Remote-name and branch-reference hints show
+at most ten entries each. Revalidation observes full remote configuration, available
+branch names, and validated private values/sources/path; formatting-only private
+changes and branch tip changes with unchanged names do not alter that review.
 
 Safety implementation: stage complete bytes in a random hidden temporary file at
 the root, sync its contents, rediscover and compare the Git context, recheck all

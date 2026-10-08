@@ -1,10 +1,16 @@
 //! Configuration argument grammar and human presentation.
-use std::{env, ffi::OsString, path::Path, process::ExitCode};
+use std::{
+    env,
+    ffi::OsString,
+    io::{self, IsTerminal, Write},
+    path::Path,
+    process::ExitCode,
+};
 
 use crate::{
     config::{self, ConfigError, Format},
     repository::InspectionError,
-    settings::{SettingSource, SettingsError},
+    settings::{self, SettingSource, SettingsError},
     status::display,
 };
 
@@ -13,13 +19,13 @@ fn text(value: impl std::fmt::Display) -> String {
 }
 enum Command {
     Help,
-    Guidance,
+    Guided(Format),
     Show,
     Generate(Format),
 }
 fn parse(args: &[OsString]) -> Option<Command> {
     match args {
-        [] => return Some(Command::Guidance),
+        [] => return Some(Command::Guided(Format::Toml)),
         [arg] if arg == "--help" || arg == "-h" => return Some(Command::Help),
         [arg] if arg == "show" => return Some(Command::Show),
         _ => {}
@@ -46,12 +52,17 @@ fn parse(args: &[OsString]) -> Option<Command> {
             return None;
         }
     }
-    yes.then_some(Command::Generate(format.unwrap_or(Format::Toml)))
+    let format = format.unwrap_or(Format::Toml);
+    Some(if yes {
+        Command::Generate(format)
+    } else {
+        Command::Guided(format)
+    })
 }
 pub fn run(args: &[OsString]) -> ExitCode {
     let Some(command) = parse(args) else {
         eprintln!(
-            "error: expected config show or config --yes [--format <toml|yaml|json>]; use config --help"
+            "error: expected config show or config [--yes] [--format <toml|yaml|json>]; use config --help"
         );
         return ExitCode::from(2);
     };
@@ -60,11 +71,11 @@ pub fn run(args: &[OsString]) -> ExitCode {
             help();
             return ExitCode::SUCCESS;
         }
-        Command::Guidance => {
-            println!(
-                "Inspect effective settings with gof config show.\nGenerate shared built-in defaults with gof config --yes [--format <toml|yaml|json>].\nGuided setup is not available yet. Use gof config --help for details."
+        Command::Guided(_) if !io::stdin().is_terminal() || !io::stderr().is_terminal() => {
+            eprintln!(
+                "error: guided setup requires terminal input and stderr; use gof config --yes [--format <toml|yaml|json>] for unattended defaults"
             );
-            return ExitCode::SUCCESS;
+            return ExitCode::FAILURE;
         }
         _ => {}
     }
@@ -85,7 +96,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
                     println!("Local overrides in {} take precedence over generated values; use gof config show to inspect effective settings.", text(path.display()));
                 }
             }),
-        Command::Help | Command::Guidance => unreachable!(),
+        Command::Guided(format) => guided(&directory, format),
+        Command::Help => unreachable!(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -109,6 +121,180 @@ pub fn run(args: &[OsString]) -> ExitCode {
         }
     }
 }
+// Match save's terminal convention: a complete submitted line is required;
+// EOF (including a partial line) cancels and never approves publication.
+fn input(prompt: &str) -> Result<Option<String>, ConfigError> {
+    eprint!("{prompt}");
+    io::stderr().flush().map_err(ConfigError::Input)?;
+    let mut line = String::new();
+    if io::stdin()
+        .read_line(&mut line)
+        .map_err(ConfigError::Input)?
+        == 0
+        || !line.ends_with('\n')
+    {
+        return Ok(None);
+    }
+    line.pop();
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    if line == "cancel" {
+        Ok(None)
+    } else {
+        Ok(Some(line))
+    }
+}
+fn cancelled() -> Result<(), ConfigError> {
+    eprintln!("Setup cancelled; no configuration created.");
+    Ok(())
+}
+fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
+    let mut plan = config::prepare_guided(directory, format)?;
+    let defaults = settings::Settings::default();
+    eprintln!(
+        "Configure shared start/save settings. Enter keeps the built-in default; type cancel to stop."
+    );
+    for (label, bytes) in [
+        ("Local remotes", &plan.review().remotes),
+        ("Local branch references", &plan.review().branches),
+    ] {
+        let shown = display(bytes);
+        let lines: Vec<_> = shown.lines().collect();
+        eprintln!(
+            "{label} (offline hint): {}",
+            if lines.is_empty() {
+                "none".into()
+            } else {
+                lines
+                    .iter()
+                    .take(10)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        if lines.len() > 10 {
+            eprintln!("  {} more entries available locally.", lines.len() - 10);
+        }
+    }
+    eprintln!("Names can be configured before remotes or branches exist.");
+    loop {
+        let Some(answer) = input(&format!(
+            "Remote used by start and save [{}]: ",
+            text(&defaults.remote)
+        ))?
+        else {
+            return cancelled();
+        };
+        let value = if answer.is_empty() {
+            &defaults.remote
+        } else {
+            &answer
+        };
+        if settings::valid_remote(directory, value)? {
+            plan.proposed.remote = value.into();
+            break;
+        }
+        eprintln!(
+            "Use a valid named Git remote, such as origin or upstream (no URL, spaces, or leading '-')."
+        );
+    }
+    loop {
+        let Some(answer) = input(&format!(
+            "Base branch for new work [{}]: ",
+            text(&defaults.base)
+        ))?
+        else {
+            return cancelled();
+        };
+        let value = if answer.is_empty() {
+            &defaults.base
+        } else {
+            &answer
+        };
+        if settings::valid_branch(directory, value)? {
+            plan.proposed.base = value.into();
+            break;
+        }
+        eprintln!(
+            "Use a valid literal Git branch name, such as main or feature/base (no spaces, HEAD, or leading '-')."
+        );
+    }
+    eprintln!(
+        "Save with uncommitted changes:\n  ask          Choose an action each time at a terminal.\n  publish-only Publish existing commits; uncommitted work stays local.\n  staged       Commit exactly the selected staged work, then publish; requires a message. Unstaged/untracked work stays local.\n  wip          Create separate WIP commits for staged and remaining work, then publish; ignored files stay local.\n  stash        Retain work, including untracked files, in a local stash; publish existing commits. Ignored files stay local.\nClean trees publish existing commits directly. Explicit save flags override this preference."
+    );
+    loop {
+        let Some(answer) = input(&format!(
+            "Default save action [{}]: ",
+            defaults.save_action.as_str()
+        ))?
+        else {
+            return cancelled();
+        };
+        match settings::parse_action(if answer.is_empty() {
+            defaults.save_action.as_str()
+        } else {
+            &answer
+        }) {
+            Ok(action) => {
+                plan.proposed.save_action = action;
+                break;
+            }
+            Err(reason) => eprintln!("{reason}; or enter cancel."),
+        }
+    }
+    config::revalidate_review(directory, &plan)?;
+    eprintln!(
+        "Destination: {}\nExact proposed shared configuration:\n{}",
+        text(plan.destination().display()),
+        plan.contents()
+    );
+    let review = plan.review();
+    if let Some(path) = &review.local {
+        eprintln!(
+            "Private overrides: {} (take precedence; values are not copied).",
+            text(path.display())
+        );
+        let effective = &review.overrides;
+        for (key, value, origin) in [
+            (
+                "remote",
+                effective.remote.as_str(),
+                &effective.sources.remote,
+            ),
+            ("base", effective.base.as_str(), &effective.sources.base),
+            (
+                "save-action",
+                effective.save_action.as_str(),
+                &effective.sources.save_action,
+            ),
+        ] {
+            if matches!(origin, SettingSource::Local(_)) {
+                eprintln!("  Effective {key}: {} ({})", text(value), source(origin));
+            }
+        }
+    } else {
+        eprintln!("Private overrides: none.");
+    }
+    loop {
+        let Some(answer) = input("Create this file? [yes/no]: ")? else {
+            return cancelled();
+        };
+        match answer.as_str() {
+            "yes" => break,
+            "no" | "" => return cancelled(),
+            _ => eprintln!("Enter yes to create the reviewed file, or no/cancel to stop."),
+        }
+    }
+    let generated = config::generate(directory, &plan)?;
+    println!(
+        "Created shared configuration: {}",
+        text(generated.path.display())
+    );
+    Ok(())
+}
+
 fn source(source: &SettingSource) -> String {
     match source {
         SettingSource::BuiltIn => "built-in default".into(),
@@ -158,11 +344,11 @@ fn show(inspection: &config::Inspection) {
 }
 fn help() {
     println!(
-        "Inspect configuration or generate shared built-in defaults.
+        "Inspect configuration or set up shared start/save settings.
 
 Usage: git-oneflow config show
        git-oneflow config --yes [--format <toml|yaml|json>]
-       git-oneflow config
+       git-oneflow config [--format <toml|yaml|json>]
 
 Arguments:
   show             Display effective remote, base, save-action, and their sources
@@ -170,10 +356,11 @@ Arguments:
 Options:
   -y, --yes        Create shared defaults without interactive input
   --format <toml|yaml|json>
-                   Generated format (default: toml; requires --yes)
+                   Generated format (default: toml)
   -h, --help       Show help
 
 Examples:
+  gof config
   gof config show
   gof config -y
   gof config --yes --format yaml
@@ -184,17 +371,21 @@ Details:
   Precedence per key: explicit save action > local > shared > built-in defaults.
   Run from the root or any nested directory. Bare repositories support inspection.
   Generation creates git-oneflow.config.toml, .yaml, or .json at the working-tree root.
-  Generated values: remote = origin; base = main; save-action = ask.
-  Private overrides take precedence; generation reports their file locations.
+  Built-in defaults: remote = origin; base = main; save-action = ask.
+  Private overrides take precedence; guided review shows their effective values.
+  Guided setup validates private files; --yes reports their locations without parsing.
   Every recognized shared file or symlink, including .yml, prevents generation.
   --yes permits unattended creation; existing files are preserved.
   Generation works offline with dirty, unborn, or detached working trees.
   It leaves existing work, the index, refs, and Git configuration unchanged.
-  Run config without --yes for guidance; it leaves files unchanged.
+  Run config for guided remote, base, and save-action choices at a terminal.
+  Setup starts with built-in defaults and offers offline repository hints.
+  Review the destination, exact contents, and private overrides; enter yes to create.
+  Cancellation or end-of-input creates no file. Changed review context stops setup.
 
 Exit status:
-  0  Inspection, generation, help, or guidance completed
-  1  Repository, settings, or write failure
+  0  Inspection, generation, help, or cancellation completed
+  1  Terminal, repository, settings, or write failure
   2  Invalid syntax
 
 See docs/USAGE.md for settings and recovery."

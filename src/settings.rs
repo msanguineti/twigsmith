@@ -166,7 +166,7 @@ impl SaveAction {
     }
 }
 
-fn parse_action(value: &str) -> Result<SaveAction, String> {
+pub(crate) fn parse_action(value: &str) -> Result<SaveAction, String> {
     match value {
         "ask" => Ok(SaveAction::Ask),
         "publish-only" => Ok(SaveAction::PublishOnly),
@@ -372,7 +372,7 @@ pub(crate) fn valid_branch(directory: &Path, name: &str) -> Result<bool, Inspect
     valid_ref(directory, &format!("refs/heads/{name}"))
 }
 
-fn valid_remote(directory: &Path, name: &str) -> Result<bool, InspectionError> {
+pub(crate) fn valid_remote(directory: &Path, name: &str) -> Result<bool, InspectionError> {
     // A named remote, not a URL, path, local-repository '.', or command option.
     if name.is_empty() || name.starts_with('-') || name == "." {
         return Ok(false);
