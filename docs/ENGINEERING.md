@@ -121,6 +121,120 @@
   and any effects safely. A workaround requires separately reviewed switching
   design; preparation still preserves the literal name.
 
+## Save contract (not implemented)
+
+Purpose: preserve or publish progress on the current workstream without
+requiring finished work. Both executable names will accept `save`, with `v`
+as its exact command alias; `s` remains assigned to `start`. No branch operand
+or workflow category is required.
+
+### Tree states and actions
+
+The main states are clean, staged-only, unstaged-only, and mixed. Count
+non-ignored untracked files as remaining work for this interaction, displaying
+them separately. Conflicts, active operations, and dirty submodules are safety
+checks, not additional user-selectable save modes.
+
+A clean tree publishes existing commits without asking or making an empty
+commit, regardless of the selected dirty-work action. Existing commit messages
+are never relabelled. For dirty trees the available actions are:
+
+| Action | Local effect before publication | Work left only locally |
+| --- | --- | --- |
+| Publish only | No commit, staging, or stash changes. | All uncommitted work remains untouched. |
+| Staged commit | Commit exactly the index selection with a developer-supplied message, preserving partially staged file boundaries. | Unstaged edits and untracked files remain untouched. |
+| WIP checkpoint | Commit the staged selection first when present, then remaining included work separately when present. | Ignored untracked files and other explicitly excluded content are not checkpointed. |
+| Stash | Stash uncommitted work, including non-ignored untracked files, leaving it stashed; publish existing branch commits. | The stash is local and is not published by the branch push. |
+
+Cancel makes no changes. Offer only applicable actions; staged-only on a dirty
+tree without staged changes fails rather than inventing a commit or falling
+back to another action. Staging is not proof that work is ready for review.
+The WIP path uses `[WIP - Staged]` and `[WIP - Unstaged]` message labels. It
+includes all tracked changes and non-ignored untracked files in its scope.
+This preserves staged/remaining grouping in commit history, not the original
+index state afterward. No empty checkpoint is manufactured. Stash is the
+alternative for setting work aside while recording index/working-tree state;
+restoration uses ordinary Git and is not performed automatically by save.
+
+### Interaction and automation
+
+Command forms:
+
+- `save` / `v`: use the repository's preferred dirty-work action, defaulting to
+  ask. Clean trees publish directly.
+- `save --publish-only`: publish existing commits and leave unfinished work
+  untouched, reporting that it remains local.
+- `save --staged --message <message>`: commit/publish the staged selection.
+  Without a supplied message, an interactive session can request one;
+  unattended execution stops before changes rather than opening an editor.
+- `save --wip`: create the applicable WIP checkpoints and publish without asking.
+- `save --stash`: stash locally and publish existing commits without asking;
+  report that the stash remains local and included changes were cleared
+  (ignored untracked files remain untouched).
+
+The four action switches are mutually exclusive. A configured action can be
+used without its switch; a supplied message applies to the staged action.
+An explicit action overrides the configured preference. Reuse the repository
+configuration source with one preference key,
+without adding global sources or profiles. Custom message-prefix configuration
+has not been included in this contract. A default ask action without an
+interactive terminal fails before mutation with actionable guidance; it must
+not hang or choose for the developer. Interactive cancellation also precedes
+mutation. Showing a concise scope summary is part of informed checkpoint/stash
+confirmation; agents and scripts use the same action semantics explicitly.
+
+### Safeguards and results
+
+Require an attached, born working branch; refuse outside/bare contexts, the
+configured base, conflicts, active Git operations, and dirty submodules. No
+parent-repository checkpoint can silently claim to preserve uncommitted
+submodule content. Preserve normal Git hooks/configuration; no automatic hook
+bypass, forced update, merge, rebase, reset, or destructive rollback. No mandatory
+tests or review-readiness assessment is added to saving unfinished work.
+
+Publication creates an absent destination branch or advances it without losing
+its history. Already-published unchanged commits are a successful no-op.
+Publish only the intended branch, not incidental tags or unrelated branches.
+Report published work separately from edits/stashes left locally. Failure after
+a local commit or stash retains that checkpoint and reports actual completed
+steps and remaining state. A dropped connection may leave publication uncertain;
+do not invent either success or absence of remote effects. Retrying a clean
+checkpoint must not produce another empty WIP commit.
+
+Publication destination is agreed: the exact current branch name on the
+configured named remote (default `origin`). Existing upstream settings must
+match that remote and exact branch; conflicts are refused before local checkpoint
+or stash mutations, rather than silently followed or overwritten. Incomplete
+or ambiguous upstream settings must be diagnosed, not guessed. An absent
+upstream is established after confirmed successful publication; failure of that
+local configuration step reports the already-published branch accurately. The
+configured base remains protected, and the exact destination cannot be replaced
+by implicit Git push mappings, mirror behavior, tag publication, or another
+branch. Respect the selected named remote's ordinary push-URL selection,
+including a separate push URL; do not use a fetch URL to infer publication.
+Multiple configured push destinations require truthful aggregate/partial results,
+not a success claim based on only one destination. No new remote-URL selector is
+introduced. This does not change start's accepted local-resume policy.
+
+Read-only preflight and interactive cancellation do not mutate repository state
+or contact the remote. Cancel/EOF/interruption must not be reported as saved.
+Syntax errors exit 2; operational failures, unresolved input, and cancellation
+exit 1; confirmed completion of the selected action exits 0. Message options
+apply only to the staged action; blank messages fail rather than opening an
+editor. A clean tree needs no commit message because no commit is created.
+Revalidate branch, settings, upstream, and relevant change scope before mutations;
+if the approved context changes, stop rather than silently include different work.
+Known local blockers are diagnosed before checkpoint/stash writes. No mandatory
+trunk fetch or trunk integration is part of save.
+
+The behavior above is the product contract agreed in discussion, not a claim
+of universal developer practice. Git's documented foundations are selected
+index commits, interrupted-work WIP/stash patterns, index-aware stash recovery,
+and fast-forward publication:
+[git-commit](https://git-scm.com/docs/git-commit),
+[git-stash](https://git-scm.com/docs/git-stash),
+[git-push](https://git-scm.com/docs/git-push).
+
 ## Historical baseline
 
 Commit `c6c9f709bb5197a70815e15d7d6fb644dd6f35d3`, immediately before removal in
