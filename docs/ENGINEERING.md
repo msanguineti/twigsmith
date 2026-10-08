@@ -43,6 +43,11 @@ CI bootstrap/check targets Ubuntu 24.04. Package version is `0.0.0-dev`,
   isolation is confined to tests. Preserve raw bytes and process/I/O distinctions.
 - Separate read-only planning from effects and CLI presentation. Revalidate before
   mutations and preserve observations of partial completion rather than rolling back.
+- Resolve consequential workflow choices from explicit flags and configuration;
+  when a choice remains unresolved, ask the developer. Unattended execution must
+  fail with actionable guidance before the affected mutations rather than guess.
+  This interaction principle does not turn routine implementation choices,
+  established deterministic behaviour, or safety invariants into new prompts.
 - Start is one branch-name-or-phrase operand. Literal names retain exact spelling;
   ASCII-space phrases use canonical Unicode lowercase/hyphenation. Exact collisions
   mean resume. Local resume is offline; creation uses the freshly fetched configured
@@ -150,11 +155,6 @@ hotfix tagging and merge-back procedures. A OneFlow bundle must not conflate bra
 update policy, review submission, and final integration. Bundle selection is still
 open; release/hotfix implementation remains deferred. The current single-remote
 setting does not model separate upstream and fork roles.
-
-Explicit starting references, release/hotfix operations, tagging policy, workflow
-profiles, shell completion, extra aliases, installers, platform support, and npm
-distribution remain deferred. A tagged starting point alone does not determine hotfix intent; releasing
-may operate on an existing reference rather than a new branch.
 
 ## Historical reference
 
