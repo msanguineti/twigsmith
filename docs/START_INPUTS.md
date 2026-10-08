@@ -3,9 +3,9 @@
 Task #7 supplies `start::prepare(directory, description, name)` as a library
 boundary for ordinary work. It returns a `PreparedRequest` with a literal target
 branch, resolved remote/base settings, and Git-discovered repository paths.
-The executable does **not** expose `start` yet. CLI grammar/presentation remains
-task #9; task #8 supplies the separate
-[create/resume workflow](START_WORKFLOW.md).
+The executable exposes `start feature <description> [--name <branch>]`;
+see [invocation and troubleshooting](../README.md). Preparation feeds the
+separate [create/resume workflow](START_WORKFLOW.md).
 
 ## Generated names
 
@@ -95,7 +95,7 @@ Existing branch names and collisions do not change resolution.
 `ResolveError` distinguishes outside-repository context, Git discovery/execution
 errors, settings I/O, malformed/invalid settings, unusable descriptions, invalid
 target names, and protected-base targets. Git process errors retain raw output
-through `InspectionError`; presentation and exit codes belong to the future CLI.
+through `InspectionError`; presentation and exit codes belong to the CLI (operational errors exit 1).
 Repository settings resolve and validate before target generation/validation.
 Preparation is several reads, not an atomic snapshot or authorization for a
 later mutation; the workflow must recheck its own safety conditions.

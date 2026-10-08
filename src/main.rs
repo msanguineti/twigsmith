@@ -1,3 +1,4 @@
+mod start_cli;
 mod status;
 
 use std::{env, process::ExitCode};
@@ -17,6 +18,7 @@ fn main() -> ExitCode {
         [command, arg] if command == "status" && (arg == "--help" || arg == "-h") => {
             print_status_help();
         }
+        [command, rest @ ..] if command == "start" => return start_cli::run(rest),
         _ => {
             eprintln!("error: unsupported arguments; use --help for available options");
             return ExitCode::from(2);
@@ -28,12 +30,14 @@ fn main() -> ExitCode {
 
 fn print_help() {
     println!(
-        "git-oneflow — observe Git repository state
+        "git-oneflow — start work and observe Git repository state
 
 Usage: git-oneflow [OPTIONS]
        git-oneflow status
+       git-oneflow start feature <description> [--name <branch>]
 
 Commands:
+  start            Create or resume ordinary work (feature)
   status           Summarize observed repository state (read-only)
 
 Options:
@@ -41,7 +45,7 @@ Options:
   -V, --version    Show the development version
 
 Status compares locally available references/history only; it does not fetch.
-Workflow commands are not implemented yet."
+Use start --help or start feature --help for workflow help."
     );
 }
 
@@ -62,7 +66,10 @@ fn run_status() -> ExitCode {
     let directory = match env::current_dir() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!("error: cannot determine current directory: {error}");
+            eprintln!(
+                "error: cannot determine current directory: {}",
+                status::display(error.to_string().as_bytes())
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -76,7 +83,7 @@ fn run_status() -> ExitCode {
             ExitCode::FAILURE
         }
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("error: {}", status::display(error.to_string().as_bytes()));
             match &error {
                 InspectionError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     eprintln!(
@@ -84,7 +91,7 @@ fn run_status() -> ExitCode {
                     );
                 }
                 InspectionError::Git { output, .. } if !output.stderr.is_empty() => {
-                    eprintln!("{}", String::from_utf8_lossy(&output.stderr).trim_end());
+                    eprintln!("{}", status::display(&output.stderr).trim_end());
                 }
                 _ => {}
             }

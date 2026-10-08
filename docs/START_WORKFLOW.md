@@ -2,7 +2,8 @@
 
 Task #8 adds `start::execute(directory, &PreparedRequest)` after the read-only
 [request preparation](START_INPUTS.md) boundary. It returns an `Outcome` or a
-boxed `Failure`; it does not print output or provide a CLI command. All prefixes
+boxed `Failure`; the library does not print output. The executable exposes
+`start feature <description> [--name <branch>]` and presents these typed results. All prefixes
 use the same ordinary-work workflow.
 
 ## Eligibility and selection
@@ -93,7 +94,7 @@ Workflow Git execution keeps lazy object fetching and fsmonitor disabled,
 permits required locks/writes, and retains normal hooks/configuration with
 noninteractive transport and C-locale diagnostics. There is no stash, commit,
 merge, rebase, operation recovery, push, tag, automatic branch synchronisation,
-release/hotfix behaviour, or CLI wiring.
+release/hotfix behaviour.
 
 ## Validation
 

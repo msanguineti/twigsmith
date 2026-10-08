@@ -5,7 +5,7 @@ use git_oneflow::repository::{
 };
 
 // Escape controls and backslashes; replace invalid UTF-8 for terminal display.
-fn display(bytes: &[u8]) -> String {
+pub(crate) fn display(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .chars()
         .flat_map(|ch| {

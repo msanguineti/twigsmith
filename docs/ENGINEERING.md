@@ -6,15 +6,14 @@
   `publish = false`; runtime dependencies are `unicode-normalization` and
   `unicode-general-category` for canonical Unicode naming. `tempfile` remains a
   development dependency; resolved dependencies are tracked in `Cargo.lock`.
-- [src/main.rs](../src/main.rs) dispatches help/version and status, and owns
-  runtime diagnostics. [src/status.rs](../src/status.rs) renders the repository
+- [src/main.rs](../src/main.rs) dispatches help/version, status, and start. [src/status.rs](../src/status.rs) renders the repository
   observation types; inspection and workflow policy remain separate. Status
   reports repository kind, attached/detached/unborn HEAD, path-category counts,
   submodule dirtiness, operation markers (including `am` and bisect), and configured upstream/local counts.
   Missing or unavailable upstream information never becomes zero divergence.
-  Control characters in displayed Git names are escaped; invalid UTF-8 is
-  replaced for display. No paths, diffs, logs, JSON, or eligibility assessment
-  are exposed. A `gof` executable alias is not yet provided.
+  Control characters and backslashes in CLI names/paths/diagnostics are escaped;
+  invalid UTF-8 is replaced for display. Status exposes no paths, diffs, logs,
+  JSON, or eligibility assessment. A `gof` executable alias is not yet provided.
 - [dev](../dev) and [rust-toolchain.toml](../rust-toolchain.toml): local Rust
   1.99.0, rustfmt, and Clippy; tools/caches/temporary files in `.dev/`, outputs in
   `target/`, both ignored. The launcher sets process-local environment variables
@@ -55,8 +54,8 @@
   [src/start/workflow.rs](../src/start/workflow.rs): `start::execute(directory,
   &PreparedRequest)` revalidates prepared names/settings/context and returns
   typed actions, completed effects, and either an observed outcome or failure
-  with remaining repository/target/fetched-ref/upstream observations. No CLI
-  wiring was added. Git refusals retain literal arguments and raw process
+  with remaining repository/target/fetched-ref/upstream observations.
+  Git refusals retain literal arguments and raw process
   output; no rollback disguises partially completed work.
 - Start blocks outside/bare/detached/unborn contexts, all six operation families,
   protected bases, other-worktree occupation, and dirtiness before switching.
@@ -73,6 +72,26 @@
   A restricted remote fetch mapping can leave local upstream comparison
   unavailable, while counterpart remote/merge configuration remains exact.
   Snapshots are not cross-process locks; normal Git hooks/configuration apply.
+- [src/start_cli.rs](../src/start_cli.rs) parses only the dispatched grammar
+  and presents typed library results. Success distinguishes created, resumed
+  local/remote, and already current. Failure lists the blocker/guidance, completed
+  effects, and observed HEAD/tree/operations, target, attempted fetched reference,
+  and upstream configuration, including unavailable observations. It does not
+  claim a failed Git command had no effects or perform rollback.
+- [tests/cli_start.rs](../tests/cli_start.rs) adds 10 executable-level tests with
+  isolated real Git/local remotes: fresh generated/literal creation, all ordinary
+  prefixes (including release/hotfix) and unprefixed targets, local/remote resume,
+  dirty current no-op, nested invocation, custom settings, syntax preservation,
+  missing Git, bare/unborn/detached/dirty/operation/occupation blockers,
+  settings/name/protected-base/remote/base errors, fetch-only refusal, config-lock
+  partial creation, and a failed hook leaving HEAD switched. Help/version and
+  both command help paths succeed with no Git, outside a repository, and with
+  malformed settings. Existing status no-write/no-fetch tests still pass.
+  Library suites retain broader submodule/operation/race/refmap preservation
+  coverage; CLI code adds no workflow policy or runtime dependencies.
+- [README.md](../README.md) documents executable invocation, exact literal
+  overrides, repository settings, exit statuses, and recovery from blockers and
+  partial completion; library contracts now reference the implemented CLI.
 - Known Git compatibility limitation: on tested Git 2.47.3, `git switch @`
   interprets the valid literal branch name as HEAD and refuses. The workflow
   preserves and surfaces that refusal; preparation's naming contract is unchanged.
@@ -110,6 +129,15 @@
   inspection errors exit 1 with diagnostics; syntax errors retain exit 2.
   Help/version remain independent of Git. Human-readable formatting is an
   implementation choice, not a public machine-readable contract.
+- The CLI accepts only `start feature <description> [--name <branch>]`, with
+  `--name` after the single description argument. UTF-8 operands are required;
+  option-like operands and extra/duplicate arguments are syntax errors (exit 2).
+  No extra option spellings or terminator grammar were introduced. Resolution,
+  eligibility, repository/settings, and Git failures exit 1; success/no-op exits 0.
+  Global help/version and `start`/`start feature -h/--help` dispatch before any
+  operational access. Presentation is for humans, without a machine-readable
+  contract. These parser/presentation choices implement the bounded grammar;
+  they do not establish deferred commands or workflow policies.
 - Status counts paths by category; staged/unstaged categories can overlap,
   conflicts are separate, and submodule changes receive an additional count.
   Configured upstream output preserves remote/merge information and identifies
