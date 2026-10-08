@@ -157,8 +157,8 @@ this file. It is local repository metadata, not tracked project content. The
 remote must be configured in Git and its base must exist remotely when creating
 new work. The base value is a branch name, without a remote prefix.
 
-The file uses UTF-8, one `key = value` per line. Only `remote` and `base` are
-accepted, once each. Surrounding whitespace is trimmed; blank lines and whole-line
+The file uses UTF-8, one `key = value` per line. `remote`, `base`, and
+`save-action` are accepted, once each. Surrounding whitespace is trimmed; blank lines and whole-line
 `#` comments are ignored. Values are literal, without quoting, escapes, inline
 comments, expansion, or includes. Missing files/keys use defaults; malformed,
 unknown, duplicate, invalid, or unreadable settings fail. There are no global or

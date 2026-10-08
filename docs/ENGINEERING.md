@@ -44,12 +44,36 @@
   truncation, product length limit, or collision suffix is applied. Full-ref
   syntax checks avoid revision expansion; leading `-`, reserved `HEAD`, and the
   exact configured base are rejected as targets.
-- Repository settings remain a strict UTF-8 `remote = value` / `base = value`
-  file named `oneflow.conf` in the Git common directory. Missing file/keys default
-  to `origin`/`main`; malformed, unreadable, duplicate, unknown, or invalid values
-  fail. Linked worktrees share settings. Existence/freshness and eligibility
-  belong to execution; profiles, global sources, includes, executable settings,
-  and legacy migration are excluded.
+- Repository settings in [src/settings.rs](../src/settings.rs) remain a strict
+  UTF-8 `key = value` file named `oneflow.conf` in the Git common directory.
+  Missing file/keys default to `remote = origin`, `base = main`, and
+  `save-action = ask`; malformed, unreadable, duplicate, unknown, or invalid
+  values fail. Linked worktrees share settings. The new `save-action` accepts exactly
+  `ask`, `publish-only`, `staged`, `wip`, or `stash`. Start and save use one
+  parser and syntax validator; start retains its error categories and public
+  behavior. Remote existence/freshness for start belongs to execution; profiles,
+  global sources, includes, executable settings, and legacy migration are
+  excluded.
+- [src/save.rs](../src/save.rs) exposes read-only `assess`/`revalidate` with
+  typed eligibility errors, clean/staged-only/unstaged-only/mixed scope, explicit
+  required input, applicable actions, ordered local steps and exact publication
+  intent. Nonignored untracked work is separate; partially staged paths overlap
+  index/remaining lists. Raw upstream values must be absent or exactly one
+  matching remote and merge ref; duplicate equal values are also refused.
+  Save shares repository observation but skips tracking resolution: an isolated
+  Git 2.47.3 fixture crashed resolving an empty branch remote, whereas raw config
+  reads allow a clear preflight rejection. No Git tracking behavior is repaired.
+- Save validates the named remote locally with `remote get-url --push --all`,
+  retaining all resolved destinations for revalidation. HEAD/settings/upstream,
+  scope, index bytes, changed-file content/permissions/symlink targets and tracked
+  diff/gitlink revisions are compared before later execution. Diff capture
+  disables external drivers/textconv, relative paths and auto-refresh explicitly:
+  the stale-stat regression proved ordinary diff could otherwise rewrite the
+  index despite optional-lock safeguards. Git documents this auto-refresh in
+  [git-config](https://git-scm.com/docs/git-config#Documentation/git-config.txt-diffautoRefreshIndex).
+  These are engineering safeguards for the accepted read-only contract, not
+  atomic concurrency guarantees. [SAVE_PLANNING.md](SAVE_PLANNING.md) records
+  the API, effect/input semantics, authoritative Git evidence and limits.
 - [src/start/workflow.rs](../src/start/workflow.rs) retains the backend, with only
   its preparation call adapted. `execute(directory, &PreparedRequest)` revalidates
   names/settings/context and returns typed actions, completed effects, and either
@@ -121,7 +145,7 @@
   and any effects safely. A workaround requires separately reviewed switching
   design; preparation still preserves the literal name.
 
-## Save contract (not implemented)
+## Save contract (planning implemented; execution/CLI pending)
 
 Purpose: preserve or publish progress on the current workstream without
 requiring finished work. Both executable names will accept `save`, with `v`
@@ -175,7 +199,7 @@ Command forms:
 The four action switches are mutually exclusive. A configured action can be
 used without its switch; a supplied message applies to the staged action.
 An explicit action overrides the configured preference. Reuse the repository
-configuration source with one preference key,
+configuration source; `save-action` defaults to `ask`,
 without adding global sources or profiles. Custom message-prefix configuration
 has not been included in this contract. A default ask action without an
 interactive terminal fails before mutation with actionable guidance; it must

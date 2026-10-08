@@ -73,13 +73,16 @@ remote = upstream
 base = trunk
 ```
 
-- Only case-sensitive `remote` and `base` keys are supported, at most once each.
+- Case-sensitive `remote`, `base`, and `save-action` keys are supported, at most
+  once each. `save-action` is shared with save planning and does not alter start.
 - Each setting is `key = value`, split at the first `=`. Surrounding whitespace
   on the line, key, and value is trimmed. LF and CRLF are supported.
 - Blank lines and whole-line `#` comments are ignored. Values are literal:
   no quoting, escapes, inline comments, expansion, includes, or execution.
 - An absent file, empty/comment-only file, or absent individual key uses the
-  corresponding default: `remote = origin`, `base = main`.
+  corresponding default: `remote = origin`, `base = main`, `save-action = ask`.
+- `save-action` accepts exactly `ask`, `publish-only`, `staged`, `wip`, or `stash`;
+  see the [read-only save planning contract](SAVE_PLANNING.md).
 - Empty values, unknown/duplicate keys, malformed lines, invalid UTF-8, and
   unreadable existing files fail. A dangling symlink fails rather than defaulting.
 - `base` is a branch name and uses the same syntax validation as targets.

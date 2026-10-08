@@ -182,7 +182,8 @@ fn settings_overrides_and_errors() {
             request.settings,
             Settings {
                 remote: "team/upstream".into(),
-                base: "Feature/École".into()
+                base: "Feature/École".into(),
+                ..Settings::default()
             }
         );
         assert!(matches!(

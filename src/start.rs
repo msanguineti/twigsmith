@@ -6,33 +6,17 @@ pub use workflow::{
     execute,
 };
 
-use std::{fmt, fs, io, path::Path};
+use std::{fmt, io, path::Path};
 
 use unicode_general_category::{GeneralCategory as Category, get_general_category};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::{
-    git,
     repository::{self, InspectionError, RepositoryContext},
+    settings::{self, valid_branch},
 };
 
-pub const SETTINGS_FILE: &str = "oneflow.conf";
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Settings {
-    pub remote: String,
-    pub base: String,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            remote: "origin".into(),
-            base: "main".into(),
-        }
-    }
-}
-
+pub use crate::settings::{SETTINGS_FILE, Settings};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedRequest {
     pub repository: RepositoryContext,
@@ -137,19 +121,13 @@ fn phrase_slug(input: &str) -> Result<String, ResolveError> {
 pub fn prepare(directory: impl AsRef<Path>, input: &str) -> Result<PreparedRequest, ResolveError> {
     let directory = directory.as_ref();
     let repository = repository::discover(directory)?.ok_or(ResolveError::OutsideRepository)?;
-    let settings = read_settings(&repository)?;
-    if !valid_remote(directory, &settings.remote)? {
-        return Err(ResolveError::InvalidSettings(format!(
-            "invalid remote name: {:?}",
-            settings.remote
-        )));
-    }
-    if !valid_branch(directory, &settings.base)? {
-        return Err(ResolveError::InvalidSettings(format!(
-            "invalid base branch name: {:?}",
-            settings.base
-        )));
-    }
+    let settings = settings::load(directory, &repository).map_err(|e| match e {
+        settings::SettingsError::Repository(e) => ResolveError::Repository(e),
+        settings::SettingsError::SettingsIo { path, source } => {
+            ResolveError::SettingsIo { path, source }
+        }
+        settings::SettingsError::InvalidSettings(e) => ResolveError::InvalidSettings(e),
+    })?;
     let target = if input.contains(' ') {
         phrase_slug(input)?
     } else {
@@ -166,85 +144,6 @@ pub fn prepare(directory: impl AsRef<Path>, input: &str) -> Result<PreparedReque
         target,
         settings,
     })
-}
-
-fn read_settings(repository: &RepositoryContext) -> Result<Settings, ResolveError> {
-    let path = repository.common_dir.join(SETTINGS_FILE);
-    // Only absence defaults. A dangling symlink or any unreadable existing entry
-    // is an error rather than silently discarding repository intent.
-    match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Settings::default()),
-        Err(source) => return Err(ResolveError::SettingsIo { path, source }),
-        Ok(_) => {}
-    }
-    let contents =
-        fs::read_to_string(&path).map_err(|source| ResolveError::SettingsIo { path, source })?;
-    parse_settings(&contents)
-}
-
-fn parse_settings(contents: &str) -> Result<Settings, ResolveError> {
-    let mut settings = Settings::default();
-    let mut remote_seen = false;
-    let mut base_seen = false;
-    for (index, line) in contents.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let invalid =
-            |reason: &str| ResolveError::InvalidSettings(format!("line {}: {reason}", index + 1));
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| invalid("expected key = value"))?;
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(invalid("empty value"));
-        }
-        let (slot, seen) = match key.trim() {
-            "remote" => (&mut settings.remote, &mut remote_seen),
-            "base" => (&mut settings.base, &mut base_seen),
-            _ => return Err(invalid("unknown key (only remote and base are supported)")),
-        };
-        if *seen {
-            return Err(invalid("duplicate key"));
-        }
-        *seen = true;
-        *slot = value.to_owned();
-    }
-    Ok(settings)
-}
-
-fn valid_branch(directory: &Path, name: &str) -> Result<bool, ResolveError> {
-    // --branch expands @{-n}; validating a full ref never interprets revisions.
-    if name.starts_with('-') || name == "HEAD" {
-        return Ok(false);
-    }
-    valid_ref(directory, &format!("refs/heads/{name}"))
-}
-
-fn valid_remote(directory: &Path, name: &str) -> Result<bool, ResolveError> {
-    // A named remote, not a URL, path, local-repository '.', or command option.
-    if name.is_empty() || name.starts_with('-') || name == "." {
-        return Ok(false);
-    }
-    valid_ref(directory, &format!("refs/remotes/{name}/base"))
-}
-
-fn valid_ref(directory: &Path, reference: &str) -> Result<bool, ResolveError> {
-    if reference.contains('\0') {
-        return Ok(false);
-    }
-    let args = ["check-ref-format", reference];
-    let output = git::inspect(directory, args).map_err(InspectionError::Io)?;
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) if output.stderr.is_empty() => Ok(false),
-        _ => Err(InspectionError::Git {
-            arguments: args.iter().map(std::ffi::OsString::from).collect(),
-            output,
-        }
-        .into()),
-    }
 }
 
 #[cfg(test)]
@@ -277,27 +176,6 @@ mod tests {
             ("É\u{323}", "E\u{323}\u{301}"),
         ] {
             assert_eq!(phrase_slug(a).unwrap(), phrase_slug(b).unwrap());
-        }
-    }
-
-    #[test]
-    fn strict_settings_parser() {
-        assert_eq!(parse_settings("# comment\n").unwrap(), Settings::default());
-        assert_eq!(parse_settings("base = trunk\r\n").unwrap().remote, "origin");
-        assert_eq!(parse_settings("remote = team\n").unwrap().base, "main");
-        for contents in [
-            "remote",
-            "remote=",
-            "base= \n",
-            "other=x",
-            "base=one\nbase=two",
-            "remote=a\nremote=a",
-            "[oneflow]",
-        ] {
-            assert!(matches!(
-                parse_settings(contents),
-                Err(ResolveError::InvalidSettings(_))
-            ));
         }
     }
 }

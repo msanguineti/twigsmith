@@ -464,8 +464,18 @@ pub fn discover(directory: impl AsRef<Path>) -> Result<Option<RepositoryContext>
 /// Observe the repository selected by Git at `directory`, without fetching or
 /// modifying it. Operational failures remain errors, never clean observations.
 pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
-    let inspector = Inspector(directory.as_ref());
-    let Some(context) = discover(directory.as_ref())? else {
+    let mut observation = inspect_without_upstream(directory.as_ref())?;
+    if let Observation::Repository(state) = &mut observation {
+        state.upstream = Inspector(directory.as_ref()).upstream(&state.head)?;
+    }
+    Ok(observation)
+}
+
+/// Save validates raw upstream values itself before any tracking resolution.
+/// Upstream is deliberately NotApplicable in this internal observation.
+pub(crate) fn inspect_without_upstream(directory: &Path) -> Result<Observation> {
+    let inspector = Inspector(directory);
+    let Some(context) = discover(directory)? else {
         return Ok(Observation::OutsideRepository);
     };
     let RepositoryContext {
@@ -493,7 +503,7 @@ pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
         None
     };
     let operations = inspector.operations()?;
-    let upstream = inspector.upstream(&head)?;
+    let upstream = Upstream::NotApplicable;
     Ok(Observation::Repository(Box::new(RepositoryState {
         kind,
         git_dir,
@@ -534,7 +544,7 @@ fn records(output: &[u8]) -> Result<impl Iterator<Item = &[u8]>> {
     Ok(body.split(|b| *b == 0).filter(move |_| !output.is_empty()))
 }
 
-fn os(bytes: &[u8]) -> Result<OsString> {
+pub(crate) fn os(bytes: &[u8]) -> Result<OsString> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStringExt;
