@@ -45,6 +45,7 @@ dependencies = [
 name = "git-oneflow"
 version = "0.0.0-dev"
 dependencies = [
+ "rustix",
  "tempfile",
  "unicode-general-category",
  "unicode-normalization",

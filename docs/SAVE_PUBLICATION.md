@@ -6,7 +6,8 @@ plan with no pending local steps. Task #13's [local executor](SAVE_EXECUTION.md)
 completes preservation and obtains a fresh publish-only plan for the resulting
 branch/commit. It shares publication's read-only configuration guards before
 checkpoint writes, so known local blockers precede preservation effects.
-Task #14 will connect the public `save`/`v` command.
+Task #14 connects the public `save`/`v` command to these reports without inferring
+publication from local tracking observations.
 
 ## Exact publication and preservation
 

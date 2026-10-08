@@ -2,8 +2,8 @@
 
 Task #11 provides library planning. Task #12 adds the independent
 [publication backend](SAVE_PUBLICATION.md); task #13 composes it with
-[local checkpoint execution](SAVE_EXECUTION.md). The `save`/`v` commands remain
-for task #14. Public CLI behavior is unchanged.
+[local checkpoint execution](SAVE_EXECUTION.md). Task #14 exposes these APIs
+through the shared `save`/`v` CLI; see [invocation and recovery](../README.md#save-progress).
 
 ## Shared settings
 
@@ -55,8 +55,8 @@ establishment **after confirmed successful publication**. The plan does not
 claim server availability, fast-forward eligibility, or successful publication.
 The publication backend executes resolved plans without pending local steps and
 reports its outcomes. The local executor implements preservation/composition;
-interaction remains for task #14. WIP grouping represents index/remaining scope,
-not readiness.
+interaction uses these plans through the shared CLI. WIP grouping represents
+index/remaining scope, not readiness.
 
 ## Preconditions and local evidence
 

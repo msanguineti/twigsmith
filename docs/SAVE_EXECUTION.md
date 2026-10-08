@@ -3,8 +3,9 @@
 Task #13 implements `save::execution::execute(directory, &approved_plan)`.
 Callers first obtain a resolved plan through [assessment](SAVE_PLANNING.md).
 The executor preserves the selected work and composes the existing
-[publication backend](SAVE_PUBLICATION.md). Public command parsing, interaction,
-aliases and human presentation remain task #14.
+[publication backend](SAVE_PUBLICATION.md). Task #14's shared `save`/`v` CLI
+resolves terminal input and renders these reports; the executor remains
+independent of interaction.
 
 ## Local actions
 

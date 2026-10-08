@@ -120,7 +120,7 @@ fn resolve_guidance(error: &ResolveError) {
         ResolveError::OutsideRepository => eprintln!("enter a Git working tree and retry"),
         ResolveError::SettingsIo { .. } | ResolveError::InvalidSettings(_) => {
             eprintln!(
-                "check oneflow.conf in the Git common directory; only remote and base are supported"
+                "check oneflow.conf in the Git common directory; supported keys: remote, base, save-action"
             );
         }
         ResolveError::UnusablePhrase

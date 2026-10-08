@@ -4,12 +4,14 @@
 
 - [Cargo.toml](../Cargo.toml): `git-oneflow` `0.0.0-dev`, edition 2024, MIT,
   `publish = false`. Runtime dependencies are `unicode-normalization` and
-  `unicode-general-category`; `tempfile` is a development dependency. The
-  lockfile and package version are unchanged. `default-run = "git-oneflow"`
+  `unicode-general-category`; `tempfile` is a development dependency. Linux terminal tests also use
+  `rustix` (already locked transitively through tempfile), with PTY/process features.
+  No new dependency versions or runtime dependencies were added; the package
+  version is unchanged. `default-run = "git-oneflow"`
   preserves the existing Cargo invocation when two binary targets are present.
 - [src/main.rs](../src/main.rs) and [src/bin/gof.rs](../src/bin/gof.rs) are thin
   native entry points calling [src/cli.rs](../src/cli.rs). Shared dispatch,
-  help/version, status, start parsing, presentation, and exit semantics prevent
+  help/version, status, start/save parsing, presentation, and exit semantics prevent
   executable-specific behaviour. Help/version keep the canonical product name.
 - [dev](../dev) and [rust-toolchain.toml](../rust-toolchain.toml) use local Rust
   1.99.0, rustfmt, and Clippy. Tools/caches/temporary files live in `.dev/`,
@@ -114,7 +116,29 @@
   Assessment now retains the Git-resolved index path for alternate-index lock
   guards and observation. [SAVE_EXECUTION.md](SAVE_EXECUTION.md) records the API,
   evidence, failure/retry semantics and limits, including scoped staging's OS
-  argument-size boundary. Public `save`/`v` behavior remains unimplemented.
+  argument-size boundary.
+- [src/save_cli.rs](../src/save_cli.rs) parses `save`/`v` identically for both
+  executables and uses the existing planner/executor without reproducing their
+  workflow policies. Duplicate/conflicting/unknown/malformed flags are rejected
+  before execution; incompatible messages exit 2, blank required messages exit 1.
+  Option-like UTF-8 message values remain literal. Clean plans publish directly.
+  Prompts require terminal stdin and stderr (stdout may be redirected). Unresolved
+  unattended action/message input exits 1 before mutations. Terminal interaction
+  is one scope summary, one applicable action selection with cancel, and a staged
+  message if needed; invalid/blank responses stop instead of restarting a wizard.
+  EOF cancels even a partial response without Enter. The original assessment is
+  revalidated before and after resolving each response; execution validates the
+  resulting plan again. Successful reports go to stdout; prompts and failures to
+  stderr. Reports distinguish verified checkpoints/stashes, observed HEAD/tree,
+  confirmed/rejected/unconfirmed destinations and unfinished tracking, retaining
+  raw Git diagnostics through the existing safe display boundary. No rollback,
+  editor or additional Git wrapper interface is introduced.
+- [tests/cli_save.rs](../tests/cli_save.rs) uses isolated real Git fixtures and
+  deadlines for unattended execution. [PTY support](../tests/support/terminal.rs)
+  uses safe rustix/Linux PTY APIs with deadline reads/waits and child cleanup,
+  without shell command interpolation, an external terminal driver, global tools,
+  or runtime test hooks. PTY tests are Linux-only; ordinary CLI cases also remain
+  independent of terminal support.
 - [src/start/workflow.rs](../src/start/workflow.rs) retains the backend, with only
   its preparation call adapted. `execute(directory, &PreparedRequest)` revalidates
   names/settings/context and returns typed actions, completed effects, and either
@@ -186,10 +210,10 @@
   and any effects safely. A workaround requires separately reviewed switching
   design; preparation still preserves the literal name.
 
-## Save contract (planning/checkpoints/publication implemented; CLI pending)
+## Save contract (implemented)
 
 Purpose: preserve or publish progress on the current workstream without
-requiring finished work. Both executable names will accept `save`, with `v`
+requiring finished work. Both executable names accept `save`, with `v`
 as its exact command alias; `s` remains assigned to `start`. No branch operand
 or workflow category is required.
 

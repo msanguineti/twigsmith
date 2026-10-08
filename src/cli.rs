@@ -2,7 +2,7 @@ use std::{env, process::ExitCode};
 
 use crate::{
     repository::{self, InspectionError, Observation},
-    start_cli, status,
+    save_cli, start_cli, status,
 };
 
 pub fn run() -> ExitCode {
@@ -21,6 +21,9 @@ pub fn run() -> ExitCode {
         [command, rest @ ..] if command == "start" || command == "s" => {
             return start_cli::run(rest);
         }
+        [command, rest @ ..] if command == "save" || command == "v" => {
+            return save_cli::run(rest);
+        }
         _ => {
             eprintln!("error: unsupported arguments; use --help for available options");
             return ExitCode::from(2);
@@ -32,14 +35,16 @@ pub fn run() -> ExitCode {
 
 fn print_help() {
     println!(
-        "git-oneflow — start work and observe Git repository state
+        "git-oneflow — start work, save progress, and observe Git repository state
 
 Usage: git-oneflow [OPTIONS]
        git-oneflow status
        git-oneflow start <branch-name-or-phrase>
+       git-oneflow save [ACTION] [--message <message>]
 
 Commands:
   start, s         Create or resume a workstream
+  save, v          Preserve progress and publish the current branch
   status           Summarize observed repository state (read-only)
 
 Options:
@@ -48,7 +53,7 @@ Options:
 
 Status compares locally available references/history only; it does not fetch.
 The gof executable is equivalent to git-oneflow.
-Use start --help or s --help for workflow help."
+Use start --help or save --help (also s --help or v --help) for workflow help."
     );
 }
 
