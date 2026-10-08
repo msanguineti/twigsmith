@@ -96,6 +96,25 @@
   updates. These guards are engineering containment of the accepted preservation
   contract. No user config is repaired. Normal hooks, authentication and relevant
   push configuration remain effective within explicit publication boundaries.
+- [src/save/execution.rs](../src/save/execution.rs) executes approved, resolved
+  plans independently of CLI presentation. Clean/publish-only actions produce no
+  local checkpoints. Staged commits use exactly the index and developer message;
+  WIP commits the staged selection before scoped literal-path staging/commit of
+  remaining work. Stash includes nonignored untracked work and retains an
+  identifiable local stash without restoration/drop. Shared publisher preflight,
+  index-lock and identity guards precede local writes. Successor validation checks
+  context/files, commit parent/index content, remaining diff/gitlink revisions
+  and expected staging transitions before reassessment/publication. Reports
+  separate verified local effects, raw command results, per-command/final
+  observations, and independent publication outcomes. Failed commands/hooks can
+  leave commits/stash/index effects; none are rolled back. Actual-state retries
+  omit empty checkpoints and use the current index grouping. Git can retain an
+  identical stash entry when contents/messages/timestamps give the same OID;
+  the verified retention check admits that case without disturbing older entries.
+  Assessment now retains the Git-resolved index path for alternate-index lock
+  guards and observation. [SAVE_EXECUTION.md](SAVE_EXECUTION.md) records the API,
+  evidence, failure/retry semantics and limits, including scoped staging's OS
+  argument-size boundary. Public `save`/`v` behavior remains unimplemented.
 - [src/start/workflow.rs](../src/start/workflow.rs) retains the backend, with only
   its preparation call adapted. `execute(directory, &PreparedRequest)` revalidates
   names/settings/context and returns typed actions, completed effects, and either
@@ -167,7 +186,7 @@
   and any effects safely. A workaround requires separately reviewed switching
   design; preparation still preserves the literal name.
 
-## Save contract (planning/publication implemented; checkpoints/CLI pending)
+## Save contract (planning/checkpoints/publication implemented; CLI pending)
 
 Purpose: preserve or publish progress on the current workstream without
 requiring finished work. Both executable names will accept `save`, with `v`

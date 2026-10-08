@@ -1,8 +1,9 @@
 # Read-only save planning
 
 Task #11 provides library planning. Task #12 adds the independent
-[publication backend](SAVE_PUBLICATION.md). Local checkpoint execution and the
-`save`/`v` commands remain for tasks #13–#14. Public CLI behavior is unchanged.
+[publication backend](SAVE_PUBLICATION.md); task #13 composes it with
+[local checkpoint execution](SAVE_EXECUTION.md). The `save`/`v` commands remain
+for task #14. Public CLI behavior is unchanged.
 
 ## Shared settings
 
@@ -53,8 +54,9 @@ remote and exact `refs/heads/<current branch>`; absent upstream is marked for
 establishment **after confirmed successful publication**. The plan does not
 claim server availability, fast-forward eligibility, or successful publication.
 The publication backend executes resolved plans without pending local steps and
-reports its outcomes. Local mutation/composition and interaction remain for later
-executors/CLI. WIP grouping represents index/remaining scope, not readiness.
+reports its outcomes. The local executor implements preservation/composition;
+interaction remains for task #14. WIP grouping represents index/remaining scope,
+not readiness.
 
 ## Preconditions and local evidence
 
@@ -90,7 +92,7 @@ not a claim that Git prohibits them or that this workflow is universal.
 
 `save::revalidate(directory, &approved_plan)` repeats assessment and compares
 context, HEAD, settings, raw upstream values, resolved push URLs, scope, index
-bytes, changed-file bytes/permissions or symlink targets, and local tracked diff
+path/bytes, changed-file bytes/permissions or symlink targets, and local tracked diff
 content (including changed gitlink revisions). It catches changed content even
 when the same paths/categories remain dirty. Untracked directory observations
 are inspected recursively without following symlinks. Snapshot content remains

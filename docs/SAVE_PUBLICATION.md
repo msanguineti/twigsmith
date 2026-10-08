@@ -2,11 +2,11 @@
 
 Task #12 implements `save::publication::publish(directory, &Plan)` independently
 of interaction and local checkpoint creation. It accepts an assessed, resolved
-plan with no pending local steps. Task #13 must complete its local actions and
-obtain a fresh publish-only plan for the resulting branch/commit; task #14 will
-connect the public `save`/`v` command. Neither is implemented here.
-Task #13's composition must also reuse publication's local configuration guards
-before checkpoint writes, so known local blockers precede preservation effects.
+plan with no pending local steps. Task #13's [local executor](SAVE_EXECUTION.md)
+completes preservation and obtains a fresh publish-only plan for the resulting
+branch/commit. It shares publication's read-only configuration guards before
+checkpoint writes, so known local blockers precede preservation effects.
+Task #14 will connect the public `save`/`v` command.
 
 ## Exact publication and preservation
 

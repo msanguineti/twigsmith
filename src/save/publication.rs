@@ -312,6 +312,26 @@ fn submodule_policy(directory: &Path) -> Result<&'static str, SaveError> {
         "--recurse-submodules=no"
     })
 }
+
+// Shared read-only local guards. Checkpoint execution uses these before writes;
+// publication repeats them because hooks/configuration can change in between.
+pub(super) fn preflight(directory: &Path, plan: &Plan) -> Result<Vec<Vec<u8>>, PublishError> {
+    let urls = plan
+        .snapshot
+        .push_urls
+        .strip_suffix(b"\n")
+        .ok_or(PublishError::InvalidDestinations)?;
+    let destinations: Vec<_> = urls.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect();
+    if destinations
+        .iter()
+        .any(|url| url.is_empty() || url.contains(&b'\r'))
+    {
+        return Err(PublishError::InvalidDestinations);
+    }
+    protect_tracking(directory, plan)?;
+    submodule_policy(directory)?;
+    Ok(destinations)
+}
 // Keep this byte-oriented on every platform; URLs/refnames are not decoded.
 trait SplitByte {
     fn split_once_byte(&self, byte: u8) -> Option<(&[u8], &[u8])>;
@@ -431,8 +451,8 @@ fn establish_tracking(
     Ok(())
 }
 
-/// Publish a fully resolved plan with no pending local steps. Later checkpoint
-/// composition must assess its resulting branch/commit afresh before calling.
+/// Publish a fully resolved plan with no pending local steps. Checkpoint
+/// composition assesses its resulting branch/commit afresh before calling.
 /// Dirty publish-only work stays untouched. Snapshots do not lock concurrent
 /// edits or arbitrary hook effects; the literal OID pins what Git publishes.
 pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
@@ -469,21 +489,8 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             .unwrap()
             .root
             .as_path();
-        let urls = plan
-            .snapshot
-            .push_urls
-            .strip_suffix(b"\n")
-            .ok_or(PublishError::InvalidDestinations)?;
-        report.configured_destinations = urls.split(|b| *b == b'\n').map(<[u8]>::to_vec).collect();
-        if report
-            .configured_destinations
-            .iter()
-            .any(|url| url.is_empty() || url.contains(&b'\r'))
-        {
-            return Err(PublishError::InvalidDestinations);
-        }
         super::revalidate(root, plan)?;
-        protect_tracking(root, plan)?;
+        report.configured_destinations = preflight(root, plan)?;
         let submodules = submodule_policy(root)?;
         let refspec = [&plan.commit, b":".as_slice(), &report.branch_ref].concat();
         let arguments = vec![

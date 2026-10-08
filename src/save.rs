@@ -1,5 +1,5 @@
-//! Save planning and exact publication. Assessment/revalidation are read-only;
-//! the publication module executes resolved plans without pending local steps.
+//! Save planning, local preservation, and exact publication.
+//! Assessment/revalidation are read-only; execution composes the Git backends.
 //! Revalidation is conservative and consists of several reads, not a lock.
 use crate::{
     git,
@@ -15,6 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod execution;
 pub mod publication;
 
 pub const WIP_STAGED_MESSAGE: &str = "[WIP - Staged]";
@@ -101,6 +102,7 @@ struct ContextSnapshot {
     state: RepositoryState,
     upstream: UpstreamSettings,
     push_urls: Vec<u8>,
+    index_path: PathBuf,
     index: Option<Vec<u8>>,
     tracked_diff: Vec<u8>,
     files: Vec<(Vec<u8>, FileSnapshot)>,
@@ -419,7 +421,8 @@ fn assess_with_upstream(
     let index_path = index_path
         .strip_suffix(b"\n")
         .ok_or(InspectionError::InvalidOutput("index path"))?;
-    let index = match fs::read(PathBuf::from(repository::os(index_path)?)) {
+    let index_path = PathBuf::from(repository::os(index_path)?);
+    let index = match fs::read(&index_path) {
         Ok(b) => Some(b),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
@@ -469,6 +472,7 @@ fn assess_with_upstream(
             state: *state,
             upstream,
             push_urls,
+            index_path,
             index,
             tracked_diff,
             files,
