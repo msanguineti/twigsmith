@@ -1,0 +1,200 @@
+# User guide
+
+Use `git-oneflow` or its equivalent executable `gof` from a Git working tree.
+Both accept the same commands and options. Git 2.45 or newer must be on PATH.
+The [development guide](DEVELOPMENT.md) explains how to build the executables;
+use their full paths when they are not on PATH.
+
+## Command reference
+
+```sh
+gof --help
+gof --version
+gof start --help
+gof save --help
+gof status --help
+```
+
+Running with no arguments shows help. Help and version are available anywhere,
+including without Git installed.
+
+## Start or resume work
+
+```sh
+gof start "nasty deployment bug"
+gof s fix/deployment-bug
+```
+
+Supply one branch name or quoted phrase. Valid literal Git names retain their
+exact spelling: `feature`, `Fix/DeploymentBug`, and `fix/parser_v2` are examples.
+An ordinary space selects phrase conversion: Unicode letters and numbers are
+normalized, lowercased, and joined with hyphens. For example, `nasty deployment
+bug` becomes `nasty-deployment-bug`. The input determines the branch name.
+
+Branch prefixes are naming conventions. All names use the same start behaviour.
+Names must be valid for Git, begin with a character other than `-`, and differ
+from `HEAD` and the configured base branch. Existing exact names mean resume.
+
+Start chooses among four actions:
+
+| Target | Action |
+| --- | --- |
+| Already current | Report success and keep the current checkout |
+| Exists locally | Switch to that branch using its current local history |
+| Exists only on the configured remote | Fetch it and create a tracking local branch |
+| New branch | Create it from the freshly fetched configured remote base |
+
+Start reports the action taken. Remote-dependent actions stop if discovery or
+fetching fails. Local resume works offline; new branches begin without upstream
+tracking. The local base branch retains its current history.
+
+Start requires an attached branch with at least one commit. Switching requires
+a clean index, working tree, and submodules. An already-current target succeeds
+with uncommitted work. Active Git operations or a target checked out in another
+worktree block start.
+
+## Save progress
+
+```sh
+gof save
+gof v --publish-only
+gof save --staged --message "selected parser changes"
+gof save --wip
+gof save --stash
+```
+
+A clean tree publishes existing commits directly. With uncommitted work, the
+default action is to ask what you want to preserve:
+
+| Option | Action | Work retained locally |
+| --- | --- | --- |
+| `--publish-only` | Publish existing commits | All uncommitted changes |
+| `--staged` | Commit the index selection with your message, then publish | Unstaged changes and untracked files |
+| `--wip` | Commit staged and remaining work separately, then publish | Ignored untracked files |
+| `--stash` | Stash tracked and nonignored untracked work, then publish existing commits | The stash and ignored untracked files |
+
+Staged save respects partial staging, including selected portions of one file.
+WIP creates `[WIP - Staged]` and `[WIP - Unstaged]` commits for the groups that
+contain changes. The second group includes nonignored untracked files.
+
+A stash stays in the local repository. Keep it there until you are ready to
+recover the work using Git. Save reports its object ID; see [recovery](#recovery).
+
+Choose one action flag. It overrides the repository's `save-action` preference.
+`--message` applies to the staged action, including a configured staged preference.
+Quote the message as one argument. Git's normal message cleanup, hooks, and signing
+settings apply. A clean tree needs no checkpoint message.
+
+### Interactive use
+
+When the action is `ask`, save displays the affected scope and applicable action
+names. Enter a displayed name or `cancel`. Staged is offered when staged changes
+exist; a missing staged message is requested as one line.
+
+Input and stderr must be terminals for prompting. Cancellation or end-of-input
+before execution leaves the repository untouched. Invalid choices or blank
+messages stop the command; rerun to choose again. Save rechecks the approved
+context after input and stops if it changed.
+
+### Scripts and agents
+
+Select an explicit action for unattended execution:
+
+```sh
+gof save --wip
+gof save --staged --message "selected changes"
+```
+
+Alternatively, set a repository preference such as `save-action = staged` and
+supply `--message` on each invocation. Unresolved action or message input fails
+before changes when a terminal is unavailable. Piped responses are not accepted
+as interactive approval.
+
+### Publication
+
+Save publishes the current branch to its exact name on the configured remote,
+using that remote's push destinations. It creates or fast-forwards the branch;
+an unchanged remote tip is also successful. Rewritten or divergent remote history
+requires attention before publication can succeed.
+
+Existing upstream settings must match the selected remote and branch. Missing
+tracking is established after all push destinations confirm publication.
+The branch must have an existing commit and differ from the configured base.
+Conflicts, active Git operations, detached HEAD, and dirty submodules block save.
+Preserve dirty submodule work within its own repository.
+
+## Inspect state
+
+```sh
+gof status
+```
+
+Status reports HEAD/branch, staged and unstaged path counts, conflicts, untracked
+paths, submodule changes, active operations, and upstream information. Run it
+from the repository root or a nested directory. Bare repositories are identified
+as having no working tree.
+
+Counts can overlap when a path has both staged and unstaged changes. Ignored paths
+are excluded. Upstream comparisons use locally available references and history;
+unavailable comparisons are identified explicitly. Status is a read-only local
+observation. Its text is intended for people.
+
+## Repository settings
+
+Defaults are `remote = origin`, `base = main`, and `save-action = ask`.
+To override them, create `oneflow.conf` in the Git common directory, usually
+`.git/oneflow.conf`:
+
+```text
+remote = upstream
+base = trunk
+save-action = ask
+```
+
+Find the directory with `git rev-parse --git-common-dir`. Linked worktrees share
+this local metadata file. The remote must be configured in Git. Its base branch
+must exist remotely when creating new work. Write `base` as a branch name such
+as `trunk`.
+
+`save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
+The UTF-8 file uses one `key = value` per line. Surrounding whitespace is trimmed;
+blank lines and whole-line `#` comments are accepted. Values are literal. Use each
+supported key once. Malformed, unknown, duplicate, invalid, or unreadable settings
+fail with a diagnostic. Missing files or keys use defaults.
+
+## Recovery
+
+- **Git unavailable:** install Git 2.45 or newer and make it available on PATH.
+- **Start blocked:** preserve changes before switching; complete or abort the
+  reported Git operation. Use the reported worktree if another checkout owns
+  the target. For detached or unborn HEAD, attach a branch or create an initial
+  commit before starting.
+- **Remote/settings failure:** inspect `oneflow.conf`, `git remote -v`, the remote
+  base, push destinations, and access credentials.
+- **Save needs input:** select an action explicitly or configure `save-action`.
+  Supply a nonblank `--message` for an unattended staged checkpoint.
+- **Scope changed:** inspect the branch, index, files, upstream, and settings,
+  then rerun to approve the current state.
+- **Retained stash:** inspect `git stash list` and `git stash show <reported-id>`.
+  Restore it with `git stash apply --index <reported-id>` when ready. Resolve any
+  conflicts reported by Git; successful application retains the stash entry.
+- **Partial or interrupted execution:** inspect the reported effects, HEAD,
+  `git status`, stash list, upstream settings, and each push destination. Completed
+  commits, stashes, and remote updates remain available. Repair the reported
+  problem and retry from the actual state. A clean retry creates no empty WIP
+  checkpoint. After an interruption without a report, verify remote state too.
+- **Incomplete upstream:** repair the reported remote/merge configuration before
+  retrying. A confirmed remote update can coexist with failed local tracking setup.
+- **Literal `@` branch:** tested Git 2.47.3 accepts the name but refuses
+  `git switch @`. Use another name or resolve the checkout through Git.
+
+## Exit status
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Successful command, observation, or unchanged publication |
+| `1` | Operational failure, unresolved input, cancellation, or incomplete execution |
+| `2` | Invalid command syntax |
+
+Status successfully reports dirty, conflicted, detached, unborn, and bare states.
+Operating-system interruption is unsuccessful and may prevent a final report.

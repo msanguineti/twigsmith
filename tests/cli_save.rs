@@ -166,7 +166,10 @@ fn save_help_and_syntax_work_without_git_or_repository() {
                     &[
                         "Usage: git-oneflow save",
                         "Alias: v",
-                        "s remains start",
+                        "Options:",
+                        "Examples:",
+                        "Settings:",
+                        "Exit status:",
                         "save-action",
                         "cancel",
                     ],

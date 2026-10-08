@@ -546,46 +546,47 @@ fn render(plan: &Plan, report: &Report) -> String {
 
 fn help() {
     println!(
-        "Usage: git-oneflow save
-       git-oneflow save --publish-only
-       git-oneflow save --staged [--message <message>]
-       git-oneflow save --wip
-       git-oneflow save --stash
+        "Preserve progress and publish the current branch. Alias: v.
 
-Alias: v. Both git-oneflow and gof support the same forms; s remains start.
-Publish existing commits on the exact current branch to the configured remote.
-Clean trees publish directly, without an action question or empty commit.
-Dirty trees use save-action (default ask); an explicit action overrides it.
-{}
-{}
-{}
-{}
+Usage: git-oneflow save [ACTION] [--message <message>]
 
-Action flags are mutually exclusive. --message takes a literal UTF-8 value and
-applies only when the effective action is staged. A nonblank message is required
-when staged work is committed; without one, a terminal can request one line.
-No editor is launched. Input and stderr must both be terminals for prompts.
-The ask choice includes cancel; EOF also cancels before execution. Invalid choices
-or blank messages stop; rerun to choose again. Changed context after input stops.
-Without a terminal, unresolved action/message input fails before mutations.
-Explicit/configured actions with sufficient input run without questions.
+Options:
+  --publish-only       Publish existing commits; keep uncommitted work local
+  --staged             Commit the index selection, then publish
+  --wip                Checkpoint staged and remaining work separately, then publish
+  --stash              Stash tracked/untracked work locally; publish existing commits
+  --message <message>  Supply the staged commit message
+  -h, --help           Show help
 
-Settings: <Git common directory>/oneflow.conf (usually .git/oneflow.conf).
-Optional remote = <named-remote>, base = <branch>, save-action = <action>.
-Defaults: origin, main, ask. Actions: ask, publish-only, staged, wip, stash.
-Linked worktrees share these settings. Save refuses the configured base, unborn
-or detached HEAD, conflicts, active operations, and dirty submodule contents.
-Normal Git hooks/configuration apply. Publication is non-forced; save never
-merges, rebases, restores stashes, or rolls back retained effects on failure.
-Output separates local checkpoints/stashes from confirmed remote publication.
+Examples:
+  gof save
+  gof v --wip
+  gof save --staged --message \"selected parser changes\"
+  git-oneflow save --stash
 
-  -h, --help       Show this help without Git or repository access
+Details:
+  Choose one action flag. Explicit selection overrides save-action.
+  Clean trees publish directly. Dirty trees default to ask.
+  Prompts require terminal input and stderr; enter a displayed action or cancel.
+  Staged checkpoints need a nonblank message, supplied or requested at a terminal.
+  Scripts need an explicit/configured action and any required message.
+  WIP messages are [WIP - Staged] and [WIP - Unstaged] for groups with changes.
+  Stash contents remain local. Ignored untracked files remain outside checkpoints.
+  Publication creates or fast-forwards the same branch on the configured remote.
+  Save requires an attached working branch with a commit and matching/absent upstream.
+  The configured base, conflicts, active operations, and dirty submodules block save.
+  Failures retain completed effects; inspect the report before retrying.
 
-Exit status: 0 completed (including unchanged publication); 1 operational failure,
-unresolved input, cancellation or incomplete execution; 2 invalid syntax.",
-        choice(SaveAction::PublishOnly),
-        choice(SaveAction::Staged),
-        choice(SaveAction::Wip),
-        choice(SaveAction::Stash)
+Settings:
+  <Git common directory>/oneflow.conf (usually .git/oneflow.conf)
+  remote = origin; base = main; save-action = ask (defaults)
+  save-action: ask, publish-only, staged, wip, stash
+
+Exit status:
+  0  Selected action completed, including unchanged publication
+  1  Failure, unresolved input, cancellation, or incomplete execution
+  2  Invalid syntax
+
+See docs/USAGE.md for settings and recovery."
     );
 }

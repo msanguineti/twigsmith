@@ -321,7 +321,9 @@ fn cli_missing_git_and_status_help() {
                 &[
                     "Usage: git-oneflow status",
                     "locally available references/history only",
-                    "no fetch",
+                    "Options:",
+                    "Examples:",
+                    "Exit status:",
                 ],
             );
         }

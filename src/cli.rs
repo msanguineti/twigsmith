@@ -35,38 +35,55 @@ pub fn run() -> ExitCode {
 
 fn print_help() {
     println!(
-        "git-oneflow — start work, save progress, and observe Git repository state
+        "git-oneflow — start workstreams, save progress, and inspect Git state
 
 Usage: git-oneflow [OPTIONS]
-       git-oneflow status
-       git-oneflow start <branch-name-or-phrase>
-       git-oneflow save [ACTION] [--message <message>]
+       git-oneflow <COMMAND> [ARGS]
 
 Commands:
   start, s         Create or resume a workstream
   save, v          Preserve progress and publish the current branch
-  status           Summarize observed repository state (read-only)
+  status           Summarize local repository state
 
 Options:
-  -h, --help       Show this help
-  -V, --version    Show the development version
+  -h, --help       Show help
+  -V, --version    Show version
 
-Status compares locally available references/history only; it does not fetch.
-The gof executable is equivalent to git-oneflow.
-Use start --help or save --help (also s --help or v --help) for workflow help."
+Examples:
+  gof start \"add user avatars\"
+  gof save
+  gof status
+
+The gof executable accepts the same commands and options.
+Use <command> --help for command details. See docs/USAGE.md for the user guide."
     );
 }
 
 fn print_status_help() {
     println!(
-        "Usage: git-oneflow status
+        "Summarize local Git repository state.
 
-Report HEAD/branch, working-tree change counts, operations, and upstream information.
-Run from a repository root or nested directory. Bare repositories have no working tree.
-Comparisons use locally available references/history only; no fetch is performed.
-Observations do not assess remote freshness or workflow readiness.
+Usage: git-oneflow status
 
-  -h, --help    Show this help"
+Options:
+  -h, --help       Show help
+
+Examples:
+  gof status
+
+Details:
+  Report HEAD/branch, change counts, active operations, and upstream information.
+  Run from a repository root or nested directory; bare repositories are supported.
+  A path can count as both staged and unstaged. Ignored paths are excluded.
+  Upstream comparisons use locally available references/history only.
+  Unavailable comparison data is reported explicitly.
+
+Exit status:
+  0  Observation completed
+  1  Repository or inspection failure
+  2  Invalid syntax
+
+See docs/USAGE.md for settings and recovery."
     );
 }
 

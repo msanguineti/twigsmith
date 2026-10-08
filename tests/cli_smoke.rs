@@ -37,6 +37,9 @@ fn cli_runs_outside_git_without_node_or_rust_tools() {
                 assert!(stdout.contains("Usage: git-oneflow [OPTIONS]"));
                 assert!(stdout.contains("--help"));
                 assert!(stdout.contains("--version"));
+                assert!(stdout.contains("Commands:"));
+                assert!(stdout.contains("Options:"));
+                assert!(stdout.contains("Examples:"));
             }
         }
 

@@ -454,8 +454,17 @@ fn cli_start_help_is_independent_of_git_repository_and_settings() {
                         .unwrap();
                     let help = check(output, 0, &[]);
                     if args[0] == "start" {
-                        for form in ["git-oneflow start", "git-oneflow s", "gof start", "gof s"] {
-                            assert!(help.contains(&format!("{form} <branch-name-or-phrase>")));
+                        for content in [
+                            "Usage: git-oneflow start <branch-name-or-phrase>",
+                            "Alias: s",
+                            "Arguments:",
+                            "Options:",
+                            "Examples:",
+                            "gof s fix/parser_v2",
+                            "Settings:",
+                            "Exit status:",
+                        ] {
+                            assert!(help.contains(content));
                         }
                         assert!(!help.contains("--name"));
                         assert!(!help.contains("start feature"));

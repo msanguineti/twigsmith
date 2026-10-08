@@ -70,30 +70,42 @@ fn syntax_error() -> ExitCode {
 
 fn help_start() {
     println!(
-        "Usage: git-oneflow start <branch-name-or-phrase>
-       git-oneflow s <branch-name-or-phrase>
-       gof start <branch-name-or-phrase>
-       gof s <branch-name-or-phrase>
+        "Create or resume a workstream. Alias: s.
 
-Create or resume a workstream from a repository working tree.
-Valid Git branch names retain their exact spelling, case, and Unicode normalization.
-Quote phrases containing ordinary spaces: canonical Unicode lowercase and hyphenated
-separators determine the name, without adding a prefix. Other invalid names fail.
-The input determines only the target branch; it is not stored as a description.
-Prefixes (including release/ and hotfix/) do not select a different workflow.
+Usage: git-oneflow start <branch-name-or-phrase>
 
-An existing local branch is resumed without remote contact or history changes.
-Otherwise fetch the exact remote counterpart, or create from the fresh remote base.
-Report created, resumed, or already current. Switching requires a clean tree;
-an already-current branch is a read-only no-op even when dirty. Active Git operations block start.
+Arguments:
+  <branch-name-or-phrase>  Exact branch name or quoted phrase
 
-Settings: <Git common directory>/oneflow.conf (usually .git/oneflow.conf).
-Optional remote = <named-remote> and base = <branch>; defaults: origin and main.
-No file is required. Linked worktrees share these repository settings.
+Options:
+  -h, --help       Show help
 
-  -h, --help       Show this help without Git or repository access
+Examples:
+  gof start \"add user avatars\"
+  gof s fix/parser_v2
+  git-oneflow start Fix/DeploymentBug
 
-Exit status: 0 success/no-op; 1 repository/settings/workflow failure; 2 invalid syntax."
+Details:
+  Literal Git names keep their spelling, case, prefixes, and Unicode form.
+  Ordinary spaces select phrase conversion: normalized lowercase words
+  joined with hyphens. Existing exact names mean resume.
+  Local branches resume using local history, including offline.
+  Otherwise fetch the remote counterpart or create from the fresh remote base.
+  Switching requires a clean tree, attached HEAD, and an existing commit.
+  An already-current target succeeds with uncommitted work.
+  Active operations and targets occupied by another worktree block start.
+
+Settings:
+  <Git common directory>/oneflow.conf (usually .git/oneflow.conf)
+  remote = origin; base = main (defaults)
+  Linked worktrees share this file.
+
+Exit status:
+  0  Created, resumed, or already current
+  1  Input, repository, settings, or workflow failure
+  2  Invalid syntax
+
+See docs/USAGE.md for settings and recovery."
     );
 }
 
