@@ -3,8 +3,9 @@
 ## Implementation
 
 - [Cargo.toml](../Cargo.toml): `git-oneflow` `0.0.0-dev`, edition 2024, MIT,
-  `publish = false`, no runtime dependencies; `tempfile` is a development
-  dependency. Resolved dependencies are tracked in `Cargo.lock`.
+  `publish = false`; runtime dependencies are `unicode-normalization` and
+  `unicode-general-category` for canonical Unicode naming. `tempfile` remains a
+  development dependency; resolved dependencies are tracked in `Cargo.lock`.
 - [src/main.rs](../src/main.rs) dispatches help/version and status, and owns
   runtime diagnostics. [src/status.rs](../src/status.rs) renders the repository
   observation types; inspection and workflow policy remain separate. Status
@@ -24,7 +25,8 @@
   Inspection adds `--no-optional-locks`, `--no-lazy-fetch`, `core.fsmonitor=false`,
   noninteractive transport, and C locale. Unsupported safeguards remain errors.
 - [src/repository.rs](../src/repository.rs), exported by [src/lib.rs](../src/lib.rs),
-  provides `repository::inspect(directory)` returns observations
+  now shares lightweight `repository::discover(directory)` with request
+  preparation. `repository::inspect(directory)` still returns observations
   or distinct Git/I/O/parse errors. Git-resolved paths support linked and bare
   repositories. Porcelain v2/NUL status retains raw path bytes, excludes ignored
   files, inspects submodules, disables rename heuristics, and sorts records.
@@ -33,6 +35,21 @@
   templates, HOME/XDG, and discovery ceiling. [tests/support/snapshot.rs](../tests/support/snapshot.rs)
   shares preservation assertions between inspection and CLI tests:
   file/directory set, bytes, symlink targets, modification times, and permissions.
+- [src/start.rs](../src/start.rs) exposes `prepare(directory, description, name)`
+  independently of CLI presentation and Git workflow. It returns repository
+  context, exact target, and validated settings, with distinct input/settings,
+  I/O, and repository errors. Discovery does not read HEAD or the index.
+- [Naming/settings contract](START_INPUTS.md): generated `feature/` suffixes use
+  NFC → locale-independent lowercase → NFC, Unicode letters/numbers and attached
+  marks, and hyphenated separators. Overrides remain literal. Full-ref syntax
+  checks avoid revision expansion; leading `-`, reserved `HEAD`, and the exact
+  configured base are rejected as targets. No collision avoidance is applied.
+- Repository configuration is a strict UTF-8 `remote = value` /
+  `base = value` file named `oneflow.conf` in the Git common directory. This
+  provides one repository-wide source for nested invocation and linked worktrees,
+  without includes or executable configuration. Missing keys/file default to
+  `origin`/`main`; malformed, unreadable, duplicate, unknown, or invalid values
+  fail. Remote names and base syntax are checked; existence/freshness belongs to execution. Bare/detached/unborn eligibility also remains workflow policy.
 
 ## Design constraints
 

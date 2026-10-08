@@ -20,6 +20,14 @@ pub enum Observation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryContext {
+    pub kind: RepositoryKind,
+    pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
+    pub working_tree_root: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryState {
     pub kind: RepositoryKind,
     pub git_dir: PathBuf,
@@ -399,9 +407,9 @@ impl Inspector<'_> {
     }
 }
 
-/// Observe the repository selected by Git at `directory`, without fetching or
-/// modifying it. Operational failures remain errors, never clean observations.
-pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
+/// Discover repository paths without reading HEAD, the index, or worktree state.
+/// Git's normal repository-selection environment is honored.
+pub fn discover(directory: impl AsRef<Path>) -> Result<Option<RepositoryContext>> {
     let inspector = Inspector(directory.as_ref());
     let args = strings(&["rev-parse", "--absolute-git-dir"]);
     let output = inspector.run(&args)?;
@@ -416,7 +424,7 @@ pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
                     .stderr
                     .starts_with(b"fatal: not a git repository (or any parent up to mount point "))
         {
-            return Ok(Observation::OutsideRepository);
+            return Ok(None);
         }
         return Err(git_error(&args, output));
     }
@@ -430,11 +438,34 @@ pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
         b"false\n" => RepositoryKind::Working,
         _ => return Err(InspectionError::InvalidOutput("bare repository flag")),
     };
-    let head = inspector.head()?;
-    let working_tree = if kind == RepositoryKind::Bare {
+    let working_tree_root = if kind == RepositoryKind::Bare {
         None
     } else {
-        let root = inspector.path(&["rev-parse", "--path-format=absolute", "--show-toplevel"])?;
+        Some(inspector.path(&["rev-parse", "--path-format=absolute", "--show-toplevel"])?)
+    };
+    Ok(Some(RepositoryContext {
+        kind,
+        git_dir,
+        common_dir,
+        working_tree_root,
+    }))
+}
+
+/// Observe the repository selected by Git at `directory`, without fetching or
+/// modifying it. Operational failures remain errors, never clean observations.
+pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
+    let inspector = Inspector(directory.as_ref());
+    let Some(context) = discover(directory.as_ref())? else {
+        return Ok(Observation::OutsideRepository);
+    };
+    let RepositoryContext {
+        kind,
+        git_dir,
+        common_dir,
+        working_tree_root,
+    } = context;
+    let head = inspector.head()?;
+    let working_tree = if let Some(root) = working_tree_root {
         let output = inspector.checked(&strings(&[
             "status",
             "--porcelain=v2",
@@ -448,6 +479,8 @@ pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
             root,
             changes: parse_changes(&output)?,
         })
+    } else {
+        None
     };
     let operations = inspector.operations()?;
     let upstream = inspector.upstream(&head)?;
