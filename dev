@@ -38,7 +38,7 @@ usage() {
 Usage: ./dev COMMAND [ARGS]
 
   bootstrap       Install the pinned Rust toolchain, rustfmt, and Clippy locally
-  build [ARGS]    Build the native executable (pass --release for optimization)
+  build [ARGS]    Build both native executables (pass --release for optimization)
   test [ARGS]     Run the Rust tests and CLI smoke checks
   fmt [ARGS]      Format Rust source (pass --check to verify without changes)
   lint [ARGS]     Run Clippy on all targets with warnings treated as errors

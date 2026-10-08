@@ -12,11 +12,19 @@ use std::{
 use support::{Repository, isolated};
 
 fn run(directory: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
-        .args(args)
-        .current_dir(directory)
-        .output()
-        .unwrap()
+    let invoke = |executable| {
+        Command::new(executable)
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .unwrap()
+    };
+    let output = invoke(env!("CARGO_BIN_EXE_git-oneflow"));
+    let alias = invoke(env!("CARGO_BIN_EXE_gof"));
+    assert_eq!(output.status.code(), alias.status.code());
+    assert_eq!(output.stdout, alias.stdout);
+    assert_eq!(output.stderr, alias.stderr);
+    output
 }
 
 fn status(root: &Path, directory: &Path) -> String {

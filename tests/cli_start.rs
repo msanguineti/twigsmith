@@ -10,12 +10,46 @@ use std::{
 };
 use support::{Repository, isolated};
 
-fn run(directory: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
-        .current_dir(directory)
-        .args(args)
-        .output()
-        .unwrap()
+#[derive(Clone, Copy)]
+struct Invocation {
+    executable: &'static str,
+    command: &'static str,
+}
+
+impl Invocation {
+    fn run(self, directory: &Path, args: &[&str]) -> Output {
+        let mut args = args.to_vec();
+        if args.first() == Some(&"start") {
+            args[0] = self.command;
+        }
+        Command::new(self.executable)
+            .current_dir(directory)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    fn start(self, repo: &Repository, input: &str) -> Output {
+        self.run(repo.path(), &["start", input])
+    }
+}
+
+// Every scenario runs through all four spellings in a fresh fixture.
+fn cli_cases(name: &str, git_available: bool, test: impl Fn(&Path, Invocation)) {
+    isolated(name, git_available, |root| {
+        for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+            for command in ["start", "s"] {
+                let fixture = tempfile::tempdir_in(root).unwrap();
+                test(
+                    fixture.path(),
+                    Invocation {
+                        executable,
+                        command,
+                    },
+                );
+            }
+        }
+    });
 }
 fn check(output: Output, code: i32, expected: &[&str]) -> String {
     assert_eq!(output.status.code(), Some(code), "{output:?}");
@@ -58,19 +92,12 @@ fn pair(root: &Path) -> (Repository, Repository) {
     local.success(&["reset", "--hard", "origin/main"]);
     (remote, local)
 }
-fn start(repo: &Repository, name: &str) -> Output {
-    run(
-        repo.path(),
-        &["start", "feature", "ordinary work", "--name", name],
-    )
-}
-
 #[test]
-fn cli_start_generated_and_literal_names_use_fresh_ordinary_base() {
-    isolated(
-        "cli_start_generated_and_literal_names_use_fresh_ordinary_base",
+fn cli_start_phrase_and_literal_names_use_fresh_base() {
+    cli_cases(
+        "cli_start_phrase_and_literal_names_use_fresh_base",
         true,
-        |root| {
+        |root, cli| {
             let (remote, local) = pair(root);
             let old = oid(&local, "main");
             let fresh = commit(&remote, "fresh\n");
@@ -78,13 +105,23 @@ fn cli_start_generated_and_literal_names_use_fresh_ordinary_base() {
             let nested = local.path().join("nested");
             fs::create_dir(&nested).unwrap();
             check(
-                run(&nested, &["start", "feature", "Add CAFÉ avatars"]),
+                cli.run(&nested, &["start", "Add CAFÉ avatars"]),
                 0,
-                &["Created branch feature/add-café-avatars"],
+                &["Created branch add-café-avatars"],
             );
             assert_eq!(oid(&local, "HEAD"), fresh);
+            local.success(&["switch", "main"]);
+            check(
+                cli.start(&local, "--- nasty deployment bug !!!"),
+                0,
+                &["Created branch nasty-deployment-bug"],
+            );
             for name in [
+                "feature",
+                "Fix/DeploymentBug",
+                "fix/parser_v2",
                 "fix/Empty-Response",
+                "docs/E\u{301}cole",
                 "release/V1",
                 "hotfix/Urgent",
                 "notes",
@@ -92,7 +129,11 @@ fn cli_start_generated_and_literal_names_use_fresh_ordinary_base() {
                 "custom/$;literal",
             ] {
                 local.success(&["switch", "main"]);
-                check(start(&local, name), 0, &[&format!("Created branch {name}")]);
+                check(
+                    cli.start(&local, name),
+                    0,
+                    &[&format!("Created branch {name}")],
+                );
                 assert_eq!(oid(&local, "HEAD"), fresh);
                 assert_eq!(
                     local.success(&["symbolic-ref", "--short", "HEAD"]).stdout,
@@ -112,10 +153,10 @@ fn cli_start_generated_and_literal_names_use_fresh_ordinary_base() {
 
 #[test]
 fn cli_start_local_resume_and_dirty_current_noop_do_not_contact_remote() {
-    isolated(
+    cli_cases(
         "cli_start_local_resume_and_dirty_current_noop_do_not_contact_remote",
         true,
-        |root| {
+        |root, cli| {
             let repo = Repository::new(root);
             commit(&repo, "base\n");
             repo.success(&["switch", "-c", "release/Local"]);
@@ -124,7 +165,7 @@ fn cli_start_local_resume_and_dirty_current_noop_do_not_contact_remote() {
             repo.success(&["remote", "add", "origin", "/unreachable-oneflow-cli"]);
             let config = fs::read(repo.path().join(".git/config")).unwrap();
             check(
-                start(&repo, "release/Local"),
+                cli.start(&repo, "release/Local"),
                 0,
                 &["Resumed local branch release/Local"],
             );
@@ -133,7 +174,7 @@ fn cli_start_local_resume_and_dirty_current_noop_do_not_contact_remote() {
             fs::write(repo.path().join("tracked"), "dirty\n").unwrap();
             let before = snapshot(root);
             check(
-                start(&repo, "release/Local"),
+                cli.start(&repo, "release/Local"),
                 0,
                 &["Already current: branch release/Local"],
             );
@@ -143,11 +184,55 @@ fn cli_start_local_resume_and_dirty_current_noop_do_not_contact_remote() {
 }
 
 #[test]
+fn cli_start_resumes_exact_unicode_names_and_canonical_phrases() {
+    cli_cases(
+        "cli_start_resumes_exact_unicode_names_and_canonical_phrases",
+        true,
+        |root, cli| {
+            let repo = Repository::new(root);
+            let base = commit(&repo, "base\n");
+            for name in [
+                "Fix/DeploymentBug",
+                "fix/parser_v2",
+                "docs/École",
+                "docs/E\u{301}cole",
+                "feature",
+            ] {
+                repo.success(&["switch", "-c", name, "main"]);
+                let work = commit(&repo, name);
+                repo.success(&["switch", "main"]);
+                check(
+                    cli.start(&repo, name),
+                    0,
+                    &[&format!("Resumed local branch {name}")],
+                );
+                assert_eq!(oid(&repo, "HEAD"), work);
+                assert_eq!(
+                    repo.success(&["symbolic-ref", "HEAD"]).stdout,
+                    format!("refs/heads/{name}\n").as_bytes()
+                );
+                repo.success(&["switch", "main"]);
+            }
+            assert_eq!(oid(&repo, "main"), base);
+            repo.success(&["branch", "café-work"]);
+            for input in ["CAFÉ work", "CAFE\u{301} work"] {
+                check(
+                    cli.start(&repo, input),
+                    0,
+                    &["Resumed local branch café-work"],
+                );
+                repo.success(&["switch", "main"]);
+            }
+        },
+    );
+}
+
+#[test]
 fn cli_start_remote_resume_tracks_exact_counterpart_for_every_prefix() {
-    isolated(
+    cli_cases(
         "cli_start_remote_resume_tracks_exact_counterpart_for_every_prefix",
         true,
-        |root| {
+        |root, cli| {
             let (remote, local) = pair(root);
             for name in [
                 "feature/remote",
@@ -160,7 +245,7 @@ fn cli_start_remote_resume_tracks_exact_counterpart_for_every_prefix() {
                 let work = commit(&remote, name);
                 remote.success(&["switch", "main"]);
                 check(
-                    start(&local, name),
+                    cli.start(&local, name),
                     0,
                     &[&format!("Resumed remote branch {name}")],
                 );
@@ -185,47 +270,41 @@ fn cli_start_remote_resume_tracks_exact_counterpart_for_every_prefix() {
 
 #[test]
 fn cli_start_malformed_arguments_are_preserved_syntax_failures() {
-    isolated(
+    cli_cases(
         "cli_start_malformed_arguments_are_preserved_syntax_failures",
         true,
-        |root| {
+        |root, cli| {
             let (_remote, repo) = pair(root);
             for args in [
                 vec!["start"],
-                vec!["start", "feature"],
-                vec!["start", "release", "work"],
-                vec!["start", "hotfix", "work"],
-                vec!["start", "fix", "work"],
-                vec!["start", "feature", "work", "--name"],
-                vec!["start", "feature", "work", "--name", "--help"],
-                vec!["start", "feature", "--dry-run"],
-                vec!["start", "feature", "work", "--prefix", "fix"],
-                vec!["start", "feature", "work", "extra"],
-                vec!["start", "feature", "work", "--name", "one", "--name", "two"],
-                vec!["start", "feature", "work", "--help"],
+                vec!["start", "feature", "description"],
+                vec!["start", "work", "extra"],
+                vec!["start", "work", "--name", "target"],
+                vec!["start", "feature", "work", "--name", "target"],
+                vec!["start", "--name"],
+                vec!["start", "--name=target"],
+                vec!["start", "--dry-run"],
+                vec!["start", "--", "work"],
+                vec!["start", "work", "--help"],
+                vec!["start", "feature", "--help"],
+                vec!["st", "work"],
+                vec!["sta", "work"],
+                vec!["S", "work"],
             ] {
                 let before = snapshot(root);
-                check(
-                    run(repo.path(), &args),
-                    2,
-                    &["expected start feature", "use --help"],
-                );
+                check(cli.run(repo.path(), &args), 2, &["use --help"]);
                 assert_eq!(snapshot(root), before, "{args:?}");
             }
             #[cfg(unix)]
             {
                 use std::{ffi::OsString, os::unix::ffi::OsStringExt};
                 let before = snapshot(root);
-                let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+                let output = Command::new(cli.executable)
                     .current_dir(repo.path())
-                    .args([
-                        OsString::from("start"),
-                        OsString::from("feature"),
-                        OsString::from_vec(vec![0xff]),
-                    ])
+                    .args([OsString::from(cli.command), OsString::from_vec(vec![0xff])])
                     .output()
                     .unwrap();
-                check(output, 2, &["expected start feature"]);
+                check(output, 2, &["expected start <branch-name-or-phrase>"]);
                 assert_eq!(snapshot(root), before);
             }
         },
@@ -234,18 +313,18 @@ fn cli_start_malformed_arguments_are_preserved_syntax_failures() {
 
 #[test]
 fn cli_start_eligibility_settings_and_remote_errors() {
-    isolated(
+    cli_cases(
         "cli_start_eligibility_settings_and_remote_errors",
         true,
-        |root| {
+        |root, cli| {
             check(
-                run(root, &["start", "feature", "work"]),
+                cli.run(root, &["start", "work"]),
                 1,
                 &["Git repository", "enter a Git working tree"],
             );
             let repo = Repository::new(root);
             check(
-                start(&repo, "work"),
+                cli.start(&repo, "work"),
                 1,
                 &["HEAD has no commit", "initial branch commit"],
             );
@@ -265,7 +344,11 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                     }
                 }
                 let before = snapshot(root);
-                check(start(&repo, "work"), 1, &[expected, "Completed steps: 0"]);
+                check(
+                    cli.start(&repo, "work"),
+                    1,
+                    &[expected, "Completed steps: 0"],
+                );
                 assert_eq!(snapshot(root), before);
                 match setup {
                     "dirty" => {
@@ -277,17 +360,19 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                     _ => fs::remove_file(repo.path().join(".git/MERGE_HEAD")).unwrap(),
                 }
             }
-            check(start(&repo, "main"), 1, &["configured base branch"]);
-            check(
-                start(&repo, "bad\x1bname"),
-                1,
-                &["invalid target branch", "\\u{1b}"],
-            );
-            check(
-                run(repo.path(), &["start", "feature", "!!!"]),
-                1,
-                &["no usable letters or numbers"],
-            );
+            for (input, expected) in [
+                ("main", "configured base branch"),
+                ("bad\x1bname", "invalid target branch"),
+                ("", "invalid target branch"),
+                ("@{-1}", "invalid target branch"),
+                ("main~1", "invalid target branch"),
+                ("a..b", "invalid target branch"),
+                (" !!! ", "no usable letters or numbers"),
+            ] {
+                let before = snapshot(root);
+                check(cli.start(&repo, input), 1, &[expected]);
+                assert_eq!(snapshot(root), before, "{input:?}");
+            }
             fs::write(
                 repo.path().join(".git/oneflow.conf"),
                 "base = main\nbase = trunk\n",
@@ -295,7 +380,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             .unwrap();
             let before = snapshot(root);
             check(
-                start(&repo, "work"),
+                cli.start(&repo, "work"),
                 1,
                 &[
                     "invalid oneflow.conf",
@@ -306,20 +391,20 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             assert_eq!(snapshot(root), before);
             fs::remove_file(repo.path().join(".git/oneflow.conf")).unwrap();
             check(
-                start(&repo, "work"),
+                cli.start(&repo, "work"),
                 1,
                 &["Git refused", "origin", "configured remote/base"],
             );
             repo.success(&["remote", "add", "origin", "/oneflow-unreachable-cli"]);
             check(
-                start(&repo, "work"),
+                cli.start(&repo, "work"),
                 1,
                 &["Git refused", "ls-remote", "Completed steps: 0"],
             );
             let (remote, local) = pair(root);
             fs::write(local.path().join(".git/oneflow.conf"), "base = absent\n").unwrap();
             check(
-                start(&local, "work"),
+                cli.start(&local, "work"),
                 1,
                 &["no exact base branch", "absent"],
             );
@@ -331,7 +416,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             )
             .unwrap();
             check(
-                start(&local, "custom-base"),
+                cli.start(&local, "custom-base"),
                 0,
                 &["Created branch custom-base"],
             );
@@ -342,10 +427,10 @@ fn cli_start_eligibility_settings_and_remote_errors() {
 
 #[test]
 fn cli_start_help_is_independent_of_git_repository_and_settings() {
-    isolated(
+    cli_cases(
         "cli_start_help_is_independent_of_git_repository_and_settings",
         true,
-        |root| {
+        |root, cli| {
             let repo = Repository::new(root);
             fs::write(repo.path().join(".git/oneflow.conf"), "invalid settings").unwrap();
             for directory in [root, repo.path()] {
@@ -354,23 +439,33 @@ fn cli_start_help_is_independent_of_git_repository_and_settings() {
                     vec!["--version"],
                     vec!["start", "--help"],
                     vec!["start", "-h"],
-                    vec!["start", "feature", "--help"],
-                    vec!["start", "feature", "-h"],
+                    vec!["status", "--help"],
+                    vec!["status", "-h"],
                 ] {
                     let before = snapshot(root);
-                    let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+                    let output = Command::new(cli.executable)
                         .current_dir(directory)
-                        .args(&args)
+                        .args(
+                            args.iter()
+                                .map(|arg| if *arg == "start" { cli.command } else { arg }),
+                        )
                         .env("PATH", "")
                         .output()
                         .unwrap();
-                    check(output, 0, &[]);
+                    let help = check(output, 0, &[]);
+                    if args[0] == "start" {
+                        for form in ["git-oneflow start", "git-oneflow s", "gof start", "gof s"] {
+                            assert!(help.contains(&format!("{form} <branch-name-or-phrase>")));
+                        }
+                        assert!(!help.contains("--name"));
+                        assert!(!help.contains("start feature"));
+                    }
                     assert_eq!(snapshot(root), before);
                 }
             }
-            let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+            let output = Command::new(cli.executable)
                 .current_dir(root)
-                .args(["start", "feature", "work"])
+                .args([cli.command, "work"])
                 .env("PATH", "")
                 .output()
                 .unwrap();
@@ -382,10 +477,10 @@ fn cli_start_help_is_independent_of_git_repository_and_settings() {
 #[cfg(unix)]
 #[test]
 fn cli_start_partial_failure_reports_completed_effects_and_actual_head_safely() {
-    isolated(
+    cli_cases(
         "cli_start_partial_failure_reports_completed_effects_and_actual_head_safely",
         true,
-        |root| {
+        |root, cli| {
             use std::os::unix::fs::PermissionsExt;
             let (_remote, repo) = pair(root);
             let hooks = repo.path().join(".git/hooks\n\x1bpath");
@@ -403,7 +498,7 @@ fn cli_start_partial_failure_reports_completed_effects_and_actual_head_safely() 
                 hooks.as_os_str(),
             ]);
             let output = check(
-                start(&repo, "partial"),
+                cli.start(&repo, "partial"),
                 1,
                 &[
                     "Git refused",
@@ -422,7 +517,7 @@ fn cli_start_partial_failure_reports_completed_effects_and_actual_head_safely() 
                 b"partial\n"
             );
             let before = snapshot(root);
-            check(start(&repo, "partial"), 0, &["Already current"]);
+            check(cli.start(&repo, "partial"), 0, &["Already current"]);
             assert_eq!(snapshot(root), before);
         },
     );
@@ -430,10 +525,10 @@ fn cli_start_partial_failure_reports_completed_effects_and_actual_head_safely() 
 
 #[test]
 fn cli_start_occupied_worktree_paths_and_settings_paths_escape_controls() {
-    isolated(
+    cli_cases(
         "cli_start_occupied_worktree_paths_and_settings_paths_escape_controls",
         true,
-        |root| {
+        |root, cli| {
             let repo = Repository::new(root);
             commit(&repo, "base\n");
             let linked = root.join("linked\n\x1bpath");
@@ -446,7 +541,7 @@ fn cli_start_occupied_worktree_paths_and_settings_paths_escape_controls() {
             ]);
             let before = snapshot(root);
             let output = check(
-                start(&repo, "occupied"),
+                cli.start(&repo, "occupied"),
                 1,
                 &[
                     "checked out at",
@@ -459,7 +554,7 @@ fn cli_start_occupied_worktree_paths_and_settings_paths_escape_controls() {
             let settings = repo.path().join(".git/oneflow.conf");
             fs::create_dir(&settings).unwrap();
             check(
-                start(&repo, "work"),
+                cli.start(&repo, "work"),
                 1,
                 &["cannot read settings", "oneflow.conf"],
             );
@@ -470,10 +565,10 @@ fn cli_start_occupied_worktree_paths_and_settings_paths_escape_controls() {
 #[cfg(unix)]
 #[test]
 fn cli_start_fetch_refusal_and_config_lock_report_remaining_state() {
-    isolated(
+    cli_cases(
         "cli_start_fetch_refusal_and_config_lock_report_remaining_state",
         true,
-        |root| {
+        |root, cli| {
             use std::os::unix::fs::PermissionsExt;
             let (remote, local) = pair(root);
             remote.success(&["branch", "remote-work"]);
@@ -486,7 +581,7 @@ fn cli_start_fetch_refusal_and_config_lock_report_remaining_state() {
             local.success(&["config", "remote.origin.uploadpack", &quote(&script)]);
             let initial = oid(&local, "HEAD");
             check(
-                start(&local, "remote-work"),
+                cli.start(&local, "remote-work"),
                 1,
                 &[
                     "fetch transport refused",
@@ -501,7 +596,7 @@ fn cli_start_fetch_refusal_and_config_lock_report_remaining_state() {
             local.success(&["config", "--unset", "remote.origin.uploadpack"]);
             fs::write(local.path().join(".git/config.lock"), "preserve").unwrap();
             check(
-                start(&local, "remote-work"),
+                cli.start(&local, "remote-work"),
                 1,
                 &[
                     "Git refused",
@@ -524,10 +619,10 @@ fn cli_start_fetch_refusal_and_config_lock_report_remaining_state() {
 
 #[test]
 fn cli_start_bare_repository_is_a_preserved_failure() {
-    isolated(
+    cli_cases(
         "cli_start_bare_repository_is_a_preserved_failure",
         true,
-        |root| {
+        |root, cli| {
             let repo = Repository::new(root);
             commit(&repo, "base\n");
             let bare = root.join("bare.git");
@@ -539,7 +634,7 @@ fn cli_start_bare_repository_is_a_preserved_failure() {
             ]);
             let before = snapshot(root);
             check(
-                run(&bare, &["start", "feature", "work"]),
+                cli.run(&bare, &["start", "work"]),
                 1,
                 &[
                     "use a checkout instead of this bare repository",

@@ -204,7 +204,7 @@ struct Workflow<'a> {
     fetched: Option<String>,
 }
 
-/// Execute a prepared ordinary-work request. Revalidate its names, settings,
+/// Execute a prepared workstream request. Revalidate its names, settings,
 /// and repository identity rather than trusting a mutable/old PreparedRequest.
 /// Local resume never contacts a remote. Remote paths explicitly discover heads
 /// and fetch one full head ref, overriding restrictive/default fetch mappings.
@@ -265,7 +265,7 @@ impl Workflow<'_> {
         if context.kind == RepositoryKind::Bare {
             return Err(StartError::Bare);
         }
-        let fresh = prepare(self.directory, "", Some(&self.request.target))?;
+        let fresh = prepare(self.directory, &self.request.target)?;
         if &fresh != self.request {
             return Err(StartError::Changed);
         }

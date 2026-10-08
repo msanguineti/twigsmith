@@ -1,10 +1,10 @@
-# Ordinary-work start workflow
+# Start workstream workflow
 
-Task #8 adds `start::execute(directory, &PreparedRequest)` after the read-only
+The library exposes `start::execute(directory, &PreparedRequest)` after the read-only
 [request preparation](START_INPUTS.md) boundary. It returns an `Outcome` or a
 boxed `Failure`; the library does not print output. The executable exposes
-`start feature <description> [--name <branch>]` and presents these typed results. All prefixes
-use the same ordinary-work workflow.
+`start <branch-name-or-phrase>` (alias `s`) through both `git-oneflow` and `gof`,
+and presents these typed results. All prefixes use the same workstream workflow.
 
 ## Eligibility and selection
 

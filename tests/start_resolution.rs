@@ -11,14 +11,9 @@ use preservation::snapshot;
 use std::{fs, path::Path};
 use support::{Repository, isolated};
 
-fn preserved(
-    root: &Path,
-    directory: &Path,
-    description: &str,
-    name: Option<&str>,
-) -> Result<PreparedRequest, ResolveError> {
+fn preserved(root: &Path, directory: &Path, input: &str) -> Result<PreparedRequest, ResolveError> {
     let before = snapshot(root);
-    let result = start::prepare(directory, description, name);
+    let result = start::prepare(directory, input);
     assert_eq!(snapshot(root), before, "preparation modified fixture state");
     result
 }
@@ -31,11 +26,11 @@ fn defaults_nested_and_literal_targets() {
         fs::create_dir(&nested).unwrap();
         // Preparation does not depend on reading a healthy index or born HEAD.
         fs::write(repo.path().join(".git/index"), "invalid index").unwrap();
-        let request = preserved(root, repo.path(), "Fix bug", None).unwrap();
-        assert_eq!(request.target, "feature/fix-bug");
+        let request = preserved(root, repo.path(), "Fix bug").unwrap();
+        assert_eq!(request.target, "fix-bug");
         assert_eq!(request.settings, Settings::default());
         assert_eq!(request.repository.kind, RepositoryKind::Working);
-        assert_eq!(request, preserved(root, &nested, "Fix bug", None).unwrap());
+        assert_eq!(request, preserved(root, &nested, "Fix bug").unwrap());
         for name in [
             "plain",
             "release/V1",
@@ -46,10 +41,7 @@ fn defaults_nested_and_literal_targets() {
             "a;echo-pwned",
             "feature/-option",
         ] {
-            assert_eq!(
-                preserved(root, &nested, "🚀", Some(name)).unwrap().target,
-                name
-            );
+            assert_eq!(preserved(root, &nested, name).unwrap().target, name);
         }
         for name in [
             "",
@@ -61,7 +53,6 @@ fn defaults_nested_and_literal_targets() {
             "main^",
             "main:other",
             "a..b",
-            "a b",
             "a\n",
             "a\0b",
             "/a",
@@ -78,21 +69,102 @@ fn defaults_nested_and_literal_targets() {
         ] {
             assert!(
                 matches!(
-                    preserved(root, &nested, "okay", Some(name)),
+                    preserved(root, &nested, name),
                     Err(ResolveError::InvalidTarget(_))
                 ),
                 "{name:?}"
             );
         }
         assert!(matches!(
-            preserved(root, &nested, "main", Some("main")),
+            preserved(root, &nested, "main"),
             Err(ResolveError::ProtectedBase(_))
         ));
         assert!(matches!(
-            preserved(root, &nested, "🚀", None),
-            Err(ResolveError::EmptySuffix)
+            preserved(root, &nested, " 🚀 "),
+            Err(ResolveError::UnusablePhrase)
         ));
     });
+}
+
+#[test]
+fn phrase_conversion_and_literal_unicode_are_distinct_contracts() {
+    isolated(
+        "phrase_conversion_and_literal_unicode_are_distinct_contracts",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            for (input, expected) in [
+                ("nasty deployment bug", "nasty-deployment-bug"),
+                (" Fix__ BUG / now... ", "fix-bug-now"),
+                ("CAFÉ 123", "café-123"),
+                ("Cafe\u{301} 123", "café-123"),
+                ("ΑΒΓ МОСКВА 中文１２", "αβγ-москва-中文１２"),
+                ("İSTANBUL work", "i\u{307}stanbul-work"),
+                ("हिन्दी عَرَبِيّ", "हिन्दी-عَرَبِيّ"),
+                ("\u{301}ABC /\u{301}DEF", "abc-def"),
+                ("a\t/_.🚀\u{a0} b", "a-b"),
+            ] {
+                assert_eq!(
+                    preserved(root, repo.path(), input).unwrap().target,
+                    expected
+                );
+            }
+            for (a, b) in [
+                ("Å", "A\u{30a}"),
+                ("각", "각"),
+                ("É\u{323}", "E\u{323}\u{301}"),
+            ] {
+                // Git accepts both exact spellings; preparation must not merge them.
+                assert_ne!(a, b);
+                assert_eq!(preserved(root, repo.path(), a).unwrap().target, a);
+                assert_eq!(preserved(root, repo.path(), b).unwrap().target, b);
+                assert_eq!(
+                    preserved(root, repo.path(), &format!("{a} work"))
+                        .unwrap()
+                        .target,
+                    preserved(root, repo.path(), &format!("{b} work"))
+                        .unwrap()
+                        .target,
+                );
+            }
+            // No arbitrary product length limit or summarization.
+            let input = "Long_word ".repeat(200);
+            let expected = vec!["long-word"; 200].join("-");
+            assert_eq!(
+                preserved(root, repo.path(), &input).unwrap().target,
+                expected
+            );
+            let literal = "É_".repeat(300);
+            assert_eq!(
+                preserved(root, repo.path(), &literal).unwrap().target,
+                literal
+            );
+            for input in [" ", " \t", " ---...🚀 ", " \u{301}\u{20dd}"] {
+                assert!(matches!(
+                    preserved(root, repo.path(), input),
+                    Err(ResolveError::UnusablePhrase)
+                ));
+            }
+            // Tabs alone do not trigger repair; Unicode spaces valid in Git stay literal.
+            for input in ["a\tb", "\t", "a\nb"] {
+                assert!(matches!(
+                    preserved(root, repo.path(), input),
+                    Err(ResolveError::InvalidTarget(_))
+                ));
+            }
+            for input in [
+                "CAFÉ",
+                "Cafe\u{301}",
+                "a\u{a0}b",
+                "🚀",
+                "Fix/DeploymentBug",
+                "fix/parser_v2",
+                "feature",
+            ] {
+                assert_eq!(preserved(root, repo.path(), input).unwrap().target, input);
+            }
+        },
+    );
 }
 
 #[test]
@@ -105,7 +177,7 @@ fn settings_overrides_and_errors() {
             "# repository settings\nremote = team/upstream\nbase = Feature/École\n",
         )
         .unwrap();
-        let request = preserved(root, repo.path(), "okay", None).unwrap();
+        let request = preserved(root, repo.path(), "okay").unwrap();
         assert_eq!(
             request.settings,
             Settings {
@@ -114,13 +186,13 @@ fn settings_overrides_and_errors() {
             }
         );
         assert!(matches!(
-            preserved(root, repo.path(), "okay", Some("Feature/École")),
+            preserved(root, repo.path(), "Feature/École"),
             Err(ResolveError::ProtectedBase(_))
         ));
-        // Generated names receive the same protected-base check.
-        fs::write(&path, "base=feature/okay").unwrap();
+        // Phrase names receive the same protected-base check.
+        fs::write(&path, "base=okay-work").unwrap();
         assert!(matches!(
-            preserved(root, repo.path(), "okay", None),
+            preserved(root, repo.path(), "okay work"),
             Err(ResolveError::ProtectedBase(_))
         ));
         for contents in [
@@ -145,7 +217,7 @@ fn settings_overrides_and_errors() {
             fs::write(&path, contents).unwrap();
             assert!(
                 matches!(
-                    preserved(root, repo.path(), "okay", None),
+                    preserved(root, repo.path(), "okay"),
                     Err(ResolveError::InvalidSettings(_))
                 ),
                 "{contents:?}"
@@ -153,13 +225,13 @@ fn settings_overrides_and_errors() {
         }
         fs::write(&path, b"remote=\xff").unwrap();
         assert!(matches!(
-            preserved(root, repo.path(), "okay", None),
+            preserved(root, repo.path(), "okay"),
             Err(ResolveError::SettingsIo { .. })
         ));
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(matches!(
-            preserved(root, repo.path(), "okay", None),
+            preserved(root, repo.path(), "okay"),
             Err(ResolveError::SettingsIo { .. })
         ));
         fs::remove_dir(&path).unwrap();
@@ -167,7 +239,7 @@ fn settings_overrides_and_errors() {
         {
             std::os::unix::fs::symlink("absent", &path).unwrap();
             assert!(matches!(
-                preserved(root, repo.path(), "okay", None),
+                preserved(root, repo.path(), "okay"),
                 Err(ResolveError::SettingsIo { .. })
             ));
         }
@@ -198,18 +270,18 @@ fn common_settings_in_linked_and_bare_contexts() {
                 "remote=upstream\nbase=trunk",
             )
             .unwrap();
-            repo.success(&["branch", "feature/fix"]);
+            repo.success(&["branch", "Fix"]);
             repo.success(&["checkout", "--detach"]);
-            let local = preserved(root, repo.path(), "Fix", None).unwrap();
-            assert_eq!(local.target, "feature/fix"); // Existing names never gain a suffix.
-            let other = preserved(root, &linked.join("nested"), "Fix", None).unwrap();
+            let local = preserved(root, repo.path(), "Fix").unwrap();
+            assert_eq!(local.target, "Fix"); // Existing names never gain a suffix.
+            let other = preserved(root, &linked.join("nested"), "Fix").unwrap();
             assert_eq!(other.repository.kind, RepositoryKind::LinkedWorktree);
             assert_eq!(local.repository.common_dir, other.repository.common_dir);
             assert_eq!(local.settings, other.settings);
             // A worktree-private lookalike is ignored by the common-dir contract.
             fs::write(other.repository.git_dir.join("oneflow.conf"), "base=wrong").unwrap();
             assert_eq!(
-                preserved(root, &linked, "Fix", None).unwrap().settings,
+                preserved(root, &linked, "Fix").unwrap().settings,
                 local.settings
             );
             let bare = root.join("bare.git");
@@ -220,16 +292,16 @@ fn common_settings_in_linked_and_bare_contexts() {
                 bare.as_os_str(),
             ]);
             fs::write(bare.join("oneflow.conf"), "base=trunk").unwrap();
-            let request = preserved(root, &bare, "Fix", None).unwrap();
+            let request = preserved(root, &bare, "Fix").unwrap();
             assert_eq!(request.repository.kind, RepositoryKind::Bare);
             assert_eq!(request.settings.base, "trunk");
             // Bare eligibility belongs to the workflow task, not input resolution.
             assert!(matches!(
-                preserved(root, &repo.path().join(".git"), "Fix", None),
+                preserved(root, &repo.path().join(".git"), "Fix"),
                 Err(ResolveError::Repository(_))
             ));
             assert!(matches!(
-                preserved(root, root, "Fix", None),
+                preserved(root, root, "Fix"),
                 Err(ResolveError::OutsideRepository)
             ));
         },
@@ -261,7 +333,7 @@ fn preparation_never_contacts_remote_or_runs_fsmonitor() {
             repo.success(&["config", "protocol.ext.allow", "always"]);
             repo.success(&["remote", "add", "origin", "ext::touch remote-was-contacted"]);
             fs::write(repo.path().join(".git/index.lock"), "existing lock").unwrap();
-            preserved(root, repo.path(), "ordinary", None).unwrap();
+            preserved(root, repo.path(), "ordinary").unwrap();
             assert!(!repo.path().join("fsmonitor-was-called").exists());
             assert!(!repo.path().join("remote-was-contacted").exists());
             // Positive controls prove both probes work in the isolated fixture.
@@ -279,7 +351,7 @@ fn preparation_never_contacts_remote_or_runs_fsmonitor() {
 fn missing_git_is_explicit() {
     isolated("missing_git_is_explicit", false, |root| {
         assert!(matches!(
-            preserved(root, root, "Fix", None),
+            preserved(root, root, "Fix"),
             Err(ResolveError::Repository(_))
         ));
         assert!(git::run(root, ["--version"]).is_err());

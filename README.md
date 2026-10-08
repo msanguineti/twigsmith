@@ -28,12 +28,12 @@ Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 ## Development
 
 Run `./dev check` before handing off changes. This is also the CI entry point:
-it checks formatting, builds the executable, runs tests,
+it checks formatting, builds both executables, runs tests,
 and runs Clippy with warnings treated as errors.
 
 | Command | Purpose |
 | --- | --- |
-| `./dev build` | Build the debug executable |
+| `./dev build` | Build both debug executables |
 | `./dev test` | Run tests |
 | `./dev fmt` | Format Rust source |
 | `./dev fmt --check` | Check formatting |
@@ -50,9 +50,9 @@ Build, test, and lint use the committed `Cargo.lock`.
 ./target/debug/git-oneflow --help
 ./target/debug/git-oneflow --version
 ./target/debug/git-oneflow status
-./target/debug/git-oneflow start feature "add user avatars"
-./target/debug/git-oneflow start feature "handle empty response" --name fix/empty-response
-./target/debug/git-oneflow start feature "update notes" --name notes
+./target/debug/git-oneflow start "add user avatars"
+./target/debug/gof start Fix/DeploymentBug
+./target/debug/gof s fix/parser_v2
 ```
 
 Or build and run through Cargo:
@@ -63,16 +63,20 @@ Or build and run through Cargo:
 ./dev cargo run --locked -- status
 ```
 
-To build and run the optimized executable:
+To build and run the optimized executables:
 
 ```sh
 ./dev build --release
 ./target/release/git-oneflow --help
-./target/release/git-oneflow --version
+./target/release/gof --version
 ```
 
-Running without arguments shows help. Available options are `--help` and
-`--version` (also `-h` and `-V`). Use `status --help`, `start --help`, or `start feature --help` for command help.
+`./dev build` produces equivalent native executables named `git-oneflow` and
+`gof`; both support the same commands, help, version, and exit statuses.
+Cargo defaults to `git-oneflow`; use `./dev cargo run --locked --bin gof -- --help`
+to select `gof`. Running without arguments shows help. Available options are
+`--help` and `--version` (also `-h` and `-V`). Use `status --help`, `start --help`,
+or `s --help` for command help.
 All help and version invocations work outside a repository and without Git;
 they do not read repository settings.
 
@@ -96,28 +100,31 @@ a diagnostic. Invalid syntax exits 2. Help and version require no Git installati
 Use the built executable to inspect another checkout; `./dev cargo run` always
 runs from this project's root.
 
-### Start ordinary work
+### Start or resume work
 
-From a repository root or nested directory, run:
+From a repository root or nested directory, run any equivalent form:
 
 ```sh
-git-oneflow start feature "add user avatars"
-git-oneflow start feature "handle empty response" --name fix/empty-response
-git-oneflow start feature "update notes" --name notes
+git-oneflow start "nasty deployment bug"
+git-oneflow s "nasty deployment bug"
+gof start "nasty deployment bug"
+gof s "nasty deployment bug"
 ```
 
-Use the built executable's full path when it is not on PATH. The description is
-one argument; quote spaces. Only `feature` is accepted, covering ordinary work
-such as fixes, refactoring, and documentation. Without `--name`, descriptions
-become `feature/` names with normalized, lowercase Unicode letters/numbers and
-hyphenated separators (for example, `add user avatars` → `feature/add-user-avatars`).
-An unusable description fails; no numbered collision suffix is added.
+Use the built executable's full path when it is not on PATH. Supply one branch
+name or phrase; quote spaces. `start` and `s` are exact command spellings.
+Valid literal names keep their exact case, underscores, prefixes, and Unicode
+normalization form: `feature`, `Fix/DeploymentBug`, and `fix/parser_v2` are
+unchanged. Ordinary ASCII spaces trigger canonical Unicode phrase conversion:
+lowercase letters/numbers and attached marks, with hyphenated separators.
+For example, `nasty deployment bug` becomes `nasty-deployment-bug`.
+The input determines only the branch target and is not stored as a description.
 
-`--name` replaces the complete name literally, preserving case and Unicode.
-Arbitrary prefixes and unprefixed names are allowed: `fix/Empty`, `release/V1`,
-`hotfix/Urgent`, and `notes` all use the same ordinary-work workflow. Names must
-be valid Git branch names and cannot be `HEAD`, begin with `-`, or equal the
-configured base. See the [precise naming contract](docs/START_INPUTS.md).
+No prefix, numbered collision suffix, truncation, or product length limit is
+added. Other invalid literal names and unusable phrases fail. Targets cannot be
+`HEAD`, begin with `-`, or equal the configured base. `release/V1`,
+`hotfix/Urgent`, and `notes` all use the same workstream workflow; prefixes do
+not select behaviour. See the [precise naming contract](docs/START_INPUTS.md).
 
 Start reports **created**, **resumed local**, **resumed remote**, or **already
 current**. An existing local branch takes priority and is resumed without remote

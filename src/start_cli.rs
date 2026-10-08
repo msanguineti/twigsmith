@@ -1,7 +1,7 @@
 //! Argument parsing and human presentation; workflow decisions live in start.
 use std::{env, ffi::OsString, process::ExitCode};
 
-use git_oneflow::{
+use crate::{
     repository::{Head, InspectionError, Observation},
     start::{self, Action, Effect, Failure, ResolveError, StartError},
 };
@@ -18,31 +18,16 @@ pub fn run(args: &[OsString]) -> ExitCode {
             help_start();
             return ExitCode::SUCCESS;
         }
-        [kind, help] if kind == "feature" && (help == "--help" || help == "-h") => {
-            help_start();
-            return ExitCode::SUCCESS;
-        }
         _ => {}
     }
-    let parsed = match args {
-        [kind, description] if kind == "feature" => Some((description, None)),
-        [kind, description, option, name] if kind == "feature" && option == "--name" => {
-            Some((description, Some(name)))
-        }
-        _ => None,
-    };
-    let Some((description, name)) = parsed else {
+    let [input] = args else {
         return syntax_error();
     };
-    let Some(description) = description.to_str().filter(|s| !s.starts_with('-')) else {
+    let Some(input) = input
+        .to_str()
+        .filter(|s| !s.starts_with('-') || s.contains(' '))
+    else {
         return syntax_error();
-    };
-    let name = match name {
-        Some(name) => match name.to_str().filter(|s| !s.starts_with('-')) {
-            Some(name) => Some(name),
-            None => return syntax_error(),
-        },
-        None => None,
     };
     let directory = match env::current_dir() {
         Ok(directory) => directory,
@@ -51,7 +36,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let request = match start::prepare(&directory, description, name) {
+    let request = match start::prepare(&directory, input) {
         Ok(request) => request,
         Err(error) => {
             resolve_error(&error);
@@ -78,19 +63,23 @@ pub fn run(args: &[OsString]) -> ExitCode {
 
 fn syntax_error() -> ExitCode {
     eprintln!(
-        "error: expected start feature <description> [--name <branch>]; only feature is supported; use --help or start feature --help"
+        "error: expected start <branch-name-or-phrase> (alias: s); use --help or start --help"
     );
     ExitCode::from(2)
 }
 
 fn help_start() {
     println!(
-        "Usage: git-oneflow start feature <description> [--name <branch>]
+        "Usage: git-oneflow start <branch-name-or-phrase>
+       git-oneflow s <branch-name-or-phrase>
+       gof start <branch-name-or-phrase>
+       gof s <branch-name-or-phrase>
 
-Create or resume ordinary work from a repository working tree.
-Only feature is supported, including fixes, refactoring, and documentation.
-Quote descriptions containing spaces. Generated names use feature/<normalized-description>.
---name supplies the complete literal branch name; any prefix or no prefix is allowed.
+Create or resume a workstream from a repository working tree.
+Valid Git branch names retain their exact spelling, case, and Unicode normalization.
+Quote phrases containing ordinary spaces: canonical Unicode lowercase and hyphenated
+separators determine the name, without adding a prefix. Other invalid names fail.
+The input determines only the target branch; it is not stored as a description.
 Prefixes (including release/ and hotfix/) do not select a different workflow.
 
 An existing local branch is resumed without remote contact or history changes.
@@ -102,7 +91,6 @@ Settings: <Git common directory>/oneflow.conf (usually .git/oneflow.conf).
 Optional remote = <named-remote> and base = <branch>; defaults: origin and main.
 No file is required. Linked worktrees share these repository settings.
 
-  --name <branch>  Override the entire generated branch name
   -h, --help       Show this help without Git or repository access
 
 Exit status: 0 success/no-op; 1 repository/settings/workflow failure; 2 invalid syntax."
@@ -135,11 +123,11 @@ fn resolve_guidance(error: &ResolveError) {
                 "check oneflow.conf in the Git common directory; only remote and base are supported"
             );
         }
-        ResolveError::EmptySuffix
+        ResolveError::UnusablePhrase
         | ResolveError::InvalidTarget(_)
         | ResolveError::ProtectedBase(_) => {
             eprintln!(
-                "use a description with letters/numbers or --name with a valid branch other than the configured base"
+                "use a valid literal Git branch name or a quoted phrase containing ordinary spaces and letters/numbers; choose a target other than the configured base"
             );
         }
     }

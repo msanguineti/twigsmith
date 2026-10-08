@@ -1,48 +1,59 @@
 # Start request preparation contract
 
-Task #7 supplies `start::prepare(directory, description, name)` as a library
-boundary for ordinary work. It returns a `PreparedRequest` with a literal target
-branch, resolved remote/base settings, and Git-discovered repository paths.
-The executable exposes `start feature <description> [--name <branch>]`;
-see [invocation and troubleshooting](../README.md). Preparation feeds the
+`start::prepare(directory, input)` returns a `PreparedRequest` with an exact
+branch target, resolved remote/base settings, and Git-discovered repository paths.
+The executable accepts `start <branch-name-or-phrase>` and the exact alias
+`s <branch-name-or-phrase>` through either `git-oneflow` or `gof`;
+see [invocation and troubleshooting](../README.md). The input determines only
+the target branch and is not stored as a description. Preparation feeds the
 separate [create/resume workflow](START_WORKFLOW.md).
 
-## Generated names
+## Literal names and phrases
 
-Without an override, names are `feature/<suffix>`. The suffix algorithm is:
+An input containing an ordinary ASCII space (`U+0020`) is a phrase. Every other
+input is a literal branch name, preserved exactly: case, underscores, prefixes,
+Unicode text, and normalization form. Tabs or other whitespace alone do not
+trigger phrase conversion. Unicode spaces valid in Git names remain literal.
+For example, `feature`, `Fix/DeploymentBug`, and `fix/parser_v2` remain unchanged.
+Prefixes including `release/` and `hotfix/` do not select workflow behaviour.
 
-1. Canonically normalize the description to NFC, apply Rust's Unicode
-   locale-independent string lowercase conversion, then normalize to NFC again.
+Phrase conversion uses the canonical Unicode slug algorithm:
+
+1. Normalize to NFC, apply Rust's Unicode locale-independent string lowercase
+   conversion, then normalize to NFC again.
 2. Retain Unicode general-category letters (`L`) and numbers (`N`). Retain
    combining marks (`M`) only after a retained letter, number, or mark in the
    same word; discard unattached marks.
 3. Treat all other characters as separators. Collapse separator runs to one
    ASCII hyphen between words; omit leading/trailing separators.
-4. Reject an empty suffix, then validate the complete branch name.
+4. Reject an empty slug, then validate the complete branch name. Add no prefix.
 
-For example, `Fix__BUG / now` becomes `feature/fix-bug-now`; `CAFÉ` and
-`CAFE` followed by a combining acute accent both become `feature/café`.
-Hindi vowel signs and Arabic combining marks remain part of their words.
+For example, `nasty deployment bug` becomes `nasty-deployment-bug`, and
+`Fix__BUG / now` becomes `fix-bug-now`. `CAFÉ work` and `CAFE` followed by a
+combining acute accent and ` work` both become `café-work`. Literal `CAFÉ` and
+`CAFE` followed by a combining acute accent retain their distinct exact spelling.
+Hindi vowel signs and Arabic combining marks remain part of phrase words.
 This is canonical normalization, not transliteration, compatibility folding,
 case folding, or locale-specific casing. Dependency tables and the pinned Rust
-toolchain define the Unicode version used; changes to those tables should be
-reviewed for naming effects. No collision lookup or numbered suffix is applied.
+toolchain define the Unicode version; changes should be reviewed for naming
+effects. No summarization, truncation, product length limit, collision lookup,
+numbered suffix, or arbitrary repair of invalid literal names is applied.
 
-## Literal overrides and validation
+## Safe target validation
 
-`name: Some(...)` replaces the entire name, preserving its exact UTF-8 text,
-case, normalization form, and prefix. The description is unused for naming in
-this case and does not need to produce a suffix. Names such as `plain`,
-`docs/École`, `release/V1`, and `hotfix/Urgent` are ordinary workstream targets;
-prefixes do not select workflow behaviour.
-
-Git validates `refs/heads/<name>` with `check-ref-format`, rather than
+Git validates `refs/heads/<target>` with `check-ref-format`, rather than
 `--branch` (which expands checkout shorthand). Leading `-` and the reserved
 branch name `HEAD` are also rejected. NUL is rejected before process execution.
 Revision expressions such as `@{-1}`, `main~1`, and `main^{commit}` are never
 resolved. A literal `@` is a valid branch name. The target must differ **exactly**
-from the configured base, for both generated names and overrides. No case or
+from the configured base, for both phrase slugs and literal names. No case or
 Unicode-equivalence comparison is imposed on literal Git names.
+
+The CLI requires one UTF-8 operand. Missing/extra arguments, option-like literal
+operands, removed naming options, and command prefixes are syntax errors (exit 2).
+Quoted phrases may begin with separators, including hyphens. Command help is
+parsed before any repository/Git/settings access. Invalid target names and
+unusable phrases are operational input failures (exit 1).
 
 ## Repository settings
 
@@ -93,9 +104,9 @@ the existing no-optional-locks, no-lazy-fetch, fsmonitor-disabled Git executor.
 Existing branch names and collisions do not change resolution.
 
 `ResolveError` distinguishes outside-repository context, Git discovery/execution
-errors, settings I/O, malformed/invalid settings, unusable descriptions, invalid
+errors, settings I/O, malformed/invalid settings, unusable phrases, invalid
 target names, and protected-base targets. Git process errors retain raw output
 through `InspectionError`; presentation and exit codes belong to the CLI (operational errors exit 1).
-Repository settings resolve and validate before target generation/validation.
+Repository settings resolve and validate before target resolution/validation.
 Preparation is several reads, not an atomic snapshot or authorization for a
 later mutation; the workflow must recheck its own safety conditions.

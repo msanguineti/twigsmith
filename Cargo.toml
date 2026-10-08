@@ -3,6 +3,7 @@ name = "git-oneflow"
 version = "0.0.0-dev"
 edition = "2024"
 publish = false
+default-run = "git-oneflow"
 license = "MIT"
 description = "Development skeleton for the native git-oneflow CLI"
 

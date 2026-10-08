@@ -1,6 +1,6 @@
 //! Human-readable presentation of repository observations at the CLI boundary.
 
-use git_oneflow::repository::{
+use crate::repository::{
     Change, ChangeKind, Head, RepositoryKind, RepositoryState, Upstream, UpstreamReference,
 };
 

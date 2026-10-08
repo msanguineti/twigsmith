@@ -1,4 +1,4 @@
-//! Preparation and safe create/resume for ordinary work, independent of CLI.
+//! Preparation and safe create/resume for workstreams, independent of CLI.
 
 mod workflow;
 pub use workflow::{
@@ -49,7 +49,7 @@ pub enum ResolveError {
         source: io::Error,
     },
     InvalidSettings(String),
-    EmptySuffix,
+    UnusablePhrase,
     InvalidTarget(String),
     ProtectedBase(String),
 }
@@ -65,7 +65,7 @@ impl fmt::Display for ResolveError {
             Self::InvalidSettings(reason) => {
                 write!(f, "invalid {SETTINGS_FILE} settings: {reason}")
             }
-            Self::EmptySuffix => write!(f, "description contains no usable letters or numbers"),
+            Self::UnusablePhrase => write!(f, "phrase contains no usable letters or numbers"),
             Self::InvalidTarget(name) => write!(f, "invalid target branch name: {name:?}"),
             Self::ProtectedBase(name) => {
                 write!(f, "target is the configured base branch: {name:?}")
@@ -92,14 +92,14 @@ impl From<InspectionError> for ResolveError {
 
 /// Generate a canonical, locale-independent name. Marks are retained only
 /// after a letter/number (or another retained mark) in the current word.
-pub fn generated_name(description: &str) -> Result<String, ResolveError> {
-    let normalized: String = description
+fn phrase_slug(input: &str) -> Result<String, ResolveError> {
+    let normalized: String = input
         .nfc()
         .collect::<String>()
         .to_lowercase()
         .nfc()
         .collect();
-    let mut suffix = String::new();
+    let mut slug = String::new();
     let mut separator = false;
     for ch in normalized.chars() {
         match get_general_category(ch) {
@@ -111,34 +111,30 @@ pub fn generated_name(description: &str) -> Result<String, ResolveError> {
             | Category::DecimalNumber
             | Category::LetterNumber
             | Category::OtherNumber => {
-                if separator && !suffix.is_empty() {
-                    suffix.push('-');
+                if separator && !slug.is_empty() {
+                    slug.push('-');
                 }
-                suffix.push(ch);
+                slug.push(ch);
                 separator = false;
             }
             Category::NonspacingMark | Category::SpacingMark | Category::EnclosingMark => {
-                if !suffix.is_empty() && !separator {
-                    suffix.push(ch);
+                if !slug.is_empty() && !separator {
+                    slug.push(ch);
                 }
             }
             _ => separator = true,
         }
     }
-    if suffix.is_empty() {
-        return Err(ResolveError::EmptySuffix);
+    if slug.is_empty() {
+        return Err(ResolveError::UnusablePhrase);
     }
-    Ok(format!("feature/{suffix}"))
+    Ok(slug)
 }
 
 /// Resolve repository settings and a target without contacting remotes or
-/// changing files, refs, HEAD, or index. An override replaces the entire name;
-/// its description does not need a usable generated suffix.
-pub fn prepare(
-    directory: impl AsRef<Path>,
-    description: &str,
-    name: Option<&str>,
-) -> Result<PreparedRequest, ResolveError> {
+/// changing files, refs, HEAD, or index. Ordinary ASCII spaces select canonical
+/// phrase conversion; all other inputs must be safe literal branch names.
+pub fn prepare(directory: impl AsRef<Path>, input: &str) -> Result<PreparedRequest, ResolveError> {
     let directory = directory.as_ref();
     let repository = repository::discover(directory)?.ok_or(ResolveError::OutsideRepository)?;
     let settings = read_settings(&repository)?;
@@ -154,9 +150,10 @@ pub fn prepare(
             settings.base
         )));
     }
-    let target = match name {
-        Some(name) => name.to_owned(),
-        None => generated_name(description)?,
+    let target = if input.contains(' ') {
+        phrase_slug(input)?
+    } else {
+        input.to_owned()
     };
     if !valid_branch(directory, &target)? {
         return Err(ResolveError::InvalidTarget(target));
@@ -255,23 +252,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_unicode_names() {
-        for (description, expected) in [
-            (" Fix__ BUG / now... ", "feature/fix-bug-now"),
-            ("CAFÉ 123", "feature/café-123"),
-            ("Cafe\u{301} 123", "feature/café-123"),
-            ("ΑΒΓ МОСКВА 中文１２", "feature/αβγ-москва-中文１２"),
-            ("İSTANBUL", "feature/i\u{307}stanbul"),
-            ("हिन्दी عَرَبِيّ", "feature/हिन्दी-عَرَبِيّ"),
-            ("\u{301}ABC /\u{301}DEF", "feature/abc-def"),
-            ("ΟΣ", "feature/ος"),
+    fn canonical_phrase_slugs() {
+        for (input, expected) in [
+            (" Fix__ BUG / now... ", "fix-bug-now"),
+            ("CAFÉ 123", "café-123"),
+            ("Cafe\u{301} 123", "café-123"),
+            ("ΑΒΓ МОСКВА 中文１２", "αβγ-москва-中文１２"),
+            ("İSTANBUL", "i\u{307}stanbul"),
+            ("हिन्दी عَرَبِيّ", "हिन्दी-عَرَبِيّ"),
+            ("\u{301}ABC /\u{301}DEF", "abc-def"),
+            ("ΟΣ", "ος"),
         ] {
-            assert_eq!(generated_name(description).unwrap(), expected);
+            assert_eq!(phrase_slug(input).unwrap(), expected);
         }
-        for description in ["", " \t", "---...🚀", "\u{301}\u{20dd}"] {
+        for input in ["", " \t", "---...🚀", "\u{301}\u{20dd}"] {
             assert!(matches!(
-                generated_name(description),
-                Err(ResolveError::EmptySuffix)
+                phrase_slug(input),
+                Err(ResolveError::UnusablePhrase)
             ));
         }
         for (a, b) in [
@@ -279,7 +276,7 @@ mod tests {
             ("각", "각"),
             ("É\u{323}", "E\u{323}\u{301}"),
         ] {
-            assert_eq!(generated_name(a).unwrap(), generated_name(b).unwrap());
+            assert_eq!(phrase_slug(a).unwrap(), phrase_slug(b).unwrap());
         }
     }
 

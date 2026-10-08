@@ -38,7 +38,7 @@ fn pair(root: &Path) -> (Repository, Repository) {
     (remote, local)
 }
 fn start(directory: &Path, name: &str) -> Result<Outcome, Box<Failure>> {
-    let request = start::prepare(directory, "", Some(name)).unwrap();
+    let request = start::prepare(directory, name).unwrap();
     start::execute(directory, &request)
 }
 fn branch(state: &git_oneflow::repository::RepositoryState, name: &str, commit: &str) {
@@ -321,14 +321,14 @@ fn contexts_and_protected_targets_are_refused_without_writes() {
                 StartError::Unborn
             ));
             commit(&repo, "tracked", "base\n");
-            let request = start::prepare(repo.path(), "", Some("target")).unwrap();
+            let request = start::prepare(repo.path(), "target").unwrap();
             let before = snapshot(root);
             assert!(matches!(
                 start::execute(root, &request).unwrap_err().error,
                 StartError::OutsideRepository
             ));
             assert!(matches!(
-                start::prepare(repo.path(), "", Some("main")),
+                start::prepare(repo.path(), "main"),
                 Err(start::ResolveError::ProtectedBase(_))
             ));
             let mut protected = request.clone();
@@ -697,7 +697,7 @@ fn old_or_forged_requests_are_revalidated() {
     isolated("old_or_forged_requests_are_revalidated", true, |root| {
         let repo = Repository::new(root);
         commit(&repo, "tracked", "base\n");
-        let request = start::prepare(repo.path(), "", Some("target")).unwrap();
+        let request = start::prepare(repo.path(), "target").unwrap();
         fs::write(repo.path().join(".git/oneflow.conf"), "base=trunk\n").unwrap();
         let before = snapshot(root);
         assert!(matches!(
