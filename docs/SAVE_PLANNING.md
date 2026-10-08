@@ -1,7 +1,8 @@
 # Read-only save planning
 
-Task #11 provides library planning only. Save execution and the `save`/`v`
-commands remain for tasks #12–#14. Existing public CLI behavior is unchanged.
+Task #11 provides library planning. Task #12 adds the independent
+[publication backend](SAVE_PUBLICATION.md). Local checkpoint execution and the
+`save`/`v` commands remain for tasks #13–#14. Public CLI behavior is unchanged.
 
 ## Shared settings
 
@@ -51,7 +52,8 @@ mean unresolved input permits no effects. Publication names only the configured
 remote and exact `refs/heads/<current branch>`; absent upstream is marked for
 establishment **after confirmed successful publication**. The plan does not
 claim server availability, fast-forward eligibility, or successful publication.
-All mutation, interaction, cancellation and failure reporting remain for later
+The publication backend executes resolved plans without pending local steps and
+reports its outcomes. Local mutation/composition and interaction remain for later
 executors/CLI. WIP grouping represents index/remaining scope, not readiness.
 
 ## Preconditions and local evidence

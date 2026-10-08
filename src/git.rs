@@ -41,7 +41,7 @@ where
 }
 
 /// Workflow execution keeps lazy fetching and fsmonitor disabled, but permits
-/// required locks/writes. Explicit fetches are the only network mutation steps.
+/// required locks/writes. Workflows explicitly delimit fetches and publication.
 pub(crate) fn workflow<I, S>(directory: &Path, arguments: I) -> io::Result<Output>
 where
     I: IntoIterator<Item = S>,

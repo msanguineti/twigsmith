@@ -1,4 +1,5 @@
-//! Read-only save planning. No step here authorizes or performs a mutation.
+//! Save planning and exact publication. Assessment/revalidation are read-only;
+//! the publication module executes resolved plans without pending local steps.
 //! Revalidation is conservative and consists of several reads, not a lock.
 use crate::{
     git,
@@ -13,6 +14,8 @@ use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
 };
+
+pub mod publication;
 
 pub const WIP_STAGED_MESSAGE: &str = "[WIP - Staged]";
 pub const WIP_REMAINING_MESSAGE: &str = "[WIP - Unstaged]";
@@ -103,9 +106,9 @@ struct ContextSnapshot {
     files: Vec<(Vec<u8>, FileSnapshot)>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct UpstreamSettings {
-    remotes: Vec<Vec<u8>>,
-    merge_refs: Vec<Vec<u8>>,
+pub struct UpstreamSettings {
+    pub remotes: Vec<Vec<u8>>,
+    pub merge_refs: Vec<Vec<u8>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FileSnapshot {
@@ -263,7 +266,16 @@ fn file_snapshot(path: &Path, recurse: bool) -> Result<FileSnapshot, SaveError> 
 /// Assess local eligibility and exact action scope without contacting any remote.
 /// Publication is an intended effect, not evidence of remote availability/history.
 pub fn assess(directory: impl AsRef<Path>, request: &Request) -> Result<Plan, SaveError> {
-    let directory = directory.as_ref();
+    assess_with_upstream(directory.as_ref(), request, None)
+}
+
+// Only the publisher's second tracking write may validate its own intermediate
+// remote-only configuration. Public assessment always enforces the full guard.
+fn assess_with_upstream(
+    directory: &Path,
+    request: &Request,
+    expected_upstream: Option<&UpstreamSettings>,
+) -> Result<Plan, SaveError> {
     let repository = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
     if repository.kind == RepositoryKind::Bare {
         return Err(SaveError::BareRepository);
@@ -310,21 +322,15 @@ pub fn assess(directory: impl AsRef<Path>, request: &Request) -> Result<Plan, Sa
             }
         }
     }
-    let mut key = b"branch.".to_vec();
-    key.extend_from_slice(&branch);
-    let mut remote_key = key.clone();
-    remote_key.extend_from_slice(b".remote");
-    key.extend_from_slice(b".merge");
-    let upstream = UpstreamSettings {
-        remotes: config(directory, &remote_key)?,
-        merge_refs: config(directory, &key)?,
-    };
+    let upstream = upstream_settings(directory, &branch)?;
     let mut branch_ref = b"refs/heads/".to_vec();
     branch_ref.extend_from_slice(&branch);
     let absent = upstream.remotes.is_empty() && upstream.merge_refs.is_empty();
-    if !absent
-        && (upstream.remotes != [settings.remote.as_bytes()]
-            || upstream.merge_refs != [branch_ref.as_slice()])
+    if expected_upstream.is_some_and(|expected| expected != &upstream)
+        || (expected_upstream.is_none()
+            && !absent
+            && (upstream.remotes != [settings.remote.as_bytes()]
+                || upstream.merge_refs != [branch_ref.as_slice()]))
     {
         return Err(SaveError::InvalidUpstream);
     }
@@ -479,4 +485,15 @@ pub fn revalidate(directory: impl AsRef<Path>, approved: &Plan) -> Result<(), Sa
         return Err(SaveError::ContextChanged);
     }
     Ok(())
+}
+
+fn upstream_key(branch: &[u8], suffix: &[u8]) -> Vec<u8> {
+    [b"branch.".as_slice(), branch, suffix].concat()
+}
+
+fn upstream_settings(directory: &Path, branch: &[u8]) -> Result<UpstreamSettings, SaveError> {
+    Ok(UpstreamSettings {
+        remotes: config(directory, &upstream_key(branch, b".remote"))?,
+        merge_refs: config(directory, &upstream_key(branch, b".merge"))?,
+    })
 }

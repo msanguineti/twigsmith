@@ -74,6 +74,28 @@
   These are engineering safeguards for the accepted read-only contract, not
   atomic concurrency guarantees. [SAVE_PLANNING.md](SAVE_PLANNING.md) records
   the API, effect/input semantics, authoritative Git evidence and limits.
+- [src/save/publication.rs](../src/save/publication.rs) publishes a resolved plan
+  without pending local steps using a pinned commit OID, exact branch ref and the
+  configured remote name. It revalidates local context and contains mirror,
+  configured push mappings, tags and recursive submodule publication. Non-mutating
+  submodule publication checks remain effective. Git's non-forced transport rules
+  reject remote-ahead/divergent history without repair. All push destinations are
+  handled by Git, with raw per-ref acknowledgements retained independently of
+  process status and local tracking caches. Outcomes distinguish not-attempted,
+  complete, partial, rejected and unconfirmed publication. Matching upstream is
+  preserved; missing upstream is established only after all destinations confirm.
+  Tracking observations retain partial config writes and remote-tracking updates;
+  failed commands do not erase observed effects. Public save planning's upstream
+  guard remains strict; only a private second-write check admits the publisher's
+  expected intermediate configuration. [SAVE_PUBLICATION.md](SAVE_PUBLICATION.md)
+  records the API, evidence, recovery guidance and limits.
+- Publication conservatively refuses positive fetch destinations outside
+  `refs/remotes/`, matching symbolic tracking refs and legacy remote-file
+  definitions that configuration reads cannot inspect. Real-Git positive controls
+  proved ordinary push can otherwise change local branch history through tracking
+  updates. These guards are engineering containment of the accepted preservation
+  contract. No user config is repaired. Normal hooks, authentication and relevant
+  push configuration remain effective within explicit publication boundaries.
 - [src/start/workflow.rs](../src/start/workflow.rs) retains the backend, with only
   its preparation call adapted. `execute(directory, &PreparedRequest)` revalidates
   names/settings/context and returns typed actions, completed effects, and either
@@ -145,7 +167,7 @@
   and any effects safely. A workaround requires separately reviewed switching
   design; preparation still preserves the literal name.
 
-## Save contract (planning implemented; execution/CLI pending)
+## Save contract (planning/publication implemented; checkpoints/CLI pending)
 
 Purpose: preserve or publish progress on the current workstream without
 requiring finished work. Both executable names will accept `save`, with `v`
