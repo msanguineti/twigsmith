@@ -35,7 +35,9 @@ fn fixture(root: &Path) -> (Repository, Vec<u8>) {
 }
 fn evidence(base: Vec<u8>, branch: RefObservation) -> RemoteEvidence {
     RemoteEvidence {
-        remote: "origin".into(),
+        base_remote: "origin".into(),
+        base_destination: b"/missing/finish-fetch".to_vec(),
+        publish_remote: "origin".into(),
         base_ref: b"refs/heads/main".to_vec(),
         branch_ref: b"refs/heads/Feature/Exact_Name".to_vec(),
         base: RefObservation::Commit(base),
@@ -561,10 +563,20 @@ fn exact_multiple_destinations_and_evidence_binding() {
             assert!(plan.constraints.contains(&Constraint::DestinationAmbiguous(
                 b"/missing/second-push".to_vec()
             )));
-            for case in ["remote", "base", "branch", "order", "oid"] {
+            for case in [
+                "remote",
+                "base-remote",
+                "base-endpoint",
+                "base",
+                "branch",
+                "order",
+                "oid",
+            ] {
                 let mut changed = remote.clone();
                 match case {
-                    "remote" => changed.remote = "other".into(),
+                    "remote" => changed.publish_remote = "other".into(),
+                    "base-remote" => changed.base_remote = "other".into(),
+                    "base-endpoint" => changed.base_destination = b"/other/base".to_vec(),
                     "base" => changed.base_ref = b"refs/heads/trunk".to_vec(),
                     "branch" => changed.branch_ref = b"refs/heads/feature/exact_name".to_vec(),
                     "order" => changed.destinations.reverse(),

@@ -529,20 +529,15 @@ fn routing_changes_invalidate_start_save_and_checkpoint_approval() {
 }
 
 #[test]
-fn equal_roles_accept_base_tracking_and_split_roles_still_guard_finish() {
+fn equal_and_split_roles_accept_finish_assessment() {
     isolated(
-        "equal_roles_accept_base_tracking_and_split_roles_still_guard_finish",
+        "equal_and_split_roles_accept_finish_assessment",
         true,
         |root| {
             let f = Fixture::new(root);
             f.work();
             let before = snapshot(root);
-            assert!(
-                finish::assess(f.local.path(), &finish::Request::default(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("matching remote roles")
-            );
+            assert!(finish::assess(f.local.path(), &finish::Request::default(), None).is_ok());
             assert_eq!(snapshot(root), before);
             fs::write(
                 f.local.path().join(".git/git-oneflow.config.toml"),

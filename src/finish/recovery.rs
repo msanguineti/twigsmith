@@ -53,13 +53,72 @@ struct Attempt {
     branch_log: Anchor,
     head_log: Anchor,
 }
+/// Keep the version-1 observations intact. They never recorded a base endpoint
+/// or transport configuration; only version 2 claims those additional bindings.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordedEvidence {
+    remote: String,
+    base_ref: Vec<u8>,
+    branch_ref: Vec<u8>,
+    base: RefObservation,
+    destinations: Vec<DestinationEvidence>,
+}
+impl From<&RemoteEvidence> for RecordedEvidence {
+    fn from(evidence: &RemoteEvidence) -> Self {
+        Self {
+            remote: evidence.publish_remote.clone(),
+            base_ref: evidence.base_ref.clone(),
+            branch_ref: evidence.branch_ref.clone(),
+            base: evidence.base.clone(),
+            destinations: evidence.destinations.clone(),
+        }
+    }
+}
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RoleBinding {
+    base_remote: String,
+    base_destination: Vec<u8>,
+    // Publication name, refs and resolved destinations are in RecordedEvidence.
+    // Keep role transport/routing configuration in order, including duplicates.
+    remote_config: Vec<Vec<u8>>,
+}
+impl RoleBinding {
+    fn new(plan: &Plan) -> Self {
+        let prefixes = [
+            format!("remote.{}.", plan.settings.base_remote),
+            format!("remote.{}.", plan.settings.publish_remote),
+        ];
+        let remote_config = plan
+            .git_config
+            .split(|b| *b == 0)
+            .filter(|entry| {
+                let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
+                key.starts_with(b"url.")
+                    || prefixes.iter().any(|prefix| {
+                        key.strip_prefix(prefix.as_bytes())
+                            .is_some_and(|suffix| !suffix.contains(&b'.'))
+                    })
+            })
+            .map(<[u8]>::to_vec)
+            .collect();
+        Self {
+            base_remote: plan.settings.base_remote.clone(),
+            base_destination: plan.base_destination.clone(),
+            remote_config,
+        }
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
     version: u32,
     // OS paths remain bytes, like repository/ref observations elsewhere.
     repository: Vec<Vec<u8>>,
-    evidence: RemoteEvidence,
+    evidence: RecordedEvidence,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    roles: Option<RoleBinding>,
     original: Vec<u8>,
     attempts: Vec<Attempt>,
 }
@@ -170,9 +229,17 @@ impl Record {
     fn verify(&self, directory: &Path, plan: &Plan) -> Result<Recovery, FinishError> {
         let invalid = || Ok(Recovery::Invalid);
         let evidence = plan.evidence.as_ref().expect("fresh evidence");
-        if self.version != 1
+        let roles_match = match (self.version, &self.roles) {
+            // Preserve exactly the old verification boundary, and only when
+            // the original name still supplies BOTH roles. Never infer a new
+            // base source or destination from version-1 evidence.
+            (1, None) => evidence.base_remote == self.evidence.remote,
+            (2, Some(roles)) => *roles == RoleBinding::new(plan),
+            _ => false,
+        };
+        if !roles_match
             || self.repository != identity(plan)
-            || self.evidence.remote != evidence.remote
+            || self.evidence.remote != evidence.publish_remote
             || self.evidence.base_ref != evidence.base_ref
             || self.evidence.branch_ref != evidence.branch_ref
             || self
@@ -415,9 +482,10 @@ pub(super) fn record(directory: &Path, plan: &Plan) -> Result<(PathBuf, String),
             record
         }
         _ => Record {
-            version: 1,
+            version: 2,
             repository: identity(plan),
-            evidence: evidence.clone(),
+            evidence: RecordedEvidence::from(&evidence),
+            roles: Some(RoleBinding::new(plan)),
             original: plan.commit.clone(),
             attempts: vec![],
         },

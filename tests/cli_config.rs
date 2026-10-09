@@ -1188,9 +1188,9 @@ fn config_show_identifies_remote_role_values_aliases_and_derived_sources() {
 }
 
 #[test]
-fn differing_remote_roles_guard_finish_without_mutation() {
+fn differing_remote_roles_preserve_finish_readiness_guards() {
     cases(
-        "differing_remote_roles_guard_finish_without_mutation",
+        "differing_remote_roles_preserve_finish_readiness_guards",
         true,
         |root, exe| {
             let repo = Repository::new(root);
@@ -1202,6 +1202,8 @@ fn differing_remote_roles_guard_finish_without_mutation() {
                 "publish-remote=personal\nbase-remote=project\n",
             )
             .unwrap();
+            repo.success(&["remote", "add", "personal", "/missing/personal"]);
+            repo.success(&["remote", "add", "project", "/missing/project"]);
             let before = snapshot(root);
             for args in [
                 vec!["finish", "--update", "none", "--allow-rewrite"],
@@ -1210,12 +1212,7 @@ fn differing_remote_roles_guard_finish_without_mutation() {
                 check(
                     run(exe, repo.path(), &args),
                     1,
-                    &[
-                        "matching remote roles",
-                        "project",
-                        "personal",
-                        "gof config show",
-                    ],
+                    &["finish requires a clean index, working tree, and submodules"],
                 );
                 assert_eq!(snapshot(root), before);
             }

@@ -218,12 +218,14 @@ fn refresh_inner(
     let base = observe(
         root,
         plan,
-        plan.settings.publish_remote.as_bytes(),
+        plan.settings.base_remote.as_bytes(),
         &base_ref,
         report,
     )?;
     let mut evidence = RemoteEvidence {
-        remote: plan.settings.publish_remote.clone(),
+        base_remote: plan.settings.base_remote.clone(),
+        base_destination: plan.base_destination.clone(),
+        publish_remote: plan.settings.publish_remote.clone(),
         base_ref,
         branch_ref: plan.publication.branch_ref.clone(),
         base,
@@ -283,6 +285,7 @@ fn stable_after(before: &Plan, after: &Plan) -> bool {
         && before.settings == after.settings
         && before.branch == after.branch
         && before.publication == after.publication
+        && before.base_destination == after.base_destination
         && before.git_config == after.git_config
         && before.shallow == after.shallow
         && before.grafts == after.grafts

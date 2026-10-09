@@ -263,7 +263,7 @@ fn finish_unattended_publication_updates_and_precedence() {
                         &[
                             "Published fix/deployment-bug to origin at",
                             "created",
-                            "Next: submit fix/deployment-bug for review into main.",
+                            "Next: submit fix/deployment-bug for review into origin/main.",
                         ],
                     );
                     contains(

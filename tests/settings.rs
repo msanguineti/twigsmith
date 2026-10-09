@@ -1209,9 +1209,9 @@ fn remote_role_values_and_syntax_are_strict_even_when_overridden() {
 }
 
 #[test]
-fn remote_role_changes_revalidate_migrated_apis_and_guard_finish() {
+fn remote_role_changes_revalidate_workflow_apis() {
     isolated(
-        "remote_role_changes_revalidate_migrated_apis_and_guard_finish",
+        "remote_role_changes_revalidate_workflow_apis",
         true,
         |root| {
             use git_oneflow::finish;
@@ -1233,6 +1233,12 @@ fn remote_role_changes_revalidate_migrated_apis_and_guard_finish() {
                 "remote".as_ref(),
                 "add".as_ref(),
                 "origin".as_ref(),
+                destination.as_os_str(),
+            ]);
+            repo.success(&[
+                "remote".as_ref(),
+                "add".as_ref(),
+                "project".as_ref(),
                 destination.as_os_str(),
             ]);
             let local = repo.path().join(".git");
@@ -1270,12 +1276,7 @@ fn remote_role_changes_revalidate_migrated_apis_and_guard_finish() {
             let before = snapshot(root);
             assert!(start::prepare(repo.path(), "new-work").is_ok());
             assert!(save::assess(repo.path(), &Request::default()).is_ok());
-            assert!(
-                finish::assess(repo.path(), &finish::Request::default(), None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("matching remote roles")
-            );
+            assert!(finish::assess(repo.path(), &finish::Request::default(), None).is_ok());
             let failure = start::execute(repo.path(), &start_plan).unwrap_err();
             assert!(failure.effects.is_empty());
             let report = execution::execute(repo.path(), &save_plan);

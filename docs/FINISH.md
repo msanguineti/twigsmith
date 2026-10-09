@@ -96,9 +96,9 @@ rollback or finish-specific continuation/abort command.
   ignored files remain outside the scope. Changed submodule commits also count.
 - No unresolved conflict or active merge, rebase, am, cherry-pick, revert, bisect,
   or relevant sequencer operation.
-- A configured remote with locally resolvable push destinations.
-- Matching base and publication remote roles; split-role refresh/recovery remains
-  deferred and all finish execution paths revalidate this guard.
+- A configured `base-remote` with a locally resolvable fetch endpoint and a
+  configured `publish-remote` with locally resolvable push destinations. The roles
+  may name the same remote or different remotes.
 - Either absent upstream settings or exactly one remote and one full merge ref
   for the published counterpart or configured project base. Incomplete, duplicate,
   and unrelated values fail.
@@ -106,7 +106,7 @@ rollback or finish-specific continuation/abort command.
   using the shared [save precedence and snapshot guard](SAVE.md#preconditions-and-local-evidence).
 
 Publication intent is the current branch's exact `refs/heads/<name>` on the
-configured remote, never the configured base or an inferred upstream destination.
+publication remote, never the configured base or an inferred upstream destination.
 Missing tracking is permitted; establishing it is an intent for after confirmed
 publication. Save's read-only publication preflight is reused: ambiguous URL
 representations, legacy remote files, unsafe fetch mappings, and symbolic mapped
@@ -120,20 +120,24 @@ execution, and recovery metadata writes.
 
 A plan records two separate forms of observation:
 
-- `TrackingHints` reads conventional `refs/remotes/<remote>/<base|branch>` locally.
+- `TrackingHints` reads conventional `refs/remotes/<base-remote>/<base>` and
+  `refs/remotes/<publish-remote>/<branch>` locally.
   These may be stale; custom fetch mappings may use other refs. They never
   establish remote availability, incorporation, or publication readiness.
 - `RemoteEvidence` is operation-scoped fresh evidence acquired by
-  `preparation::refresh`. It identifies the configured remote, exact base and working-branch refs, the
-  fetched base commit, and an exact branch observation for every resolved push URL
+  `preparation::refresh`. It identifies the base remote and its resolved fetch
+  endpoint, the publication remote, exact base and working-branch refs, the
+  fetched project base commit, and
+  an exact branch observation for every resolved publication push URL
   in configuration order. Push destinations can differ from the fetch URL and
   from each other. Repeated push URLs remain supported; their observations must
   agree, or the destination is ambiguous. Fetching only the base is insufficient
   publication evidence.
 
 Assessment without fresh evidence returns `FreshRemoteEvidenceRequired`, with no
-history-dependent prompts. Evidence for different refs, remote, destination order,
-or destination set fails with `InvalidEvidence`. Commit observations accept full
+history-dependent prompts. Evidence for different refs, either remote role, base
+endpoint, destination order, or destination set fails with `InvalidEvidence`.
+Commit observations accept full
 object IDs of the repository's hash length, never revision expressions. Absent,
 unavailable, and ambiguous observations remain distinct.
 
@@ -211,7 +215,7 @@ Publication uses a lease for the exact observed commit at the exact destination.
 A lease protects against later destination changes; it establishes no
 incorporation of earlier remote work. Creation protects the observed absence.
 
-The accepted delivery direction is publication to the configured remote by
+The accepted delivery direction is publication to the configured publication remote by
 default, followed by a clear handoff to the developer for any submission step.
 Provider submission is opt-in through configuration that explicitly selects a
 supported CLI. Do not require or automatically invoke `gh`, infer a provider from
@@ -224,16 +228,22 @@ implemented by the preparation library.
 
 Publication reports identify the branch, pinned commit, and outcome at each
 actual destination. The CLI follows confirmed publication with a concise manual
-submission next step into the configured base. It creates no pull request,
-runs no validation checks, and performs no base integration.
+submission next step into the configured base remote and base branch. It creates
+no pull request, runs no validation checks, and performs no base integration.
 
 ## Controlled refresh and preparation
 
 `finish::preparation::refresh(directory, plan)` accepts a locally assessed plan,
 including one awaiting fresh evidence or input. It repeats readiness and
 destination guards before transport commands. It observes the exact base head
-through the configured remote and the exact working-branch head at every resolved
-push URL, preserving configuration order. A push URL that would resolve to another
+through `base-remote` and the exact working-branch head at every resolved
+`publish-remote` push URL, preserving configuration order. The base endpoint is
+the first resolved fetch URL, following [Git fetch selection](https://git-scm.com/docs/git-fetch#REMOTES);
+[`git remote get-url`](https://git-scm.com/docs/git-remote) resolves URL rewrites
+locally for plan binding. Fetch uses the named base remote with its transport
+settings. A stale, divergent, or unavailable fork base does not supply preparation
+history. The required project base must be available even for update `none`;
+there is no fallback to a publication remote. A push URL that would resolve to another
 fetch endpoint is rejected. Read access to each publication destination is
 required; an unreadable endpoint is a transport failure, never confirmed absence.
 
@@ -339,7 +349,8 @@ aggregate publication state is:
 `Complete` describes publication evidence; `Report::is_complete()` additionally
 requires valid upstream settings in either accepted style and no reported errors.
 Only after all destinations confirm publication does missing tracking use save's existing
-contract: revalidate and add the configured remote and exact branch merge ref.
+contract: revalidate and add the publication remote and exact branch merge ref. Existing project-base
+tracking remains unchanged.
 Tracking writes, final settings, and errors are reported separately. A tracking
 failure retains confirmed publication; partial configuration writes remain for
 Git recovery. Conflicting or incomplete tracking must be resolved before a fresh
@@ -352,8 +363,8 @@ still rereads every destination and keeps its original lease expectations.
 Already completed destinations need no replacement. Pending replacements must
 still match verified incorporation evidence and current rewrite authorization.
 New remote work cannot borrow an older rewrite's permission or proof. Further
-preparation, if required by a newly selected base, uses the existing verified
-rebase chain.
+preparation, if required by an advancing base at the same bound source, uses
+the existing verified rebase chain.
 
 Publication leaves the durable rebase record intact. No publication journal or
 final write is needed to recover from a process dying after a successful push:
@@ -383,6 +394,26 @@ identity, exact refs and destinations, original incorporated observations,
 pre-rebase commits, fetched base commits, and HEAD/branch reflog anchors. An
 operation-specific reflog action identifies the finish-initiated rebase start.
 No permission flag alone establishes rewrite eligibility.
+
+New records use version 2. In addition to the publication remote, exact refs,
+and ordered destination observations, they bind the base remote and resolved
+fetch endpoint. They snapshot both selected remotes' `remote.<name>.*` entries
+and all `url.*` rewrite entries, preserving configuration order and duplicates.
+A changed role, endpoint, or recorded configuration invalidates this proof.
+Other effective configuration and settings remain part of plan revalidation;
+update/rewrite choices are resolved anew on retry and are not stored permission.
+
+Version-1 records retain their existing verifier when their original remote
+still supplies both roles, repository/worktree identities and refs match, and
+the ordered exact publication destinations remain unchanged. Original
+incorporation, every attempt, and reflog verification remain mandatory. These
+records did not capture historical base fetch endpoints or transport configuration;
+compatibility asserts only their recorded bindings, not those additional version-2
+properties. Compatible records are retained, including when extending a verified
+rebase chain, without synthesizing missing bindings or upgrading their format.
+A version-1 record cannot authorize a split-role retry or a new publication
+destination. Unsupported versions, incomplete version-2 bindings, and incompatible
+records fail closed for replacement; ordinary ancestry is assessed independently.
 
 Assessment corroborates records against Git. It verifies original ancestry,
 each attempt's observed destinations, anchored branch transitions, the unique

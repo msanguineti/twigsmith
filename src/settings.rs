@@ -187,35 +187,6 @@ impl Default for Settings {
     }
 }
 
-/// Temporary finish boundary until its refresh/recovery support separate roles.
-#[derive(Debug)]
-pub struct UnsupportedRemoteRoles {
-    base_remote: String,
-    publish_remote: String,
-}
-impl fmt::Display for UnsupportedRemoteRoles {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "finish currently requires matching remote roles; base-remote is {:?}, publish-remote is {:?}; inspect settings with gof config show",
-            self.base_remote, self.publish_remote
-        )
-    }
-}
-impl std::error::Error for UnsupportedRemoteRoles {}
-impl Settings {
-    pub(crate) fn require_single_remote(&self) -> Result<(), UnsupportedRemoteRoles> {
-        if self.base_remote == self.publish_remote {
-            Ok(())
-        } else {
-            Err(UnsupportedRemoteRoles {
-                base_remote: self.base_remote.clone(),
-                publish_remote: self.publish_remote.clone(),
-            })
-        }
-    }
-}
-
 /// One sparse schema for all formats, including the legacy compatibility boundary.
 #[derive(Debug, Default)]
 struct Layer {

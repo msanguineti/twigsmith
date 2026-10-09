@@ -198,10 +198,11 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         eprintln!(
-            "Finish {} at {} to {} (base {}).",
+            "Finish {} at {} to {} (base {}/{}).",
             display(presentation, &plan.branch),
             display(presentation, &plan.commit),
             text(presentation, &plan.settings.publish_remote),
+            text(presentation, &plan.settings.base_remote),
             text(presentation, &plan.settings.base)
         );
         let answer = match prompt(presentation, &plan, choice) {
@@ -280,8 +281,9 @@ pub fn run(args: &[OsString]) -> ExitCode {
             );
         }
         println!(
-            "Next: submit {} for review into {}.",
+            "Next: submit {} for review into {}/{}.",
             display(presentation, &plan.branch),
+            text(presentation, &plan.settings.base_remote),
             text(presentation, &plan.settings.base)
         );
         ExitCode::SUCCESS
@@ -707,7 +709,7 @@ Examples:
 
 Details:
   Requires a clean, attached working branch with a commit, separate from the base.
-  Observes and fetches the remote base and each exact push destination.
+  Observes and fetches base from base-remote and each exact publish-remote push destination.
   Rebase replays commits onto the remote base; merge incorporates it; none retains history.
   Branches already including the base need no update choice.
   Explicit flags override settings; rewrite flags are mutually exclusive.
@@ -725,6 +727,8 @@ Details:
   tagging, and cleanup are deferred.
 
 Settings:
+  publish-remote: origin (default); base-remote follows publication unless configured
+  base: main (default); remote is a compatibility alias for publish-remote
   finish-update: ask (default), rebase, merge, none
   finish-rewrite: ask (default), allow, deny
   allow is standing authorization for eligible replacement; remote safeguards remain.

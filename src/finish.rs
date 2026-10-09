@@ -51,7 +51,10 @@ pub struct DestinationEvidence {
 /// This module validates the binding and local history, not network freshness.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RemoteEvidence {
-    pub remote: String,
+    pub base_remote: String,
+    /// Resolved fetch endpoint of the named base remote.
+    pub base_destination: Vec<u8>,
+    pub publish_remote: String,
     pub base_ref: Vec<u8>,
     pub branch_ref: Vec<u8>,
     pub base: RefObservation,
@@ -123,6 +126,7 @@ pub struct Plan {
     pub settings: Settings,
     pub branch: Vec<u8>,
     pub commit: Vec<u8>,
+    pub base_destination: Vec<u8>,
     /// Exact current branch name on the configured remote; no prefix semantics.
     pub publication: save::Publication,
     pub tracking_hints: TrackingHints,
@@ -154,7 +158,6 @@ impl Plan {
 #[derive(Debug)]
 pub enum FinishError {
     Local(SaveError),
-    UnsupportedRemoteRoles(crate::settings::UnsupportedRemoteRoles),
     Publication(PublishError),
     DirtyTree,
     InvalidEvidence(&'static str),
@@ -180,7 +183,6 @@ impl fmt::Display for FinishError {
                 }
                 _ => return write!(f, "{error}"),
             },
-            Self::UnsupportedRemoteRoles(error) => return write!(f, "{error}"),
             Self::Publication(error) => return write!(f, "{error}"),
             Self::DirtyTree => {
                 "finish requires a clean index, working tree, and submodules; commit or preserve changes first"
@@ -202,7 +204,6 @@ impl std::error::Error for FinishError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Local(e) => Some(e),
-            Self::UnsupportedRemoteRoles(e) => Some(e),
             Self::Publication(e) => Some(e),
             _ => None,
         }
@@ -364,12 +365,6 @@ pub fn assess(
     evidence: Option<&RemoteEvidence>,
 ) -> Result<Plan, FinishError> {
     let directory = directory.as_ref();
-    // Retain the migration boundary before save's broader role-aware guards.
-    let context = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
-    crate::settings::load(directory, &context)
-        .map_err(SaveError::from)?
-        .require_single_remote()
-        .map_err(FinishError::UnsupportedRemoteRoles)?;
     let local = save::assess(
         directory,
         &save::Request {
@@ -377,18 +372,22 @@ pub fn assess(
             message: None,
         },
     )?;
-    local
-        .settings
-        .require_single_remote()
-        .map_err(FinishError::UnsupportedRemoteRoles)?;
     if local.scope.tree_state() != TreeState::Clean {
         return Err(FinishError::DirtyTree);
     }
     let urls = save::publication::preflight(directory, &local).map_err(FinishError::Publication)?;
     let settings = local.settings.clone();
+    // Resolve a configured name offline, never a path fallback. Git fetch uses
+    // the first URL; retain the resolved endpoint separately from push URLs.
+    let base_url = read(directory, &["remote", "get-url", &settings.base_remote])?;
+    let base_destination = base_url
+        .strip_suffix(b"\n")
+        .filter(|url| !url.is_empty() && !url.contains(&b'\n'))
+        .ok_or(FinishError::InvalidEvidence("invalid base fetch endpoint"))?
+        .to_vec();
     let publication = local.publication.clone().expect("publish-only plan");
     let base_ref = format!("refs/heads/{}", settings.base).into_bytes();
-    let tracking_base = format!("refs/remotes/{}/{}", settings.publish_remote, settings.base);
+    let tracking_base = format!("refs/remotes/{}/{}", settings.base_remote, settings.base);
     let tracking_branch = [
         b"refs/remotes/".as_slice(),
         settings.publish_remote.as_bytes(),
@@ -413,6 +412,7 @@ pub fn assess(
         settings: settings.clone(),
         branch: local.branch.clone(),
         commit: local.commit.clone(),
+        base_destination,
         publication,
         tracking_hints,
         evidence: evidence.cloned(),
@@ -446,7 +446,9 @@ pub fn assess(
             .push(Constraint::FreshRemoteEvidenceRequired);
         return Ok(plan);
     };
-    if evidence.remote != settings.publish_remote
+    if evidence.base_remote != settings.base_remote
+        || evidence.base_destination != plan.base_destination
+        || evidence.publish_remote != settings.publish_remote
         || evidence.base_ref != base_ref
         || evidence.branch_ref != plan.publication.branch_ref
     {

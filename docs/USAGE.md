@@ -147,23 +147,27 @@ gof finish --update rebase --allow-rewrite
 gof finish --update none --no-rewrite
 ```
 
-`finish` (shorthand: `f`) prepares and publishes the current clean branch to the configured remote,
-then reports the branch, destinations, and commit with a manual submission next
-step into the configured base. This is the preparation/publication increment:
-checks, external integrations, pull request creation, base integration, tagging,
-and cleanup are deferred.
+`finish` (shorthand: `f`) prepares the current clean branch against `base-remote`
+and publishes it through `publish-remote`, then reports the branch, destinations,
+and commit with a manual submission next step into the configured base remote
+and branch. This is the preparation/publication increment: checks, external
+integrations, pull request creation, base integration, tagging, and cleanup are
+deferred.
 
 Finish requires a clean index, working tree, and submodules, an attached branch
 with an existing commit, and no active Git operation or conflicts. Commit or
 preserve uncommitted work first. The branch must differ from the configured base.
 Tracking can follow the published counterpart or the configured project base,
 or be absent. Explicit push-selection validation follows the same rules as save;
-finish establishes absent tracking after confirmed publication. Finish currently
-requires matching base and publication remote roles.
+finish establishes absent tracking after confirmed publication and preserves
+existing project-base tracking.
 
-Finish observes the remote base and the exact branch at every push destination,
-then fetches their observed objects. The local base and tracking refs retain their
-history during refresh. Read access to each push destination is required.
+Finish observes the base at `base-remote` and the exact branch at every
+`publish-remote` push destination, then fetches their observed objects.
+The roles can differ, with preparation using the project base even when the fork
+base is stale or divergent. An unavailable project base stops finish, including
+with `--update none`. The local base and tracking refs retain their history
+during refresh. Read access to each push destination is required.
 
 `--update` overrides `finish-update`:
 
@@ -405,8 +409,8 @@ read-only; configure remote availability in Git for the workflows that use it.
 
 Start creates new work from `base-remote` and resumes published work from
 `publish-remote`; save publishes through `publish-remote`. The roles may match
-or differ. Finish currently requires them to match until its remote refresh and
-recovery support separate roles. Use `gof config show` to inspect both roles and
+or differ. Finish prepares against `base-remote` and publishes through
+`publish-remote`. Use `gof config show` to inspect both roles and
 their sources. Guided setup keeps its single-remote question and generates
 `publish-remote`; the base remote follows it.
 
@@ -478,6 +482,8 @@ values in the local file.
   finish. Retrying uses fresh observations and verified rebase evidence; it does
   not repeat an already completed update. New remote work requires incorporation
   with Git. Missing/expired recovery evidence cannot authorize replacement.
+  Recovery binds the original remote roles and destinations; changing them can
+  require incorporating the destination history with Git before retrying.
 - **Scope changed:** inspect the branch, index, files, upstream, and settings,
   then rerun to approve the current state.
 - **Retained stash:** inspect `git stash list` and `git stash show <reported-id>`.

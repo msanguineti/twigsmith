@@ -60,9 +60,10 @@ technical specifications here.
 ## Finish architecture and limits
 
 Finish preparation and publication are library APIs separate from CLI policy.
-Refresh observes the configured remote base and exact push destinations, fetches the observed objects
-without changing branch/tag refs, and supplies evidence to assessment. Preparation
-revalidates a resolved plan, repeats remote observation, and rebases or merges
+Refresh observes the base remote and the publication remote's exact push
+destinations, fetches the observed objects without changing branch/tag refs, and
+supplies evidence to assessment. Preparation revalidates a resolved plan, repeats
+remote observation, and rebases or merges
 against the observed base. Effective settings and committed configuration changes
 stop subsequent execution pending fresh assessment.
 
@@ -136,10 +137,14 @@ base from the base remote. Local resume remains offline. Save publishes only
 the exact current branch through the publication remote and needs no base-remote
 access. Neither workflow synchronizes local base history or the fork base.
 
-Finish assessment retains a matching-role guard until its remote refresh and
-recovery support separate roles. Refresh, preparation, and publication revalidate
-through that assessment before affected mutations, including changed or
-caller-modified plans. Matching roles retain the existing finish execution path.
+Finish refreshes and prepares against `base-remote`, then publishes the exact
+working branch through `publish-remote`. Plans bind both names, the resolved base
+fetch endpoint, and ordered publication destinations. Version-2 durable rebase
+records also bind remote and URL-rewrite configuration; compatible version-1
+records retain their original same-remote verification boundary. The
+[finish contract](FINISH.md#durable-rewrite-verification) defines compatibility
+and its limits. Neither path lets project-base observations replace incorporation
+evidence at publication destinations.
 
 The accepted workflow direction is: for a fork, new work starts from the project
 base, published work resumes from the publication remote, save publishes there,
