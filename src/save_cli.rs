@@ -248,7 +248,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             inspection_diagnostics(error);
         }
         SaveError::Settings(_) => eprintln!(
-            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, base, save-action, finish-update, finish-rewrite"
+            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, publish-remote, base-remote, base, save-action, finish-update, finish-rewrite"
         ),
         SaveError::NoStagedChanges => eprintln!(
             "stage the intended selection yourself, or select --publish-only, --wip, or --stash"
@@ -572,8 +572,12 @@ Details:
   Scripts need an explicit/configured action and any required message.
   WIP messages are [WIP - Staged] and [WIP - Unstaged] for groups with changes.
   Stash contents remain local. Ignored untracked files remain outside checkpoints.
-  Publication creates or fast-forwards the same branch on the configured remote.
-  Save requires an attached working branch with a commit and matching/absent upstream.
+  Publication creates or fast-forwards the same branch on publish-remote.
+  Save uses publication destinations without fetching the project base.
+  Save requires an attached working branch with a commit.
+  Tracking may be absent, the published counterpart, or the configured project base.
+  Existing valid tracking is preserved; missing tracking follows confirmed publication.
+  An effective explicit Git push remote must agree with publish-remote.
   The configured base, conflicts, active operations, and dirty submodules block save.
   Failures retain completed effects; inspect the report before retrying.
 
@@ -582,7 +586,8 @@ Settings:
   Shared: working-tree root; local overrides: Git common directory
   Precedence: explicit action flag > local > shared > defaults
   Legacy local oneflow.conf remains supported when no new local file exists
-  remote = origin; base = main; save-action = ask (defaults)
+  publish-remote = origin; base-remote follows publication; base = main (defaults)
+  remote is a compatibility alias for publish-remote; save-action defaults to ask.
   save-action: ask, publish-only, staged, wip, stash
 
 Exit status:

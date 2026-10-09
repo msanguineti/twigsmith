@@ -31,6 +31,7 @@ contract.
 | Start | `src/start.rs`, `src/start/workflow.rs` |
 | Save and publication | `src/save.rs`, `src/save/execution.rs`, `src/save/publication.rs` |
 | Finish planning, preparation, publication, and recovery | `src/finish.rs`, `src/finish/preparation.rs`, `src/finish/publication.rs`, `src/finish/recovery.rs` |
+| Shared branch tracking and push selection | `src/tracking.rs` |
 | Shared exact-ref push response decoding | `src/publication.rs` |
 | Isolated Git and terminal fixtures | `tests/support/` |
 
@@ -129,12 +130,16 @@ roles and their sources without checking availability. Generation emits the
 publication key and preserves explicit base selection when rendering it; guided
 setup retains its single-remote question and leaves base selection derived.
 
-Workflow migration remains deferred. Start preparation and save assessment reject
-differing effective roles; finish assessment reuses save's guard. Execution,
-refresh, preparation, and publication revalidate through those assessment paths
-before affected mutations. This boundary also stops changed or caller-modified
-plans from executing with differing roles. Matching roles preserve current
-single-remote behavior.
+Start and save execute with matching or separate roles. Start discovers the
+exact publication branch for remote resume and otherwise fetches the project
+base from the base remote. Local resume remains offline. Save publishes only
+the exact current branch through the publication remote and needs no base-remote
+access. Neither workflow synchronizes local base history or the fork base.
+
+Finish assessment retains a matching-role guard until its remote refresh and
+recovery support separate roles. Refresh, preparation, and publication revalidate
+through that assessment before affected mutations, including changed or
+caller-modified plans. Matching roles retain the existing finish execution path.
 
 The accepted workflow direction is: for a fork, new work starts from the project
 base, published work resumes from the publication remote, save publishes there,
@@ -146,10 +151,15 @@ and provider integration are separate future capabilities.
 Remote-role changes must participate in revalidation and verified rewrite recovery;
 new publication destinations cannot inherit proof or authorization from old ones.
 
-Accepted tracking direction: preserve both existing publication-branch tracking and
+Shared tracking validation preserves both existing publication-branch tracking and
 project-base tracking with separate publication. New branches keep the existing
 no-tracking-until-publication behaviour; remote resume tracks the exact branch on
 the publication remote. Successful publication can establish missing publication
-tracking, but must not silently rewrite valid existing base tracking. Explicit
-remote-role and conflicting Git push-selection settings need validation; the
-configured publication role remains the tool's destination authority.
+tracking, but must not silently rewrite valid existing base tracking. Role
+settings, raw tracking and explicit push-selection values, and required resolved
+destinations participate in revalidation. The last branch pushRemote
+overrides the last remote.pushDefault; a conflicting effective explicit value
+is rejected. The configured publication role remains destination authority.
+Implicit defaults do not broaden exact operations, and user-owned Git routing
+settings remain unchanged. The [save contract](SAVE.md#preconditions-and-local-evidence)
+records the Git evidence and compatibility effects of this policy.

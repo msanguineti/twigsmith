@@ -477,7 +477,8 @@ Details:
   Built-in defaults: publish-remote = origin; base-remote follows publication; base = main; save-action = ask.
   remote is a publication compatibility setting; publish-remote takes precedence at the same layer.
   Local publication settings override shared publication settings, including through remote.
-  Explicit base-remote resolves independently; start/save/finish currently require matching remote roles.
+  Explicit base-remote resolves independently; start and save support separate roles.
+  Finish currently requires matching remote roles.
   Finish defaults: finish-update = ask; finish-rewrite = ask.
   Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.
   Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.

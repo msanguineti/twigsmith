@@ -211,11 +211,9 @@ pub(crate) fn tracking_state(
         return TrackingState::Unavailable;
     };
     let upstream = &observation.upstream;
-    if upstream.remotes == [plan.settings.publish_remote.as_bytes()]
-        && upstream.merge_refs == [branch_ref(plan).as_slice()]
-    {
+    if !upstream.absent() && upstream.valid(&plan.settings, &plan.branch) {
         TrackingState::Matching
-    } else if upstream.remotes.is_empty() && upstream.merge_refs.is_empty() {
+    } else if upstream.absent() {
         TrackingState::Absent
     } else {
         TrackingState::Incomplete
@@ -375,10 +373,14 @@ fn revalidate_tracking(
         return super::revalidate(directory, plan);
     }
     let mut expected = plan.clone();
-    expected.snapshot.upstream.remotes = vec![plan.settings.publish_remote.as_bytes().to_vec()];
+    expected.snapshot.routing.upstream.remotes =
+        vec![plan.settings.publish_remote.as_bytes().to_vec()];
     expected.publication.as_mut().unwrap().establish_upstream = false;
-    let fresh =
-        super::assess_with_upstream(directory, &plan.request, Some(&expected.snapshot.upstream))?;
+    let fresh = super::assess_with_upstream(
+        directory,
+        &plan.request,
+        Some(&expected.snapshot.routing.upstream),
+    )?;
     if fresh != expected {
         return Err(SaveError::ContextChanged);
     }
@@ -513,6 +515,7 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         }
         // Git may have written remote-tracking refs while pushing. Assessment
         // intentionally ignores those caches, so fresh guards remain meaningful.
+        super::revalidate(root, plan)?;
         if plan.publication.as_ref().unwrap().establish_upstream {
             establish_tracking(root, plan, &mut report.tracking.writes)?;
         }

@@ -90,7 +90,9 @@ Details:
   Ordinary spaces select phrase conversion: normalized lowercase words
   joined with hyphens. Existing exact names mean resume.
   Local branches resume using local history, including offline.
-  Otherwise fetch the remote counterpart or create from the fresh remote base.
+  Otherwise resume from publish-remote or create from the fresh base-remote base.
+  Tracking may be absent, the published counterpart, or the configured project base.
+  An effective explicit Git push remote must agree with publish-remote.
   Switching requires a clean tree, attached HEAD, and an existing commit.
   An already-current target succeeds with uncommitted work.
   Active operations and targets occupied by another worktree block start.
@@ -100,7 +102,8 @@ Settings:
   Shared: working-tree root; local overrides: Git common directory
   Precedence: local > shared > defaults
   Legacy local oneflow.conf remains supported when no new local file exists
-  remote = origin; base = main (defaults)
+  publish-remote = origin; base-remote follows publication; base = main (defaults)
+  remote is a compatibility alias for publish-remote.
   Linked worktrees have separate shared files and common local overrides.
 
 Exit status:
@@ -138,7 +141,6 @@ fn resolve_guidance(error: &ResolveError) {
                 "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, publish-remote, base-remote, base, save-action, finish-update, finish-rewrite"
             );
         }
-        ResolveError::UnsupportedRemoteRoles(_) => {}
         ResolveError::UnusablePhrase
         | ResolveError::InvalidTarget(_)
         | ResolveError::ProtectedBase(_) => {

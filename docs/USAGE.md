@@ -43,12 +43,14 @@ Start chooses among four actions:
 | --- | --- |
 | Already current | Report success and keep the current checkout |
 | Exists locally | Switch to that branch using its current local history |
-| Exists only on the configured remote | Fetch it and create a tracking local branch |
-| New branch | Create it from the freshly fetched configured remote base |
+| Exists on the publication remote, with no local branch | Fetch it and create a tracking local branch |
+| Absent locally and on the publication remote | Create it from the freshly fetched project base on the base remote |
 
 Start reports the action taken. Remote-dependent actions stop if discovery or
 fetching fails. Local resume works offline; new branches begin without upstream
-tracking. The local base branch retains its current history.
+tracking. Existing tracking can follow the published counterpart or the configured
+project base and is preserved. The local base and fork base retain their history.
+A same-named branch on the base remote alone does not select remote resume.
 
 Start requires an attached branch with at least one commit. Switching requires
 a clean index, working tree, and submodules. An already-current target succeeds
@@ -114,13 +116,24 @@ as interactive approval.
 
 ### Publication
 
-Save publishes the current branch to its exact name on the configured remote,
+Save publishes the current branch to its exact name on the publication remote,
 using that remote's push destinations. It creates or fast-forwards the branch;
 an unchanged remote tip is also successful. Rewritten or divergent remote history
 requires attention before publication can succeed.
 
-Existing upstream settings must match the selected remote and branch. Missing
-tracking is established after all push destinations confirm publication.
+Tracking can be absent, follow the exact published counterpart, or follow the
+configured project base. Existing valid tracking is preserved. Missing tracking
+is established to the publication branch after all push destinations confirm
+publication. Save needs no base-remote access and does not fetch. Incomplete,
+duplicate, or unrelated tracking requires repair.
+
+For start and save, an effective explicit Git push remote must equal
+`publish-remote`: `branch.<name>.pushRemote` takes precedence over
+`remote.pushDefault`, and each uses its last configured value. Conflicting
+overrides stop the command; gof preserves user-owned Git routing settings.
+Implicit push defaults and expansive mappings leave gof's publication scoped
+to the exact current branch.
+
 The branch must have an existing commit and differ from the configured base.
 Conflicts, active Git operations, detached HEAD, and dirty submodules block save.
 Preserve dirty submodule work within its own repository.
@@ -143,8 +156,10 @@ and cleanup are deferred.
 Finish requires a clean index, working tree, and submodules, an attached branch
 with an existing commit, and no active Git operation or conflicts. Commit or
 preserve uncommitted work first. The branch must differ from the configured base.
-Upstream settings must match the configured remote/current branch or be absent;
-finish establishes absent tracking after confirmed publication.
+Tracking can follow the published counterpart or the configured project base,
+or be absent. Explicit push-selection validation follows the same rules as save;
+finish establishes absent tracking after confirmed publication. Finish currently
+requires matching base and publication remote roles.
 
 Finish observes the remote base and the exact branch at every push destination,
 then fetches their observed objects. The local base and tracking refs retain their
@@ -388,11 +403,12 @@ Both named settings work in every shared/local format and legacy local
 by `publish-remote` at the same layer. Configuration inspection is local and
 read-only; configure remote availability in Git for the workflows that use it.
 
-Start, save, and finish currently require the effective remote roles to match.
-Differing roles stop these commands before workflow mutations. Use
-`gof config show` to inspect the roles and their sources. Guided setup keeps its
-single-remote question and generates `publish-remote`; the base remote follows it.
-Separate-role workflow execution is deferred.
+Start creates new work from `base-remote` and resumes published work from
+`publish-remote`; save publishes through `publish-remote`. The roles may match
+or differ. Finish currently requires them to match until its remote refresh and
+recovery support separate roles. Use `gof config show` to inspect both roles and
+their sources. Guided setup keeps its single-remote question and generates
+`publish-remote`; the base remote follows it.
 
 `save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
 `finish-update` accepts `ask`, `rebase`, `merge`, or `none`. `finish-rewrite`

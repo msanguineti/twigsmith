@@ -97,8 +97,13 @@ rollback or finish-specific continuation/abort command.
 - No unresolved conflict or active merge, rebase, am, cherry-pick, revert, bisect,
   or relevant sequencer operation.
 - A configured remote with locally resolvable push destinations.
-- Either absent upstream settings or exactly one matching remote and one merge
-  ref for the current branch. Incomplete, duplicate, and conflicting values fail.
+- Matching base and publication remote roles; split-role refresh/recovery remains
+  deferred and all finish execution paths revalidate this guard.
+- Either absent upstream settings or exactly one remote and one full merge ref
+  for the published counterpart or configured project base. Incomplete, duplicate,
+  and unrelated values fail.
+- An effective explicit Git push override that agrees with the publication role,
+  using the shared [save precedence and snapshot guard](SAVE.md#preconditions-and-local-evidence).
 
 Publication intent is the current branch's exact `refs/heads/<name>` on the
 configured remote, never the configured base or an inferred upstream destination.
@@ -332,8 +337,8 @@ aggregate publication state is:
 | `Unconfirmed` | No destination confirmed it, and at least one outcome remains uncertain |
 
 `Complete` describes publication evidence; `Report::is_complete()` additionally
-requires matching upstream settings and no reported errors. Only after all
-destinations confirm publication does missing tracking use save's existing
+requires valid upstream settings in either accepted style and no reported errors.
+Only after all destinations confirm publication does missing tracking use save's existing
 contract: revalidate and add the configured remote and exact branch merge ref.
 Tracking writes, final settings, and errors are reported separately. A tracking
 failure retains confirmed publication; partial configuration writes remain for

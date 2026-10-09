@@ -1188,9 +1188,9 @@ fn config_show_identifies_remote_role_values_aliases_and_derived_sources() {
 }
 
 #[test]
-fn differing_remote_roles_refuse_lifecycle_commands_without_mutation() {
+fn differing_remote_roles_guard_finish_without_mutation() {
     cases(
-        "differing_remote_roles_refuse_lifecycle_commands_without_mutation",
+        "differing_remote_roles_guard_finish_without_mutation",
         true,
         |root, exe| {
             let repo = Repository::new(root);
@@ -1204,10 +1204,6 @@ fn differing_remote_roles_refuse_lifecycle_commands_without_mutation() {
             .unwrap();
             let before = snapshot(root);
             for args in [
-                vec!["start", "new-work"],
-                vec!["s", "work"],
-                vec!["save", "--wip"],
-                vec!["v", "--stash"],
                 vec!["finish", "--update", "none", "--allow-rewrite"],
                 vec!["f"],
             ] {

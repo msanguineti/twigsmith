@@ -8,6 +8,7 @@ use crate::{
         RepositoryKind, RepositoryState,
     },
     settings::{self, SaveAction, SettingSource, Settings, SettingsError},
+    tracking,
 };
 use std::{
     ffi::OsString,
@@ -109,18 +110,14 @@ pub struct Plan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextSnapshot {
     state: RepositoryState,
-    upstream: UpstreamSettings,
+    routing: tracking::Snapshot,
     push_urls: Vec<u8>,
     index_path: PathBuf,
     index: Option<Vec<u8>>,
     tracked_diff: Vec<u8>,
     files: Vec<(Vec<u8>, FileSnapshot)>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpstreamSettings {
-    pub remotes: Vec<Vec<u8>>,
-    pub merge_refs: Vec<Vec<u8>>,
-}
+pub use crate::tracking::UpstreamSettings;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FileSnapshot {
     Missing,
@@ -135,7 +132,6 @@ enum FileSnapshot {
 pub enum SaveError {
     Inspection(InspectionError),
     Settings(SettingsError),
-    UnsupportedRemoteRoles(settings::UnsupportedRemoteRoles),
     OutsideRepository,
     BareRepository,
     DetachedHead,
@@ -145,6 +141,7 @@ pub enum SaveError {
     ActiveOperation,
     DirtySubmodules,
     InvalidUpstream,
+    ConflictingPushRemote,
     InvalidRemote {
         name: String,
         source: InspectionError,
@@ -159,7 +156,6 @@ impl fmt::Display for SaveError {
         let text = match self {
             Self::Inspection(e) => return write!(f, "{e}"),
             Self::Settings(e) => return write!(f, "{e}"),
-            Self::UnsupportedRemoteRoles(e) => return write!(f, "{e}"),
             Self::OutsideRepository => "save requires a Git repository",
             Self::BareRepository => "save requires a working tree",
             Self::DetachedHead => "save requires an attached branch",
@@ -168,8 +164,9 @@ impl fmt::Display for SaveError {
             Self::Conflicts => "save refuses unresolved conflicts",
             Self::ActiveOperation => "save refuses an active Git operation",
             Self::DirtySubmodules => "save cannot preserve dirty submodule contents",
-            Self::InvalidUpstream => {
-                "upstream settings are incomplete, ambiguous, or conflict with the configured remote and exact branch"
+            Self::InvalidUpstream => return write!(f, "{}", tracking::Error::InvalidUpstream),
+            Self::ConflictingPushRemote => {
+                return write!(f, "{}", tracking::Error::ConflictingPushRemote);
             }
             Self::InvalidRemote { name, source } => {
                 return write!(
@@ -192,7 +189,6 @@ impl std::error::Error for SaveError {
         match self {
             Self::Inspection(e) => Some(e),
             Self::Settings(e) => Some(e),
-            Self::UnsupportedRemoteRoles(e) => Some(e),
             Self::InvalidRemote { source, .. } => Some(source),
             _ => None,
         }
@@ -226,28 +222,15 @@ fn read(directory: &Path, args: &[OsString]) -> Result<Vec<u8>, SaveError> {
     Ok(output.stdout)
 }
 fn config(directory: &Path, key: &[u8]) -> Result<Vec<Vec<u8>>, SaveError> {
-    let args = vec![
-        "config".into(),
-        "-z".into(),
-        "--get-all".into(),
-        repository::os(key)?,
-    ];
-    let output = git::inspect(directory, &args)?;
-    if output.status.code() == Some(1) && output.stderr.is_empty() {
-        return Ok(vec![]);
-    }
-    if !output.status.success() {
-        return Err(InspectionError::Git {
-            arguments: args,
-            output,
+    Ok(tracking::config(directory, key)?)
+}
+impl From<tracking::Error> for SaveError {
+    fn from(error: tracking::Error) -> Self {
+        match error {
+            tracking::Error::InvalidUpstream => Self::InvalidUpstream,
+            tracking::Error::ConflictingPushRemote => Self::ConflictingPushRemote,
         }
-        .into());
     }
-    let bytes = output
-        .stdout
-        .strip_suffix(b"\0")
-        .ok_or(InspectionError::InvalidOutput("save configuration"))?;
-    Ok(bytes.split(|b| *b == 0).map(<[u8]>::to_vec).collect())
 }
 fn file_snapshot(path: &Path, recurse: bool) -> Result<FileSnapshot, SaveError> {
     let metadata = match fs::symlink_metadata(path) {
@@ -295,9 +278,6 @@ fn assess_with_upstream(
         return Err(SaveError::BareRepository);
     }
     let settings = settings::load(directory, &repository)?;
-    settings
-        .require_single_remote()
-        .map_err(SaveError::UnsupportedRemoteRoles)?;
     let Observation::Repository(state) = repository::inspect_without_upstream(directory)? else {
         return Err(SaveError::OutsideRepository);
     };
@@ -339,17 +319,20 @@ fn assess_with_upstream(
             }
         }
     }
-    let upstream = upstream_settings(directory, &branch)?;
-    let mut branch_ref = b"refs/heads/".to_vec();
-    branch_ref.extend_from_slice(&branch);
-    let absent = upstream.remotes.is_empty() && upstream.merge_refs.is_empty();
-    if expected_upstream.is_some_and(|expected| expected != &upstream)
-        || (expected_upstream.is_none()
-            && !absent
-            && (upstream.remotes != [settings.publish_remote.as_bytes()]
-                || upstream.merge_refs != [branch_ref.as_slice()]))
-    {
-        return Err(SaveError::InvalidUpstream);
+    let routing = tracking::snapshot(directory, &branch)?;
+    let branch_ref = [b"refs/heads/".as_slice(), &branch].concat();
+    let absent = routing.upstream.absent();
+    if let Some(expected) = expected_upstream {
+        if expected != &routing.upstream {
+            return Err(SaveError::InvalidUpstream);
+        }
+        // Admit only the publisher's own intermediate tracking write, while
+        // retaining the same explicit push-selection guard.
+        let mut complete = routing.clone();
+        complete.upstream.merge_refs = vec![branch_ref.clone()];
+        complete.validate(&settings, &branch)?;
+    } else {
+        routing.validate(&settings, &branch)?;
     }
     // get-url resolves the named remote and ordinary push URL rewrites locally.
     // Preserve every destination for revalidation; publication handles outcomes later.
@@ -493,7 +476,7 @@ fn assess_with_upstream(
         request: request.clone(),
         snapshot: ContextSnapshot {
             state: *state,
-            upstream,
+            routing,
             push_urls,
             index_path,
             index,
@@ -515,12 +498,8 @@ pub fn revalidate(directory: impl AsRef<Path>, approved: &Plan) -> Result<(), Sa
 }
 
 fn upstream_key(branch: &[u8], suffix: &[u8]) -> Vec<u8> {
-    [b"branch.".as_slice(), branch, suffix].concat()
+    tracking::key(branch, suffix)
 }
-
 fn upstream_settings(directory: &Path, branch: &[u8]) -> Result<UpstreamSettings, SaveError> {
-    Ok(UpstreamSettings {
-        remotes: config(directory, &upstream_key(branch, b".remote"))?,
-        merge_refs: config(directory, &upstream_key(branch, b".merge"))?,
-    })
+    Ok(tracking::upstream(directory, branch)?)
 }

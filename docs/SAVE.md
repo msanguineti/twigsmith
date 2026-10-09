@@ -51,7 +51,8 @@ publication destination. The action semantics are:
 
 Local steps always precede publication. `publication = None` and empty steps
 mean unresolved input permits no effects. Publication names only the configured
-remote and exact `refs/heads/<current branch>`; absent upstream is marked for
+publication remote and exact `refs/heads/<current branch>`; absent upstream is
+marked for
 establishment **after confirmed successful publication**. The plan does not
 claim server availability, fast-forward eligibility, or successful publication.
 The publication backend executes resolved plans without pending local steps and
@@ -69,16 +70,38 @@ changes can be included; parent commits cannot preserve dirty child contents.
 
 All effective `branch.<name>.remote` and `.merge` values are read with NUL-delimited
 `git config --get-all`. Both absent is acceptable. Otherwise **one remote value
-and one exact full merge ref** must match the configured remote/current branch.
+and one exact full merge ref** must match either:
+
+- The publication remote and current branch.
+- The base remote and configured base branch.
+
 Even repeated equal values are rejected as ambiguous. Empty values, missing
-halves, local `.` upstreams and other branches/remotes fail. Tracking ref
+halves, local `.` upstreams and unrelated branches/remotes fail. Tracking ref
 existence, fetch refmaps and locally cached divergence are not prerequisites.
-Save bypasses status's tracking resolution so malformed upstream configuration
-can be diagnosed before Git tries to resolve it.
+Start and save share this relationship validation. Save bypasses status's tracking
+resolution so malformed upstream configuration can be diagnosed before Git
+tries to resolve it.
+
+The configured publication role selects gof's destination. Explicit Git push
+selection is checked using Git's precedence: the last
+`branch.<name>.pushRemote` value overrides the last `remote.pushDefault` value.
+The effective explicit value must equal the publication remote name; a conflicting
+value (including a URL or another remote name) fails before checkpoints or push.
+A masked lower-precedence value does not conflict. Both raw value lists are
+snapshotted, so even a masked change requires reassessment. Ordinary upstream
+fallbacks, `push.default`, and expansive refspecs do not broaden the tool's
+explicit exact-branch publication, and no user routing configuration is rewritten.
+
+This expands the earlier publication-only tracking guard to accept project-base
+tracking. Existing valid tracking is retained through publication. It also changes
+compatibility for explicit push overrides: conflicting overrides now fail instead
+of being ignored. Start validates these same relationships on local resume and
+current-branch success, while preserving offline operation.
 
 `git remote get-url --push --all <name>` validates the named remote locally and
 captures all resolved push destinations, including ordinary URL rewriting.
-The remote may be inaccessible; no fetch, server query, trunk update or trunk
+The publication remote may be inaccessible at assessment. Save does not resolve
+or contact the base remote; no fetch, server query, trunk update or trunk
 integration is performed. Later publication must handle multiple destinations
 and partial/uncertain outcomes truthfully.
 
@@ -86,14 +109,20 @@ Git documents upstream configuration and multi-valued merge behavior in
 [git-config](https://git-scm.com/docs/git-config#Documentation/git-config.txt-branchltnamegtmerge),
 and push-URL expansion/selection in
 [git-remote](https://git-scm.com/docs/git-remote#Documentation/git-remote.txt-get-url).
-Rejecting duplicate upstream values is our accepted conservative product policy,
-not a claim that Git prohibits them or that this workflow is universal.
+Git documents push-remote precedence in
+[branch.pushRemote](https://git-scm.com/docs/git-config#Documentation/git-config.txt-branchltnamegtpushRemote)
+and [remote.pushDefault](https://git-scm.com/docs/git-config#Documentation/git-config.txt-remotepushDefault).
+Isolated ordinary Git push dry runs verify precedence, including the last-value
+behavior of repeated scalar settings. Requiring an explicit override to name
+the publication role and rejecting duplicate upstream values are our accepted
+product policies, not a claim that Git prohibits them or that this workflow
+is universal.
 
 ## Revalidation and limits
 
 `save::revalidate(directory, &approved_plan)` repeats assessment and compares
-context, HEAD, settings, raw upstream values, resolved push URLs, scope, index
-path/bytes, changed-file bytes/permissions or symlink targets, and local tracked diff
+context, HEAD, settings, raw upstream and explicit push-selection values, resolved
+push URLs, scope, index path/bytes, changed-file bytes/permissions or symlink targets, and local tracked diff
 content (including changed gitlink revisions). It catches changed content even
 when the same paths/categories remain dirty. Untracked directory observations
 are inspected recursively without following symlinks. Snapshot content remains
@@ -152,8 +181,8 @@ one new entry or that identical retained entry is accepted, preserving older one
 ## Guards and transitions
 
 Before mutation, revalidate the original approval against HEAD, repository,
-settings, raw upstream, resolved push destinations, index path/bytes and approved
-change scope/content. Unresolved input, failed eligibility, changed approval,
+settings, raw upstream and explicit push-selection values, resolved push destinations,
+index path/bytes and approved change scope/content. Unresolved input, failed eligibility, changed approval,
 known index locks and identity failures stop local execution. Publication's
 read-only destination/tracking/configuration guards are shared and run before
 checkpoint writes, then repeated before later mutations/publication.
@@ -273,8 +302,10 @@ when the process subsequently fails; that process failure is still retained.
 Remote-tracking caches are observations of local effects, never publication proof.
 
 An absent upstream is written only after **all** destinations confirm publication.
-Matching settings are preserved byte-for-byte. Two ordinary local Git config
-writes add the exact remote and merge ref. Revalidation before each write refuses
+Both accepted tracking styles are preserved byte-for-byte. After pushing, context
+is revalidated before completion or tracking setup; changed routing remains
+a reported failure even when the exact branch was published. Two ordinary local
+Git config writes add the exact remote and merge ref. Revalidation before each write refuses
 changed context; the private second-write check admits only the publisher's own
 expected remote-only intermediate state. Public assessment continues to reject
 all incomplete, ambiguous or conflicting upstreams. There is no automatic cleanup
@@ -282,8 +313,9 @@ of a first write after second-write failure. The result exposes successful confi
 commands plus actual remaining config, including effects left by a failed command.
 
 Publication and tracking states are independent. `Report::is_complete()` requires
-confirmed publication, observed matching tracking, and no execution error. A
-published branch with absent/incomplete tracking remains published, with a tracking
+confirmed publication, observed valid tracking in either supported style, and no
+execution error. `TrackingState::Matching` represents either accepted relationship.
+A published branch with absent/incomplete tracking remains published, with a tracking
 failure; a failed command that actually finished the config writes reports observed
 matching tracking plus its error. Callers must present these separate facts and
 escape raw bytes appropriately. To recover, inspect uncertain push destinations,

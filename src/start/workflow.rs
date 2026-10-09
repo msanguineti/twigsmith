@@ -8,12 +8,13 @@ use std::{
     process::Output,
 };
 
-use super::{PreparedRequest, ResolveError, prepare};
+use super::{PreparedRequest, ResolveError, TrackingError, prepare};
 use crate::{
     git,
     repository::{
         self, Head, InspectionError, Observation, Operations, RepositoryKind, RepositoryState,
     },
+    tracking,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,11 +43,7 @@ pub struct Outcome {
     pub state: RepositoryState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TargetUpstream {
-    pub remotes: Vec<Vec<u8>>,
-    pub merge_refs: Vec<Vec<u8>>,
-}
+pub use crate::tracking::UpstreamSettings as TargetUpstream;
 
 #[derive(Debug)]
 pub struct ReferenceState {
@@ -108,6 +105,8 @@ pub enum StartError {
         base: String,
     },
     ExistingUpstreamConfiguration,
+    SymbolicTrackingRef(String),
+    Tracking(TrackingError),
     Io(io::Error),
     Git {
         arguments: Vec<OsString>,
@@ -120,6 +119,7 @@ impl fmt::Display for StartError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Resolve(e) => write!(f, "{e}"),
+            Self::Tracking(e) => write!(f, "{e}"),
             Self::Inspection(e) => write!(f, "{e}"),
             Self::OutsideRepository => {
                 write!(f, "start requires a Git working tree; enter a checkout")
@@ -157,6 +157,10 @@ impl fmt::Display for StartError {
                 f,
                 "remote {remote:?} has no exact base branch {base:?}; check repository settings and remote availability"
             ),
+            Self::SymbolicTrackingRef(reference) => write!(
+                f,
+                "fetch destination {reference:?} is symbolic; start refused to protect existing refs"
+            ),
             Self::ExistingUpstreamConfiguration => write!(
                 f,
                 "the absent target already has upstream configuration; inspect that configuration before creating it"
@@ -179,6 +183,7 @@ impl std::error::Error for StartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Resolve(error) => Some(error),
+            Self::Tracking(error) => Some(error),
             Self::Inspection(error) => Some(error),
             Self::Io(error) => Some(error),
             _ => None,
@@ -202,6 +207,8 @@ struct Workflow<'a> {
     action: Option<Action>,
     effects: Vec<Effect>,
     fetched: Option<String>,
+    routing: tracking::Snapshot,
+    destinations: Vec<(String, Vec<u8>)>,
 }
 
 /// Execute a prepared workstream request. Revalidate its names, settings,
@@ -220,6 +227,8 @@ pub fn execute(
         action: None,
         effects: Vec::new(),
         fetched: None,
+        routing: request.routing.clone(),
+        destinations: vec![],
     };
     match workflow.execute() {
         Ok(state) => Ok(Outcome {
@@ -266,10 +275,12 @@ impl Workflow<'_> {
             return Err(StartError::Bare);
         }
         let fresh = prepare(self.directory, &self.request.target)?;
-        if &fresh != self.request {
+        let mut expected = self.request.clone();
+        expected.routing = self.routing.clone();
+        if fresh != expected {
             return Err(StartError::Changed);
         }
-        let state = match repository::inspect(self.directory)? {
+        let state = match repository::inspect_without_upstream(self.directory)? {
             Observation::OutsideRepository => return Err(StartError::OutsideRepository),
             Observation::Repository(state) => *state,
         };
@@ -282,6 +293,11 @@ impl Workflow<'_> {
             Head::Attached { .. } => {}
         }
         self.check_occupation(&state)?;
+        for (remote, urls) in &self.destinations {
+            if self.read(&["remote", "get-url", "--all", remote])? != *urls {
+                return Err(StartError::Changed);
+            }
+        }
         Ok(state)
     }
 
@@ -365,32 +381,68 @@ impl Workflow<'_> {
         Ok(Some(oid.to_vec()))
     }
 
-    fn config(&self, key: &str) -> Result<Vec<Vec<u8>>, StartError> {
-        let args = ["config", "-z", "--get-all", key];
-        let output = git::inspect(self.directory, args).map_err(StartError::Io)?;
-        if output.status.code() == Some(1) && output.stderr.is_empty() {
-            return Ok(Vec::new());
-        }
-        let bytes = checked(&args, output)?;
-        let body = bytes
-            .strip_suffix(b"\0")
-            .ok_or(StartError::InvalidOutput("config records"))?;
-        Ok(body.split(|b| *b == 0).map(<[u8]>::to_vec).collect())
+    fn target_upstream(&self) -> Result<TargetUpstream, StartError> {
+        Ok(tracking::upstream(
+            self.directory,
+            self.request.target.as_bytes(),
+        )?)
     }
 
-    fn target_upstream(&self) -> Result<TargetUpstream, StartError> {
-        let prefix = format!("branch.{}", self.request.target);
-        Ok(TargetUpstream {
-            remotes: self.config(&format!("{prefix}.remote"))?,
-            merge_refs: self.config(&format!("{prefix}.merge"))?,
-        })
+    fn destination(&mut self, remote: &str) -> Result<(), StartError> {
+        if !self.destinations.iter().any(|(name, _)| name == remote) {
+            // Resolve a named remote locally; never allow a path fallback.
+            let urls = self.read(&["remote", "get-url", "--all", remote])?;
+            self.destinations.push((remote.to_owned(), urls));
+        }
+        Ok(())
+    }
+
+    fn remote_heads(&self, remote: &str, references: &[&str]) -> Result<Vec<bool>, StartError> {
+        let mut arguments: Vec<OsString> = ["ls-remote", "--heads", "--refs", "--", remote]
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        arguments.extend(references.iter().map(OsString::from));
+        let output = git::inspect(self.directory, &arguments).map_err(StartError::Io)?;
+        if !output.status.success() {
+            return Err(StartError::Git { arguments, output });
+        }
+        let mut found = vec![false; references.len()];
+        for row in output
+            .stdout
+            .split(|b| *b == b'\n')
+            .filter(|row| !row.is_empty())
+        {
+            let separator = row
+                .iter()
+                .position(|b| *b == b'\t')
+                .ok_or(StartError::InvalidOutput("remote heads"))?;
+            let (oid, rest) = row.split_at(separator);
+            if !valid_oid(oid) {
+                return Err(StartError::InvalidOutput("remote head object ID"));
+            }
+            for (reference, found) in references.iter().zip(&mut found) {
+                *found |= &rest[1..] == reference.as_bytes();
+            }
+        }
+        Ok(found)
+    }
+
+    fn observed_state(&self) -> Result<RepositoryState, StartError> {
+        match repository::inspect(self.directory)? {
+            Observation::Repository(state) => Ok(*state),
+            Observation::OutsideRepository => Err(StartError::OutsideRepository),
+        }
     }
 
     fn execute(&mut self) -> Result<RepositoryState, StartError> {
         let initial = self.validated()?;
         if self.is_current(&initial) {
+            self.routing
+                .validate(&self.request.settings, self.request.target.as_bytes())
+                .map_err(StartError::Tracking)?;
             self.action = Some(Action::AlreadyCurrent);
-            return Ok(initial);
+            return self.observed_state();
         }
         self.clean(&initial)?;
         // A checkout may remove the caller's nested directory. Execute and
@@ -409,6 +461,9 @@ impl Workflow<'_> {
         let initial_upstream = self.target_upstream()?;
         let expected_commit;
         if let Some(commit) = local {
+            self.routing
+                .validate(&self.request.settings, self.request.target.as_bytes())
+                .map_err(StartError::Tracking)?;
             expected_commit = commit.clone();
             self.action = Some(Action::ResumeLocal);
             self.recheck(&initial, Some(&commit))?;
@@ -417,42 +472,40 @@ impl Workflow<'_> {
             if !initial_upstream.remotes.is_empty() || !initial_upstream.merge_refs.is_empty() {
                 return Err(StartError::ExistingUpstreamConfiguration);
             }
-            let remote = &self.request.settings.publish_remote;
-            self.read(&["remote", "get-url", remote])?; // Named remote, never a path fallback.
+            self.routing
+                .validate(&self.request.settings, self.request.target.as_bytes())
+                .map_err(StartError::Tracking)?;
+            let publish_remote = &self.request.settings.publish_remote;
+            let base_remote = &self.request.settings.base_remote;
+            self.destination(publish_remote)?;
             let target_ref = format!("refs/heads/{}", self.request.target);
             let base_ref = format!("refs/heads/{}", self.request.settings.base);
-            let advertisement = self.read(&[
-                "ls-remote",
-                "--heads",
-                "--refs",
-                "--",
-                remote,
-                &target_ref,
-                &base_ref,
-            ])?;
-            let mut target_found = false;
-            let mut base_found = false;
-            for row in advertisement
-                .split(|b| *b == b'\n')
-                .filter(|r| !r.is_empty())
-            {
-                let separator = row
-                    .iter()
-                    .position(|b| *b == b'\t')
-                    .ok_or(StartError::InvalidOutput("remote heads"))?;
-                let (oid, rest) = row.split_at(separator);
-                let reference = &rest[1..];
-                if !valid_oid(oid) {
-                    return Err(StartError::InvalidOutput("remote head object ID"));
+            let same_remote = publish_remote == base_remote;
+            let heads = if same_remote {
+                self.remote_heads(publish_remote, &[&target_ref, &base_ref])?
+            } else {
+                self.remote_heads(publish_remote, &[&target_ref])?
+            };
+            let target_found = heads[0];
+            let remote = if target_found {
+                publish_remote
+            } else {
+                base_remote
+            };
+            if !target_found {
+                self.recheck(&initial, None)?;
+                self.destination(base_remote)?;
+                let base_found = if same_remote {
+                    heads[1]
+                } else {
+                    self.remote_heads(base_remote, &[&base_ref])?[0]
+                };
+                if !base_found {
+                    return Err(StartError::BaseUnavailable {
+                        remote: base_remote.clone(),
+                        base: self.request.settings.base.clone(),
+                    });
                 }
-                target_found |= reference == target_ref.as_bytes();
-                base_found |= reference == base_ref.as_bytes();
-            }
-            if !target_found && !base_found {
-                return Err(StartError::BaseUnavailable {
-                    remote: remote.clone(),
-                    base: self.request.settings.base.clone(),
-                });
             }
             self.action = Some(if target_found {
                 Action::ResumeRemote
@@ -467,6 +520,17 @@ impl Workflow<'_> {
                 &self.request.settings.base
             };
             let destination = format!("refs/remotes/{remote}/{branch}");
+            let arguments = ["symbolic-ref", "--quiet", destination.as_str()];
+            let probe = git::inspect(self.directory, arguments).map_err(StartError::Io)?;
+            if probe.status.success() {
+                return Err(StartError::SymbolicTrackingRef(destination));
+            }
+            if probe.status.code() != Some(1) {
+                return Err(StartError::Git {
+                    arguments: arguments.iter().map(OsString::from).collect(),
+                    output: probe,
+                });
+            }
             self.fetched = Some(destination.clone());
             let refspec = format!("+{source}:{destination}");
             self.mutate(&[
@@ -516,6 +580,7 @@ impl Workflow<'_> {
                     &format!("branch.{}.remote", self.request.target),
                     remote,
                 ])?;
+                self.routing.upstream.remotes = vec![remote.as_bytes().to_vec()];
                 self.effects.push(Effect::UpstreamRemoteSet {
                     remote: remote.clone(),
                 });
@@ -527,6 +592,7 @@ impl Workflow<'_> {
                     &format!("branch.{}.merge", self.request.target),
                     &source,
                 ])?;
+                self.routing.upstream.merge_refs = vec![source.as_bytes().to_vec()];
                 self.effects
                     .push(Effect::UpstreamMergeSet { reference: source });
             }
@@ -560,7 +626,7 @@ impl Workflow<'_> {
         {
             return Err(StartError::Changed);
         }
-        Ok(state)
+        self.observed_state()
     }
 }
 

@@ -187,7 +187,7 @@ impl Default for Settings {
     }
 }
 
-/// Temporary workflow boundary until each workflow supports separate roles.
+/// Temporary finish boundary until its refresh/recovery support separate roles.
 #[derive(Debug)]
 pub struct UnsupportedRemoteRoles {
     base_remote: String,
@@ -197,7 +197,7 @@ impl fmt::Display for UnsupportedRemoteRoles {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "start, save, and finish currently require matching remote roles; base-remote is {:?}, publish-remote is {:?}; inspect settings with gof config show",
+            "finish currently requires matching remote roles; base-remote is {:?}, publish-remote is {:?}; inspect settings with gof config show",
             self.base_remote, self.publish_remote
         )
     }

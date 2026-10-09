@@ -154,6 +154,7 @@ impl Plan {
 #[derive(Debug)]
 pub enum FinishError {
     Local(SaveError),
+    UnsupportedRemoteRoles(crate::settings::UnsupportedRemoteRoles),
     Publication(PublishError),
     DirtyTree,
     InvalidEvidence(&'static str),
@@ -179,6 +180,7 @@ impl fmt::Display for FinishError {
                 }
                 _ => return write!(f, "{error}"),
             },
+            Self::UnsupportedRemoteRoles(error) => return write!(f, "{error}"),
             Self::Publication(error) => return write!(f, "{error}"),
             Self::DirtyTree => {
                 "finish requires a clean index, working tree, and submodules; commit or preserve changes first"
@@ -200,6 +202,7 @@ impl std::error::Error for FinishError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Local(e) => Some(e),
+            Self::UnsupportedRemoteRoles(e) => Some(e),
             Self::Publication(e) => Some(e),
             _ => None,
         }
@@ -361,6 +364,12 @@ pub fn assess(
     evidence: Option<&RemoteEvidence>,
 ) -> Result<Plan, FinishError> {
     let directory = directory.as_ref();
+    // Retain the migration boundary before save's broader role-aware guards.
+    let context = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
+    crate::settings::load(directory, &context)
+        .map_err(SaveError::from)?
+        .require_single_remote()
+        .map_err(FinishError::UnsupportedRemoteRoles)?;
     let local = save::assess(
         directory,
         &save::Request {
@@ -368,6 +377,10 @@ pub fn assess(
             message: None,
         },
     )?;
+    local
+        .settings
+        .require_single_remote()
+        .map_err(FinishError::UnsupportedRemoteRoles)?;
     if local.scope.tree_state() != TreeState::Clean {
         return Err(FinishError::DirtyTree);
     }

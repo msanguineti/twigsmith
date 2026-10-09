@@ -276,7 +276,7 @@ fn unchanged_context(before: &Plan, after: &Plan) -> Result<(), SaveError> {
     if before.repository != after.repository
         || before.branch != after.branch
         || before.settings != after.settings
-        || before.snapshot.upstream != after.snapshot.upstream
+        || before.snapshot.routing != after.snapshot.routing
         || before.snapshot.push_urls != after.snapshot.push_urls
         || before.snapshot.index_path != after.snapshot.index_path
     {

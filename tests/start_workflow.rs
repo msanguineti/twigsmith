@@ -93,8 +93,8 @@ fn local_resume_preserves_history_upstream_and_never_contacts_remote() {
             let base = commit(&repo, "tracked", "base\n");
             repo.success(&["switch", "-c", "release/V1"]);
             let target = commit(&repo, "tracked", "local work\n");
-            repo.success(&["config", "branch.release/V1.remote", "unavailable"]);
-            repo.success(&["config", "branch.release/V1.merge", "refs/heads/different"]);
+            repo.success(&["config", "branch.release/V1.remote", "origin"]);
+            repo.success(&["config", "branch.release/V1.merge", "refs/heads/main"]);
             repo.success(&["config", "branch.release/V1.rebase", "true"]);
             repo.success(&["remote", "add", "origin", "/oneflow-unreachable-fixture"]);
             repo.success(&["switch", "main"]);
@@ -113,7 +113,7 @@ fn local_resume_preserves_history_upstream_and_never_contacts_remote() {
             assert_eq!(repo.success(&["show-ref"]).stdout, refs);
             assert_eq!(oid(&repo, "refs/heads/main"), base);
             assert!(
-                matches!(outcome.state.upstream, Upstream::Configured { remote: Some(ref r), ref merge_refs, .. } if r == b"unavailable" && merge_refs == &[b"refs/heads/different".to_vec()])
+                matches!(outcome.state.upstream, Upstream::Configured { remote: Some(ref r), ref merge_refs, .. } if r == b"origin" && merge_refs == &[b"refs/heads/main".to_vec()])
             );
         },
     );

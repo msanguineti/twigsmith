@@ -1209,9 +1209,9 @@ fn remote_role_values_and_syntax_are_strict_even_when_overridden() {
 }
 
 #[test]
-fn remote_role_changes_stop_all_unmigrated_execution_apis_before_effects() {
+fn remote_role_changes_revalidate_migrated_apis_and_guard_finish() {
     isolated(
-        "remote_role_changes_stop_all_unmigrated_execution_apis_before_effects",
+        "remote_role_changes_revalidate_migrated_apis_and_guard_finish",
         true,
         |root| {
             use git_oneflow::finish;
@@ -1268,14 +1268,8 @@ fn remote_role_changes_stop_all_unmigrated_execution_apis_before_effects() {
                 &[("publish-remote", "origin"), ("base-remote", "project")],
             );
             let before = snapshot(root);
-            assert!(matches!(
-                start::prepare(repo.path(), "new-work"),
-                Err(start::ResolveError::UnsupportedRemoteRoles(_))
-            ));
-            assert!(matches!(
-                save::assess(repo.path(), &Request::default()),
-                Err(SaveError::UnsupportedRemoteRoles(_))
-            ));
+            assert!(start::prepare(repo.path(), "new-work").is_ok());
+            assert!(save::assess(repo.path(), &Request::default()).is_ok());
             assert!(
                 finish::assess(repo.path(), &finish::Request::default(), None)
                     .unwrap_err()

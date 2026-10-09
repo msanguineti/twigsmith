@@ -1,7 +1,8 @@
 # Start contract
 
 `start::prepare(directory, input)` returns a `PreparedRequest` with an exact
-branch target, resolved remote/base settings, and Git-discovered repository paths.
+branch target, resolved remote/base settings, Git-discovered repository paths,
+and raw target tracking and explicit Git push-selection settings.
 The executable accepts `start <branch-name-or-phrase>` and the exact alias
 `s <branch-name-or-phrase>` through either `git-oneflow` or `gof`;
 see the [user guide](USAGE.md#start-or-resume-work). The input determines only
@@ -74,7 +75,8 @@ error with explicit migration guidance. Legacy values remain literal unquoted
 blank lines, and whole-line `#` comments accepted.
 
 - New formats require a flat mapping of string values under case-sensitive
-  `remote`, `base`, and `save-action` keys, each at most once. YAML uses scalar
+  supported settings keys, each at most once; see the
+  [settings reference](USAGE.md#repository-settings). YAML uses scalar
   types rather than coercing numbers/booleans/null to strings; merge keys and
   unsupported tags are rejected. Parser import/expression features are disabled.
 - Keys resolve individually: explicit existing flags > local > shared > built-in
@@ -84,8 +86,8 @@ blank lines, and whole-line `#` comments accepted.
   Unknown/duplicate keys, invalid types, malformed syntax, empty/invalid values,
   invalid UTF-8, and unreadable files fail. Only absent files default; dangling
   symlinks fail. Empty TOML or empty YAML/JSON mappings inherit all keys.
-- `base` uses the same branch-name validation as targets. `remote` is validated
-  as the component in `refs/remotes/<remote>/base`; it cannot be empty, start
+- `base` uses the same branch-name validation as targets. Each remote role is
+  validated as the component in `refs/remotes/<remote>/base`; it cannot be empty, start
   with `-`, or be `.`. URLs, paths such as `../repo`, and invalid ref characters
   fail. Valid slash-separated remote names remain supported.
 - Resolved settings retain a source per key: built-in default, shared file path,
@@ -93,7 +95,13 @@ blank lines, and whole-line `#` comments accepted.
   Revalidation compares resolved values and sources; comments/formatting changes
   with identical values and sources do not change the settings snapshot.
 
-Settings syntax validation does not require the remote to exist or the base
+`publish-remote` selects publication and remote resume; `base-remote` selects
+the project base. An omitted base remote follows the final publication selection.
+`remote` remains a publication input alias, with the precedence described in the
+[user guide](USAGE.md#repository-settings). Remote names have no special meaning
+and both roles may use the same remote.
+
+Settings syntax validation does not require either remote to exist or the base
 branch to be present locally. Those checks need fresh remote information and
 belong to the workflow. Preparation accepts bare, detached, and unborn
 repository contexts; eligibility for mutation belongs to that same workflow.
@@ -103,8 +111,8 @@ context fails discovery, matching the existing inspection boundary.
 ## Read-only boundary and errors
 
 Preparation discovers repository paths, reads configuration layers, and invokes
-Git's local ref-syntax checks. It does not read the index, fetch, inspect remote
-availability, create/switch/publish branches, or edit repository files. It uses
+Git's local ref-syntax checks and raw target tracking/push-selection settings.
+It does not read the index, fetch, inspect remote availability, create/switch/publish branches, or edit repository files. It uses
 the existing no-optional-locks, no-lazy-fetch, fsmonitor-disabled Git executor.
 Existing branch names and collisions do not change resolution.
 
@@ -135,8 +143,8 @@ start and reports that worktree's path.
 | --- | --- |
 | `AlreadyCurrent` | Exact branch already current: read-only success, including a dirty tree. |
 | `ResumeLocal` | Switch to the exact existing local branch; do not contact any remote or alter history/upstream configuration. |
-| `ResumeRemote` | Discover the exact remote head afresh, fetch it explicitly, create its local counterpart without automatic tracking, configure its exact remote/merge pair, and switch. |
-| `Create` | Discover that the exact remote target is absent, explicitly fetch the configured remote base head, create the target at that fetched commit without tracking, and switch. |
+| `ResumeRemote` | Discover the exact publication-remote head afresh, fetch it explicitly, create its local counterpart without automatic tracking, configure its exact remote/merge pair, and switch. |
+| `Create` | Discover that the exact publication-remote target is absent, explicitly fetch the configured base head from the base remote, create the target at that fetched commit without tracking, and switch. |
 
 Every action except `AlreadyCurrent` requires a clean index and working tree,
 including conflicts and submodule commit, tracked, and untracked dirtiness.
@@ -146,9 +154,12 @@ overwrite them. Git retains its normal file/index/worktree safety checks.
 ## Exact references and remote freshness
 
 Local existence checks use `show-ref --verify refs/heads/<target>` and verify a
-commit object. Remote discovery uses a configured named remote and `ls-remote`
-for full `refs/heads/<target>` / `refs/heads/<base>` names, accepting only exact
-returned refs. Tags and cached remote-tracking refs never prove existence or
+commit object. Remote discovery uses configured named remotes and `ls-remote`
+for full head names, accepting only exact returned refs. The publication remote
+is queried for `refs/heads/<target>`. When absent there, the base remote supplies
+`refs/heads/<base>`; a same-named working branch on the base remote is not resumed.
+When roles match, both exact heads can be discovered in one query. Tags and
+cached remote-tracking refs never prove existence or
 absence. A missing remote/base, discovery failure, or fetch refusal stops the
 remote-dependent path. In particular, deletion between discovery and fetch
 fails rather than using a cached ref or changing the selected action.
@@ -156,12 +167,14 @@ fails rather than using a cached ref or changing the selected action.
 Fetching uses a single explicit full-head-to-remote-tracking refspec and an
 empty `--refmap`, overriding restrictive and negative fetch mappings. Only the
 selected remote-tracking ref is refreshed; unrelated refs/tags and local base
-history remain untouched. Automatic tag fetching, pruning, recursive submodule
+history remain untouched. The fork's base branch is not synchronized. Symbolic
+fetch destinations are refused because they can redirect writes into existing
+local history. Automatic tag fetching, pruning, recursive submodule
 fetching, FETCH_HEAD writes, commit-graph writes, and auto-maintenance are
 explicitly disabled. The forced refspec permits remote-tracking updates after
 remote history changes; it never forces a local branch update or switch.
 
-A remote counterpart receives exactly `branch.<target>.remote` and
+A remote counterpart receives exactly `branch.<target>.remote = <publish-remote>` and
 `branch.<target>.merge = refs/heads/<target>`. Existing remote fetch mappings are
 preserved. If they exclude that head, Git's local upstream-comparison mapping
 can remain unavailable despite the configured remote/merge pair; inspection
@@ -170,12 +183,32 @@ regardless of automatic-tracking settings. An absent local target with existing
 upstream configuration is refused before fetching rather than silently reusing
 or overwriting that configuration.
 
+## Tracking and push selection
+
+Local resume and current-branch success accept absent tracking, the exact target
+on the publication remote, or the configured base branch on the base remote.
+Each configured relationship requires exactly one remote and one full merge ref.
+Incomplete, duplicate, empty, local `.` and unrelated relationships fail. Valid
+existing tracking and other branch settings remain unchanged; local actions need
+no configured or reachable remote.
+
+The shared [save tracking and push-selection guard](SAVE.md#preconditions-and-local-evidence)
+also validates the target's effective explicit push override. The last
+`branch.<target>.pushRemote` value takes precedence over the last
+`remote.pushDefault` value; when present it must equal the publication remote
+name. Implicit routing defaults do not select start's source. Start neither
+edits these settings nor changes ordinary Git routing.
+
 ## Snapshots, effects, and failures
 
 Before each mutation, execution rechecks operation/occupation guards, attached
-HEAD identity, cleanliness, settings/context, and the expected local target
-ref. It does not claim to lock out other Git processes. Git refusals remain
-errors. Mutations and subsequent observation run from the verified working-tree
+HEAD identity, cleanliness, settings/context, the expected local target ref,
+and raw target tracking/push-selection settings. Each required remote's resolved
+fetch URLs are captured before discovery and rechecked before subsequent
+operations. Local actions omit remote URL resolution. Only start's own confirmed
+tracking writes advance the expected snapshot; concurrent tracking changes stop
+the next step. These snapshots are not locks against other Git processes.
+Git refusals remain errors. Mutations and subsequent observation run from the verified working-tree
 root so switching away from a branch that contains the caller's nested directory
 can remove that directory without losing the remaining-state report. Inherited
 Git repository-selection semantics must still select the prepared context from

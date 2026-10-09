@@ -510,7 +510,7 @@ fn expansive_push_settings_do_not_publish_unrelated_branches_or_tags() {
                 ("push.followTags", "true"),
                 ("push.autoSetupRemote", "true"),
                 ("push.recurseSubmodules", "on-demand"),
-                ("branch.Feature/Exact_Name.pushRemote", "another"),
+                ("branch.Feature/Exact_Name.pushRemote", "origin"),
                 ("remote.pushDefault", "another"),
             ] {
                 repo.success(&["config", key, value]);

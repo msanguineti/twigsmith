@@ -307,7 +307,7 @@ fn finish_preserves_strict_upstream_and_mapping_guards() {
                 (vec!["origin"], vec![], false),
                 (vec![], vec!["refs/heads/Feature/Exact_Name"], false),
                 (vec!["other"], vec!["refs/heads/Feature/Exact_Name"], false),
-                (vec!["origin"], vec!["refs/heads/main"], false),
+                (vec!["origin"], vec!["refs/heads/main"], true),
                 (
                     vec!["origin", "origin"],
                     vec!["refs/heads/Feature/Exact_Name"],
