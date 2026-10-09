@@ -249,13 +249,14 @@ gof config --yes --format json
 ```
 
 `config show` displays the effective `publish-remote`, `base-remote`, `base`,
-`save-action`, `finish-update`, and `finish-rewrite`, identifying each value's
-shared file, local file, or built-in default. An inherited base remote identifies
+`save-action`, `finish-update`, `finish-rewrite`, and ordered `finish-checks`,
+identifying each value's shared file, local file, or built-in default. An inherited base remote identifies
 the publication source it follows. Inspection lists discovered files and the
 directories searched when a layer is absent.
 Settings resolve from local overrides, shared settings, then defaults. Explicit
 save/finish flags take precedence over their corresponding settings. Inspection uses shared workflow
-validation and diagnostics. Its output is intended for people.
+validation and diagnostics. It displays check commands as argument lists without
+executing them or checking executable availability. Its output is intended for people.
 
 `config` guides you through the publication remote for working branches, the
 base source remote, the base branch, the default save action, and the finish
@@ -336,7 +337,7 @@ configuration is either absent or complete.
 
 Defaults are `publish-remote = origin`, `base-remote` following publication,
 `base = main`, `save-action = ask`,
-`finish-update = ask`, and `finish-rewrite = ask`.
+`finish-update = ask`, `finish-rewrite = ask`, and `finish-checks = []`.
 Commit shared settings at the Git working-tree root. Keep private overrides in
 the Git common directory, usually `.git`. Each directory accepts one of:
 
@@ -361,7 +362,8 @@ Finish's update and rewrite flags override their respective settings.
 Start has no setting override flags. Parent directories and the home directory
 supply no additional settings.
 
-Use a flat mapping of case-sensitive keys with string values. These examples
+Use a mapping of case-sensitive keys. Remote names, the base branch, and workflow
+policies are strings; `finish-checks` is a list of objects. These examples
 are equivalent; save each under its matching filename:
 
 ```toml
@@ -370,6 +372,7 @@ base = "trunk"
 save-action = "ask"
 finish-update = "ask"
 finish-rewrite = "ask"
+finish-checks = []
 ```
 
 ```yaml
@@ -378,10 +381,11 @@ base: "trunk"
 save-action: "ask"
 finish-update: "ask"
 finish-rewrite: "ask"
+finish-checks: []
 ```
 
 ```json
-{"publish-remote": "team", "base": "trunk", "save-action": "ask", "finish-update": "ask", "finish-rewrite": "ask"}
+{"publish-remote": "team", "base": "trunk", "save-action": "ask", "finish-update": "ask", "finish-rewrite": "ask", "finish-checks": []}
 ```
 
 `publish-remote` names the Git remote receiving working branches. `base-remote`
@@ -483,6 +487,61 @@ remote base; rewrite supplies independent permission for eligible replacement.
 Guided setup offers both with `ask` defaults, and `config --yes` writes those
 explicit defaults. See [finish](#prepare-and-publish-finished-work) and the
 [finish contract](FINISH.md).
+
+### Finish checks
+
+`finish-checks` is an ordered list of objects containing exactly `name` and
+`command`. `name` is a nonblank string used as a display label. `command` is a
+nonempty list of strings whose first element is a nonempty executable name or
+path. Remaining elements are individual arguments. Spaces, quotes, Unicode,
+and empty argument strings are preserved exactly. Command strings cannot contain
+NUL, which process arguments cannot represent.
+
+These check lists are equivalent in TOML, YAML/YML, and JSON:
+
+```toml
+[[finish-checks]]
+name = "Tests"
+command = ["cargo", "test", "--locked"]
+
+[[finish-checks]]
+name = "Custom validation"
+command = ["sh", "-c", "npm run lint && npm run check"]
+```
+
+```yaml
+finish-checks:
+  - name: "Tests"
+    command: ["cargo", "test", "--locked"]
+  - name: "Custom validation"
+    command: ["sh", "-c", "npm run lint && npm run check"]
+```
+
+```json
+{
+  "finish-checks": [
+    {"name": "Tests", "command": ["cargo", "test", "--locked"]},
+    {"name": "Custom validation", "command": ["sh", "-c", "npm run lint && npm run check"]}
+  ]
+}
+```
+
+Commands are exact executable-and-argument lists. Shell features require an
+explicit shell invocation, as in the second check. There is no implicit shell
+interpretation, interpolation, or argument splitting.
+
+An omitted local `finish-checks` inherits the shared list. A supplied local list
+replaces the entire shared list, preserving its order; `[]` explicitly disables
+inherited checks. Every supplied list is validated, including overridden shared
+lists. `config show` reports the effective list and its source.
+
+Check execution is deferred. Finish refuses a nonempty effective list before
+branch preparation or publication. Start, save, and configuration inspection
+never execute finish checks. Generated defaults contain an empty list; guided
+setup leaves check entry to editing the configuration file.
+
+### Validation and private output settings
+
 Omit keys to inherit them from the next layer. An empty TOML document or an empty
 mapping (`{}`) in YAML/JSON inherits every key. Quote YAML values that could be
 interpreted as another type, such as `"true"` or `"123"`.
@@ -497,7 +556,8 @@ credentials in terminal output and captured logs.
 All present files must be valid UTF-8 and satisfy the same validation rules.
 Malformed syntax, unknown or duplicate keys, invalid values, and unreadable files
 fail even when another layer or an explicit action overrides them. String-valued
-settings require strings; `redact-credentials` requires a boolean in the private
+settings require strings; check labels and command elements also require strings.
+`redact-credentials` requires a boolean in the private
 local file. Configuration is read locally as data;
 remote availability is checked by the workflow that needs it. Save rechecks
 settings before affected operations, including after local preservation. If a

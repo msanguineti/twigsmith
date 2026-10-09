@@ -3,8 +3,8 @@
 Finish prepares and publishes the current working branch for delivery. This
 contract is implemented through read-only assessment/revalidation, controlled
 remote refresh, branch preparation, durable rebase recovery evidence, and exact
-publication, exposed identically by `git-oneflow finish` and `gof finish`. This is
-the preparation/publication increment. Configurable checks, external integrations,
+publication, exposed identically by `git-oneflow finish` and `gof finish`.
+Structured check configuration is supported. Check execution, external integrations,
 provider submission, integration into the base, tagging, and cleanup are deferred.
 
 ## Configuration and choices
@@ -17,12 +17,13 @@ temporarily enables display regardless of the local value. Disabling redaction
 exposes credentials in terminal output and captured logs, and requires no
 confirmation.
 
-The flat configuration schema includes:
+The configuration schema includes:
 
 | Setting | Values | Default |
 | --- | --- | --- |
 | `finish-update` | `ask`, `rebase`, `merge`, `none` | `ask` |
 | `finish-rewrite` | `ask`, `allow`, `deny` | `ask` |
+| `finish-checks` | Ordered list of `{ name, command }` objects | `[]` |
 
 Shared and common-directory local TOML/YAML/YML/JSON files
 use the same strict validation and sparse per-key precedence. Every present value
@@ -34,6 +35,27 @@ Update and rewrite flags combine in either order. Rewrite flags are mutually
 exclusive; duplicate options, unsupported values, and positional arguments are
 syntax errors. The alias accepts identical grammar and behavior. There is no
 blanket `--yes` or dry-run.
+
+Each check contains exactly a nonblank string `name` and a nonempty string list
+`command`. The first command element is a nonempty executable name or path;
+remaining elements are literal arguments, including empty strings. NUL is rejected
+in every command element. No shell interpretation, interpolation, splitting,
+executable lookup, or command execution occurs during loading or inspection.
+Shell features require an explicit shell in the command vector. Names and
+arguments retain their supplied contents and list order across rendering in every
+supported format.
+
+An omitted local list inherits the shared list. A supplied local list replaces
+it completely; an empty list disables inherited checks. Both layers are validated
+even when overridden. The effective ordered list and its whole-list source are
+part of settings equality and plan/setup revalidation. Generated defaults contain
+an explicit empty list; guided entry and CLI bypass options are deferred.
+
+Until check execution is implemented, `finish::assess` returns
+`FinishChecksUnavailable` for a nonempty effective list. The CLI stops before
+remote refresh, branch preparation, or publication. Library preparation and
+publication revalidation also enforce this guard, including checks added after
+assessment. Start, save, and configuration inspection never execute finish checks.
 
 Fresh evidence that the branch includes the remote base resolves update to `none`
 with source `IncludesBase`, regardless of the selected update preference. Otherwise

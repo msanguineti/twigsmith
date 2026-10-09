@@ -33,35 +33,36 @@ pub fn render_defaults(format: Format) -> String {
 }
 
 pub fn render(format: Format, proposed: &settings::Settings) -> String {
-    let mut pairs = vec![
-        ("publish-remote", proposed.publish_remote.as_str()),
-        ("base", proposed.base.as_str()),
-        ("save-action", proposed.save_action.as_str()),
-        ("finish-update", proposed.finish_update.as_str()),
-        ("finish-rewrite", proposed.finish_rewrite.as_str()),
-    ];
-    if proposed.sources.base_remote.is_some() || proposed.base_remote != proposed.publish_remote {
-        pairs.insert(1, ("base-remote", proposed.base_remote.as_str()));
+    // Serialize the schema in each format rather than sharing scalar quoting rules.
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "kebab-case")]
+    struct Document<'a> {
+        publish_remote: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_remote: Option<&'a str>,
+        base: &'a str,
+        save_action: &'a str,
+        finish_update: &'a str,
+        finish_rewrite: &'a str,
+        finish_checks: &'a [settings::FinishCheck],
     }
-    // Valid ref names exclude controls/backslashes; JSON string quoting also
-    // serves TOML and YAML for all accepted setting values.
-    let quote = |s: &str| serde_json::to_string(s).expect("string serialization");
+    let document = Document {
+        publish_remote: &proposed.publish_remote,
+        base_remote: (proposed.sources.base_remote.is_some()
+            || proposed.base_remote != proposed.publish_remote)
+            .then_some(proposed.base_remote.as_str()),
+        base: &proposed.base,
+        save_action: proposed.save_action.as_str(),
+        finish_update: proposed.finish_update.as_str(),
+        finish_rewrite: proposed.finish_rewrite.as_str(),
+        finish_checks: &proposed.finish_checks,
+    };
     match format {
-        Format::Toml => pairs
-            .iter()
-            .map(|(k, v)| format!("{k} = {}\n", quote(v)))
-            .collect(),
-        Format::Yaml => pairs
-            .iter()
-            .map(|(k, v)| format!("{k}: {}\n", quote(v)))
-            .collect(),
+        Format::Toml => toml::to_string_pretty(&document).expect("settings serialization"),
+        Format::Yaml => serde_saphyr::to_string(&document).expect("settings serialization"),
         Format::Json => format!(
-            "{{\n{}\n}}\n",
-            pairs
-                .iter()
-                .map(|(k, v)| format!("  {}: {}", quote(k), quote(v)))
-                .collect::<Vec<_>>()
-                .join(",\n")
+            "{}\n",
+            serde_json::to_string_pretty(&document).expect("settings serialization")
         ),
     }
 }
@@ -264,6 +265,8 @@ fn validate(directory: &Path, proposed: &settings::Settings) -> Result<(), Confi
         )
         .into());
     }
+    settings::validate_finish_checks(&proposed.finish_checks)
+        .map_err(SettingsError::InvalidSettings)?;
     Ok(())
 }
 

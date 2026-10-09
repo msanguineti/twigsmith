@@ -75,12 +75,14 @@ fn assert_defaults(directory: &Path, filename: &str) {
     assert_eq!(loaded.save_action, defaults.save_action);
     assert_eq!(loaded.finish_update, defaults.finish_update);
     assert_eq!(loaded.finish_rewrite, defaults.finish_rewrite);
+    assert!(loaded.finish_checks.is_empty());
     let source = SettingSource::Shared(directory.join(filename));
     assert_eq!(loaded.sources.publish_remote, source);
     assert_eq!(loaded.sources.base, source);
     assert_eq!(loaded.sources.save_action, source);
     assert_eq!(loaded.sources.finish_update, source);
     assert_eq!(loaded.sources.finish_rewrite, source);
+    assert_eq!(loaded.sources.finish_checks, source);
 }
 
 #[test]
@@ -806,7 +808,7 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     let repo = Repository::new(root);
                     repo.success(&["remote", "add", "hint-only", "/unreachable/offline"]);
                     let private = repo.path().join(".git/git-oneflow.config.toml");
-                    fs::write(&private, "publish-remote = 'private'\nsave-action = 'stash'\nfinish-update = 'none'\nfinish-rewrite = 'deny'\n").unwrap();
+                    fs::write(&private, "publish-remote = 'private'\nsave-action = 'stash'\nfinish-update = 'none'\nfinish-rewrite = 'deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
                     let before_git = snapshot(&repo.path().join(".git"));
                     let mut terminal = terminal::Terminal::start(
                         exe,
@@ -830,6 +832,9 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     assert!(terminal.output.contains("Effective save-action: stash"));
                     assert!(terminal.output.contains("Effective finish-update: none"));
                     assert!(terminal.output.contains("Effective finish-rewrite: deny"));
+                    assert!(terminal.output.contains(
+                        r#"Effective finish-checks: [{"name":"Private tests","command":["private-check",""]}] (local:"#
+                    ));
                     let proposed = Settings {
                         publish_remote: if custom { "future-remote" } else { "origin" }.into(),
                         base_remote: if custom { "future-remote" } else { "origin" }.into(),
@@ -860,6 +865,7 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                         &proposed,
                     );
                     assert!(!contents.contains("redact-credentials"));
+                    assert!(!contents.contains("private-check"));
                     assert!(terminal.output.replace('\r', "").contains(&contents));
                     terminal.send(b"yes\n");
                     assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
@@ -1382,6 +1388,7 @@ fn guided_remote_roles_review_selected_intent_with_private_precedence() {
                         let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
                         assert_eq!(contents.contains("base-remote"), split);
                         assert!(!contents.contains("redact-credentials"));
+                        assert!(!contents.contains("private-check"));
                         assert!(!contents.contains("private"));
                         assert!(!contents.contains("local-base"));
                         let effective = load(repo.path());

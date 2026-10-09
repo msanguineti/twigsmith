@@ -160,6 +160,7 @@ pub enum FinishError {
     Local(SaveError),
     Publication(PublishError),
     DirtyTree,
+    FinishChecksUnavailable,
     InvalidEvidence(&'static str),
     ContextChanged,
 }
@@ -186,6 +187,9 @@ impl fmt::Display for FinishError {
             Self::Publication(error) => return write!(f, "{error}"),
             Self::DirtyTree => {
                 "finish requires a clean index, working tree, and submodules; commit or preserve changes first"
+            }
+            Self::FinishChecksUnavailable => {
+                "finish-checks are configured, but check execution is not implemented; finish cannot prepare or publish this branch"
             }
             Self::InvalidEvidence(reason) => {
                 return write!(
@@ -372,6 +376,9 @@ pub fn assess(
             message: None,
         },
     )?;
+    if !local.settings.finish_checks.is_empty() {
+        return Err(FinishError::FinishChecksUnavailable);
+    }
     if local.scope.tree_state() != TreeState::Clean {
         return Err(FinishError::DirtyTree);
     }

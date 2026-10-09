@@ -357,6 +357,13 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
                 source(&review.redact_credentials_source)
             );
         }
+        if matches!(effective.sources.finish_checks, SettingSource::Local(_)) {
+            eprintln!(
+                "  Effective finish-checks: {} ({})",
+                checks(&effective.finish_checks),
+                source(&effective.sources.finish_checks)
+            );
+        }
     } else {
         eprintln!("Private overrides: none.");
     }
@@ -408,6 +415,10 @@ fn source(source: &SettingSource) -> String {
         SettingSource::Shared(path) => format!("shared: {}", text(path.display())),
         SettingSource::Local(path) => format!("local: {}", text(path.display())),
     }
+}
+// JSON preserves argument boundaries and escapes terminal controls for inspection.
+fn checks(checks: &[settings::FinishCheck]) -> String {
+    serde_json::to_string(checks).expect("finish checks serialization")
 }
 fn base_remote_source(settings: &settings::Settings) -> String {
     match &settings.sources.base_remote {
@@ -468,6 +479,11 @@ fn show(inspection: &config::Inspection) {
         loaded.redact_credentials,
         source(&loaded.redact_credentials_source)
     );
+    println!(
+        "  finish-checks: {} ({})",
+        checks(&settings.finish_checks),
+        source(&settings.sources.finish_checks)
+    );
     layer(
         "Shared file",
         loaded.shared.as_deref(),
@@ -515,6 +531,11 @@ Details:
   Local publication settings override shared publication settings.
   Explicit base-remote resolves independently; start, save, and finish support separate roles.
   Finish defaults: finish-update = ask; finish-rewrite = ask.
+  finish-checks is an ordered list of objects with a name string and command list.
+  command is a nonempty executable-and-argument list; shell syntax requires an explicit shell.
+  Defaults contain no checks. A local list replaces the shared list; [] disables inherited checks.
+  Inspection displays checks and their source without running commands or checking executables.
+  Start and save never execute finish checks. Finish refuses a nonempty list until execution is implemented.
   Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.
   Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.
   finish-update: ask, rebase, merge, none; finish-rewrite: ask, allow, deny.

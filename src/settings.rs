@@ -4,8 +4,8 @@ use crate::{
     repository::{InspectionError, RepositoryContext},
 };
 use serde::{
-    Deserialize, Deserializer,
-    de::{self, MapAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+    de::{self, MapAccess, SeqAccess, Visitor},
 };
 use std::{
     fmt, fs, io,
@@ -34,6 +34,59 @@ pub enum FinishRewrite {
     Ask,
     Allow,
     Deny,
+}
+
+/// An exact process argument vector; shell syntax requires an explicit shell.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FinishCheck {
+    pub name: String,
+    pub command: Vec<String>,
+}
+impl<'de> Deserialize<'de> for FinishCheck {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            name: Text,
+            command: List<Text>,
+        }
+        struct CheckVisitor;
+        impl<'de> Visitor<'de> for CheckVisitor {
+            type Value = FinishCheck;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a finish check object containing name and command")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<FinishCheck, M::Error> {
+                let fields = Fields::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(FinishCheck {
+                    name: fields.name.0,
+                    command: fields.command.0.into_iter().map(|text| text.0).collect(),
+                })
+            }
+        }
+        // Accept only objects, including in formats that allow struct tuples.
+        d.deserialize_any(CheckVisitor)
+    }
+}
+
+pub(crate) fn validate_finish_checks(checks: &[FinishCheck]) -> Result<(), String> {
+    for (index, check) in checks.iter().enumerate() {
+        let invalid = |reason| format!("finish-checks[{}]: {reason}", index + 1);
+        if check.name.trim().is_empty() {
+            return Err(invalid("name must be a nonblank display label"));
+        }
+        if check.command.first().is_none_or(String::is_empty) {
+            return Err(invalid(
+                "command must contain a nonempty executable name or path",
+            ));
+        }
+        if check.command.iter().any(|argument| argument.contains('\0')) {
+            return Err(invalid(
+                "command strings must not contain NUL (process arguments cannot contain NUL)",
+            ));
+        }
+    }
+    Ok(())
 }
 impl FinishUpdate {
     pub fn as_str(self) -> &'static str {
@@ -129,6 +182,7 @@ pub struct SettingSources {
     pub save_action: SettingSource,
     pub finish_update: SettingSource,
     pub finish_rewrite: SettingSource,
+    pub finish_checks: SettingSource,
 }
 impl Default for SettingSources {
     fn default() -> Self {
@@ -139,6 +193,7 @@ impl Default for SettingSources {
             save_action: SettingSource::BuiltIn,
             finish_update: SettingSource::BuiltIn,
             finish_rewrite: SettingSource::BuiltIn,
+            finish_checks: SettingSource::BuiltIn,
         }
     }
 }
@@ -151,6 +206,7 @@ pub struct Settings {
     pub save_action: SaveAction,
     pub finish_update: FinishUpdate,
     pub finish_rewrite: FinishRewrite,
+    pub finish_checks: Vec<FinishCheck>,
     pub sources: SettingSources,
 }
 impl Default for Settings {
@@ -162,6 +218,7 @@ impl Default for Settings {
             save_action: SaveAction::Ask,
             finish_update: FinishUpdate::Ask,
             finish_rewrite: FinishRewrite::Ask,
+            finish_checks: Vec::new(),
             sources: SettingSources::default(),
         }
     }
@@ -176,6 +233,7 @@ struct Layer {
     save_action: Option<String>,
     finish_update: Option<String>,
     finish_rewrite: Option<String>,
+    finish_checks: Option<Vec<FinishCheck>>,
     redact_credentials: Option<bool>,
 }
 impl Layer {
@@ -188,7 +246,7 @@ impl Layer {
             "finish-update" => Ok(&mut self.finish_update),
             "finish-rewrite" => Ok(&mut self.finish_rewrite),
             _ => Err(format!(
-                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite; local-only: redact-credentials)"
+                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite, finish-checks; local-only: redact-credentials)"
             )),
         }
     }
@@ -223,6 +281,9 @@ impl Layer {
         if let Some(rewrite) = &self.finish_rewrite {
             parse_rewrite(rewrite).map_err(|e| invalid(path, e))?;
         }
+        if let Some(checks) = &self.finish_checks {
+            validate_finish_checks(checks).map_err(|e| invalid(path, e))?;
+        }
         Ok(())
     }
     fn apply(
@@ -256,6 +317,10 @@ impl Layer {
             settings.finish_rewrite = parse_rewrite(&rewrite).expect("validated layer");
             settings.sources.finish_rewrite = source.clone();
         }
+        if let Some(checks) = self.finish_checks {
+            settings.finish_checks = checks;
+            settings.sources.finish_checks = source.clone();
+        }
         if let Some(redact) = self.redact_credentials {
             *redact_credentials = redact;
             *redact_credentials_source = source;
@@ -288,6 +353,28 @@ pub(crate) fn parse_action(value: &str) -> Result<SaveAction, String> {
 // deserialize_any preserves scalar types, including YAML's inferred types.
 // String deserialization alone permits scalar coercion in some YAML parsers.
 struct Text(String);
+// Some YAML deserializers accept null as an empty Vec. Only a supplied sequence
+// represents a list here; null must not disable inherited checks.
+struct List<T>(Vec<T>);
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for List<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct ListVisitor<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for ListVisitor<T> {
+            type Value = List<T>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a list")
+            }
+            fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<List<T>, S::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = seq.next_element()? {
+                    values.push(value);
+                }
+                Ok(List(values))
+            }
+        }
+        d.deserialize_any(ListVisitor(std::marker::PhantomData))
+    }
+}
 impl<'de> Deserialize<'de> for Text {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         struct TextVisitor;
@@ -312,11 +399,18 @@ impl<'de> Deserialize<'de> for Layer {
         impl<'de> Visitor<'de> for LayerVisitor {
             type Value = Layer;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a flat mapping of recognized Oneflow settings")
+                f.write_str("a mapping of recognized Oneflow settings")
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Layer, M::Error> {
                 let mut layer = Layer::default();
                 while let Some(Text(key)) = map.next_key::<Text>()? {
+                    if key == "finish-checks" {
+                        if layer.finish_checks.is_some() {
+                            return Err(de::Error::custom(format!("duplicate key {key:?}")));
+                        }
+                        layer.finish_checks = Some(map.next_value::<List<FinishCheck>>()?.0);
+                        continue;
+                    }
                     if key == "redact-credentials" {
                         if layer.redact_credentials.is_some() {
                             return Err(de::Error::custom(format!("duplicate key {key:?}")));

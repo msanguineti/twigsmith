@@ -105,8 +105,23 @@ handles conflicts and continuation/abort before rerunning finish.
 Finish-specific continuation/abort commands remain deferred. Submission is manual; provider integration remains
 accepted future direction only when explicitly configured.
 
-Provider adapters and their settings remain undecided. Configurable checks,
-integration into the base branch, tagging, cleanup, workflow profiles, release
+Finish-check configuration is an ordered typed list of display labels and exact
+process argument vectors. The local list replaces the shared list as a whole;
+omission inherits and an explicit empty list disables inherited checks. Every
+supplied layer is validated. Values and whole-list provenance participate in
+settings equality and workflow/setup revalidation. Rendering uses each format's
+serializer to preserve argument contents; loading preserves scalar types and
+rejects unknown/duplicate fields and NUL in command elements. Inspection performs
+no command execution or executable availability checks.
+
+Finish assessment refuses nonempty effective checks until execution is
+implemented. Preparation and publication retain this guard through revalidation;
+start and save never execute finish checks. The user guide and finish contract
+define the schema and exact boundaries. Check execution, guided check entry, and
+CLI bypass options remain deferred.
+
+Provider adapters and their settings remain undecided. Integration into the
+base branch, tagging, cleanup, workflow profiles, release
 operations, shell completion, installers, and distribution remain future work.
 
 ## Remote-role configuration

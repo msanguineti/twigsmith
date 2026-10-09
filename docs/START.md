@@ -58,8 +58,8 @@ unusable phrases are operational input failures (exit 1).
 
 ## Repository settings
 
-`settings::load` supplies the same sparse model to start and save. Git discovers
-the current working-tree root and common directory from the caller's directory;
+`settings::load` supplies the same sparse model to start, save, and finish. Git
+discovers the current working-tree root and common directory from the caller's directory;
 its normal repository-selection environment is honored. Shared configuration
 lives at that root. Local overrides live in the common directory and apply across
 linked worktrees. Bare repositories have no shared layer. Parent/home inheritance,
@@ -70,16 +70,20 @@ Each layer recognizes `git-oneflow.config.toml`, `git-oneflow.config.yaml`,
 `git-oneflow.config.yml`, and `git-oneflow.config.json`, independently. At most one
 recognized file may exist per layer; extensions have no priority.
 
-- Formats require a flat mapping of string values under case-sensitive
+- Formats require a mapping of typed values under case-sensitive
   supported settings keys, each at most once; see the
   [settings reference](USAGE.md#repository-settings). YAML uses scalar
   types rather than coercing numbers/booleans/null to strings; merge keys and
   unsupported tags are rejected. Parser import/expression features are disabled.
+- `finish-checks` is an ordered list of exact `name`/`command` objects, with
+  validation specified in the [finish contract](FINISH.md#configuration-and-choices).
+  A local list replaces the shared list, omission inherits it, and an explicit
+  empty list disables inherited checks. Start and save never execute these checks.
 - Keys resolve individually: explicit existing flags > local > shared > built-in
   defaults (`origin`, `main`, `ask`). Start has no settings flags. `save-action`
   accepts `ask`, `publish-only`, `staged`, `wip`, or `stash` and does not alter start.
 - Every present layer is parsed and validated, including overridden values.
-  Unknown/duplicate keys, invalid types, malformed syntax, empty/invalid values,
+  Unknown/duplicate keys, invalid types, malformed syntax, schema-invalid values,
   invalid UTF-8, and unreadable files fail. Only absent files default; dangling
   symlinks fail. Empty TOML or empty YAML/JSON mappings inherit all keys.
 - `base` uses the same branch-name validation as targets. Each remote role is

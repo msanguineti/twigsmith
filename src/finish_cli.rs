@@ -728,6 +728,8 @@ Examples:
 
 Details:
   Requires a clean, attached working branch with a commit, separate from the base.
+  Configured finish-checks must be empty until check execution is implemented.
+  A nonempty effective list stops finish before branch preparation or publication.
   Observes and fetches base from base-remote and each exact publish-remote push destination.
   Rebase replays commits onto the remote base; merge incorporates it; none retains history.
   Branches already including the base need no update choice.
@@ -751,6 +753,7 @@ Settings:
   base: main (default)
   finish-update: ask (default), rebase, merge, none
   finish-rewrite: ask (default), allow, deny
+  finish-checks: [] (default); ordered name/command objects in repository configuration
   allow is standing authorization for eligible replacement; remote safeguards remain.
   Precedence: explicit flags > local overrides > shared settings > defaults.
   Use gof config for guided setup or gof config show to inspect values.
