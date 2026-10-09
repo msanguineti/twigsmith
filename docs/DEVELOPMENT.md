@@ -35,6 +35,8 @@ and runs Clippy with warnings treated as errors.
 | --- | --- |
 | `./dev build` | Build both debug executables |
 | `./dev test` | Run tests |
+| `./dev test-groups` | List focused groups with their included Cargo targets |
+| `./dev test-group NAME [args]` | Run a focused group with additional Cargo test arguments |
 | `./dev fmt` | Format Rust source |
 | `./dev fmt --check` | Check formatting |
 | `./dev lint` | Run Clippy with warnings treated as errors |
@@ -43,6 +45,60 @@ and runs Clippy with warnings treated as errors.
 | `./dev rustc --version` | Show the compiler version |
 
 Build, test, and lint use the committed `Cargo.lock`.
+
+## Select tests during development
+
+Run focused tests while implementing a change. List the available groups and
+their exact targets with `./dev test-groups`, then select a capability:
+
+```sh
+./dev test-group start
+./dev test-group config
+./dev test-group shared
+```
+
+The groups are `start`, `save`, `finish`, `config`, `status`, `shared`, and
+`lifecycle`. Command groups include backend and CLI coverage. `shared` covers
+the development launcher, Git boundary, repository observation, settings,
+tracking, remote roles, finish-check configuration, and exact save/finish
+publication. `lifecycle`
+includes CLI smoke checks and end-to-end project/fork workflows. Every group
+also runs library and binary unit tests (`--lib --bins`). Targets overlap where
+they exercise shared behaviour.
+
+Choose additional targets or groups when a change affects shared components,
+dependencies, configuration, or behaviour across commands. For example, settings
+changes can affect planning and execution in all three lifecycle commands;
+`config` alone covers settings and setup plus finish-check integration, rather
+than every settings consumer. Changes to `tests/support/` can affect any target
+using those fixtures. Group membership is an iteration aid, not an exhaustive
+dependency map.
+
+Use Cargo selection directly for a narrower scope. `./dev test` forwards all
+arguments unchanged, including positional test-name filters, target selectors,
+and test-harness arguments after `--`:
+
+```sh
+./dev test --test cli_finish
+./dev test --test finish_preparation --test finish_publication
+./dev test --test settings
+./dev test config
+./dev test --test settings remote -- --nocapture
+./dev test-group finish recovery -- --nocapture
+```
+
+`./dev test config` remains a Cargo test-name filter. Groups use the separate
+`test-group` command, accept one group name, and prepend Cargo target selectors
+before forwarding the remaining arguments. Additional selectors can expand the
+selection. An unknown or missing group fails with usage guidance.
+
+Run one complete `./dev check` against the final implementation before handoff.
+Repeat complete validation when subsequent changes, failures, or unresolved
+concerns warrant it. Focused tests support iteration and preserve comprehensive
+final validation: `./dev test` without arguments and `./dev check` run every
+Cargo-discovered test target, including CLI smoke and end-to-end tests. New tests
+participate in full runs regardless of group membership; update the group
+definitions in `dev` when a target is useful for focused iteration.
 
 ## Run a build
 

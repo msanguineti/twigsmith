@@ -40,6 +40,9 @@ Usage: ./dev COMMAND [ARGS]
   bootstrap       Install the pinned Rust toolchain, rustfmt, and Clippy locally
   build [ARGS]    Build both native executables (pass --release for optimization)
   test [ARGS]     Run the Rust tests and CLI smoke checks
+  test-groups     List focused test groups and their Cargo targets
+  test-group NAME [ARGS]
+                  Run a focused group, forwarding ARGS to Cargo test
   fmt [ARGS]      Format Rust source (pass --check to verify without changes)
   lint [ARGS]     Run Clippy on all targets with warnings treated as errors
   check           Verify formatting, build, tests, and linting
@@ -49,10 +52,76 @@ Usage: ./dev COMMAND [ARGS]
 EOF
 }
 
+# Keep discovery and execution on the same target definitions. Groups are
+# conveniences; Cargo's normal discovery remains authoritative for full runs.
+test_group() {
+    case "$1" in
+        start)
+            group_description='Start planning, execution, and command interaction'
+            group_targets='start_resolution start_workflow cli_start remote_roles'
+            ;;
+        save)
+            group_description='Save planning, checkpoints, publication, and command interaction'
+            group_targets='save_planning save_execution save_publication cli_save remote_roles'
+            ;;
+        finish)
+            group_description='Finish planning, preparation, publication, recovery, and command interaction'
+            group_targets='finish_planning finish_preparation finish_publication finish_roles finish_checks cli_finish'
+            ;;
+        config)
+            group_description='Settings, setup, and cross-command finish-check configuration'
+            group_targets='settings cli_config finish_checks'
+            ;;
+        status)
+            group_description='Repository observation and status presentation'
+            group_targets='repository_state cli_status'
+            ;;
+        shared)
+            group_description='Development launcher, Git boundary, observation, settings, tracking, roles, and exact publication'
+            group_targets='dev_selection git_execution repository_state settings remote_roles finish_roles finish_checks save_publication finish_publication'
+            ;;
+        lifecycle)
+            group_description='CLI smoke and end-to-end project/fork lifecycles'
+            group_targets='cli_smoke cli_lifecycle'
+            ;;
+        *)
+            echo "error: unknown test group '$1'; use ./dev test-groups to list groups" >&2
+            exit 2
+            ;;
+    esac
+}
+
 command=${1:-help}
 if [ "$#" -gt 0 ]; then shift; fi
 case "$command" in
     help|-h|--help) usage; exit 0 ;;
+    test-groups)
+        if [ "$#" -ne 0 ]; then
+            echo 'error: usage: ./dev test-groups' >&2
+            exit 2
+        fi
+        echo 'Every group includes --lib --bins and the following --test targets:'
+        for group in start save finish config status shared lifecycle; do
+            test_group "$group"
+            printf '\n%s: %s\n  %s\n' "$group" "$group_description" "$group_targets"
+        done
+        exit 0
+        ;;
+    test-group)
+        if [ "$#" -eq 0 ]; then
+            echo 'error: usage: ./dev test-group NAME [CARGO_TEST_ARGS]; use ./dev test-groups to list groups' >&2
+            exit 2
+        fi
+        test_group "$1"
+        shift
+        # Split only our fixed target list. Preserve every caller argument,
+        # including test-name filters and the test-harness -- boundary.
+        for target in $group_targets; do
+            set -- --test "$target" "$@"
+        done
+        set -- --lib --bins "$@"
+        command=test
+        ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
     *) usage >&2; exit 2 ;;
 esac
