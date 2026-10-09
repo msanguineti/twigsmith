@@ -193,6 +193,13 @@ verified finish rebase evidence. Multiple destinations can complete only partly.
 Exit `0` confirms complete publication, including unchanged publication; an
 operational failure, unresolved input, cancellation, or incomplete execution exits
 `1`. Syntax errors exit `2`. Failures report completed effects and remaining state.
+
+Finish redacts credentials in HTTP(S) URLs across prompts, completion output,
+failures, and displayed Git diagnostics by default. The private local setting
+`redact-credentials = false` disables redaction for all finish output. Use
+`gof finish --show-credentials` to show credentials for one invocation; the flag
+takes precedence over the local setting. Disabling redaction exposes credentials
+in terminal output and captured logs. No confirmation prompt is added.
 Use Git to recover conflicts, then rerun finish as described in [recovery](#recovery).
 
 ## Inspect state
@@ -361,10 +368,18 @@ Omit keys to inherit them from the next layer. An empty TOML document or an empt
 mapping (`{}`) in YAML/JSON inherits every key. Quote YAML values that could be
 interpreted as another type, such as `"true"` or `"123"`.
 
+`redact-credentials` is a private local-only boolean, defaulting to `true`. Set
+it in the common-directory local file to disable credential redaction in finish
+output. Shared files reject this key, and guided setup never copies it into the
+generated shared file. `finish --show-credentials` enables credential display for
+one invocation regardless of the local value. Disabling redaction exposes
+credentials in terminal output and captured logs.
+
 All present files must be valid UTF-8 and satisfy the same validation rules.
-Malformed syntax, unknown or duplicate keys, non-string values (including null),
-invalid names/actions, and unreadable files fail even when another layer or an
-explicit action overrides their values. Configuration is read locally as data;
+Malformed syntax, unknown or duplicate keys, invalid values, and unreadable files
+fail even when another layer or an explicit action overrides them. String-valued
+settings require strings; `redact-credentials` requires a boolean in the private
+local file. Configuration is read locally as data;
 remote availability is checked by the workflow that needs it. Save rechecks
 settings before affected operations, including after local preservation. If a
 stash or hook changes effective settings, save stops with completed effects

@@ -814,6 +814,7 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                         },
                         &proposed,
                     );
+                    assert!(!contents.contains("redact-credentials"));
                     assert!(terminal.output.replace('\r', "").contains(&contents));
                     terminal.send(b"yes\n");
                     assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);

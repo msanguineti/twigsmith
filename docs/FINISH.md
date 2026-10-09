@@ -9,6 +9,14 @@ provider submission, integration into the base, tagging, and cleanup are deferre
 
 ## Configuration and choices
 
+Finish output redacts credentials in HTTP(S) URLs by default, including prompts,
+completion output, failures, and displayed Git diagnostics. The local-only
+`redact-credentials` boolean defaults to `true`; it is excluded from committed
+shared configuration and generated shared files. `finish --show-credentials`
+temporarily enables display regardless of the local value. Disabling redaction
+exposes credentials in terminal output and captured logs, and requires no
+confirmation.
+
 The flat configuration schema includes:
 
 | Setting | Values | Default |

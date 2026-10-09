@@ -21,6 +21,13 @@ fn load(directory: &Path) -> Result<Settings, SettingsError> {
         &repository::discover(directory).unwrap().unwrap(),
     )
 }
+fn load_all(directory: &Path) -> settings::LoadedSettings {
+    settings::load_with_files(
+        directory,
+        &repository::discover(directory).unwrap().unwrap(),
+    )
+    .unwrap()
+}
 fn config(format: usize, pairs: &[(&str, &str)]) -> String {
     match format {
         0 => pairs
@@ -694,6 +701,7 @@ fn finish_settings_sparse_layers_legacy_and_sources() {
             let defaults = load(repo.path()).unwrap();
             assert_eq!(defaults.finish_update, FinishUpdate::Ask);
             assert_eq!(defaults.finish_rewrite, FinishRewrite::Ask);
+            assert!(load_all(repo.path()).redact_credentials);
             assert_eq!(defaults.sources.finish_update, SettingSource::BuiltIn);
             assert_eq!(defaults.sources.finish_rewrite, SettingSource::BuiltIn);
             for (shared, shared_file) in CONFIG_FILES.iter().enumerate() {
@@ -845,6 +853,61 @@ fn finish_settings_strict_validation_in_every_layer() {
                     fs::remove_file(legacy).unwrap();
                 }
             }
+        },
+    );
+}
+
+#[test]
+fn credential_redaction_setting_is_private_and_strict() {
+    isolated(
+        "credential_redaction_setting_is_private_and_strict",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let workflow_settings = load(repo.path()).unwrap();
+            for (format, filename) in CONFIG_FILES.iter().enumerate() {
+                let common = repo.path().join(".git");
+                for (value, expected) in [("true", true), ("false", false)] {
+                    let contents = match format {
+                        0 => format!("redact-credentials = {value}\n"),
+                        1 | 2 => format!("redact-credentials: {value}\n"),
+                        _ => format!("{{\"redact-credentials\":{value}}}"),
+                    };
+                    fs::write(common.join(filename), contents).unwrap();
+                    let settings = load_all(repo.path());
+                    assert_eq!(settings.redact_credentials, expected);
+                    assert_eq!(
+                        settings::load(
+                            repo.path(),
+                            &repository::discover(repo.path()).unwrap().unwrap()
+                        )
+                        .unwrap(),
+                        workflow_settings
+                    );
+                    assert_eq!(
+                        settings.redact_credentials_source,
+                        SettingSource::Local(common.join(filename))
+                    );
+                }
+                fs::remove_file(common.join(filename)).unwrap();
+
+                let shared = match format {
+                    0 => "redact-credentials = true\n".to_owned(),
+                    1 | 2 => "redact-credentials: true\n".to_owned(),
+                    _ => "{\"redact-credentials\":true}".to_owned(),
+                };
+                fs::write(repo.path().join(filename), shared).unwrap();
+                let error = load(repo.path()).unwrap_err().to_string();
+                assert!(error.contains("private local setting"), "{error}");
+                fs::remove_file(repo.path().join(filename)).unwrap();
+
+                fs::write(common.join(filename), "redact-credentials = \"false\"\n").unwrap();
+                assert!(load(repo.path()).is_err());
+                fs::remove_file(common.join(filename)).unwrap();
+            }
+            let legacy = repo.path().join(".git/oneflow.conf");
+            fs::write(&legacy, "redact-credentials=false\n").unwrap();
+            assert!(!load_all(repo.path()).redact_credentials);
         },
     );
 }

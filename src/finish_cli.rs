@@ -5,8 +5,8 @@ use crate::{
         self, Constraint, FinishError, Plan, Request, RequiredInput, preparation, publication,
     },
     repository::{self, Head, InspectionError, Observation},
-    settings::{FinishRewrite, FinishUpdate},
-    status::display,
+    settings::{self, FinishRewrite, FinishUpdate},
+    status::display as terminal_display,
 };
 use std::{
     env,
@@ -17,14 +17,79 @@ use std::{
     process::ExitCode,
 };
 
-fn text(value: impl std::fmt::Display) -> String {
-    display(value.to_string().as_bytes())
+#[derive(Clone, Copy)]
+struct Presentation {
+    show_credentials: bool,
 }
-fn parse(args: &[OsString]) -> Result<Request, &'static str> {
+
+fn resolve_presentation(
+    show_credentials_flag: bool,
+    redact_credentials: Option<bool>,
+) -> Presentation {
+    Presentation {
+        show_credentials: show_credentials_flag || redact_credentials == Some(false),
+    }
+}
+
+/// Render finish data for people. URL bytes in workflow plans remain untouched.
+fn display(presentation: Presentation, bytes: &[u8]) -> String {
+    let rendered = terminal_display(bytes);
+    if presentation.show_credentials {
+        rendered
+    } else {
+        redact_url_userinfo(&rendered)
+    }
+}
+
+fn text(presentation: Presentation, value: impl std::fmt::Display) -> String {
+    display(presentation, value.to_string().as_bytes())
+}
+
+fn redact_url_userinfo(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(value.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let start = if bytes[cursor..].starts_with(b"https://") {
+            Some(cursor + 8)
+        } else if bytes[cursor..].starts_with(b"http://") {
+            Some(cursor + 7)
+        } else {
+            None
+        };
+        let Some(authority_start) = start else {
+            let ch = value[cursor..]
+                .chars()
+                .next()
+                .expect("valid character boundary");
+            output.push(ch);
+            cursor += ch.len_utf8();
+            continue;
+        };
+        output.push_str(&value[cursor..authority_start]);
+        let authority_end = bytes[authority_start..]
+            .iter()
+            .position(|byte| matches!(byte, b'/' | b'?' | b'#' | b' ' | b'\n' | b'\r' | b'\t'))
+            .map_or(bytes.len(), |offset| authority_start + offset);
+        let authority = &value[authority_start..authority_end];
+        if let Some(at) = authority.rfind('@') {
+            output.push_str("<redacted>@");
+            output.push_str(&authority[at + 1..]);
+        } else {
+            output.push_str(authority);
+        }
+        cursor = authority_end;
+    }
+    output
+}
+fn parse(args: &[OsString]) -> Result<(Request, bool), &'static str> {
     let mut request = Request::default();
+    let mut show_credentials = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("--show-credentials") if !show_credentials => show_credentials = true,
+            Some("--show-credentials") => return Err("duplicate --show-credentials"),
             Some("--update") => {
                 if request.update.is_some() {
                     return Err("duplicate --update");
@@ -49,7 +114,7 @@ fn parse(args: &[OsString]) -> Result<Request, &'static str> {
             _ => return Err("unknown or malformed finish argument"),
         }
     }
-    Ok(request)
+    Ok((request, show_credentials))
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -57,27 +122,37 @@ pub fn run(args: &[OsString]) -> ExitCode {
         help();
         return ExitCode::SUCCESS;
     }
-    let mut request = match parse(args) {
-        Ok(request) => request,
+    let (mut request, show_credentials) = match parse(args) {
+        Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("error: {error}; use finish --help (alias: f)");
             return ExitCode::from(2);
         }
     };
+    let mut presentation = resolve_presentation(show_credentials, None);
     let directory = match env::current_dir() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!("error: cannot determine current directory: {}", text(error));
+            eprintln!(
+                "error: cannot determine current directory: {}",
+                text(presentation, error)
+            );
             return ExitCode::FAILURE;
         }
     };
+    if !show_credentials
+        && let Ok(Some(context)) = repository::discover(&directory)
+        && let Ok(configured) = settings::load_with_files(&directory, &context)
+    {
+        presentation = resolve_presentation(show_credentials, Some(configured.redact_credentials));
+    }
     let initial = match finish::assess(&directory, &request, None) {
         Ok(plan) => plan,
         Err(error) => {
-            eprintln!("error: {}", text(&error));
-            error_diagnostics(&error);
+            eprintln!("error: {}", text(presentation, &error));
+            error_diagnostics(presentation, &error);
             let mut output = String::new();
-            remaining(&mut output, &repository::inspect(&directory));
+            remaining(presentation, &mut output, &repository::inspect(&directory));
             output.push_str("Branch publication not attempted.\n");
             eprint!("{output}");
             return ExitCode::FAILURE;
@@ -85,16 +160,16 @@ pub fn run(args: &[OsString]) -> ExitCode {
     };
     let refresh = preparation::refresh(&directory, &initial);
     let Some(mut plan) = refresh.plan.clone().filter(|_| refresh.error.is_none()) else {
-        preparation_failure(&refresh, None);
+        preparation_failure(presentation, &refresh, None);
         return ExitCode::FAILURE;
     };
     loop {
         if !plan.constraints.is_empty() {
             let mut output = String::new();
             for constraint in &plan.constraints {
-                constraint_message(&mut output, constraint);
+                constraint_message(presentation, &mut output, constraint);
             }
-            preparation_failure(&refresh, Some(&output));
+            preparation_failure(presentation, &refresh, Some(&output));
             return ExitCode::FAILURE;
         }
         let Some(choice) = plan.required_input.first().copied() else {
@@ -110,6 +185,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 }
             };
             preparation_failure(
+                presentation,
                 &refresh,
                 Some(&format!(
                     "error: unresolved {} choice; terminal input and stderr are required; {guidance}.\n",
@@ -123,15 +199,15 @@ pub fn run(args: &[OsString]) -> ExitCode {
         }
         eprintln!(
             "Finish {} at {} to {} (base {}).",
-            display(&plan.branch),
-            display(&plan.commit),
-            text(&plan.settings.remote),
-            text(&plan.settings.base)
+            display(presentation, &plan.branch),
+            display(presentation, &plan.commit),
+            text(presentation, &plan.settings.remote),
+            text(presentation, &plan.settings.base)
         );
-        let answer = match prompt(&plan, choice) {
+        let answer = match prompt(presentation, &plan, choice) {
             Ok(answer) => answer,
             Err(error) => {
-                preparation_failure(&refresh, Some(&format!("{error}\n")));
+                preparation_failure(presentation, &refresh, Some(&format!("{error}\n")));
                 return ExitCode::FAILURE;
             }
         };
@@ -143,6 +219,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                     "none" => FinishUpdate::None,
                     _ => {
                         preparation_failure(
+                            presentation,
                             &refresh,
                             Some("error: invalid update choice; rerun finish to choose again.\n"),
                         );
@@ -156,6 +233,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                     "deny" => FinishRewrite::Deny,
                     _ => {
                         preparation_failure(
+                            presentation,
                             &refresh,
                             Some("error: invalid rewrite choice; rerun finish to choose again.\n"),
                         );
@@ -167,8 +245,12 @@ pub fn run(args: &[OsString]) -> ExitCode {
         plan = match resolve(&directory, &plan, &request) {
             Ok(plan) => plan,
             Err(error) => {
-                preparation_failure(&refresh, Some(&format!("error: {}\n", text(&error))));
-                error_diagnostics(&error);
+                preparation_failure(
+                    presentation,
+                    &refresh,
+                    Some(&format!("error: {}\n", text(presentation, &error))),
+                );
+                error_diagnostics(presentation, &error);
                 return ExitCode::FAILURE;
             }
         };
@@ -178,7 +260,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let mut effects = refresh.effects.clone();
         effects.append(&mut prepared.effects);
         prepared.effects = effects;
-        preparation_failure(&prepared, None);
+        preparation_failure(presentation, &prepared, None);
         return ExitCode::FAILURE;
     }
     let plan = prepared.plan.as_ref().expect("prepared plan");
@@ -186,21 +268,21 @@ pub fn run(args: &[OsString]) -> ExitCode {
     if published.is_complete() {
         println!(
             "Published {} to {} at {}.",
-            display(&plan.branch),
-            text(&published.remote),
-            display(&published.commit)
+            display(presentation, &plan.branch),
+            text(presentation, &published.remote),
+            display(presentation, &published.commit)
         );
         for destination in &published.destinations {
             println!(
                 "  {}: {}",
-                display(&destination.destination),
+                display(presentation, &destination.destination),
                 destination_state(destination.state)
             );
         }
         println!(
             "Next: submit {} for review into {}.",
-            display(&plan.branch),
-            text(&plan.settings.base)
+            display(presentation, &plan.branch),
+            text(presentation, &plan.settings.base)
         );
         ExitCode::SUCCESS
     } else {
@@ -208,29 +290,29 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let _ = writeln!(
             output,
             "Finish incomplete for {} at {} to {}.",
-            display(&plan.branch),
-            display(&published.commit),
-            text(&published.remote)
+            display(presentation, &plan.branch),
+            display(presentation, &published.commit),
+            text(presentation, &published.remote)
         );
-        preparation_effects(&mut output, &refresh);
-        preparation_effects(&mut output, &prepared);
+        preparation_effects(presentation, &mut output, &refresh);
+        preparation_effects(presentation, &mut output, &prepared);
         if let Some(error) = &published.error {
-            let _ = writeln!(output, "error: {}", text(error));
+            let _ = writeln!(output, "error: {}", text(presentation, error));
         }
         for destination in &published.destinations {
             let _ = writeln!(
                 output,
                 "  {}: {}",
-                display(&destination.destination),
+                display(presentation, &destination.destination),
                 destination_state(destination.state)
             );
             if let Some(error) = &destination.error {
-                let _ = writeln!(output, "  error: {}", text(error));
+                let _ = writeln!(output, "  error: {}", text(presentation, error));
             }
-            command_diagnostics(&mut output, &destination.commands);
+            command_diagnostics(presentation, &mut output, &destination.commands);
         }
-        tracking(&mut output, &published.tracking);
-        remaining(&mut output, &published.remaining);
+        tracking(presentation, &mut output, &published.tracking);
+        remaining(presentation, &mut output, &published.remaining);
         let _ = writeln!(
             output,
             "Inspect reported destinations and Git state, resolve the failure, then rerun finish. Completed effects are retained."
@@ -246,7 +328,11 @@ fn resolve(directory: &Path, reviewed: &Plan, request: &Request) -> Result<Plan,
     finish::revalidate(directory, reviewed, reviewed.evidence.as_ref())?;
     Ok(resolved)
 }
-fn prompt(plan: &Plan, choice: RequiredInput) -> Result<String, String> {
+fn prompt(
+    presentation: Presentation,
+    plan: &Plan,
+    choice: RequiredInput,
+) -> Result<String, String> {
     let prompt = match choice {
         RequiredInput::Update => {
             eprintln!(
@@ -267,8 +353,8 @@ fn prompt(plan: &Plan, choice: RequiredInput) -> Result<String, String> {
                 {
                     eprintln!(
                         "  {}: observed {}",
-                        display(&destination.destination),
-                        display(oid)
+                        display(presentation, &destination.destination),
+                        display(presentation, oid)
                     );
                 }
             }
@@ -279,20 +365,23 @@ fn prompt(plan: &Plan, choice: RequiredInput) -> Result<String, String> {
         }
     };
     eprint!("{prompt}");
-    io::stderr()
-        .flush()
-        .map_err(|e| format!("error: cannot write finish prompt: {}", text(e)))?;
+    io::stderr().flush().map_err(|e| {
+        format!(
+            "error: cannot write finish prompt: {}",
+            text(presentation, e)
+        )
+    })?;
     let mut line = String::new();
     let count = io::stdin()
         .read_line(&mut line)
-        .map_err(|e| format!("error: cannot read finish input: {}", text(e)))?;
+        .map_err(|e| format!("error: cannot read finish input: {}", text(presentation, e)))?;
     if count == 0 || !line.ends_with('\n') || line.trim() == "cancel" {
         return Err("Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.".into());
     }
     Ok(line.trim().into())
 }
 
-fn constraint_message(out: &mut String, constraint: &Constraint) {
+fn constraint_message(presentation: Presentation, out: &mut String, constraint: &Constraint) {
     let message = match constraint {
         Constraint::FreshRemoteEvidenceRequired => "refresh remote evidence before finishing",
         Constraint::BaseUnavailable => {
@@ -307,6 +396,7 @@ fn constraint_message(out: &mut String, constraint: &Constraint) {
         Constraint::GraftedHistory => "resolve legacy Git grafts before finishing",
         Constraint::DestinationUnavailable(url) => {
             return destination_constraint(
+                presentation,
                 out,
                 url,
                 "history unavailable; check access and fetch complete history",
@@ -314,16 +404,23 @@ fn constraint_message(out: &mut String, constraint: &Constraint) {
         }
         Constraint::DestinationAmbiguous(url) => {
             return destination_constraint(
+                presentation,
                 out,
                 url,
                 "ambiguous observation; inspect destination configuration",
             );
         }
         Constraint::DestinationHistoryUncertain(url) => {
-            return destination_constraint(out, url, "ancestry uncertain; obtain complete history");
+            return destination_constraint(
+                presentation,
+                out,
+                url,
+                "ancestry uncertain; obtain complete history",
+            );
         }
         Constraint::RemoteWorkNotIncorporated(url) => {
             return destination_constraint(
+                presentation,
                 out,
                 url,
                 "remote work is not incorporated; incorporate it with Git, then rerun finish",
@@ -331,6 +428,7 @@ fn constraint_message(out: &mut String, constraint: &Constraint) {
         }
         Constraint::RewriteDenied(url) => {
             return destination_constraint(
+                presentation,
                 out,
                 url,
                 "required history replacement denied; use --allow-rewrite to authorize eligible replacement, or choose --update merge or none before preparation",
@@ -339,8 +437,8 @@ fn constraint_message(out: &mut String, constraint: &Constraint) {
     };
     let _ = writeln!(out, "error: {message}.");
 }
-fn destination_constraint(out: &mut String, url: &[u8], message: &str) {
-    let _ = writeln!(out, "error: {}: {message}.", display(url));
+fn destination_constraint(presentation: Presentation, out: &mut String, url: &[u8], message: &str) {
+    let _ = writeln!(out, "error: {}: {message}.", display(presentation, url));
 }
 fn destination_state(state: publication::DestinationState) -> &'static str {
     use publication::DestinationState::*;
@@ -354,16 +452,20 @@ fn destination_state(state: publication::DestinationState) -> &'static str {
         Unconfirmed => "unconfirmed; remote effects may exist",
     }
 }
-fn preparation_failure(report: &preparation::Report, message: Option<&str>) {
+fn preparation_failure(
+    presentation: Presentation,
+    report: &preparation::Report,
+    message: Option<&str>,
+) {
     let mut output = String::from("Finish incomplete.\n");
     if let Some(message) = message {
         output.push_str(message);
     }
     if let Some(error) = &report.error {
-        let _ = writeln!(output, "error: {}", text(error));
+        let _ = writeln!(output, "error: {}", text(presentation, error));
     }
-    preparation_effects(&mut output, report);
-    command_diagnostics(&mut output, &report.commands);
+    preparation_effects(presentation, &mut output, report);
+    command_diagnostics(presentation, &mut output, &report.commands);
     // Input may have changed context since refresh; report an actual new observation.
     let current = report.plan.as_ref().map(|p| {
         repository::inspect(
@@ -373,17 +475,21 @@ fn preparation_failure(report: &preparation::Report, message: Option<&str>) {
                 .expect("working plan"),
         )
     });
-    remaining(&mut output, current.as_ref().unwrap_or(&report.remaining));
+    remaining(
+        presentation,
+        &mut output,
+        current.as_ref().unwrap_or(&report.remaining),
+    );
     let _ = writeln!(output, "Branch publication not attempted.");
     if report.error.is_some() {
-        let _ = writeln!(output, "{}", report.guidance());
+        let _ = writeln!(output, "{}", text(presentation, report.guidance()));
     }
     eprint!("{output}");
     if let Some(preparation::PreparationError::Finish(error)) = &report.error {
-        error_diagnostics(error);
+        error_diagnostics(presentation, error);
     }
 }
-fn preparation_effects(out: &mut String, report: &preparation::Report) {
+fn preparation_effects(presentation: Presentation, out: &mut String, report: &preparation::Report) {
     for effect in &report.effects {
         use preparation::Effect::*;
         match effect {
@@ -393,14 +499,14 @@ fn preparation_effects(out: &mut String, report: &preparation::Report) {
                 value,
             } => {
                 let value = match value {
-                    finish::RefObservation::Commit(oid) => display(oid),
+                    finish::RefObservation::Commit(oid) => display(presentation, oid),
                     other => format!("{other:?}"),
                 };
                 let _ = writeln!(
                     out,
                     "Observed {} at {}: {value}.",
-                    display(reference),
-                    display(destination)
+                    display(presentation, reference),
+                    display(presentation, destination)
                 );
             }
             Fetched {
@@ -410,15 +516,15 @@ fn preparation_effects(out: &mut String, report: &preparation::Report) {
                 let _ = writeln!(
                     out,
                     "Fetched objects for {} from {}.",
-                    display(commit),
-                    display(destination)
+                    display(presentation, commit),
+                    display(presentation, destination)
                 );
             }
             RecoveryRecorded(path) => {
                 let _ = writeln!(
                     out,
                     "Retained rebase recovery evidence: {}.",
-                    text(path.display())
+                    text(presentation, path.display())
                 );
             }
             Updated {
@@ -430,32 +536,36 @@ fn preparation_effects(out: &mut String, report: &preparation::Report) {
                     out,
                     "Prepared with {}: {} -> {}.",
                     update.as_str(),
-                    display(before),
-                    display(after)
+                    display(presentation, before),
+                    display(presentation, after)
                 );
             }
         }
     }
 }
-fn command_diagnostics(out: &mut String, commands: &[preparation::CommandReport]) {
+fn command_diagnostics(
+    presentation: Presentation,
+    out: &mut String,
+    commands: &[preparation::CommandReport],
+) {
     for command in commands {
         match &command.result {
             Ok(result) if !result.status.success() => {
                 let _ = writeln!(out, "Git process: {}", result.status);
                 for bytes in [&result.stdout, &result.stderr] {
                     if !bytes.is_empty() {
-                        let _ = writeln!(out, "Git: {}", display(bytes));
+                        let _ = writeln!(out, "Git: {}", display(presentation, bytes));
                     }
                 }
             }
             Err(error) => {
-                let _ = writeln!(out, "Git process: {}", text(error));
+                let _ = writeln!(out, "Git process: {}", text(presentation, error));
             }
             _ => (),
         }
     }
 }
-fn tracking(out: &mut String, report: &publication::TrackingReport) {
+fn tracking(presentation: Presentation, out: &mut String, report: &publication::TrackingReport) {
     use publication::{TrackingState, TrackingWrite};
     let state = match report.state {
         TrackingState::Matching => "matching",
@@ -481,28 +591,41 @@ fn tracking(out: &mut String, report: &publication::TrackingReport) {
                 ("Branch ref", &observed.upstream.merge_refs),
             ] {
                 for value in values {
-                    let _ = writeln!(out, "  {label}: {}", display(value));
+                    let _ = writeln!(out, "  {label}: {}", display(presentation, value));
                 }
             }
         }
         Err(error) => {
-            let _ = writeln!(out, "  Tracking observation unavailable: {}", text(error));
+            let _ = writeln!(
+                out,
+                "  Tracking observation unavailable: {}",
+                text(presentation, error)
+            );
         }
     }
 }
-fn remaining(out: &mut String, observation: &Result<Observation, InspectionError>) {
+fn remaining(
+    presentation: Presentation,
+    out: &mut String,
+    observation: &Result<Observation, InspectionError>,
+) {
     let _ = writeln!(out, "Remaining state (observed):");
     match observation {
         Ok(Observation::Repository(state)) => {
             match &state.head {
                 Head::Attached { branch, commit } => {
-                    let _ = writeln!(out, "  HEAD: {} at {}", display(branch), display(commit));
+                    let _ = writeln!(
+                        out,
+                        "  HEAD: {} at {}",
+                        display(presentation, branch),
+                        display(presentation, commit)
+                    );
                 }
                 Head::Detached { commit } => {
-                    let _ = writeln!(out, "  HEAD: detached at {}", display(commit));
+                    let _ = writeln!(out, "  HEAD: detached at {}", display(presentation, commit));
                 }
                 Head::Unborn { branch } => {
-                    let _ = writeln!(out, "  HEAD: unborn {}", display(branch));
+                    let _ = writeln!(out, "  HEAD: unborn {}", display(presentation, branch));
                 }
             }
             if let Some(tree) = &state.working_tree {
@@ -542,33 +665,38 @@ fn remaining(out: &mut String, observation: &Result<Observation, InspectionError
             let _ = writeln!(out, "  Outside a Git repository");
         }
         Err(error) => {
-            let _ = writeln!(out, "  Observation unavailable: {}", text(error));
+            let _ = writeln!(
+                out,
+                "  Observation unavailable: {}",
+                text(presentation, error)
+            );
         }
     }
 }
-fn error_diagnostics(error: &(dyn std::error::Error + 'static)) {
+fn error_diagnostics(presentation: Presentation, error: &(dyn std::error::Error + 'static)) {
     if let Some(InspectionError::Git { output, .. }) = error.downcast_ref::<InspectionError>()
         && !output.stderr.is_empty()
     {
-        eprintln!("Git: {}", display(&output.stderr));
+        eprintln!("Git: {}", display(presentation, &output.stderr));
     }
     if let Some(InspectionError::Io(_)) = error.downcast_ref::<InspectionError>() {
         eprintln!("Ensure Git is installed on PATH and repository paths are accessible.");
     }
     if let Some(source) = error.source() {
-        error_diagnostics(source);
+        error_diagnostics(presentation, source);
     }
 }
 fn help() {
     println!(
         "Prepare and publish the current branch for submission. Alias: f.
 
-Usage: git-oneflow finish [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite]
+Usage: git-oneflow finish [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--show-credentials]
 
 Options:
   --update <rebase|merge|none>  Override finish-update
   --allow-rewrite             Authorize eligible published-history replacement
   --no-rewrite                Deny published-history replacement
+  --show-credentials          Show HTTP(S) URL credentials in finish output
   -h, --help                  Show help
 
 Examples:
@@ -584,6 +712,8 @@ Details:
   Branches already including the base need no update choice.
   Explicit flags override settings; rewrite flags are mutually exclusive.
   Prompts require terminal input and stderr. Enter a displayed choice or cancel.
+  HTTP(S) URL credentials are redacted by default; redact-credentials is a private local setting.
+  --show-credentials overrides that setting for this invocation. Output and captured logs can expose credentials.
   Rebase selection and replacement authorization are separate choices.
   Required choices resolve before branch execution; changed context stops execution.
   Cancellation retains completed remote observations/fetches and leaves branch work unchanged.
@@ -609,4 +739,85 @@ Exit status:
 The gof executable accepts identical commands and options.
 See docs/USAGE.md for configuration, automation, and Git recovery."
     );
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::{Presentation, display, redact_url_userinfo, resolve_presentation};
+
+    #[test]
+    fn finish_presentation_redacts_http_credentials_and_keeps_endpoints() {
+        let raw = b"https://alice:synthetic-password@example.invalid/repo";
+        let transport_destination = raw.to_vec();
+        let default = resolve_presentation(false, None);
+        let local_override = resolve_presentation(false, Some(false));
+        let flag_override = resolve_presentation(true, Some(false));
+        assert!(!default.show_credentials);
+        assert!(local_override.show_credentials);
+        assert!(flag_override.show_credentials);
+        let presented = display(default, raw);
+        assert_eq!(transport_destination, raw);
+        assert!(!presented.contains("synthetic-password"));
+        assert!(presented.contains("example.invalid/repo"));
+
+        for value in [
+            "https://alice:synthetic-password@example.invalid/repo",
+            "https://synthetic-token@example.invalid/repo",
+            "fatal: unable to access 'https://alice:synthetic-password@example.invalid/repo': denied",
+        ] {
+            let shown = redact_url_userinfo(value);
+            assert!(!shown.contains("synthetic-password"), "{shown}");
+            assert!(!shown.contains("synthetic-token"), "{shown}");
+            assert!(shown.contains("<redacted>@example.invalid/repo"), "{shown}");
+        }
+        assert_eq!(
+            redact_url_userinfo("git@example.invalid:team/repo"),
+            "git@example.invalid:team/repo"
+        );
+        assert_eq!(redact_url_userinfo("/tmp/repo"), "/tmp/repo");
+        assert_eq!(
+            display(
+                default,
+                b"https://alice:synthetic-password@example.invalid/repo"
+            ),
+            "https://<redacted>@example.invalid/repo"
+        );
+        assert_eq!(
+            redact_url_userinfo("https://example.invalid/repo"),
+            "https://example.invalid/repo"
+        );
+
+        // Completion, prompt, failure, and Git diagnostic presentation all use
+        // this same display boundary for destination and diagnostic text.
+        let output = [
+            format!("Published branch to {}.", display(default, raw)),
+            format!("Prompt destination: {}.", display(default, raw)),
+            format!(
+                "Finish incomplete for destination {}.",
+                display(default, raw)
+            ),
+            format!(
+                "Git: {}",
+                display(
+                    default,
+                    b"fatal: rejected https://synthetic-token@example.invalid/repo"
+                )
+            ),
+        ]
+        .join("\n");
+        assert!(!output.contains("synthetic-password"));
+        assert!(!output.contains("synthetic-token"));
+        assert!(output.contains("<redacted>@example.invalid/repo"));
+        let stdout = format!("Published to {}.", display(local_override, raw));
+        let stderr = format!("Git: {}", display(flag_override, raw));
+        assert!(stdout.contains("synthetic-password"));
+        assert!(stderr.contains("synthetic-password"));
+        let unredacted = display(
+            Presentation {
+                show_credentials: true,
+            },
+            raw,
+        );
+        assert!(unredacted.contains("synthetic-password"));
+    }
 }

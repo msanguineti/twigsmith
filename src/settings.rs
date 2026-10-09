@@ -172,6 +172,7 @@ struct Layer {
     save_action: Option<String>,
     finish_update: Option<String>,
     finish_rewrite: Option<String>,
+    redact_credentials: Option<bool>,
 }
 impl Layer {
     fn slot(&mut self, key: &str) -> Result<&mut Option<String>, String> {
@@ -186,7 +187,13 @@ impl Layer {
             )),
         }
     }
-    fn validate(&self, directory: &Path, path: &Path) -> Result<(), SettingsError> {
+    fn validate(&self, directory: &Path, path: &Path, local: bool) -> Result<(), SettingsError> {
+        if !local && self.redact_credentials.is_some() {
+            return Err(invalid(
+                path,
+                "redact-credentials is a private local setting",
+            ));
+        }
         if let Some(remote) = &self.remote
             && !valid_remote(directory, remote)?
         {
@@ -208,7 +215,13 @@ impl Layer {
         }
         Ok(())
     }
-    fn apply(self, settings: &mut Settings, source: SettingSource) {
+    fn apply(
+        self,
+        settings: &mut Settings,
+        redact_credentials: &mut bool,
+        redact_credentials_source: &mut SettingSource,
+        source: SettingSource,
+    ) {
         if let Some(remote) = self.remote {
             settings.remote = remote;
             settings.sources.remote = source.clone();
@@ -227,7 +240,11 @@ impl Layer {
         }
         if let Some(rewrite) = self.finish_rewrite {
             settings.finish_rewrite = parse_rewrite(&rewrite).expect("validated layer");
-            settings.sources.finish_rewrite = source;
+            settings.sources.finish_rewrite = source.clone();
+        }
+        if let Some(redact) = self.redact_credentials {
+            *redact_credentials = redact;
+            *redact_credentials_source = source;
         }
     }
 }
@@ -281,11 +298,18 @@ impl<'de> Deserialize<'de> for Layer {
         impl<'de> Visitor<'de> for LayerVisitor {
             type Value = Layer;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a flat mapping of remote, base, save-action, finish-update, and finish-rewrite strings")
+                f.write_str("a flat mapping of recognized Oneflow settings")
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Layer, M::Error> {
                 let mut layer = Layer::default();
                 while let Some(Text(key)) = map.next_key::<Text>()? {
+                    if key == "redact-credentials" {
+                        if layer.redact_credentials.is_some() {
+                            return Err(de::Error::custom(format!("duplicate key {key:?}")));
+                        }
+                        layer.redact_credentials = Some(map.next_value::<bool>()?);
+                        continue;
+                    }
                     let slot = layer.slot(&key).map_err(de::Error::custom)?;
                     if slot.is_some() {
                         return Err(de::Error::custom(format!("duplicate key {key:?}")));
@@ -387,6 +411,17 @@ fn parse_legacy(contents: &str) -> Result<Layer, String> {
         if value.is_empty() {
             return Err(invalid("empty value".into()));
         }
+        if key.trim() == "redact-credentials" {
+            if layer.redact_credentials.is_some() {
+                return Err(invalid("duplicate key".into()));
+            }
+            layer.redact_credentials = Some(match value {
+                "true" => true,
+                "false" => false,
+                _ => return Err(invalid("redact-credentials must be true or false".into())),
+            });
+            continue;
+        }
         let slot = layer.slot(key.trim()).map_err(invalid)?;
         if slot.is_some() {
             return Err(invalid("duplicate key".into()));
@@ -408,6 +443,8 @@ pub struct LoadedSettings {
     pub settings: Settings,
     pub shared: Option<PathBuf>,
     pub local: Option<PathBuf>,
+    pub redact_credentials: bool,
+    pub redact_credentials_source: SettingSource,
 }
 
 pub fn load_with_files(
@@ -422,22 +459,31 @@ pub fn load_with_files(
         .flatten();
     let local = discover_layer(&repository.common_dir, true)?;
     let mut settings = Settings::default();
+    let mut redact_credentials = true;
+    let mut redact_credentials_source = SettingSource::BuiltIn;
     for (path, is_local) in [(shared.clone(), false), (local.clone(), true)] {
         if let Some(path) = path {
             let layer = read_layer(&path)?;
-            layer.validate(directory, &path)?;
+            layer.validate(directory, &path, is_local)?;
             let source = if is_local {
                 SettingSource::Local(path)
             } else {
                 SettingSource::Shared(path)
             };
-            layer.apply(&mut settings, source);
+            layer.apply(
+                &mut settings,
+                &mut redact_credentials,
+                &mut redact_credentials_source,
+                source,
+            );
         }
     }
     Ok(LoadedSettings {
         settings,
         shared,
         local,
+        redact_credentials,
+        redact_credentials_source,
     })
 }
 

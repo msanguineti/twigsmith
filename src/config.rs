@@ -168,6 +168,8 @@ pub fn prepare(directory: &Path, format: Format) -> Result<GenerationPlan, Confi
 #[derive(Debug, PartialEq, Eq)]
 pub struct Review {
     pub overrides: settings::Settings,
+    pub redact_credentials: bool,
+    pub redact_credentials_source: settings::SettingSource,
     pub local: Option<PathBuf>,
     pub remotes: Vec<u8>,
     remote_config: Vec<u8>,
@@ -200,6 +202,8 @@ fn review(directory: &Path, plan: &GenerationPlan) -> Result<Review, ConfigError
     let loaded = settings::load_with_files(directory, &plan.repository)?;
     Ok(Review {
         overrides: loaded.settings,
+        redact_credentials: loaded.redact_credentials,
+        redact_credentials_source: loaded.redact_credentials_source,
         local: loaded.local,
         remotes: observation(directory, &["remote"], false)?,
         remote_config: observation(directory, &["config", "--get-regexp", "^remote\\."], true)?,

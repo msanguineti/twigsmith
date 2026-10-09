@@ -322,6 +322,13 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
                 eprintln!("  Effective {key}: {} ({})", text(value), source(origin));
             }
         }
+        if matches!(review.redact_credentials_source, SettingSource::Local(_)) {
+            eprintln!(
+                "  Effective redact-credentials: {} ({})",
+                review.redact_credentials,
+                source(&review.redact_credentials_source)
+            );
+        }
     } else {
         eprintln!("Private overrides: none.");
     }
@@ -390,6 +397,11 @@ fn show(inspection: &config::Inspection) {
     ] {
         println!("  {key}: {value} ({})", source(origin));
     }
+    println!(
+        "  redact-credentials: {} ({})",
+        loaded.redact_credentials,
+        source(&loaded.redact_credentials_source)
+    );
     layer(
         "Shared file",
         loaded.shared.as_deref(),
@@ -435,6 +447,8 @@ Details:
   Generation creates git-oneflow.config.toml, .yaml, or .json at the working-tree root.
   Built-in defaults: remote = origin; base = main; save-action = ask.
   Finish defaults: finish-update = ask; finish-rewrite = ask.
+  Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.
+  Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.
   finish-update: ask, rebase, merge, none; finish-rewrite: ask, allow, deny.
   Rewrite allow is standing authorization for eligible replacement; remote safeguards remain.
   Private overrides take precedence; guided review shows their effective values.

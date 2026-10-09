@@ -95,6 +95,55 @@ fn settings(repo: &Repository, update: &str, rewrite: &str) {
     )
     .unwrap();
 }
+
+#[test]
+#[cfg(unix)]
+fn finish_credential_redaction_defaults_local_override_and_flag_precedence() {
+    use std::os::unix::fs::PermissionsExt;
+    cases(
+        "finish_credential_redaction_defaults_local_override_and_flag_precedence",
+        true,
+        |root, exe| {
+            let (local, remote) = fixture(root, false, false);
+            let hooks = remote.path().join(".git/hooks");
+            fs::create_dir_all(&hooks).unwrap();
+            remote.success(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+            let hook = hooks.join("pre-receive");
+            fs::write(
+                &hook,
+                "#!/bin/sh\necho 'fatal: rejected https://synthetic-user:synthetic-secret@example.invalid/repository' >&2\nexit 1\n",
+            )
+            .unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+            let default = run(exe, local.path(), &[]);
+            assert_eq!(default.status.code(), Some(1), "{default:?}");
+            assert!(!String::from_utf8_lossy(&default.stdout).contains("synthetic-secret"));
+            assert!(!String::from_utf8_lossy(&default.stderr).contains("synthetic-secret"));
+            assert!(
+                String::from_utf8_lossy(&default.stderr)
+                    .contains("<redacted>@example.invalid/repository")
+            );
+
+            fs::write(
+                local.path().join(".git/oneflow.conf"),
+                "redact-credentials=false\n",
+            )
+            .unwrap();
+            let local_override = run(exe, local.path(), &[]);
+            assert_eq!(local_override.status.code(), Some(1), "{local_override:?}");
+            assert!(
+                String::from_utf8_lossy(&local_override.stderr).contains("synthetic-secret"),
+                "{}",
+                String::from_utf8_lossy(&local_override.stderr)
+            );
+
+            let flag = run(exe, local.path(), &["--show-credentials"]);
+            assert_eq!(flag.status.code(), Some(1), "{flag:?}");
+            assert!(String::from_utf8_lossy(&flag.stderr).contains("synthetic-secret"));
+        },
+    );
+}
 fn published(local: &Repository, remote: &Repository) {
     assert_eq!(oid(local, "HEAD"), oid(remote, REF));
     assert_eq!(
