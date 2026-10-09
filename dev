@@ -167,8 +167,8 @@ case "$command" in
     check)
         "$cargo" fmt --all --check
         "$cargo" build --locked
-        "$cargo" test --locked
-        exec "$cargo" clippy --locked --all-targets -- -D warnings
+        "$cargo" clippy --locked --all-targets -- -D warnings
+        exec "$cargo" test --locked
         ;;
     cargo) exec "$cargo" "$@" ;;
     rustc) exec "$CARGO_HOME/bin/rustc" "$@" ;;
