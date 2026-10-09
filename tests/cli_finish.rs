@@ -195,8 +195,9 @@ fn finish_grammar_and_help_without_git() {
                         "--allow-rewrite",
                         "--no-rewrite",
                         "Exit status:",
-                        "checks",
-                        "deferred",
+                        "manual",
+                        "project-base tracking",
+                        "Ordinary Git commands",
                     ],
                 );
                 assert!(output.contains("Alias: f."));
@@ -263,7 +264,7 @@ fn finish_unattended_publication_updates_and_precedence() {
                         &[
                             "Published fix/deployment-bug to origin at",
                             "created",
-                            "Next: submit fix/deployment-bug for review into origin/main.",
+                            "Next: submit origin/fix/deployment-bug for review into origin/main.",
                         ],
                     );
                     contains(

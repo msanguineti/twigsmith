@@ -67,6 +67,12 @@ fn assert_defaults(directory: &Path, filename: &str) {
     let loaded = load(directory);
     let defaults = Settings::default();
     assert_eq!(loaded.publish_remote, defaults.publish_remote);
+    assert_eq!(loaded.base_remote, defaults.publish_remote);
+    assert_eq!(loaded.sources.base_remote, None);
+    let contents = fs::read_to_string(directory.join(filename)).unwrap();
+    assert!(!contents.contains("base-remote"));
+    assert!(!contents.contains("\"remote\""));
+    assert!(!contents.contains("\nremote"));
     assert_eq!(loaded.base, defaults.base);
     assert_eq!(loaded.save_action, defaults.save_action);
     assert_eq!(loaded.finish_update, defaults.finish_update);
@@ -773,12 +779,12 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                         repo.path(),
                         &["config", "--format", format],
                     );
-                    terminal.until("Remote used");
+                    terminal.until("Publication remote");
                     assert!(terminal.output.contains("hint-only"));
                     terminal.send(if custom {
-                        b"future-remote\nfuture/base\nwip\nmerge\nallow\n"
+                        b"future-remote\n\nfuture/base\nwip\nmerge\nallow\n"
                     } else {
-                        b"\n\n\n\n\n"
+                        b"\n\n\n\n\n\n"
                     });
                     terminal.until("Create this file?");
                     assert!(!repo.path().join(filename).exists());
@@ -876,10 +882,12 @@ fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
         |root, exe| {
             let repo = Repository::new(root);
             let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            terminal.until("Remote used");
+            terminal.until("Publication remote");
             terminal.send(b"bad remote\n");
             terminal.until("Use a valid named Git remote");
-            terminal.send(b"upstream\nHEAD\n");
+            terminal.send(b"upstream\nbad remote\n");
+            terminal.until("Use a valid named Git remote (no URL");
+            terminal.send(b"\nHEAD\n");
             terminal.until("Use a valid literal Git branch");
             terminal.send(b"trunk\nunknown\n");
             terminal.until("save-action must be");
@@ -912,18 +920,19 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
         true,
         |root, exe| {
             for (answers, prompt) in [
-                ("", "Remote used"),
-                ("\n", "Base branch"),
-                ("\n\n", "Default save action"),
-                ("\n\n\n", "Default finish update"),
-                ("\n\n\n\n", "Default finish rewrite"),
-                ("\n\n\n\n\n", "Create this file?"),
+                ("", "Publication remote"),
+                ("\n", "Base source remote"),
+                ("\n\n", "Base branch"),
+                ("\n\n\n", "Default save action"),
+                ("\n\n\n\n", "Default finish update"),
+                ("\n\n\n\n\n", "Default finish rewrite"),
+                ("\n\n\n\n\n\n", "Create this file?"),
             ] {
                 for cancel in [b"cancel\n".as_slice(), b"\x04", b"partial\x04\x04"] {
                     let repo = Repository::new(root);
                     let before = snapshot(repo.path());
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-                    terminal.until("Remote used");
+                    terminal.until("Publication remote");
                     terminal.send(answers.as_bytes());
                     terminal.until(prompt);
                     terminal.send(cancel);
@@ -935,7 +944,7 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
             let repo = Repository::new(root);
             let before = snapshot(repo.path());
             let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            terminal.until("Remote used");
+            terminal.until("Publication remote");
             terminal.interrupt();
             assert!(!terminal.finish().success());
             assert_eq!(snapshot(repo.path()), before);
@@ -943,8 +952,8 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
                 let repo = Repository::new(root);
                 let before = snapshot(repo.path());
                 let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-                terminal.until("Remote used");
-                terminal.send(b"\n\n\n\n\n");
+                terminal.until("Publication remote");
+                terminal.send(b"\n\n\n\n\n\n");
                 terminal.until("Create this file?");
                 terminal.send(answer);
                 assert_eq!(terminal.finish().code(), Some(0));
@@ -978,9 +987,9 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                         fs::write(repo.path().join(".git/oneflow.conf"), "base = main\n").unwrap();
                     }
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-                    terminal.until("Remote used");
+                    terminal.until("Publication remote");
                     if confirmation {
-                        terminal.send(b"\n\n\n\n\n");
+                        terminal.send(b"\n\n\n\n\n\n");
                         terminal.until("Create this file?");
                     }
                     match mutation {
@@ -1019,7 +1028,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     terminal.send(if confirmation {
                         b"yes\n"
                     } else {
-                        b"\n\n\n\n\n"
+                        b"\n\n\n\n\n\n"
                     });
                     assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
                     assert_eq!(snapshot(repo.path()), before);
@@ -1070,13 +1079,13 @@ fn guided_existing_files_fail_before_prompt_and_yes_never_prompts() {
                 let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                 assert_eq!(terminal.finish().code(), Some(1));
                 assert!(terminal.output.contains("config show"));
-                assert!(!terminal.output.contains("Remote used"));
+                assert!(!terminal.output.contains("Publication remote"));
                 assert_eq!(snapshot(repo.path()), before);
             }
             let repo = Repository::new(root);
             let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config", "--yes"]);
             assert_eq!(terminal.finish().code(), Some(0));
-            assert!(!terminal.output.contains("Remote used"));
+            assert!(!terminal.output.contains("Publication remote"));
             assert!(!terminal.output.contains("Create this file?"));
             assert_defaults(repo.path(), CONFIG_FILES[0]);
         },
@@ -1247,6 +1256,115 @@ fn generated_remote_roles_round_trip_in_each_format() {
                         explicit_base.is_some()
                     );
                     fs::remove_file(repo.path().join(format.filename())).unwrap();
+                }
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_remote_roles_review_selected_intent_with_private_precedence() {
+    cases(
+        "guided_remote_roles_review_selected_intent_with_private_precedence",
+        true,
+        |root, exe| {
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                for base_answer in ["", "personal", "project"] {
+                    for private_case in ["none", "alias", "both", "base"] {
+                        let repo = Repository::new(root);
+                        // Names are hints, not assigned roles.
+                        for name in ["origin", "upstream", "fork"] {
+                            repo.success(&["remote", "add", name, "/offline"]);
+                        }
+                        let (private_name, private_text, publication, private_base) =
+                            match private_case {
+                                "alias" => ("oneflow.conf", "remote=private\n", "private", None),
+                                "both" => (
+                                    "oneflow.conf",
+                                    "remote=ignored\npublish-remote=selected\n",
+                                    "selected",
+                                    None,
+                                ),
+                                "base" => (
+                                    CONFIG_FILES[0],
+                                    "base-remote='local-base'\nredact-credentials=false\n",
+                                    "personal",
+                                    Some("local-base"),
+                                ),
+                                _ => ("", "", "personal", None),
+                            };
+                        if !private_name.is_empty() {
+                            fs::write(repo.path().join(".git").join(private_name), private_text)
+                                .unwrap();
+                        }
+                        let mut term = terminal::Terminal::start(
+                            exe,
+                            repo.path(),
+                            &["config", "--format", format],
+                        );
+                        term.until("Publication remote");
+                        term.send(format!("personal\n{base_answer}\n\n\n\n\n").as_bytes());
+                        term.until("Create this file?");
+                        let split = base_answer == "project";
+                        let base =
+                            private_base.unwrap_or(if split { "project" } else { publication });
+                        assert!(
+                            term.output
+                                .contains(&format!("Effective publish-remote: {publication}")),
+                            "{}",
+                            term.output
+                        );
+                        assert!(
+                            term.output
+                                .contains(&format!("Effective base-remote: {base}")),
+                            "{}",
+                            term.output
+                        );
+                        let follows = !split && private_base.is_none();
+                        assert_eq!(
+                            term.output.contains("follows publish-remote"),
+                            follows,
+                            "{}",
+                            term.output
+                        );
+                        if private_case == "alias" || private_case == "both" {
+                            let key = if private_case == "alias" {
+                                "remote"
+                            } else {
+                                "publish-remote"
+                            };
+                            assert!(
+                                term.output.contains(&format!("setting: {key}")),
+                                "{}",
+                                term.output
+                            );
+                        }
+                        term.send(b"yes\n");
+                        assert!(term.finish().success(), "{}", term.output);
+                        let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
+                        assert_eq!(contents.contains("base-remote"), split);
+                        assert!(!contents.contains("redact-credentials"));
+                        assert!(!contents.contains("private"));
+                        assert!(!contents.contains("local-base"));
+                        let effective = load(repo.path());
+                        assert_eq!(effective.publish_remote, publication);
+                        assert_eq!(effective.base_remote, base);
+                        assert_eq!(effective.sources.base_remote.is_none(), follows);
+                        let shown = check(
+                            run(exe, repo.path(), &["config", "show"]),
+                            0,
+                            &[
+                                &format!("publish-remote: {publication}"),
+                                &format!("base-remote: {base}"),
+                            ],
+                        );
+                        assert_eq!(shown.contains("(follows publish-remote;"), follows);
+                    }
                 }
             }
         },

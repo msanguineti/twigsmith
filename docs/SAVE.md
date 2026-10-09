@@ -277,6 +277,10 @@ prohibits those configurations. No user configuration is rewritten to repair the
 
 ## Results and tracking
 
+CLI scope and completion output identify the publication remote. The project
+base is a separate tracking relationship and does not select save's destination.
+Ordinary Git commands continue to use the developer's Git routing configuration.
+
 `Report` keeps the exact intent, configured push URLs, per-destination transport
 responses, missing response count, raw push output/status or I/O error, typed
 failure, and before/after upstream and remote-tracking-ref observations. Display

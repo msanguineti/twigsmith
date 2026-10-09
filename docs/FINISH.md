@@ -228,8 +228,10 @@ implemented by the preparation library.
 
 Publication reports identify the branch, pinned commit, and outcome at each
 actual destination. The CLI follows confirmed publication with a concise manual
-submission next step into the configured base remote and base branch. It creates
-no pull request, runs no validation checks, and performs no base integration.
+submission next step naming both `<publish-remote>/<working-branch>` and
+`<base-remote>/<base>` as the review target. Recovery output identifies publication
+and the project base separately. It creates no pull request, runs no validation
+checks, and performs no base integration.
 
 ## Controlled refresh and preparation
 

@@ -181,7 +181,7 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
     eprintln!("Names can be configured before remotes or branches exist.");
     loop {
         let Some(answer) = input(&format!(
-            "Remote used by start, save, and finish [{}]: ",
+            "Publication remote for working branches [{}]: ",
             text(&defaults.publish_remote)
         ))?
         else {
@@ -199,6 +199,27 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         }
         eprintln!(
             "Use a valid named Git remote, such as origin or upstream (no URL, spaces, or leading '-')."
+        );
+    }
+    eprintln!(
+        "The base source supplies new work and finish updates. Enter follows publication; enter another remote to select a separate source."
+    );
+    loop {
+        let Some(answer) = input("Base source remote [follow publication]: ")? else {
+            return cancelled();
+        };
+        if answer.is_empty() || answer == plan.proposed.publish_remote {
+            plan.proposed.base_remote = plan.proposed.publish_remote.clone();
+            plan.proposed.sources.base_remote = None;
+            break;
+        }
+        if settings::valid_remote(directory, &answer)? {
+            plan.proposed.base_remote = answer;
+            plan.proposed.sources.base_remote = Some(SettingSource::Shared(plan.destination()));
+            break;
+        }
+        eprintln!(
+            "Use a valid named Git remote (no URL, spaces, or leading '-'), or Enter to follow publication."
         );
     }
     loop {
@@ -290,6 +311,17 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         plan.contents()
     );
     let review = plan.review();
+    let roles = reviewed_roles(&plan);
+    eprintln!(
+        "Effective publish-remote: {} ({})",
+        text(&roles.publish_remote),
+        publication_source(&roles)
+    );
+    eprintln!(
+        "Effective base-remote: {} ({})",
+        text(&roles.base_remote),
+        base_remote_source(&roles)
+    );
     if let Some(path) = &review.local {
         eprintln!(
             "Private overrides: {} (take precedence; values are not copied).",
@@ -297,11 +329,6 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         );
         let effective = &review.overrides;
         for (key, value, origin) in [
-            (
-                "publish-remote",
-                effective.publish_remote.as_str(),
-                &effective.sources.publish_remote,
-            ),
             ("base", effective.base.as_str(), &effective.sources.base),
             (
                 "save-action",
@@ -322,16 +349,6 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
             if matches!(origin, SettingSource::Local(_)) {
                 eprintln!("  Effective {key}: {} ({})", text(value), source(origin));
             }
-        }
-        if matches!(effective.sources.base_remote, Some(SettingSource::Local(_)))
-            || (effective.sources.base_remote.is_none()
-                && matches!(effective.sources.publish_remote, SettingSource::Local(_)))
-        {
-            eprintln!(
-                "  Effective base-remote: {} ({})",
-                text(&effective.base_remote),
-                base_remote_source(effective)
-            );
         }
         if matches!(review.redact_credentials_source, SettingSource::Local(_)) {
             eprintln!(
@@ -359,6 +376,32 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         text(generated.path.display())
     );
     Ok(())
+}
+
+// Preview the generated roles with the already validated private layer applied.
+// Private values are observation only and never enter the generated proposal.
+fn reviewed_roles(plan: &config::GenerationPlan) -> settings::Settings {
+    let mut roles = plan.proposed.clone();
+    let shared = SettingSource::Shared(plan.destination());
+    roles.sources.publish_remote = shared.clone();
+    roles.sources.publication_key = Some(settings::PublicationKey::PublishRemote);
+    if roles.sources.base_remote.is_some() || roles.base_remote != roles.publish_remote {
+        roles.sources.base_remote = Some(shared);
+    }
+    let private = &plan.review().overrides;
+    if matches!(private.sources.publish_remote, SettingSource::Local(_)) {
+        roles.publish_remote = private.publish_remote.clone();
+        roles.sources.publish_remote = private.sources.publish_remote.clone();
+        roles.sources.publication_key = private.sources.publication_key;
+    }
+    if matches!(private.sources.base_remote, Some(SettingSource::Local(_))) {
+        roles.base_remote = private.base_remote.clone();
+        roles.sources.base_remote = private.sources.base_remote.clone();
+    }
+    if roles.sources.base_remote.is_none() {
+        roles.base_remote = roles.publish_remote.clone();
+    }
+    roles
 }
 
 fn source(source: &SettingSource) -> String {
@@ -483,13 +526,17 @@ Details:
   Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.
   finish-update: ask, rebase, merge, none; finish-rewrite: ask, allow, deny.
   Rewrite allow is standing authorization for eligible replacement; remote safeguards remain.
-  Private overrides take precedence; guided review shows their effective values.
+  Private overrides take precedence; guided review shows effective roles and their sources.
+  Equal role choices omit base-remote so the base follows publication.
+  Remote names provide hints only; setup assigns no roles from their names.
+  publish-remote governs gof operations; ordinary Git commands use your Git configuration.
   Guided setup validates private files; --yes reports their locations without parsing.
   Every recognized shared file or symlink, including .yml, prevents generation.
   --yes permits unattended creation; existing files are preserved.
   Generation works offline with dirty, unborn, or detached working trees.
   It leaves existing work, the index, refs, and Git configuration unchanged.
-  Run config for guided remote, base, save-action, finish-update, and finish-rewrite choices at a terminal.
+  Run config to choose publication, a base source that follows publication or a separate remote,
+  the base branch, save action, and finish policies at a terminal.
   Setup starts with built-in defaults and offers offline repository hints.
   Review the destination, exact contents, and private overrides; enter yes to create.
   Cancellation or end-of-input creates no file. Changed review context stops setup.

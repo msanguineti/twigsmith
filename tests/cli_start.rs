@@ -393,7 +393,11 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             check(
                 cli.start(&repo, "work"),
                 1,
-                &["Git refused", "origin", "configured remote/base"],
+                &[
+                    "Git refused",
+                    "origin",
+                    "configured publication remote and project base",
+                ],
             );
             repo.success(&["remote", "add", "origin", "/oneflow-unreachable-cli"]);
             check(

@@ -127,7 +127,7 @@ is established to the publication branch after all push destinations confirm
 publication. Save needs no base-remote access and does not fetch. Incomplete,
 duplicate, or unrelated tracking requires repair.
 
-For start and save, an effective explicit Git push remote must equal
+For start, save, and finish, an effective explicit Git push remote must equal
 `publish-remote`: `branch.<name>.pushRemote` takes precedence over
 `remote.pushDefault`, and each uses its last configured value. Conflicting
 overrides stop the command; gof preserves user-owned Git routing settings.
@@ -258,10 +258,14 @@ Settings resolve from local overrides, shared settings, then defaults. Explicit
 save/finish flags take precedence over their corresponding settings. Inspection uses shared workflow
 validation and diagnostics. Its output is intended for people.
 
-`config` guides you through the remote used by start/save/finish, the base branch,
-the default save action, and the finish update and rewrite policies. Each proposal
-starts with its built-in default: `origin`, `main`, and `ask` for all three policies.
-Press Enter to keep it, or enter a replacement. Local remote configuration and branch references provide
+`config` guides you through the publication remote for working branches, the
+base source remote, the base branch, the default save action, and the finish
+update and rewrite policies. Publication starts at `origin`; the base source
+follows publication. Press Enter at the base-source prompt to keep that
+relationship, or enter another remote for a separate source. Entering the same
+remote also keeps the follow-publication relationship. The base branch starts
+at `main`, and all three policies start at `ask`. Press Enter to keep a default,
+or enter a replacement. Local remote configuration and branch references provide
 offline hints; they never change the defaults. Valid names can be configured before
 the remote or branch exists.
 
@@ -283,8 +287,10 @@ Finish update choices are `ask`, `rebase`, `merge`, and `none`. Rewrite choices 
 eligible replacement with remote safeguards retained. See
 [finish](#prepare-and-publish-finished-work) for their effects.
 
-Setup shows the destination, exact proposed file, and effective private overrides
-before asking for confirmation. Enter `yes` to create it. Enter `no`, leave the
+Setup shows the destination, exact proposed file, and effective roles with their
+sources after applying private overrides before asking for confirmation. When
+the base follows publication, review identifies the publication source it follows.
+Private values remain local. Enter `yes` to create it. Enter `no`, leave the
 confirmation blank, type `cancel` at any prompt, or end input to stop without
 creating a file. Invalid answers receive guidance and can be corrected. Guided
 setup requires terminal input and stderr; piped answers cannot approve creation.
@@ -292,8 +298,9 @@ Changes to the repository selection, observed remote configuration/branch names,
 shared file presence, or effective private override values/sources stop creation.
 Inspect the reported change and rerun setup.
 
-`config --yes` (or `-y`) creates explicit built-in defaults without any prompts,
-independently of private values and Git settings. Use it for unattended generation.
+`config --yes` (or `-y`) creates built-in defaults without any prompts,
+independently of private values and Git settings. It writes `publish-remote = origin`
+and omits `base-remote`, preserving the follow-publication relationship. Use it for unattended generation.
 The default format is TOML. Both guided and unattended setup accept `--format toml`,
 `--format yaml`, or `--format json`, creating `git-oneflow.config.toml`,
 `git-oneflow.config.yaml`, or `git-oneflow.config.json`. The loader also accepts
@@ -411,8 +418,71 @@ Start creates new work from `base-remote` and resumes published work from
 `publish-remote`; save publishes through `publish-remote`. The roles may match
 or differ. Finish prepares against `base-remote` and publishes through
 `publish-remote`. Use `gof config show` to inspect both roles and
-their sources. Guided setup keeps its single-remote question and generates
-`publish-remote`; the base remote follows it.
+their sources. Guided setup generates `publish-remote` and writes `base-remote`
+only when you select a different base source. New files use the publication key
+without a redundant compatibility `remote` entry. Existing files remain supported
+and setup preserves them.
+
+### Single-repository and fork workflows
+
+For one repository, select its remote as publication and let the base follow it:
+
+```toml
+publish-remote = "team"
+base = "main"
+```
+
+For a fork, select the fork for publication and the project for the base:
+
+```toml
+publish-remote = "personal"
+base-remote = "project"
+base = "main"
+```
+
+Configure these named remotes using Git before running remote-dependent commands.
+Setup uses locally available names as hints and assigns no role based on names
+such as `origin`, `upstream`, or `fork`. Fork topology is independent of branching
+strategy: role selection changes where work starts and publishes, while branch
+naming and finish update/rewrite policies remain separate choices.
+
+With either configuration, the lifecycle is:
+
+```sh
+gof start work/parser-fix
+# Edit, stage, and make normal Git commits
+git add parser.rs
+git commit -m "Fix parser"
+gof save
+gof finish --update merge
+```
+
+New work uses the fresh project base. Local work resumes from local history;
+published work with no local branch resumes from the publication remote. Save
+publishes the current branch. Finish incorporates the project base as needed
+using your selected update policy, then publishes the branch. Submit it manually
+for review; for the fork example, finish reports:
+
+```text
+Next: submit personal/work/parser-fix for review into project/main.
+```
+
+Tracking supports two styles: the exact published branch (`personal/work/parser-fix`)
+or the project base (`project/main`). Start's remote resume establishes publication
+tracking; new work initially has no tracking. Save and finish establish missing
+publication tracking after successful publication and retain either valid existing
+style. To choose project-base tracking using Git after the base has been fetched:
+
+```sh
+git branch --set-upstream-to=project/main work/parser-fix
+```
+
+The configured publication role governs gof operations. Ordinary Git commands
+continue to use your Git configuration, including upstream and push routing.
+For separate publication with project-base tracking, configure Git's push routing
+as appropriate for your own Git usage; an explicit effective push remote must
+agree with gof's publication role. Neither gof role configuration nor publication
+synchronizes your local base or fork base.
 
 `save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
 `finish-update` accepts `ask`, `rebase`, `merge`, or `none`. `finish-rewrite`
@@ -463,8 +533,9 @@ values in the local file.
   reported Git operation. Use the reported worktree if another checkout owns
   the target. For detached or unborn HEAD, attach a branch or create an initial
   commit before starting.
-- **Remote/settings failure:** inspect the reported configuration files,
-  `git remote -v`, the remote base, push destinations, and access credentials.
+- **Remote/settings failure:** inspect `gof config show`, the reported files,
+  and `git remote -v`. Check the project base at `base-remote/base` and publication
+  access at the `publish-remote` push destinations.
 - **Configuration creation blocked:** use `config show` to inspect existing settings.
   Keep or edit the reported shared file; select one recognized file per layer.
   For a write failure, check the reported working-tree path and directory access.

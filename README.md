@@ -30,6 +30,11 @@ branch for manual submission. `status` summarizes the current checkout.
 | `status` | | Inspect repository state |
 | `config` / `config show` / `config --yes` | | Set up or inspect shared settings |
 
+Run `gof config` to choose a publication remote and a base source for a single
+repository or a fork. Use `gof config show` to inspect effective roles and sources.
+See the [user guide](docs/USAGE.md#single-repository-and-fork-workflows) for both
+workflows and tracking styles.
+
 Use `gof --help` or `gof <command> --help` for a quick reference.
 
 ## Documentation

@@ -174,6 +174,10 @@ fetching, FETCH_HEAD writes, commit-graph writes, and auto-maintenance are
 explicitly disabled. The forced refspec permits remote-tracking updates after
 remote history changes; it never forces a local branch update or switch.
 
+Successful creation identifies `<base-remote>/<base>` as its source; remote
+resume identifies `<publish-remote>/<target>`. Local resume reports the local
+action without implying remote contact.
+
 A remote counterpart receives exactly `branch.<target>.remote = <publish-remote>` and
 `branch.<target>.merge = refs/heads/<target>`. Existing remote fetch mappings are
 preserved. If they exclude that head, Git's local upstream-comparison mapping

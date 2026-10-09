@@ -281,7 +281,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
             );
         }
         println!(
-            "Next: submit {} for review into {}/{}.",
+            "Next: submit {}/{} for review into {}/{}.",
+            text(presentation, &plan.settings.publish_remote),
             display(presentation, &plan.branch),
             text(presentation, &plan.settings.base_remote),
             text(presentation, &plan.settings.base)
@@ -296,6 +297,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             display(presentation, &published.commit),
             text(presentation, &published.remote)
         );
+        role_summary(presentation, &mut output, &plan.settings);
         preparation_effects(presentation, &mut output, &refresh);
         preparation_effects(presentation, &mut output, &prepared);
         if let Some(error) = &published.error {
@@ -387,7 +389,7 @@ fn constraint_message(presentation: Presentation, out: &mut String, constraint: 
     let message = match constraint {
         Constraint::FreshRemoteEvidenceRequired => "refresh remote evidence before finishing",
         Constraint::BaseUnavailable => {
-            "the remote base is absent or unavailable; check remote/base settings and access"
+            "the project base is absent or unavailable; check base-remote/base settings and access"
         }
         Constraint::BaseHistoryUncertain => {
             "base ancestry is uncertain; obtain complete history before finishing"
@@ -466,6 +468,9 @@ fn preparation_failure(
     if let Some(error) = &report.error {
         let _ = writeln!(output, "error: {}", text(presentation, error));
     }
+    if let Some(plan) = &report.plan {
+        role_summary(presentation, &mut output, &plan.settings);
+    }
     preparation_effects(presentation, &mut output, report);
     command_diagnostics(presentation, &mut output, &report.commands);
     // Input may have changed context since refresh; report an actual new observation.
@@ -491,6 +496,20 @@ fn preparation_failure(
         error_diagnostics(presentation, error);
     }
 }
+fn role_summary(
+    presentation: Presentation,
+    out: &mut String,
+    settings: &crate::settings::Settings,
+) {
+    let _ = writeln!(
+        out,
+        "Planned publication remote: {}; project base: {}/{}.",
+        text(presentation, &settings.publish_remote),
+        text(presentation, &settings.base_remote),
+        text(presentation, &settings.base)
+    );
+}
+
 fn preparation_effects(presentation: Presentation, out: &mut String, report: &preparation::Report) {
     for effect in &report.effects {
         use preparation::Effect::*;
@@ -723,8 +742,9 @@ Details:
   Publication uses incorporation proof and exact destination leases for replacement.
   Success reports branch, destination, commit, and a manual submission next step.
   Recover conflicts with Git, then rerun finish. Failures retain completed effects.
-  This increment prepares and publishes; checks, integrations, base integration,
-  tagging, and cleanup are deferred.
+  Submit the published branch manually for review into the project base.
+  Existing publication-branch or project-base tracking is retained.
+  Ordinary Git commands use your Git configuration for routing and tracking.
 
 Settings:
   publish-remote: origin (default); base-remote follows publication unless configured

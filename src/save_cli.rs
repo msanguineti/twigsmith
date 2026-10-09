@@ -225,7 +225,7 @@ fn choice(action: SaveAction) -> &'static str {
 }
 fn scope_summary(plan: &Plan) {
     eprintln!(
-        "Save branch {} to remote {}: {} staged, {} unstaged tracked, {} untracked paths (counts may overlap).",
+        "Save branch {} to publication remote {}: {} staged, {} unstaged tracked, {} untracked paths (counts may overlap).",
         display(&plan.branch),
         text(&plan.settings.publish_remote),
         plan.scope.staged.len(),
@@ -576,7 +576,8 @@ Details:
   Save uses publication destinations without fetching the project base.
   Save requires an attached working branch with a commit.
   Tracking may be absent, the published counterpart, or the configured project base.
-  Existing valid tracking is preserved; missing tracking follows confirmed publication.
+  Existing publication-branch or project-base tracking is preserved.
+  Missing tracking follows confirmed publication. Ordinary Git commands use your Git configuration.
   An effective explicit Git push remote must agree with publish-remote.
   The configured base, conflicts, active operations, and dirty submodules block save.
   Failures retain completed effects; inspect the report before retrying.

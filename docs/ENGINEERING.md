@@ -127,9 +127,14 @@ base remote resolves independently and stays selected across publication overrid
 Settings retain publication file/layer and alias provenance, plus explicit base
 provenance or the fact that the base follows publication. These participate in
 settings equality and existing plan/setup revalidation. Inspection reports both
-roles and their sources without checking availability. Generation emits the
-publication key and preserves explicit base selection when rendering it; guided
-setup retains its single-remote question and leaves base selection derived.
+roles and their sources without checking availability. Generation emits
+`publish-remote` and preserves explicit base selection when rendering it. Guided setup asks for publication and a base source that follows
+publication or selects a different remote. Equal choices retain the derived
+relationship and omit `base-remote`; unattended generation uses `origin` with a
+derived base. Local remote names and refs are offline hints, never role assignments.
+Review resolves the proposed shared roles with validated private overrides and
+reports provenance without exporting private values. Existing files remain
+create-protected and are not rewritten.
 
 Start and save execute with matching or separate roles. Start discovers the
 exact publication branch for remote resume and otherwise fetches the project
@@ -150,7 +155,9 @@ The accepted workflow direction is: for a fork, new work starts from the project
 base, published work resumes from the publication remote, save publishes there,
 and finish prepares against the project
 base before publishing to the publication remote. Manual submission guidance must
-identify the project base separately from the published branch. Fork synchronization
+identify both the publication-remote/branch and project-base-remote/branch.
+The configured publication role governs gof operations; ordinary Git commands
+continue to use the developer's Git configuration. Fork synchronization
 and provider integration are separate future capabilities.
 
 Remote-role changes must participate in revalidation and verified rewrite recovery;

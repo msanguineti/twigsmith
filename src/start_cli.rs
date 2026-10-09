@@ -51,7 +51,21 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 Action::ResumeRemote => "Resumed remote",
                 Action::AlreadyCurrent => "Already current:",
             };
-            println!("{action} branch {}", text(&request.target));
+            match outcome.action {
+                Action::Create => println!(
+                    "{action} branch {} from {}/{}",
+                    text(&request.target),
+                    text(&request.settings.base_remote),
+                    text(&request.settings.base)
+                ),
+                Action::ResumeRemote => println!(
+                    "{action} branch {} from {}/{}",
+                    text(&request.target),
+                    text(&request.settings.publish_remote),
+                    text(&request.target)
+                ),
+                _ => println!("{action} branch {}", text(&request.target)),
+            }
             ExitCode::SUCCESS
         }
         Err(failure) => {
@@ -93,6 +107,7 @@ Details:
   Otherwise resume from publish-remote or create from the fresh base-remote base.
   Tracking may be absent, the published counterpart, or the configured project base.
   An effective explicit Git push remote must agree with publish-remote.
+  Ordinary Git commands use your Git configuration for routing and tracking.
   Switching requires a clean tree, attached HEAD, and an existing commit.
   An already-current target succeeds with uncommitted work.
   Active operations and targets occupied by another worktree block start.
@@ -160,7 +175,7 @@ fn failure_error(failure: &Failure, target: &str) {
             eprintln!("ensure Git is installed on PATH and repository paths are accessible")
         }
         StartError::Git { .. } => eprintln!(
-            "check Git diagnostics, repository access, and the configured remote/base in repository settings"
+            "check Git diagnostics, repository access, and the configured publication remote and project base in repository settings"
         ),
         _ => {}
     }
