@@ -1,4 +1,4 @@
-//! Finish assessment and preparation. Local tracking refs are hints, never
+//! Finish assessment, preparation, and publication. Tracking refs are hints, never
 //! fresh destination observations. Assessment corroborates durable retry data.
 use crate::{
     git, repository,
@@ -9,6 +9,7 @@ use crate::{
 use std::{ffi::OsString, fmt, fs, io, path::Path};
 
 pub mod preparation;
+pub mod publication;
 mod recovery;
 pub use recovery::{Recovery, VerifiedRewrite};
 

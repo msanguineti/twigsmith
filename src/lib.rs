@@ -13,3 +13,5 @@ pub mod save;
 pub mod settings;
 
 pub mod finish;
+
+mod publication;

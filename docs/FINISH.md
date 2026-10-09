@@ -2,10 +2,9 @@
 
 Finish prepares and publishes the current working branch for delivery. This
 contract is implemented through read-only assessment/revalidation, controlled
-remote refresh, branch preparation, and durable rebase recovery evidence.
-Publication, the CLI, and additional setup questions remain future work.
-Configurable checks,
-provider submission, integration into the base, tagging, and cleanup are deferred.
+remote refresh, branch preparation, durable rebase recovery evidence, and exact
+publication. The CLI, additional setup questions, configurable checks, provider
+submission, integration into the base, tagging, and cleanup are deferred.
 
 ## Configuration and choices
 
@@ -153,11 +152,9 @@ changes to the working branch, and reassesses its result. Replacement requires
 both resolved authorization and proof that the originally observed remote work
 was incorporated before rewriting. Verified durable recovery evidence can supply
 that proof; assessment reads it without mutations.
-Future publication must use a lease for the exact observed commit at the exact
-destination. Git's [git-push documentation](https://git-scm.com/docs/git-push)
-explains explicit lease expectations. A lease protects against later destination
-changes; it establishes no incorporation of earlier remote work. Creation must
-likewise protect the observed absence in the future publication implementation.
+Publication uses a lease for the exact observed commit at the exact destination.
+A lease protects against later destination changes; it establishes no
+incorporation of earlier remote work. Creation protects the observed absence.
 
 The accepted delivery direction is publication to the configured remote by
 default, followed by a clear handoff to the developer for any submission step.
@@ -170,13 +167,9 @@ setup later offers provider submission, manual submission is the default. These
 are design constraints for future work; no provider adapter or setup flow is
 implemented by the preparation library.
 
-Publication results must distinguish confirmation per actual destination,
-rejection, unconfirmed responses, partial effects, and tracking establishment.
-After confirmed
-publication, report branch/destination/commit and hand off the project's manual
-submission step unless an explicitly configured future provider adapter handles
-it.
-These are obligations for the future publication executor.
+Publication reports identify the branch, pinned commit, and outcome at each
+actual destination. A future CLI will use these results for the project's manual
+submission handoff or an explicitly configured provider adapter.
 
 ## Controlled refresh and preparation
 
@@ -225,6 +218,104 @@ For a merge, use `git merge --continue` or `git merge --abort`. Reassess finish
 after Git recovery. The report's guidance follows the observed active operation;
 when none remains, inspect the process output and resulting repository state.
 There are no finish-specific continuation or abort commands.
+
+## Exact publication and retry
+
+`finish::publication::publish(directory, plan)` accepts a ready, prepared plan:
+its resolved update is `none`, with no outstanding choices or constraints. Use
+the resulting plan from preparation, or assess already prepared history with
+fresh evidence. Publication revalidates repository/worktree selection, the clean
+attached branch and pinned commit, settings and Git configuration, upstream,
+destinations, history, and rewrite proof before transport operations. Local
+tracking hints may change during publication; they never supply a lease or
+confirmation. Publication preserves the prepared branch and working tree.
+
+Each configured push destination is handled independently in configuration order.
+The executor rereads that destination's exact branch. Equality with the prepared
+commit confirms `Unchanged` without a push, including on retries and repeated
+URLs. Any other difference from the approved observation stops that destination
+with `Rejected`; the executor keeps its original expectation. An unreadable or
+ambiguous advertisement is `Unconfirmed`, never confirmed absence. Independent
+destinations can still proceed. A local context change stops subsequent work.
+
+A push supplies one literal `<prepared-oid>:refs/heads/<current-branch>` refspec,
+`--no-force`, and `--force-with-lease=<exact-ref>:<expected>`. The expectation is
+empty for creation and the originally observed full commit ID for an existing
+branch. Ordinary updates require proven ancestry, so they create or fast-forward
+without replacing history. Replacement requires `VerifiedRewrite` and resolved
+`allow`. An explicit lease protects even an absence observed before a competing
+creation; a background fetch cannot renew it. Neither `--force` nor a `+` refspec
+is used. A rejected lease is never refreshed and retried within publication.
+Git documents explicit and empty lease expectations and the limitations of
+tracking-based leases in [git-push](https://git-scm.com/docs/git-push).
+
+Transport selection uses a temporary, command-scoped remote with one explicit
+push URL. The URL must still resolve to the observed endpoint. This supports
+multiple destinations and fetch/push differences while preventing a second
+`pushInsteadOf` expansion. Git documents that explicit push URLs bypass
+`pushInsteadOf` in [git-config](https://git-scm.com/docs/git-config).
+Configured remote transport options, such as receive-pack and proxy settings,
+are copied; push/fetch refspecs and mirror defaults are excluded. Automatic
+tracking setup and tag following are disabled. Submodule publication is disabled,
+while an explicit `push.recurseSubmodules=check` remains effective. Hooks and
+helpers run normally; a pre-push hook receives the command-scoped remote name
+and actual destination URL. No temporary remote is written to configuration.
+These transports do not update the configured remote's tracking caches; a later
+fetch refreshes those refs. Upstream establishment follows the configuration
+contract below, independently of cache existence.
+
+Per-destination outcomes retain expected and freshly observed values, selected
+action, raw command results, response details, and confirmed effects. Exact-ref
+porcelain acknowledgements distinguish `Created`, `Advanced`, `Rewritten`,
+`Unchanged`, and `Rejected`. Missing, malformed, unexpected, or interrupted
+responses remain `Unconfirmed`, even after exit status zero. A nonzero process
+status retains an otherwise valid acknowledgement and its process error. The
+aggregate publication state is:
+
+| State | Evidence |
+| --- | --- |
+| `NotAttempted` | Local guards or unresolved preparation prevented destination work |
+| `Complete` | Every destination confirmed the pinned commit |
+| `Partial` | Some destinations confirmed it and others did not |
+| `Rejected` | Every destination rejected the intended update or changed observation |
+| `Unconfirmed` | No destination confirmed it, and at least one outcome remains uncertain |
+
+`Complete` describes publication evidence; `Report::is_complete()` additionally
+requires matching upstream settings and no reported errors. Only after all
+destinations confirm publication does missing tracking use save's existing
+contract: revalidate and add the configured remote and exact branch merge ref.
+Tracking writes, final settings, and errors are reported separately. A tracking
+failure retains confirmed publication; partial configuration writes remain for
+Git recovery. Conflicting or incomplete tracking must be resolved before a fresh
+finish assessment. Local remote-tracking caches prove neither publication nor
+failure at an endpoint.
+
+On retry, refresh and assess actual destinations with the current choices. An
+unchanged local context also permits retrying the prepared plan; publication
+still rereads every destination and keeps its original lease expectations.
+Already completed destinations need no replacement. Pending replacements must
+still match verified incorporation evidence and current rewrite authorization.
+New remote work cannot borrow an older rewrite's permission or proof. Further
+preparation, if required by a newly selected base, uses the existing verified
+rebase chain.
+
+Publication leaves the durable rebase record intact. No publication journal or
+final write is needed to recover from a process dying after a successful push:
+actual remote equality confirms completion, and the original record verifies
+outstanding rewrites. Lost acknowledgements therefore retain uncertain reports
+until a retry observes the endpoint. In-memory reports are not permission or a
+substitute for remote observation.
+
+Cross-destination publication is non-atomic. Confirmation describes the response
+or observation at that time, not a lock against later remote changes. Leases do
+not detect a ref that moved away and then returned to the same OID. Servers,
+helpers, and hooks remain trusted parts of Git execution, and hooks can change
+state between revalidation and a command; the literal OID still pins publication.
+Read access to every destination remains necessary; replacement also requires
+intact recovery evidence.
+Publication does not reread the base or prepare again: the plan pins the base
+already selected during preparation. Reassess and prepare when a newer base is
+wanted. No successful destination or local hook effect is rolled back.
 
 ## Durable rewrite verification
 
@@ -298,6 +389,8 @@ across successful/failed assessment and revalidation, including Git metadata.
 
 Observation is several reads, not an atomic snapshot or cross-process lock.
 Revalidation with the same supplied evidence cannot detect remote-only changes.
-Preparation repeats remote observation and revalidates before mutations. Future
-publication must revalidate and use exact destination guards. Recovery records
+Preparation repeats remote observation and revalidates before mutations.
+Publication revalidates local context, rereads destinations, and uses exact
+leases; tracking hints alone may change without invalidating publication.
+Recovery records
 are operational evidence with strict verification, not long-lived approval.

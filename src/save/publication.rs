@@ -174,7 +174,7 @@ impl From<SaveError> for PublishError {
     }
 }
 
-fn observe(directory: &Path, plan: &Plan) -> Result<TrackingObservation, SaveError> {
+pub(crate) fn observe(directory: &Path, plan: &Plan) -> Result<TrackingObservation, SaveError> {
     let upstream = super::upstream_settings(directory, &plan.branch)?;
     let raw = super::read(
         directory,
@@ -203,7 +203,7 @@ fn observe(directory: &Path, plan: &Plan) -> Result<TrackingObservation, SaveErr
         remote_refs,
     })
 }
-fn tracking_state(
+pub(crate) fn tracking_state(
     observation: &Result<TrackingObservation, SaveError>,
     plan: &Plan,
 ) -> TrackingState {
@@ -302,7 +302,7 @@ fn protect_tracking(directory: &Path, plan: &Plan) -> Result<(), PublishError> {
     Ok(())
 }
 
-fn submodule_policy(directory: &Path) -> Result<&'static str, SaveError> {
+pub(crate) fn submodule_policy(directory: &Path) -> Result<&'static str, SaveError> {
     // Respect a user's non-mutating publication check. Recursive publication
     // (including submodule.recurse's implicit on-demand) would exceed this intent.
     let values = super::config(directory, b"push.recurseSubmodules")?;
@@ -344,59 +344,26 @@ impl SplitByte for [u8] {
 }
 
 fn responses(output: &[u8], source: &[u8], target: &[u8]) -> (Vec<DestinationOutcome>, bool) {
-    let expected_refspec = [source, b":".as_slice(), target].concat();
-    let mut outcomes = vec![];
-    let mut destination = None;
-    let mut valid = true;
-    let mut seen = false;
-    for line in output.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-        if let Some(url) = line.strip_prefix(b"To ") {
-            if destination.is_some() {
-                valid = false;
-            }
-            destination = Some(url.to_vec());
-            seen = false;
-        } else if line == b"Done" && destination.is_some() {
-            if !seen {
-                valid = false;
-            }
-            destination = None;
-        } else {
-            let fields: Vec<_> = line.split(|b| *b == b'\t').collect();
-            // Normal hooks can print progress on stdout. Only ref-status-shaped
-            // lines participate in protocol validation; preserve all other text
-            // in the raw process output without discarding acknowledgements.
-            if fields.len() < 2 || fields[0].len() != 1 || !b" *!=+-".contains(&fields[0][0]) {
-                continue;
-            }
-            if fields.len() != 3 || fields[1] != expected_refspec || destination.is_none() || seen {
-                valid = false;
-                continue;
-            }
-            let state = match fields[0][0] {
-                b'*' => DestinationState::Created,
-                b' ' => DestinationState::Advanced,
-                b'=' => DestinationState::Unchanged,
-                b'!' if fields[2].starts_with(b"[rejected]")
-                    || fields[2].starts_with(b"[remote rejected]") =>
-                {
-                    DestinationState::Rejected
-                }
-                _ => DestinationState::Unconfirmed,
-            };
-            outcomes.push(DestinationOutcome {
-                destination: destination.clone().unwrap(),
-                state,
-                detail: fields[2].to_vec(),
-            });
-            seen = true;
-        }
-    }
-    // A missing Done does not erase an explicit per-ref acknowledgement.
-    if destination.is_some() && !seen {
-        valid = false;
-    }
-    (outcomes, valid)
+    use crate::publication::Status;
+    let (responses, valid) = crate::publication::responses(output, source, target);
+    (
+        responses
+            .into_iter()
+            .map(|r| DestinationOutcome {
+                destination: r.destination,
+                state: match r.state {
+                    Status::Created => DestinationState::Created,
+                    Status::Advanced => DestinationState::Advanced,
+                    Status::Unchanged => DestinationState::Unchanged,
+                    Status::Rejected => DestinationState::Rejected,
+                    // Save never authorizes replacement, including a surprising response.
+                    Status::Rewritten | Status::Unconfirmed => DestinationState::Unconfirmed,
+                },
+                detail: r.detail,
+            })
+            .collect(),
+        valid,
+    )
 }
 
 fn revalidate_tracking(
@@ -417,7 +384,7 @@ fn revalidate_tracking(
     }
     Ok(())
 }
-fn establish_tracking(
+pub(crate) fn establish_tracking(
     directory: &Path,
     plan: &Plan,
     writes: &mut Vec<TrackingWrite>,

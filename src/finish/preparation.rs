@@ -163,21 +163,7 @@ fn observe(
         report,
     )?;
     guard(directory, plan)?;
-    let mut found = None;
-    for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
-        let Some(index) = line.iter().position(|b| *b == b'\t') else {
-            return Err(FinishError::InvalidEvidence("invalid remote advertisement").into());
-        };
-        let (oid, name) = (&line[..index], &line[index + 1..]);
-        if name != reference {
-            continue;
-        } // ls-remote patterns can match ref tails.
-        if !valid_oid(oid, plan.commit.len()) || found.is_some() {
-            return Err(FinishError::InvalidEvidence("ambiguous remote advertisement").into());
-        }
-        found = Some(oid.to_vec());
-    }
-    let value = found.map_or(RefObservation::Absent, RefObservation::Commit);
+    let value = parse_advertisement(&bytes, reference, plan.commit.len())?;
     report.effects.push(Effect::Observed {
         destination: endpoint.to_vec(),
         reference: reference.to_vec(),
@@ -421,4 +407,28 @@ pub fn prepare(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             .unwrap_or(directory),
     );
     report
+}
+
+pub(super) fn parse_advertisement(
+    bytes: &[u8],
+    reference: &[u8],
+    oid_length: usize,
+) -> Result<RefObservation, FinishError> {
+    let mut found = None;
+    for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        let Some(index) = line.iter().position(|b| *b == b'\t') else {
+            return Err(FinishError::InvalidEvidence("invalid remote advertisement"));
+        };
+        let (oid, name) = (&line[..index], &line[index + 1..]);
+        if name != reference {
+            continue;
+        } // ls-remote patterns can match ref tails.
+        if !valid_oid(oid, oid_length) || found.is_some() {
+            return Err(FinishError::InvalidEvidence(
+                "ambiguous remote advertisement",
+            ));
+        }
+        found = Some(oid.to_vec());
+    }
+    Ok(found.map_or(RefObservation::Absent, RefObservation::Commit))
 }

@@ -275,8 +275,8 @@ finish-rewrite: "ask"
 remotely when creating new work. `base` is a branch name such as `trunk`.
 `save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
 `finish-update` accepts `ask`, `rebase`, `merge`, or `none`. `finish-rewrite`
-accepts `ask`, `allow`, or `deny`. These settings support the finish planning and preparation library;
-the finish command and publication are planned for subsequent increments. Update
+accepts `ask`, `allow`, or `deny`. These settings support the finish planning,
+preparation, and publication library; the finish command remains planned. Update
 selects how to prepare history against the remote base. Rewrite selects permission
 to replace published history, with incorporated remote work and an exact lease
 required separately. Guided setup asks about remote, base, and save action and
