@@ -8,7 +8,9 @@ mod terminal;
 use git_oneflow::{
     config::{self, ConfigError, Format},
     git, repository,
-    settings::{self, CONFIG_FILES, SaveAction, SettingSource, Settings},
+    settings::{
+        self, CONFIG_FILES, FinishRewrite, FinishUpdate, SaveAction, SettingSource, Settings,
+    },
 };
 use preservation::snapshot;
 use std::{
@@ -364,7 +366,10 @@ fn private_overrides_allow_generation_without_copying_values() {
         |root, exe| {
             for (filename, content) in [
                 (CONFIG_FILES[0], "remote='private'\nsave-action='stash'\n"),
-                ("oneflow.conf", "remote = private\nsave-action = stash\n"),
+                (
+                    "oneflow.conf",
+                    "remote = private\nsave-action = stash\nfinish-update = none\nfinish-rewrite = deny\n",
+                ),
                 (CONFIG_FILES[3], "invalid JSON"),
             ] {
                 let repo = Repository::new(root);
@@ -761,7 +766,7 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     let repo = Repository::new(root);
                     repo.success(&["remote", "add", "hint-only", "/unreachable/offline"]);
                     let private = repo.path().join(".git/oneflow.conf");
-                    fs::write(&private, "remote = private\nsave-action = stash\n").unwrap();
+                    fs::write(&private, "remote = private\nsave-action = stash\nfinish-update = none\nfinish-rewrite = deny\n").unwrap();
                     let before_git = snapshot(&repo.path().join(".git"));
                     let mut terminal = terminal::Terminal::start(
                         exe,
@@ -771,14 +776,16 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     terminal.until("Remote used");
                     assert!(terminal.output.contains("hint-only"));
                     terminal.send(if custom {
-                        b"future-remote\nfuture/base\nwip\n"
+                        b"future-remote\nfuture/base\nwip\nmerge\nallow\n"
                     } else {
-                        b"\n\n\n"
+                        b"\n\n\n\n\n"
                     });
                     terminal.until("Create this file?");
                     assert!(!repo.path().join(filename).exists());
                     assert!(terminal.output.contains("Effective remote: private"));
                     assert!(terminal.output.contains("Effective save-action: stash"));
+                    assert!(terminal.output.contains("Effective finish-update: none"));
+                    assert!(terminal.output.contains("Effective finish-rewrite: deny"));
                     let proposed = Settings {
                         remote: if custom { "future-remote" } else { "origin" }.into(),
                         base: if custom { "future/base" } else { "main" }.into(),
@@ -786,6 +793,16 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                             SaveAction::Wip
                         } else {
                             SaveAction::Ask
+                        },
+                        finish_update: if custom {
+                            FinishUpdate::Merge
+                        } else {
+                            FinishUpdate::Ask
+                        },
+                        finish_rewrite: if custom {
+                            FinishRewrite::Allow
+                        } else {
+                            FinishRewrite::Ask
                         },
                         ..Settings::default()
                     };
@@ -808,6 +825,9 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     let effective = load(repo.path());
                     assert_eq!(effective.remote, "private");
                     assert_eq!(effective.base, proposed.base);
+                    assert_eq!(effective.finish_update, FinishUpdate::None);
+                    assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
+                    assert!(terminal.output.contains("Standing authorization"));
                     assert_eq!(effective.save_action, SaveAction::Stash);
                     assert_eq!(
                         git_oneflow::start::prepare(repo.path(), "work")
@@ -825,6 +845,8 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     let effective = load(repo.path());
                     assert_eq!(effective.remote, proposed.remote);
                     assert_eq!(effective.save_action, proposed.save_action);
+                    assert_eq!(effective.finish_update, proposed.finish_update);
+                    assert_eq!(effective.finish_rewrite, proposed.finish_rewrite);
                     repo.success(&["remote", "add", &proposed.remote, "/offline"]);
                     let save = git_oneflow::save::assess(repo.path(), &Default::default()).unwrap();
                     assert_eq!(save.settings, effective);
@@ -855,7 +877,11 @@ fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
             terminal.until("Use a valid literal Git branch");
             terminal.send(b"trunk\nunknown\n");
             terminal.until("save-action must be");
-            terminal.send(b"staged\n");
+            terminal.send(b"staged\ninvalid\n");
+            terminal.until("finish-update must be");
+            terminal.send(b"none\ninvalid\n");
+            terminal.until("finish-rewrite must be");
+            terminal.send(b"deny\n");
             terminal.until("Create this file?");
             terminal.send(b"y\n");
             terminal.until("Enter yes to create");
@@ -866,6 +892,8 @@ fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
             assert_eq!(settings.remote, "upstream");
             assert_eq!(settings.base, "trunk");
             assert_eq!(settings.save_action, SaveAction::Staged);
+            assert_eq!(settings.finish_update, FinishUpdate::None);
+            assert_eq!(settings.finish_rewrite, FinishRewrite::Deny);
         },
     );
 }
@@ -881,7 +909,9 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
                 ("", "Remote used"),
                 ("\n", "Base branch"),
                 ("\n\n", "Default save action"),
-                ("\n\n\n", "Create this file?"),
+                ("\n\n\n", "Default finish update"),
+                ("\n\n\n\n", "Default finish rewrite"),
+                ("\n\n\n\n\n", "Create this file?"),
             ] {
                 for cancel in [b"cancel\n".as_slice(), b"\x04", b"partial\x04\x04"] {
                     let repo = Repository::new(root);
@@ -908,7 +938,7 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
                 let before = snapshot(repo.path());
                 let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                 terminal.until("Remote used");
-                terminal.send(b"\n\n\n");
+                terminal.send(b"\n\n\n\n\n");
                 terminal.until("Create this file?");
                 terminal.send(answer);
                 assert_eq!(terminal.finish().code(), Some(0));
@@ -944,7 +974,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                     terminal.until("Remote used");
                     if confirmation {
-                        terminal.send(b"\n\n\n");
+                        terminal.send(b"\n\n\n\n\n");
                         terminal.until("Create this file?");
                     }
                     match mutation {
@@ -980,7 +1010,11 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                         _ => unreachable!(),
                     }
                     let before = snapshot(repo.path());
-                    terminal.send(if confirmation { b"yes\n" } else { b"\n\n\n" });
+                    terminal.send(if confirmation {
+                        b"yes\n"
+                    } else {
+                        b"\n\n\n\n\n"
+                    });
                     assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
                     assert_eq!(snapshot(repo.path()), before);
                     assert!(!repo.path().join(CONFIG_FILES[0]).exists());

@@ -12,6 +12,7 @@ gof --help
 gof --version
 gof start --help
 gof save --help
+gof finish --help
 gof status --help
 gof config --help
 ```
@@ -124,6 +125,76 @@ The branch must have an existing commit and differ from the configured base.
 Conflicts, active Git operations, detached HEAD, and dirty submodules block save.
 Preserve dirty submodule work within its own repository.
 
+## Prepare and publish finished work
+
+```sh
+gof finish
+gof f --update merge
+gof finish --update rebase --allow-rewrite
+gof finish --update none --no-rewrite
+```
+
+`finish` (shorthand: `f`) prepares and publishes the current clean branch to the configured remote,
+then reports the branch, destinations, and commit with a manual submission next
+step into the configured base. This is the preparation/publication increment:
+checks, external integrations, pull request creation, base integration, tagging,
+and cleanup are deferred.
+
+Finish requires a clean index, working tree, and submodules, an attached branch
+with an existing commit, and no active Git operation or conflicts. Commit or
+preserve uncommitted work first. The branch must differ from the configured base.
+Upstream settings must match the configured remote/current branch or be absent;
+finish establishes absent tracking after confirmed publication.
+
+Finish observes the remote base and the exact branch at every push destination,
+then fetches their observed objects. The local base and tracking refs retain their
+history during refresh. Read access to each push destination is required.
+
+`--update` overrides `finish-update`:
+
+| Value | Preparation when the branch needs the remote base |
+| --- | --- |
+| `ask` (configuration default) | Choose rebase, merge, none, or cancellation at a terminal |
+| `rebase` | Replay branch commits onto the observed remote base, preserving merge structure |
+| `merge` | Incorporate the observed remote base with a merge or fast-forward |
+| `none` | Publish current history without updating from the base |
+
+A branch already including the base needs no update choice. Unrelated base history
+requires `none` or Git history repair; uncertain or unavailable history stops finish.
+
+`--allow-rewrite` permits eligible replacement of published branch history;
+`--no-rewrite` denies it. They override `finish-rewrite` and are mutually exclusive.
+Selecting rebase resolves only the update choice. Rewrite `ask` requests separate
+authorization when published history may need replacement. Configured `allow` is
+standing authorization for eligible replacement; `deny` stops required replacement.
+All replacement still requires verified incorporation of the observed remote work
+and an exact destination lease. Permission alone cannot overwrite remote work
+missing from the local history. Merge and none preserve incorporated published
+history and need no replacement authorization.
+
+Only relevant unresolved choices prompt. Input and stderr must be terminals; enter
+a displayed choice or `cancel`. Cancellation, EOF, or unresolved unattended input
+stops before branch execution, leaving branch history, the index, and working-tree
+content unchanged by finish. Completed remote observations/fetches remain and are
+reported. Choices resolve before affected branch changes; changed local or remote
+context stops execution. Resolved flags/settings require no additional confirmation.
+Duplicate options, unsupported values, and positional arguments are syntax errors.
+
+For unattended execution, resolve relevant choices through flags or configuration:
+
+```sh
+gof finish --update rebase --allow-rewrite
+gof finish --update merge --no-rewrite
+```
+
+Publication targets the same branch at each configured push URL. Each destination
+is guarded independently against changes after observation; replacement requires
+verified finish rebase evidence. Multiple destinations can complete only partly.
+Exit `0` confirms complete publication, including unchanged publication; an
+operational failure, unresolved input, cancellation, or incomplete execution exits
+`1`. Syntax errors exit `2`. Failures report completed effects and remaining state.
+Use Git to recover conflicts, then rerun finish as described in [recovery](#recovery).
+
 ## Inspect state
 
 ```sh
@@ -155,14 +226,14 @@ gof config --yes --format json
 `finish-update`, and `finish-rewrite`, identifying
 each value's shared file, local file, or built-in default. It lists discovered
 files and the directories searched when a layer is absent. Each key resolves
-from local overrides, shared settings, then defaults. Save's action flags take
-precedence over `save-action` when saving. Inspection uses the same validation
-and diagnostics as start/save. Its output is intended for people.
+from local overrides, shared settings, then defaults. Explicit save/finish flags take
+precedence over their corresponding settings. Inspection uses shared workflow
+validation and diagnostics. Its output is intended for people.
 
-`config` guides you through the remote used by start/save, the base branch for
-new work, and the default save action for uncommitted changes. Each proposal starts
-with the built-in default: `origin`, `main`, and `ask`. Press Enter to keep it, or
-enter a replacement. Local remote configuration and branch references provide
+`config` guides you through the remote used by start/save/finish, the base branch,
+the default save action, and the finish update and rewrite policies. Each proposal
+starts with its built-in default: `origin`, `main`, and `ask` for all three policies.
+Press Enter to keep it, or enter a replacement. Local remote configuration and branch references provide
 offline hints; they never change the defaults. Valid names can be configured before
 the remote or branch exists.
 
@@ -178,6 +249,11 @@ Save action choices describe what will happen:
 
 WIP and stash exclude ignored files. A stash stays local. Clean trees publish
 existing commits directly; explicit save flags override the configured preference.
+
+Finish update choices are `ask`, `rebase`, `merge`, and `none`. Rewrite choices are
+`ask`, `allow`, and `deny`; setup describes `allow` as standing authorization for
+eligible replacement with remote safeguards retained. See
+[finish](#prepare-and-publish-finished-work) for their effects.
 
 Setup shows the destination, exact proposed file, and effective private overrides
 before asking for confirmation. Enter `yes` to create it. Enter `no`, leave the
@@ -241,10 +317,11 @@ The two layers can use different formats. Resolve the directories with
 Commands find the same shared file from any subdirectory. Linked worktrees use
 their own shared root files and the same private common-directory overrides.
 Bare repositories have the local layer and defaults available for `config show`;
-start/save and configuration generation require a working tree.
+start/save/finish and configuration generation require a working tree.
 
 Each key resolves independently: **explicit command flags > local overrides >
 shared settings > defaults**. Save's existing action flags override `save-action`.
+Finish's update and rewrite flags override their respective settings.
 Start has no setting override flags. Parent directories and the home directory
 supply no additional settings.
 
@@ -275,13 +352,11 @@ finish-rewrite: "ask"
 remotely when creating new work. `base` is a branch name such as `trunk`.
 `save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
 `finish-update` accepts `ask`, `rebase`, `merge`, or `none`. `finish-rewrite`
-accepts `ask`, `allow`, or `deny`. These settings support the finish planning,
-preparation, and publication library; the finish command remains planned. Update
-selects how to prepare history against the remote base. Rewrite selects permission
-to replace published history, with incorporated remote work and an exact lease
-required separately. Guided setup asks about remote, base, and save action and
-includes both finish defaults in its generated file. Edit finish preferences in
-that file or a private override. See the [finish contract](FINISH.md).
+accepts `ask`, `allow`, or `deny`. Update selects branch preparation against the
+remote base; rewrite supplies independent permission for eligible replacement.
+Guided setup offers both with `ask` defaults, and `config --yes` writes those
+explicit defaults. See [finish](#prepare-and-publish-finished-work) and the
+[finish contract](FINISH.md).
 Omit keys to inherit them from the next layer. An empty TOML document or an empty
 mapping (`{}`) in YAML/JSON inherits every key. Quote YAML values that could be
 interpreted as another type, such as `"true"` or `"123"`.
@@ -323,6 +398,18 @@ values in the local file.
   For a write failure, check the reported working-tree path and directory access.
 - **Save needs input:** select an action explicitly or configure `save-action`.
   Supply a nonblank `--message` for an unattended staged checkpoint.
+- **Finish needs input:** select `--update rebase|merge|none` and, when replacement
+  is required, `--allow-rewrite` or `--no-rewrite`; or configure the corresponding
+  finish settings. Rebase selection supplies no replacement authorization.
+- **Finish conflicts:** resolve the reported conflicts, stage resolutions, and use
+  `git rebase --continue` or `git merge --continue`. Use `git rebase --abort` or
+  `git merge --abort` to abandon that update. Then rerun finish. Finish verifies
+  retained rebase evidence before authorizing eligible publication after recovery.
+- **Finish publication failed:** the prepared branch stays local and confirmed
+  destination updates remain. Repair access or the reported problem and rerun
+  finish. Retrying uses fresh observations and verified rebase evidence; it does
+  not repeat an already completed update. New remote work requires incorporation
+  with Git. Missing/expired recovery evidence cannot authorize replacement.
 - **Scope changed:** inspect the branch, index, files, upstream, and settings,
   then rerun to approve the current state.
 - **Retained stash:** inspect `git stash list` and `git stash show <reported-id>`.

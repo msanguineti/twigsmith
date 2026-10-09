@@ -153,7 +153,7 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
     let mut plan = config::prepare_guided(directory, format)?;
     let defaults = settings::Settings::default();
     eprintln!(
-        "Configure shared start/save settings. Enter keeps the built-in default; type cancel to stop."
+        "Configure shared start/save/finish settings. Enter keeps the built-in default; type cancel to stop."
     );
     for (label, bytes) in [
         ("Local remotes", &plan.review().remotes),
@@ -181,7 +181,7 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
     eprintln!("Names can be configured before remotes or branches exist.");
     loop {
         let Some(answer) = input(&format!(
-            "Remote used by start and save [{}]: ",
+            "Remote used by start, save, and finish [{}]: ",
             text(&defaults.remote)
         ))?
         else {
@@ -202,7 +202,7 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
     }
     loop {
         let Some(answer) = input(&format!(
-            "Base branch for new work [{}]: ",
+            "Base branch for new work and finish [{}]: ",
             text(&defaults.base)
         ))?
         else {
@@ -239,6 +239,44 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         }) {
             Ok(action) => {
                 plan.proposed.save_action = action;
+                break;
+            }
+            Err(reason) => eprintln!("{reason}; or enter cancel."),
+        }
+    }
+    eprintln!(
+        "Finish update when the branch needs the remote base:\n  ask     Choose rebase, merge, or none at a terminal.\n  rebase  Replay branch commits onto the observed base.\n  merge   Incorporate the observed base with a merge or fast-forward.\n  none    Publish current history without updating from the base.\nExplicit finish --update overrides this preference."
+    );
+    loop {
+        let Some(answer) = input("Default finish update [ask]: ")? else {
+            return cancelled();
+        };
+        match settings::parse_update(if answer.is_empty() {
+            defaults.finish_update.as_str()
+        } else {
+            &answer
+        }) {
+            Ok(update) => {
+                plan.proposed.finish_update = update;
+                break;
+            }
+            Err(reason) => eprintln!("{reason}; or enter cancel."),
+        }
+    }
+    eprintln!(
+        "Finish replacement of published history:\n  ask    Request separate authorization when replacement is required.\n  allow  Standing authorization for eligible replacement; incorporation proof and exact remote leases remain required.\n  deny   Deny replacement.\nSelecting rebase supplies no replacement authorization. Explicit rewrite flags override this preference."
+    );
+    loop {
+        let Some(answer) = input("Default finish rewrite [ask]: ")? else {
+            return cancelled();
+        };
+        match settings::parse_rewrite(if answer.is_empty() {
+            defaults.finish_rewrite.as_str()
+        } else {
+            &answer
+        }) {
+            Ok(rewrite) => {
+                plan.proposed.finish_rewrite = rewrite;
                 break;
             }
             Err(reason) => eprintln!("{reason}; or enter cancel."),
@@ -363,12 +401,12 @@ fn show(inspection: &config::Inspection) {
         Some(&inspection.repository.common_dir),
     );
     println!(
-        "Recognized files: git-oneflow.config.{{toml,yaml,yml,json}}; legacy local: oneflow.conf\nPrecedence per key: local overrides > shared settings > built-in defaults.\nSave action flags override save-action when saving."
+        "Recognized files: git-oneflow.config.{{toml,yaml,yml,json}}; legacy local: oneflow.conf\nPrecedence per key: local overrides > shared settings > built-in defaults.\nExplicit save/finish flags override their corresponding settings."
     );
 }
 fn help() {
     println!(
-        "Inspect configuration or set up shared start/save settings.
+        "Inspect configuration or set up shared start/save/finish settings.
 
 Usage: git-oneflow config show
        git-oneflow config --yes [--format <toml|yaml|json>]
@@ -392,18 +430,20 @@ Examples:
 
 Details:
   Inspection reports effective values, file locations, and validation errors.
-  Precedence per key: explicit save action > local > shared > built-in defaults.
+  Precedence per key: explicit workflow flags > local > shared > built-in defaults.
   Run from the root or any nested directory. Bare repositories support inspection.
   Generation creates git-oneflow.config.toml, .yaml, or .json at the working-tree root.
   Built-in defaults: remote = origin; base = main; save-action = ask.
-  Finish planning defaults: finish-update = ask; finish-rewrite = ask.
+  Finish defaults: finish-update = ask; finish-rewrite = ask.
+  finish-update: ask, rebase, merge, none; finish-rewrite: ask, allow, deny.
+  Rewrite allow is standing authorization for eligible replacement; remote safeguards remain.
   Private overrides take precedence; guided review shows their effective values.
   Guided setup validates private files; --yes reports their locations without parsing.
   Every recognized shared file or symlink, including .yml, prevents generation.
   --yes permits unattended creation; existing files are preserved.
   Generation works offline with dirty, unborn, or detached working trees.
   It leaves existing work, the index, refs, and Git configuration unchanged.
-  Run config for guided remote, base, and save-action choices at a terminal.
+  Run config for guided remote, base, save-action, finish-update, and finish-rewrite choices at a terminal.
   Setup starts with built-in defaults and offers offline repository hints.
   Review the destination, exact contents, and private overrides; enter yes to create.
   Cancellation or end-of-input creates no file. Changed review context stops setup.

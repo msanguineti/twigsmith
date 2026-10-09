@@ -1,7 +1,7 @@
 use std::{env, process::ExitCode};
 
 use crate::{
-    config_cli,
+    config_cli, finish_cli,
     repository::{self, InspectionError, Observation},
     save_cli, start_cli, status,
 };
@@ -28,6 +28,9 @@ pub fn run() -> ExitCode {
         [command, rest @ ..] if command == "config" => {
             return config_cli::run(rest);
         }
+        [command, rest @ ..] if command == "finish" || command == "f" => {
+            return finish_cli::run(rest);
+        }
         _ => {
             eprintln!("error: unsupported arguments; use --help for available options");
             return ExitCode::from(2);
@@ -39,7 +42,7 @@ pub fn run() -> ExitCode {
 
 fn print_help() {
     println!(
-        "git-oneflow — start workstreams, save progress, and inspect Git state
+        "git-oneflow — start workstreams, save progress, and publish finished work
 
 Usage: git-oneflow [OPTIONS]
        git-oneflow <COMMAND> [ARGS]
@@ -47,6 +50,7 @@ Usage: git-oneflow [OPTIONS]
 Commands:
   start, s         Create or resume a workstream
   save, v          Preserve progress and publish the current branch
+  finish, f        Prepare and publish the current branch for submission
   status           Summarize local repository state
   config           Set up or inspect shared settings
 
@@ -57,6 +61,7 @@ Options:
 Examples:
   gof start \"add user avatars\"
   gof save
+  gof finish
   gof status
   gof config show
 

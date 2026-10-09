@@ -9,10 +9,12 @@ workflow invariants are in the [start](START.md), [save](SAVE.md), and
 ## Current implementation
 
 The native Rust CLI is invoked as `git-oneflow` or `gof`. It provides `start`,
-`save`, `status`, and `config`. The finish library provides read-only assessment,
-controlled remote refresh, branch preparation, verified durable rebase recovery,
-and exact publication with destination-specific safeguards. A finish CLI remains
-deferred.
+`save`, `finish`, `status`, and `config`, with lifecycle aliases `s`, `v`, and `f`.
+The finish library provides read-only
+assessment, controlled remote refresh, branch preparation, verified durable rebase recovery,
+and exact publication with destination-specific safeguards. The finish CLI
+composes these backends and resolves consequential choices through flags, settings,
+or terminal input. Guided setup exposes both finish policies with `ask` defaults.
 
 The application separates repository observation and planning from effects and
 command presentation. Plans are revalidated before mutations. Multi-step
@@ -23,7 +25,7 @@ contract.
 | Area | Main modules |
 | --- | --- |
 | Entry points and command dispatch | `src/main.rs`, `src/bin/gof.rs`, `src/cli.rs` |
-| Command interaction | `src/start_cli.rs`, `src/save_cli.rs`, `src/config_cli.rs`, `src/status.rs` |
+| Command interaction | `src/start_cli.rs`, `src/save_cli.rs`, `src/finish_cli.rs`, `src/config_cli.rs`, `src/status.rs` |
 | Configuration | `src/settings.rs`, `src/config.rs` |
 | Git process boundary and repository observation | `src/git.rs`, `src/repository.rs` |
 | Start | `src/start.rs`, `src/start/workflow.rs` |
@@ -56,8 +58,8 @@ technical specifications here.
 
 ## Finish architecture and limits
 
-Finish preparation is a library API separate from the CLI. Refresh observes the
-configured remote base and exact push destinations, fetches the observed objects
+Finish preparation and publication are library APIs separate from CLI policy.
+Refresh observes the configured remote base and exact push destinations, fetches the observed objects
 without changing branch/tag refs, and supplies evidence to assessment. Preparation
 revalidates a resolved plan, repeats remote observation, and rebases or merges
 against the observed base. Effective settings and committed configuration changes
@@ -86,10 +88,21 @@ Reports separate confirmed effects, rejection, uncertainty, and tracking errors.
 Cross-destination publication is sequential and non-atomic; details and transport
 limits are in the finish contract.
 
-CLI interaction and finish-specific continuation/abort commands remain deferred;
-developers recover with Git and reassess finish. The accepted delivery direction
-is preparation and publication followed by a manual submission handoff, unless
-an explicitly configured provider integration handles that step.
+The CLI performs initial assessment and refresh, resolves only plan-required
+choices, then composes preparation and publication. It revalidates the reviewed
+plan around each input-driven reassessment; preparation repeats remote observation
+before branch execution. Rewrite authorization is independent of update selection.
+Input requires terminal stdin and stderr with a complete submitted line. Unresolved
+unattended input and cancellation return failure before branch execution, reporting
+completed observations/fetches. Resolved flags/settings introduce no confirmation.
+Completion follows the publication report, including tracking setup, and identifies
+the branch, each destination, pinned commit, and manual submission next step.
+Failure presentation retains backend effects and observed remaining state; Git
+handles conflicts and continuation/abort before rerunning finish.
+
+Finish-specific continuation/abort
+commands remain deferred. Submission is manual; provider integration remains
+accepted future direction only when explicitly configured.
 
 Provider adapters and their settings remain undecided. Configurable checks,
 integration into the base branch, tagging, cleanup, workflow profiles, release

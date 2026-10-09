@@ -3,8 +3,9 @@
 Finish prepares and publishes the current working branch for delivery. This
 contract is implemented through read-only assessment/revalidation, controlled
 remote refresh, branch preparation, durable rebase recovery evidence, and exact
-publication. The CLI, additional setup questions, configurable checks, provider
-submission, integration into the base, tagging, and cleanup are deferred.
+publication, exposed identically by `git-oneflow finish` and `gof finish`. This is
+the preparation/publication increment. Configurable checks, external integrations,
+provider submission, integration into the base, tagging, and cleanup are deferred.
 
 ## Configuration and choices
 
@@ -19,7 +20,12 @@ Shared TOML/YAML/YML/JSON, common-directory local files, and legacy `oneflow.con
 use the same strict validation and sparse per-key precedence. Every present value
 is validated, including overridden values. Sources retain defaults or exact
 shared/local paths. Explicit `finish::Request` choices override settings; their
-provenance is `Request`. CLI flag grammar is deferred.
+provenance is `Request`. The CLI accepts `finish` (alias: `f`), `finish --help` (also `-h`),
+`--update <rebase|merge|none>`, and either `--allow-rewrite` or `--no-rewrite`.
+Update and rewrite flags combine in either order. Rewrite flags are mutually
+exclusive; duplicate options, unsupported values, and positional arguments are
+syntax errors. The alias accepts identical grammar and behavior. There is no
+blanket `--yes` or dry-run.
 
 Fresh evidence that the branch includes the remote base resolves update to `none`
 with source `IncludesBase`, regardless of the selected update preference. Otherwise
@@ -32,8 +38,44 @@ are accepted.
 Selecting rebase resolves only the update choice. When published commits may be
 replaced, rewrite `ask` requires separate input and `deny` prevents approval of
 that prospective replacement. `allow` supplies permission while all incorporation,
-destination, and lease requirements still apply. A plan can require input and
+destination, and lease requirements still apply. Configured `allow` is standing
+authorization for eligible replacement; an interactive `allow` authorizes the
+reviewed invocation only. A plan can require input and
 contain independent constraints at the same time.
+
+## CLI interaction and outcomes
+
+The CLI assesses local readiness, refreshes remote observations/objects, and then
+presents only choices required by the resulting plan. Independent constraints
+stop execution without asking choices that cannot make the plan ready. Update
+`ask` offers rebase, merge, none, and cancellation with brief effects. A required
+replacement with rewrite `ask` receives separate allow/deny/cancel input, including
+when rebase was selected explicitly. Resolved flags/settings require no further
+confirmation. If the branch includes the base, update input is irrelevant.
+
+All required choices resolve before branch execution. Each answer is assessed
+against the same evidence, with revalidation of the reviewed plan before and
+after assessment. Preparation repeats remote observation before affected branch
+mutations; publication rereads exact destinations and retains its lease guards.
+Changed context stops execution without silently adopting the change.
+
+Prompting requires terminal stdin and stderr, following save/config conventions.
+EOF, a partial line at EOF, or `cancel` stops before branch execution. Invalid
+answers fail with retry guidance. Without a suitable terminal, unresolved input
+fails with the applicable flags and setting names. Cancellation and unresolved
+input leave branch history, index, and working-tree content unchanged by finish;
+already completed remote observations/fetches are retained and reported.
+
+Guided `config` exposes both finish settings, defaulting to `ask`; every generated
+format includes them. `config --yes` stays prompt-free and writes explicit defaults.
+
+Exit status is `0` only for confirmed complete publication (including unchanged
+publication and matching tracking), `1` for operational failure, unresolved input,
+cancellation, or incomplete execution, and `2` for invalid syntax. Help works
+without Git or a repository. Failures report completed effects, destination
+outcomes, process diagnostics, and observed remaining state. Conflicts direct the
+developer to Git recovery followed by rerunning finish; there is no automatic
+rollback or finish-specific continuation/abort command.
 
 ## Local readiness
 
@@ -168,8 +210,9 @@ are design constraints for future work; no provider adapter or setup flow is
 implemented by the preparation library.
 
 Publication reports identify the branch, pinned commit, and outcome at each
-actual destination. A future CLI will use these results for the project's manual
-submission handoff or an explicitly configured provider adapter.
+actual destination. The CLI follows confirmed publication with a concise manual
+submission next step into the configured base. It creates no pull request,
+runs no validation checks, and performs no base integration.
 
 ## Controlled refresh and preparation
 

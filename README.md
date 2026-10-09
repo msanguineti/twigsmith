@@ -1,10 +1,10 @@
 # git-oneflow
 
-A Git workflow CLI for starting workstreams, saving progress, and inspecting
-repository state. Invoke it as `git-oneflow` or `gof`.
+A Git workflow CLI for starting workstreams, saving progress, preparing finished work,
+and inspecting repository state. Invoke it as `git-oneflow` or `gof`.
 
-The native Rust version is under development. It currently provides `start`, `save`, `status`, and `config`. Build it from this repository using
-the [development guide](docs/DEVELOPMENT.md).
+The native Rust version is under development. It currently provides `start`,
+`save`, `finish`, `status`, and `config`. Build it from this repository using the [development guide](docs/DEVELOPMENT.md).
 
 ## Quick start
 
@@ -14,16 +14,19 @@ Once a built executable is on PATH, run these commands from your Git checkout:
 gof start "add user avatars"
 # Work and make normal Git commits
 gof save
+gof finish
 gof status
 ```
 
 `start` creates or resumes a branch. `save` publishes progress and offers
-checkpoint choices for uncommitted work. `status` summarizes the current checkout.
+checkpoint choices for uncommitted work. `finish` prepares and publishes a clean
+branch for manual submission. `status` summarizes the current checkout.
 
 | Command | Shorthand | Purpose |
 | --- | --- | --- |
 | `start <branch-name-or-phrase>` | `s` | Create or resume a workstream |
 | `save [options]` | `v` | Preserve progress and publish the branch |
+| `finish [options]` | `f` | Prepare and publish the branch for submission |
 | `status` | | Inspect repository state |
 | `config` / `config show` / `config --yes` | | Set up or inspect shared settings |
 

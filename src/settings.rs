@@ -54,7 +54,7 @@ impl FinishRewrite {
         }
     }
 }
-fn parse_update(value: &str) -> Result<FinishUpdate, String> {
+pub(crate) fn parse_update(value: &str) -> Result<FinishUpdate, String> {
     match value {
         "ask" => Ok(FinishUpdate::Ask),
         "rebase" => Ok(FinishUpdate::Rebase),
@@ -63,7 +63,7 @@ fn parse_update(value: &str) -> Result<FinishUpdate, String> {
         _ => Err("finish-update must be ask, rebase, merge, or none".into()),
     }
 }
-fn parse_rewrite(value: &str) -> Result<FinishRewrite, String> {
+pub(crate) fn parse_rewrite(value: &str) -> Result<FinishRewrite, String> {
     match value {
         "ask" => Ok(FinishRewrite::Ask),
         "allow" => Ok(FinishRewrite::Allow),
