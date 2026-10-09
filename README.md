@@ -19,8 +19,8 @@ gof status
 ```
 
 `start` creates or resumes a branch. `save` publishes progress and offers
-checkpoint choices for uncommitted work. `finish` prepares and publishes a clean
-branch for manual submission. `status` summarizes the current checkout.
+checkpoint choices for uncommitted work. `finish` prepares, runs configured checks,
+and publishes a clean branch for manual submission. `status` summarizes the current checkout.
 
 | Command | Shorthand | Purpose |
 | --- | --- | --- |

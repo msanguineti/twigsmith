@@ -150,9 +150,16 @@ gof finish --update none --no-rewrite
 `finish` (shorthand: `f`) prepares the current clean branch against `base-remote`
 and publishes it through `publish-remote`, then reports the branch, destinations,
 and commit with a manual submission next step into the configured base remote
-and branch. This is the preparation/publication increment: checks, external
-integrations, pull request creation, base integration, tagging, and cleanup are
-deferred.
+and branch. It runs configured validation checks after preparing the branch and
+before publishing. External integrations, pull request creation, base integration,
+tagging, and cleanup are deferred.
+
+The sequence is refresh → prepare → configured checks → revalidate → publish.
+Checks run even when the branch already includes the base. Each attempt runs the
+whole effective list again, including retries after failed publication. An empty
+list continues without a prompt. `--skip-checks` bypasses configured checks for
+that attempt without confirmation and reports the bypass. Git hooks and all other
+finish safeguards remain active.
 
 Finish requires a clean index, working tree, and submodules, an attached branch
 with an existing commit, and no active Git operation or conflicts. Commit or
@@ -535,10 +542,29 @@ replaces the entire shared list, preserving its order; `[]` explicitly disables
 inherited checks. Every supplied list is validated, including overridden shared
 lists. `config show` reports the effective list and its source.
 
-Check execution is deferred. Finish refuses a nonempty effective list before
-branch preparation or publication. Start, save, and configuration inspection
-never execute finish checks. Generated defaults contain an empty list; guided
-setup leaves check entry to editing the configuration file.
+Checks execute sequentially in configuration order from the discovered
+working-tree root, using your environment and PATH. The executable and each
+argument are passed literally. Use an explicit shell command for shell features,
+as in the examples above. Checks receive EOF on stdin; their stdout and stderr
+are displayed as they run, along with the check name and command. Command display
+and diagnostics follow finish's credential-redaction settings; executed arguments
+are unchanged.
+
+Every check must succeed. A failed exit, launch error, or interruption stops
+finish before publication and prevents later checks. Ctrl-C stops the running
+check and its ordinary child processes. Preparation and check effects stay in
+place. Fix the reported problem, commit or preserve any generated changes, then
+rerun finish. Finish does not commit, stash, undo, or automatically retry check
+work. Checks that change the branch, committed work, index, working tree, effective
+settings, or routing stop the attempt before another check or publication.
+Ordinary ignored build outputs are permitted.
+
+Use `gof finish --skip-checks` (or `gof f --skip-checks`) for an explicit bypass.
+A passing or skipped check stage preserves the destination observations and exact
+leases that guard publication. Remote movement during checks can still stop
+publication. Start, save, and configuration inspection never execute finish
+checks. Generated defaults contain an empty list; guided setup leaves check entry
+to editing the configuration file.
 
 ### Validation and private output settings
 
@@ -586,6 +612,9 @@ retained; inspect the report and current settings before retrying.
   `git rebase --continue` or `git merge --continue`. Use `git rebase --abort` or
   `git merge --abort` to abandon that update. Then rerun finish. Finish verifies
   retained rebase evidence before authorizing eligible publication after recovery.
+- **Finish check failed or was interrupted:** prepared history and check effects
+  stay local. Fix the reported check or launch error, commit or preserve changed
+  files, then rerun finish. All configured checks run again.
 - **Finish publication failed:** the prepared branch stays local and confirmed
   destination updates remain. Repair access or the reported problem and rerun
   finish. Retrying uses fresh observations and verified rebase evidence; it does

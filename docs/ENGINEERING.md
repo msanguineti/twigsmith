@@ -12,8 +12,8 @@ The native Rust CLI is invoked as `git-oneflow` or `gof`. It provides `start`,
 `save`, `finish`, `status`, and `config`, with lifecycle aliases `s`, `v`, and `f`.
 The finish library provides read-only
 assessment, controlled remote refresh, branch preparation, verified durable rebase recovery,
-and exact publication with destination-specific safeguards. The finish CLI
-composes these backends and resolves consequential choices through flags, settings,
+configured checks of prepared work, and exact publication with destination-specific
+safeguards. The finish CLI composes these backends and resolves consequential choices through flags, settings,
 or terminal input. Guided setup exposes both finish policies with `ask` defaults.
 
 The application separates repository observation and planning from effects and
@@ -30,7 +30,7 @@ contract.
 | Git process boundary and repository observation | `src/git.rs`, `src/repository.rs` |
 | Start | `src/start.rs`, `src/start/workflow.rs` |
 | Save and publication | `src/save.rs`, `src/save/execution.rs`, `src/save/publication.rs` |
-| Finish planning, preparation, publication, and recovery | `src/finish.rs`, `src/finish/preparation.rs`, `src/finish/publication.rs`, `src/finish/recovery.rs` |
+| Finish planning, preparation, checks, publication, and recovery | `src/finish.rs`, `src/finish/preparation.rs`, `src/finish/checks.rs`, `src/check_process.rs`, `src/finish/publication.rs`, `src/finish/recovery.rs` |
 | Shared branch tracking and push selection | `src/tracking.rs` |
 | Shared exact-ref push response decoding | `src/publication.rs` |
 | Isolated Git and terminal fixtures | `tests/support/` |
@@ -91,8 +91,8 @@ Cross-destination publication is sequential and non-atomic; details and transpor
 limits are in the finish contract.
 
 The CLI performs initial assessment and refresh, resolves only plan-required
-choices, then composes preparation and publication. It revalidates the reviewed
-plan around each input-driven reassessment; preparation repeats remote observation
+choices, then composes preparation, checks, and publication. It revalidates the
+reviewed plan around each input-driven reassessment; preparation repeats remote observation
 before branch execution. Rewrite authorization is independent of update selection.
 Input requires terminal stdin and stderr with a complete submitted line. Unresolved
 unattended input and cancellation return failure before branch execution, reporting
@@ -114,11 +114,31 @@ serializer to preserve argument contents; loading preserves scalar types and
 rejects unknown/duplicate fields and NUL in command elements. Inspection performs
 no command execution or executable availability checks.
 
-Finish assessment refuses nonempty effective checks until execution is
-implemented. Preparation and publication retain this guard through revalidation;
-start and save never execute finish checks. The user guide and finish contract
-define the schema and exact boundaries. Check execution, guided check entry, and
-CLI bypass options remain deferred.
+Finish publication executes the effective checks on every attempt, after
+preparation and before any destination transport. `check_process` owns literal
+process execution, streamed output events, and cancellation cleanup;
+`finish::checks` owns sequencing and prepared-context revalidation; the CLI owns
+progress, credential presentation, and `--skip-checks`. Publication invokes the
+stage itself so library retries cannot reuse successful results. Check reports
+are observations, never reusable publication authority. The default publication
+API enforces checks; the event-aware API accepts an explicit per-call bypass.
+Start and save never execute finish checks. Guided check entry remains deferred.
+
+The supported Linux execution path uses Unix process groups and catchable
+termination signals. The executor inherits environment variables and PATH,
+provides EOF on stdin, and drains stdout/stderr without waiting for newline.
+Checks are finite validation commands; ordinary background descendants are
+stopped when their leader exits or execution is cancelled. Signal handlers span
+the stage and restore default termination behavior outside it; concurrent library
+check stages serialize ownership of this process-wide facility. SIGKILL and
+commands deliberately escaping their process group cannot be managed; this is
+process lifecycle management, not a sandbox. Other platforms require equivalent
+process-tree cancellation before enabling configured check execution.
+
+Prepared-context guards share publication's existing treatment of tracking refs
+as non-authoritative hints. Relevant local mutations invalidate the attempt;
+remote-only movement is detected by publication's destination observations and
+exact leases. Checks cannot renew those observations or rewrite evidence.
 
 Provider adapters and their settings remain undecided. Integration into the
 base branch, tagging, cleanup, workflow profiles, release

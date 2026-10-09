@@ -2,7 +2,8 @@
 //! are relevant; preparation and publication own all workflow effects and guards.
 use crate::{
     finish::{
-        self, Constraint, FinishError, Plan, Request, RequiredInput, preparation, publication,
+        self, Constraint, FinishError, Plan, Request, RequiredInput, checks, preparation,
+        publication,
     },
     repository::{self, Head, InspectionError, Observation},
     settings::{self, FinishRewrite, FinishUpdate},
@@ -82,12 +83,15 @@ fn redact_url_userinfo(value: &str) -> String {
     }
     output
 }
-fn parse(args: &[OsString]) -> Result<(Request, bool), &'static str> {
+fn parse(args: &[OsString]) -> Result<(Request, bool, bool), &'static str> {
     let mut request = Request::default();
     let mut show_credentials = false;
+    let mut skip_checks = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("--skip-checks") if !skip_checks => skip_checks = true,
+            Some("--skip-checks") => return Err("duplicate --skip-checks"),
             Some("--show-credentials") if !show_credentials => show_credentials = true,
             Some("--show-credentials") => return Err("duplicate --show-credentials"),
             Some("--update") => {
@@ -114,7 +118,7 @@ fn parse(args: &[OsString]) -> Result<(Request, bool), &'static str> {
             _ => return Err("unknown or malformed finish argument"),
         }
     }
-    Ok((request, show_credentials))
+    Ok((request, show_credentials, skip_checks))
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -122,7 +126,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         help();
         return ExitCode::SUCCESS;
     }
-    let (mut request, show_credentials) = match parse(args) {
+    let (mut request, show_credentials, skip_checks) = match parse(args) {
         Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("error: {error}; use finish --help (alias: f)");
@@ -265,7 +269,35 @@ pub fn run(args: &[OsString]) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let plan = prepared.plan.as_ref().expect("prepared plan");
-    let published = publication::publish(&directory, plan);
+    let mut check_output = CheckOutput::new(presentation);
+    let published =
+        publication::publish_with_checks(&directory, plan, skip_checks, |event| match event {
+            checks::Event::Started {
+                index,
+                total,
+                check,
+            } => {
+                eprintln!(
+                    "Check {}/{}: {} — {}",
+                    index + 1,
+                    total,
+                    text(presentation, &check.name),
+                    text(
+                        presentation,
+                        serde_json::to_string(&check.command).expect("command JSON")
+                    )
+                );
+            }
+            checks::Event::Output { stream, bytes } => check_output.write(stream, bytes),
+            checks::Event::Passed { index } => {
+                check_output.flush();
+                eprintln!("Check {} passed.", index + 1);
+            }
+            checks::Event::Skipped { count } => {
+                eprintln!("Skipped {count} configured finish check(s) (--skip-checks).")
+            }
+        });
+    check_output.flush();
     if published.is_complete() {
         println!(
             "Published {} to {} at {}.",
@@ -300,6 +332,20 @@ pub fn run(args: &[OsString]) -> ExitCode {
         role_summary(presentation, &mut output, &plan.settings);
         preparation_effects(presentation, &mut output, &refresh);
         preparation_effects(presentation, &mut output, &prepared);
+        if let Some(error) = &published.checks.error {
+            if let Some(index) = published.checks.failed {
+                let _ = writeln!(
+                    output,
+                    "Check {} ({}) stopped: {}",
+                    index + 1,
+                    text(presentation, &plan.settings.finish_checks[index].name),
+                    text(presentation, error)
+                );
+            } else {
+                let _ = writeln!(output, "Check stage stopped: {}", text(presentation, error));
+            }
+            output.push_str("Branch publication not attempted. Prepared history and check effects are retained. Fix the reported problem, commit or preserve any changes, then rerun finish; all checks run again.\n");
+        }
         if let Some(error) = &published.error {
             let _ = writeln!(output, "error: {}", text(presentation, error));
         }
@@ -323,6 +369,94 @@ pub fn run(args: &[OsString]) -> ExitCode {
         );
         eprint!("{output}");
         ExitCode::FAILURE
+    }
+}
+
+/// Stream output while retaining incomplete UTF-8 and URL authorities. In
+/// particular, a credential split across pipe reads must never be printed early.
+struct CheckOutput {
+    presentation: Presentation,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+impl CheckOutput {
+    fn new(presentation: Presentation) -> Self {
+        Self {
+            presentation,
+            stdout: vec![],
+            stderr: vec![],
+        }
+    }
+    fn write(&mut self, stream: checks::Stream, bytes: &[u8]) {
+        let buffer = match stream {
+            checks::Stream::Stdout => &mut self.stdout,
+            checks::Stream::Stderr => &mut self.stderr,
+        };
+        buffer.extend_from_slice(bytes);
+        let end = Self::safe_prefix(buffer, self.presentation);
+        let ready: Vec<_> = buffer.drain(..end).collect();
+        Self::emit(self.presentation, stream, &ready);
+    }
+    fn safe_prefix(bytes: &[u8], presentation: Presentation) -> usize {
+        let mut end = bytes.len();
+        if let Err(error) = std::str::from_utf8(bytes)
+            && error.error_len().is_none()
+        {
+            end = error.valid_up_to();
+        }
+        if presentation.show_credentials {
+            return end;
+        }
+        let mut cursor = 0;
+        while cursor < end {
+            let tail = &bytes[cursor..end];
+            for scheme in [b"https://".as_slice(), b"http://".as_slice()] {
+                if scheme.starts_with(tail) {
+                    return cursor;
+                }
+                if let Some(authority) = tail.strip_prefix(scheme) {
+                    let Some(stop) = authority.iter().position(|b| {
+                        matches!(b, b'/' | b'?' | b'#' | b' ' | b'\n' | b'\r' | b'\t')
+                    }) else {
+                        return cursor;
+                    };
+                    cursor += scheme.len() + stop;
+                    break;
+                }
+            }
+            cursor += 1;
+        }
+        end
+    }
+    fn emit(presentation: Presentation, stream: checks::Stream, bytes: &[u8]) {
+        let mut rendered = String::new();
+        for line in bytes.split_inclusive(|b| *b == b'\n') {
+            if let Some(line) = line.strip_suffix(b"\n") {
+                rendered.push_str(&display(presentation, line));
+                rendered.push('\n');
+            } else {
+                rendered.push_str(&display(presentation, line));
+            }
+        }
+        match stream {
+            checks::Stream::Stdout => {
+                let _ = io::stdout().write_all(rendered.as_bytes());
+                let _ = io::stdout().flush();
+            }
+            checks::Stream::Stderr => {
+                let _ = io::stderr().write_all(rendered.as_bytes());
+                let _ = io::stderr().flush();
+            }
+        }
+    }
+    fn flush(&mut self) {
+        for (stream, buffer) in [
+            (checks::Stream::Stdout, &mut self.stdout),
+            (checks::Stream::Stderr, &mut self.stderr),
+        ] {
+            Self::emit(self.presentation, stream, buffer);
+            buffer.clear();
+        }
     }
 }
 
@@ -711,12 +845,13 @@ fn help() {
     println!(
         "Prepare and publish the current branch for submission. Alias: f.
 
-Usage: git-oneflow finish [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--show-credentials]
+Usage: git-oneflow finish [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
 
 Options:
   --update <rebase|merge|none>  Override finish-update
   --allow-rewrite             Authorize eligible published-history replacement
   --no-rewrite                Deny published-history replacement
+  --skip-checks               Bypass configured checks for this attempt
   --show-credentials          Show HTTP(S) URL credentials in finish output
   -h, --help                  Show help
 
@@ -728,8 +863,11 @@ Examples:
 
 Details:
   Requires a clean, attached working branch with a commit, separate from the base.
-  Configured finish-checks must be empty until check execution is implemented.
-  A nonempty effective list stops finish before branch preparation or publication.
+  Runs configured checks in order from the working-tree root after preparation.
+  Commands inherit the environment, receive EOF on stdin, and stream stdout/stderr.
+  Arguments are literal; shell features require an explicit shell.
+  A failed, interrupted, or state-changing check stops before publication.
+  --skip-checks reports the bypass; Git hooks and all other guards remain active.
   Observes and fetches base from base-remote and each exact publish-remote push destination.
   Rebase replays commits onto the remote base; merge incorporates it; none retains history.
   Branches already including the base need no update choice.
@@ -739,7 +877,7 @@ Details:
   --show-credentials overrides that setting for this invocation. Output and captured logs can expose credentials.
   Rebase selection and replacement authorization are separate choices.
   Required choices resolve before branch execution; changed context stops execution.
-  Cancellation retains completed remote observations/fetches and leaves branch work unchanged.
+  Cancellation retains preparation and check effects; rerunning executes all checks again.
   Scripts must resolve relevant choices with flags or settings.
   Publication uses incorporation proof and exact destination leases for replacement.
   Success reports branch, destination, commit, and a manual submission next step.

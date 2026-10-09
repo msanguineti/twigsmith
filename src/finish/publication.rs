@@ -48,6 +48,7 @@ pub struct DestinationOutcome {
 }
 #[derive(Debug)]
 pub struct Report {
+    pub checks: checks::Report,
     pub remote: String,
     pub branch_ref: Vec<u8>,
     pub commit: Vec<u8>,
@@ -73,6 +74,7 @@ impl Report {
 pub enum PublicationError {
     Finish(FinishError),
     UnpreparedPlan,
+    ChecksFailed,
     DestinationChanged,
     RemoteChanged,
     CommandFailed,
@@ -84,6 +86,7 @@ impl fmt::Display for PublicationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Finish(e) => write!(f, "{e}"),
+            Self::ChecksFailed => f.write_str("finish checks stopped publication; resolve the reported check failure and rerun finish"),
             Self::UnpreparedPlan => f.write_str("finish publication requires a prepared plan with resolved choices and satisfied constraints"),
             Self::DestinationChanged => f.write_str("the destination resolves to a different endpoint; reassess finish"),
             Self::RemoteChanged => f.write_str("the destination changed since observation; publication stopped without renewing its lease"),
@@ -106,14 +109,8 @@ impl From<InspectionError> for PublicationError {
     }
 }
 
-// Pushes and background fetches may advance caches. They cannot renew the
-// literal observations in the plan, so only the non-authoritative hints differ.
 fn guard(directory: &Path, plan: &Plan) -> Result<(), PublicationError> {
-    let mut fresh = assess(directory, &plan.request, plan.evidence.as_ref())?;
-    fresh.tracking_hints = plan.tracking_hints.clone();
-    if fresh != *plan {
-        return Err(FinishError::ContextChanged.into());
-    }
+    revalidate_prepared(directory, plan)?;
     Ok(())
 }
 
@@ -324,9 +321,20 @@ fn publication_state(destinations: &[DestinationOutcome]) -> PublicationState {
 /// Publish the pinned tip of a ready plan whose preparation is complete
 /// (`update == None`). Each destination is reread; only equality with the pinned
 /// commit can bypass the original observation. No rejected lease is refreshed.
+/// Each call reruns configured checks before any publication attempt.
 /// Callers may retry this plan if local context is intact, or refresh/reassess
 /// after interruption. Existing durable rebase evidence supports either route.
 pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
+    publish_with_checks(directory, plan, false, |_| {})
+}
+
+/// Run checks (or an explicit bypass) anew, then publish with the original guards.
+pub fn publish_with_checks(
+    directory: impl AsRef<Path>,
+    plan: &Plan,
+    skip: bool,
+    event: impl FnMut(checks::Event<'_>),
+) -> Report {
     let directory = directory.as_ref();
     let root = plan
         .repository
@@ -335,6 +343,7 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         .unwrap_or(directory);
     let before = shared::observe(root, &plan.local);
     let mut report = Report {
+        checks: checks::Report::default(),
         remote: plan.settings.publish_remote.clone(),
         branch_ref: plan.publication.branch_ref.clone(),
         commit: plan.commit.clone(),
@@ -380,6 +389,10 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             || report.destinations.iter().any(|d| d.action.is_none())
         {
             return Err(PublicationError::UnpreparedPlan);
+        }
+        report.checks = checks::run(directory, plan, skip, event);
+        if report.checks.error.is_some() {
+            return Err(PublicationError::ChecksFailed);
         }
         for destination in &mut report.destinations {
             // Local context changes stop subsequent destinations. A transport or

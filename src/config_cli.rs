@@ -535,7 +535,8 @@ Details:
   command is a nonempty executable-and-argument list; shell syntax requires an explicit shell.
   Defaults contain no checks. A local list replaces the shared list; [] disables inherited checks.
   Inspection displays checks and their source without running commands or checking executables.
-  Start and save never execute finish checks. Finish refuses a nonempty list until execution is implemented.
+  Finish runs checks after preparation and before publication; --skip-checks bypasses them explicitly.
+  Start and save never execute finish checks.
   Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.
   Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.
   finish-update: ask, rebase, merge, none; finish-rewrite: ask, allow, deny.

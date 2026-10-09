@@ -8,6 +8,7 @@ use crate::{
 };
 use std::{ffi::OsString, fmt, fs, io, path::Path};
 
+pub mod checks;
 pub mod preparation;
 pub mod publication;
 mod recovery;
@@ -160,7 +161,6 @@ pub enum FinishError {
     Local(SaveError),
     Publication(PublishError),
     DirtyTree,
-    FinishChecksUnavailable,
     InvalidEvidence(&'static str),
     ContextChanged,
 }
@@ -187,9 +187,6 @@ impl fmt::Display for FinishError {
             Self::Publication(error) => return write!(f, "{error}"),
             Self::DirtyTree => {
                 "finish requires a clean index, working tree, and submodules; commit or preserve changes first"
-            }
-            Self::FinishChecksUnavailable => {
-                "finish-checks are configured, but check execution is not implemented; finish cannot prepare or publish this branch"
             }
             Self::InvalidEvidence(reason) => {
                 return write!(
@@ -376,9 +373,6 @@ pub fn assess(
             message: None,
         },
     )?;
-    if !local.settings.finish_checks.is_empty() {
-        return Err(FinishError::FinishChecksUnavailable);
-    }
     if local.scope.tree_state() != TreeState::Clean {
         return Err(FinishError::DirtyTree);
     }
@@ -577,6 +571,17 @@ pub fn revalidate(
     evidence: Option<&RemoteEvidence>,
 ) -> Result<(), FinishError> {
     if assess(directory, &approved.request, evidence)? != *approved {
+        return Err(FinishError::ContextChanged);
+    }
+    Ok(())
+}
+
+// Pushes and background fetches may advance caches. They cannot renew the
+// literal observations in the plan, so only non-authoritative hints may differ.
+fn revalidate_prepared(directory: &Path, plan: &Plan) -> Result<(), FinishError> {
+    let mut fresh = assess(directory, &plan.request, plan.evidence.as_ref())?;
+    fresh.tracking_hints = plan.tracking_hints.clone();
+    if fresh != *plan {
         return Err(FinishError::ContextChanged);
     }
     Ok(())

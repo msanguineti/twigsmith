@@ -2,10 +2,11 @@
 
 Finish prepares and publishes the current working branch for delivery. This
 contract is implemented through read-only assessment/revalidation, controlled
-remote refresh, branch preparation, durable rebase recovery evidence, and exact
-publication, exposed identically by `git-oneflow finish` and `gof finish`.
-Structured check configuration is supported. Check execution, external integrations,
-provider submission, integration into the base, tagging, and cleanup are deferred.
+remote refresh, branch preparation, configured checks, durable rebase recovery
+evidence, and exact publication, exposed identically by `git-oneflow finish` and
+`gof finish`.
+External integrations, provider submission, integration into the base, tagging,
+and cleanup are deferred.
 
 ## Configuration and choices
 
@@ -30,7 +31,8 @@ use the same strict validation and sparse per-key precedence. Every present valu
 is validated, including overridden values. Sources retain defaults or exact
 shared/local paths. Explicit `finish::Request` choices override settings; their
 provenance is `Request`. The CLI accepts `finish` (alias: `f`), `finish --help` (also `-h`),
-`--update <rebase|merge|none>`, and either `--allow-rewrite` or `--no-rewrite`.
+`--update <rebase|merge|none>`, either `--allow-rewrite` or `--no-rewrite`,
+`--skip-checks`, and `--show-credentials`.
 Update and rewrite flags combine in either order. Rewrite flags are mutually
 exclusive; duplicate options, unsupported values, and positional arguments are
 syntax errors. The alias accepts identical grammar and behavior. There is no
@@ -49,13 +51,10 @@ An omitted local list inherits the shared list. A supplied local list replaces
 it completely; an empty list disables inherited checks. Both layers are validated
 even when overridden. The effective ordered list and its whole-list source are
 part of settings equality and plan/setup revalidation. Generated defaults contain
-an explicit empty list; guided entry and CLI bypass options are deferred.
+an explicit empty list; guided check entry is deferred.
 
-Until check execution is implemented, `finish::assess` returns
-`FinishChecksUnavailable` for a nonempty effective list. The CLI stops before
-remote refresh, branch preparation, or publication. Library preparation and
-publication revalidation also enforce this guard, including checks added after
-assessment. Start, save, and configuration inspection never execute finish checks.
+The execution pipeline is refresh → prepare → configured checks → revalidate →
+publish. Start, save, and configuration inspection never execute finish checks.
 
 Fresh evidence that the branch includes the remote base resolves update to `none`
 with source `IncludesBase`, regardless of the selected update preference. Otherwise
@@ -106,6 +105,57 @@ without Git or a repository. Failures report completed effects, destination
 outcomes, process diagnostics, and observed remaining state. Conflicts direct the
 developer to Git recovery followed by rerunning finish; there is no automatic
 rollback or finish-specific continuation/abort command.
+
+## Checks of prepared work
+
+`finish::checks::run` accepts a ready prepared plan, an explicit skip choice, and
+an event observer. It reports completed checks, the failed check index and error,
+or the bypass. `finish::publication::publish` runs this stage on every invocation;
+`publish_with_checks` additionally accepts the bypass and event observer. Neither
+API accepts past check success as authority. A report does not enable a later
+publication to omit checks. Even an already-published destination requires this
+attempt's effective checks to succeed or be explicitly skipped.
+
+Each command runs sequentially from the discovered working-tree root after
+successful preparation, including preparation with no history update. The process
+executor passes the executable and arguments literally, inherits the environment
+and PATH, supplies EOF on stdin, and streams stdout/stderr. Shell execution
+requires a shell executable in the configured vector. The CLI identifies the
+index, total, display name, and exact argument vector (subject to display escaping
+and credential redaction). Presentation never modifies executed arguments.
+Streaming presentation retains incomplete URL authorities across pipe reads so
+credential redaction also applies to fragmented output.
+
+The stage revalidates prepared context before execution and after every successful
+check. Branch or committed-work changes, index/working-tree changes, active Git
+operations, effective settings or source changes, routing changes, and invalidated
+recovery evidence stop later checks and publication. Existing cleanliness rules
+permit ordinary ignored build outputs. As during publication, changed tracking-ref
+hints alone cannot invalidate or renew the pinned remote observations. Revalidation
+is observational, not an atomic lock; transient mutations that are fully restored
+between observations are outside its guarantees.
+
+A nonzero exit, termination by signal, missing executable, launch/collection error,
+or user cancellation stops the attempt. Later checks and publication remain
+unattempted. Reports retain preparation effects and identify the failed step and
+observed remaining state. Check effects remain developer-owned: there are no
+automatic fixes, commits, stashes, retries, or rollback. Retrying reruns the whole
+list, while the existing durable rewrite verification remains available.
+
+The Unix executor creates a process group per check. Catchable termination signals
+(`SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`) latch cancellation through the check stage;
+cleanup kills the group and reaps its leader before returning. Ordinary descendants
+are also stopped when the leader finishes, so they cannot run unnoticed through
+later checks or publication. Output draining is bounded per iteration so a busy
+writer cannot starve cancellation. SIGKILL and deliberate process-group escape
+are outside this lifecycle guarantee; commands are project code, not sandboxed
+work. Configured execution on other platforms requires equivalent management.
+
+An empty list adds no prompt. `--skip-checks` explicitly bypasses the stage without
+confirmation and reports a nonempty skipped list. It neither suppresses Git hooks
+nor changes preparation, local revalidation, rewrite authorization, observations,
+or exact destination leases. Publication revalidates again after the stage and
+rereads each exact destination; passing checks cannot authorize a changed remote.
 
 ## Local readiness
 
@@ -314,7 +364,8 @@ There are no finish-specific continuation or abort commands.
 `finish::publication::publish(directory, plan)` accepts a ready, prepared plan:
 its resolved update is `none`, with no outstanding choices or constraints. Use
 the resulting plan from preparation, or assess already prepared history with
-fresh evidence. Publication revalidates repository/worktree selection, the clean
+fresh evidence. Every invocation runs the configured check stage before destination
+transport. Publication revalidates repository/worktree selection, the clean
 attached branch and pinned commit, settings and Git configuration, upstream,
 destinations, history, and rewrite proof before transport operations. Local
 tracking hints may change during publication; they never supply a lease or
@@ -492,7 +543,7 @@ across successful/failed assessment and revalidation, including Git metadata.
 Observation is several reads, not an atomic snapshot or cross-process lock.
 Revalidation with the same supplied evidence cannot detect remote-only changes.
 Preparation repeats remote observation and revalidates before mutations.
-Publication revalidates local context, rereads destinations, and uses exact
-leases; tracking hints alone may change without invalidating publication.
+Checks revalidate prepared context between processes. Publication revalidates
+local context, rereads destinations, and uses exact leases; tracking hints alone may change without invalidating publication.
 Recovery records
 are operational evidence with strict verification, not long-lived approval.

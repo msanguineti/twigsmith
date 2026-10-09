@@ -162,14 +162,14 @@ fn complete_runs_use_cargo_discovery_without_group_selectors() {
             "--check",
             "build",
             "--locked",
-            "test",
-            "--locked",
             "clippy",
             "--locked",
             "--all-targets",
             "--",
             "-D",
-            "warnings"
+            "warnings",
+            "test",
+            "--locked"
         ]
     );
 }
