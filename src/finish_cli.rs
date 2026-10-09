@@ -860,6 +860,7 @@ Examples:
   gof f --update merge
   git-oneflow finish --update rebase --allow-rewrite
   gof finish --update none --no-rewrite
+  gof finish --skip-checks
 
 Details:
   Requires a clean, attached working branch with a commit, separate from the base.

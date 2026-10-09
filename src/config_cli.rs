@@ -304,11 +304,59 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
             Err(reason) => eprintln!("{reason}; or enter cancel."),
         }
     }
+    eprintln!(
+        "Optional finish checks run in order after preparation and before publication. Setup only records commands; it never runs them or probes executables.\nEnter a name, then a JSON array of strings: [\"cargo\", \"test\", \"--locked\"]. The first string is the executable; each remaining string is one literal argument. Shell features require an explicit shell."
+    );
+    loop {
+        let prompt = if plan.proposed.finish_checks.is_empty() {
+            "Finish check name [Enter to finish; default: no checks]: "
+        } else {
+            "Finish check name [Enter to finish]: "
+        };
+        let Some(name) = input(prompt)? else {
+            return cancelled();
+        };
+        if name.is_empty() {
+            break;
+        }
+        if name.trim().is_empty() {
+            eprintln!("Use a nonblank display name, or Enter to finish.");
+            continue;
+        }
+        loop {
+            let Some(answer) = input("Command as JSON executable-and-argument array: ")? else {
+                return cancelled();
+            };
+            let command = match serde_json::from_str::<Vec<String>>(&answer) {
+                Ok(command) => command,
+                Err(_) => {
+                    eprintln!(
+                        "Use a JSON array of strings, such as [\"cargo\", \"test\"]. Keep each argument in its own string."
+                    );
+                    continue;
+                }
+            };
+            let check = settings::FinishCheck {
+                name: name.clone(),
+                command,
+            };
+            if let Err(reason) = settings::validate_finish_checks(std::slice::from_ref(&check)) {
+                eprintln!("{reason}; enter the command again.");
+                continue;
+            }
+            plan.proposed.finish_checks.push(check);
+            break;
+        }
+    }
     config::revalidate_review(directory, &plan)?;
     eprintln!(
         "Destination: {}\nExact proposed shared configuration:\n{}",
         text(plan.destination().display()),
         plan.contents()
+    );
+    review_checks(
+        "Proposed shared finish checks",
+        &plan.proposed.finish_checks,
     );
     let review = plan.review();
     let roles = reviewed_roles(&plan);
@@ -363,9 +411,22 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
                 checks(&effective.finish_checks),
                 source(&effective.sources.finish_checks)
             );
+            review_checks(
+                "Effective private finish checks (replace the shared list)",
+                &effective.finish_checks,
+            );
         }
     } else {
         eprintln!("Private overrides: none.");
+    }
+    if !matches!(
+        review.overrides.sources.finish_checks,
+        SettingSource::Local(_)
+    ) {
+        review_checks(
+            "Effective finish checks (shared)",
+            &plan.proposed.finish_checks,
+        );
     }
     loop {
         let Some(answer) = input("Create this file? [yes/no]: ")? else {
@@ -419,6 +480,26 @@ fn source(source: &SettingSource) -> String {
 // JSON preserves argument boundaries and escapes terminal controls for inspection.
 fn checks(checks: &[settings::FinishCheck]) -> String {
     serde_json::to_string(checks).expect("finish checks serialization")
+}
+// Numbering shows execution order; JSON strings preserve argument boundaries
+// and escape control characters rather than letting them affect the terminal.
+fn review_checks(label: &str, checks: &[settings::FinishCheck]) {
+    eprintln!(
+        "{label}: {}",
+        if checks.is_empty() {
+            "none"
+        } else {
+            "in execution order"
+        }
+    );
+    for (index, check) in checks.iter().enumerate() {
+        eprintln!(
+            "  {}. {}: {}",
+            index + 1,
+            serde_json::to_string(&check.name).expect("check name serialization"),
+            serde_json::to_string(&check.command).expect("check command serialization")
+        );
+    }
 }
 fn base_remote_source(settings: &settings::Settings) -> String {
     match &settings.sources.base_remote {
@@ -541,7 +622,7 @@ Details:
   Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.
   finish-update: ask, rebase, merge, none; finish-rewrite: ask, allow, deny.
   Rewrite allow is standing authorization for eligible replacement; remote safeguards remain.
-  Private overrides take precedence; guided review shows effective roles and their sources.
+  Private overrides take precedence; guided review shows effective roles, checks, and their sources.
   Equal role choices omit base-remote so the base follows publication.
   Remote names provide hints only; setup assigns no roles from their names.
   publish-remote governs gof operations; ordinary Git commands use your Git configuration.
@@ -551,7 +632,12 @@ Details:
   Generation works offline with dirty, unborn, or detached working trees.
   It leaves existing work, the index, refs, and Git configuration unchanged.
   Run config to choose publication, a base source that follows publication or a separate remote,
-  the base branch, save action, and finish policies at a terminal.
+  the base branch, save action, finish policies, and optional ordered checks at a terminal.
+  For each check, enter a name and a JSON array such as [\"cargo\", \"test\", \"--locked\"].
+  Enter a blank name for no checks or to finish the list. Each string is one literal argument.
+  For shell features, enter an explicit shell: [\"sh\", \"-c\", \"npm run lint && npm test\"].
+  Setup never runs checks or probes executables; --yes always generates no checks.
+  Failed checks stop publication; fix the problem and rerun finish to run all checks again.
   Setup starts with built-in defaults and offers offline repository hints.
   Review the destination, exact contents, and private overrides; enter yes to create.
   Cancellation or end-of-input creates no file. Changed review context stops setup.

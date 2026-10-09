@@ -406,7 +406,7 @@ fn private_overrides_allow_generation_without_copying_values() {
             for (filename, content) in [
                 (
                     CONFIG_FILES[0],
-                    "publish-remote='private'\nsave-action='stash'\n",
+                    "publish-remote='private'\nsave-action='stash'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check']\n",
                 ),
                 (
                     CONFIG_FILES[1],
@@ -818,9 +818,9 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     terminal.until("Publication remote");
                     assert!(terminal.output.contains("hint-only"));
                     terminal.send(if custom {
-                        b"future-remote\n\nfuture/base\nwip\nmerge\nallow\n"
+                        b"future-remote\n\nfuture/base\nwip\nmerge\nallow\n\n"
                     } else {
-                        b"\n\n\n\n\n\n"
+                        b"\n\n\n\n\n\n\n"
                     });
                     terminal.until("Create this file?");
                     assert!(!repo.path().join(filename).exists());
@@ -935,7 +935,7 @@ fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
             terminal.until("finish-update must be");
             terminal.send(b"none\ninvalid\n");
             terminal.until("finish-rewrite must be");
-            terminal.send(b"deny\n");
+            terminal.send(b"deny\n\n");
             terminal.until("Create this file?");
             terminal.send(b"y\n");
             terminal.until("Enter yes to create");
@@ -966,7 +966,13 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
                 ("\n\n\n", "Default save action"),
                 ("\n\n\n\n", "Default finish update"),
                 ("\n\n\n\n\n", "Default finish rewrite"),
-                ("\n\n\n\n\n\n", "Create this file?"),
+                ("\n\n\n\n\n\n", "Finish check name"),
+                ("\n\n\n\n\n\nCheck\n", "Command as JSON"),
+                (
+                    "\n\n\n\n\n\nCheck\n[\"missing\"]\n",
+                    "Finish check name [Enter to finish]:",
+                ),
+                ("\n\n\n\n\n\n\n", "Create this file?"),
             ] {
                 for cancel in [b"cancel\n".as_slice(), b"\x04", b"partial\x04\x04"] {
                     let repo = Repository::new(root);
@@ -993,7 +999,7 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
                 let before = snapshot(repo.path());
                 let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                 terminal.until("Publication remote");
-                terminal.send(b"\n\n\n\n\n\n");
+                terminal.send(b"\n\n\n\n\n\n\n");
                 terminal.until("Create this file?");
                 terminal.send(answer);
                 assert_eq!(terminal.finish().code(), Some(0));
@@ -1033,7 +1039,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                     terminal.until("Publication remote");
                     if confirmation {
-                        terminal.send(b"\n\n\n\n\n\n");
+                        terminal.send(b"\n\n\n\n\n\n\n");
                         terminal.until("Create this file?");
                     }
                     match mutation {
@@ -1080,7 +1086,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     terminal.send(if confirmation {
                         b"yes\n"
                     } else {
-                        b"\n\n\n\n\n\n"
+                        b"\n\n\n\n\n\n\n"
                     });
                     assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
                     assert_eq!(snapshot(repo.path()), before);
@@ -1359,7 +1365,7 @@ fn guided_remote_roles_review_selected_intent_with_private_precedence() {
                             &["config", "--format", format],
                         );
                         term.until("Publication remote");
-                        term.send(format!("personal\n{base_answer}\n\n\n\n\n").as_bytes());
+                        term.send(format!("personal\n{base_answer}\n\n\n\n\n\n").as_bytes());
                         term.until("Create this file?");
                         let split = base_answer == "project";
                         let base =
@@ -1407,6 +1413,147 @@ fn guided_remote_roles_review_selected_intent_with_private_precedence() {
                     }
                 }
             }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_checks_preserve_order_arguments_and_private_list_replacement() {
+    cases(
+        "guided_checks_preserve_order_arguments_and_private_list_replacement",
+        true,
+        |root, exe| {
+            let checks = vec![
+                settings::FinishCheck {
+                    name: "Literal arguments ✓".into(),
+                    command: vec![
+                        "unavailable executable".into(),
+                        "".into(),
+                        " two words ".into(),
+                        "\"quotes\" 'single' \\path".into(),
+                        "$HOME; $(touch must-not-exist) && *".into(),
+                        "line\nbreak\t\u{1b}".into(),
+                    ],
+                },
+                settings::FinishCheck {
+                    name: "Second".into(),
+                    command: vec!["another-unavailable-check".into(), "雪".into()],
+                },
+            ];
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                for private_case in ["inherit", "replace", "disable"] {
+                    let repo = Repository::new(root);
+                    let replacement = vec![settings::FinishCheck {
+                        name: "Private only".into(),
+                        command: vec!["private-executable".into(), "".into()],
+                    }];
+                    let private = match private_case {
+                        "replace" => serde_json::json!({"finish-checks": replacement}),
+                        "disable" => serde_json::json!({"finish-checks": []}),
+                        _ => serde_json::json!({"save-action": "stash"}),
+                    };
+                    fs::write(
+                        repo.path().join(".git").join(CONFIG_FILES[3]),
+                        private.to_string(),
+                    )
+                    .unwrap();
+                    let before = snapshot(repo.path());
+                    let mut term = terminal::Terminal::start(
+                        exe,
+                        repo.path(),
+                        &["config", "--format", format],
+                    );
+                    term.until("Publication remote");
+                    let mut answers = "\n\n\n\n\n\n".to_string();
+                    for check in &checks {
+                        answers.push_str(&check.name);
+                        answers.push('\n');
+                        answers.push_str(&serde_json::to_string(&check.command).unwrap());
+                        answers.push('\n');
+                    }
+                    answers.push('\n');
+                    term.send(answers.as_bytes());
+                    term.until("Create this file?");
+                    assert_eq!(
+                        snapshot(repo.path()),
+                        before,
+                        "setup must only read before approval"
+                    );
+                    for (index, check) in checks.iter().enumerate() {
+                        assert!(
+                            term.output.contains(&format!(
+                                "{}. {}: {}",
+                                index + 1,
+                                serde_json::to_string(&check.name).unwrap(),
+                                serde_json::to_string(&check.command).unwrap()
+                            )),
+                            "{}",
+                            term.output
+                        );
+                    }
+                    if private_case != "inherit" {
+                        assert!(
+                            term.output.contains(
+                                "Effective private finish checks (replace the shared list)"
+                            )
+                        );
+                    }
+                    if private_case == "disable" {
+                        assert!(term.output.contains(
+                            "Effective private finish checks (replace the shared list): none"
+                        ));
+                    }
+                    term.send(b"yes\n");
+                    assert!(term.finish().success(), "{}", term.output);
+                    let effective = load(repo.path());
+                    let expected = match private_case {
+                        "replace" => replacement,
+                        "disable" => vec![],
+                        _ => checks.clone(),
+                    };
+                    assert_eq!(effective.finish_checks, expected);
+                    let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
+                    assert!(!contents.contains("private-executable"));
+                    fs::remove_file(repo.path().join(".git").join(CONFIG_FILES[3])).unwrap();
+                    assert_eq!(load(repo.path()).finish_checks, checks);
+                }
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_invalid_check_entries_can_be_corrected() {
+    cases(
+        "guided_invalid_check_entries_can_be_corrected",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Publication remote");
+            term.send(b"\n\n\n\n\n\n   \n");
+            term.until("Use a nonblank display name");
+            term.send(b"Tests\ncargo test\n[1]\nnull\n{\"command\": []}\n");
+            term.until("Use a JSON array of strings");
+            term.send(b"[]\n[\"\"]\n");
+            term.until("command must contain a nonempty executable");
+            term.send(b"[\"cargo\", \"\\u0000\"]\n");
+            term.until("command strings must not contain NUL");
+            term.send(b"[\"cargo\", \"test\", \"\"]\n\nyes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(
+                load(repo.path()).finish_checks,
+                vec![settings::FinishCheck {
+                    name: "Tests".into(),
+                    command: vec!["cargo".into(), "test".into(), "".into()],
+                }]
+            );
         },
     );
 }

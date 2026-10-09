@@ -122,7 +122,12 @@ progress, credential presentation, and `--skip-checks`. Publication invokes the
 stage itself so library retries cannot reuse successful results. Check reports
 are observations, never reusable publication authority. The default publication
 API enforces checks; the event-aware API accepts an explicit per-call bypass.
-Start and save never execute finish checks. Guided check entry remains deferred.
+Start and save never execute finish checks. Guided setup captures optional check
+names and JSON process argument arrays in execution order, validates entries with
+the settings validator, and reviews numbered literal commands. Review shows a
+private replacement list as effective settings without exporting it. Setup never
+executes checks or probes executables; unattended generation retains the empty
+built-in list.
 
 The supported Linux execution path uses Unix process groups and catchable
 termination signals. The executor inherits environment variables and PATH,

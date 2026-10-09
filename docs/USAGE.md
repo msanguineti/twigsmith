@@ -294,9 +294,29 @@ Finish update choices are `ask`, `rebase`, `merge`, and `none`. Rewrite choices 
 eligible replacement with remote safeguards retained. See
 [finish](#prepare-and-publish-finished-work) for their effects.
 
-Setup shows the destination, exact proposed file, and effective roles with their
-sources after applying private overrides before asking for confirmation. When
-the base follows publication, review identifies the publication source it follows.
+Setup offers optional finish checks, starting with an empty list. Enter each
+check's display name and then a JSON array containing the executable and each
+argument as separate strings. For example:
+
+```text
+Finish check name [Enter to finish; default: no checks]: Tests
+Command as JSON executable-and-argument array: ["cargo", "test", "--locked"]
+Finish check name [Enter to finish]: Custom validation
+Command as JSON executable-and-argument array: ["sh", "-c", "npm run lint && npm run check"]
+Finish check name [Enter to finish]:
+```
+
+Enter a blank name to finish the list or keep no checks. JSON strings preserve
+spaces, quotes, and empty arguments; use `\n` for a newline inside an argument.
+Setup records the supplied commands without running them, probing executables,
+or detecting project tools. See [finish checks](#finish-checks) for execution
+and retry behavior.
+
+Setup shows the destination, exact proposed file, ordered command arrays, and
+effective roles and private overrides before asking for confirmation. Numbered
+checks show execution order and distinct arguments. A private check list replaces
+the proposed shared list in effective settings and stays out of the shared file.
+When the base follows publication, review identifies the publication source it follows.
 Private values remain local. Enter `yes` to create it. Enter `no`, leave the
 confirmation blank, type `cancel` at any prompt, or end input to stop without
 creating a file. Invalid answers receive guidance and can be corrected. Guided
@@ -308,6 +328,7 @@ Inspect the reported change and rerun setup.
 `config --yes` (or `-y`) creates built-in defaults without any prompts,
 independently of private values and Git settings. It writes `publish-remote = origin`
 and omits `base-remote`, preserving the follow-publication relationship. Use it for unattended generation.
+It always generates an empty check list, including when private checks exist.
 The default format is TOML. Both guided and unattended setup accept `--format toml`,
 `--format yaml`, or `--format json`, creating `git-oneflow.config.toml`,
 `git-oneflow.config.yaml`, or `git-oneflow.config.json`. The loader also accepts
@@ -562,9 +583,9 @@ Ordinary ignored build outputs are permitted.
 Use `gof finish --skip-checks` (or `gof f --skip-checks`) for an explicit bypass.
 A passing or skipped check stage preserves the destination observations and exact
 leases that guard publication. Remote movement during checks can still stop
-publication. Start, save, and configuration inspection never execute finish
-checks. Generated defaults contain an empty list; guided setup leaves check entry
-to editing the configuration file.
+publication. Start, save, and configuration setup and inspection never execute finish
+checks. Guided setup accepts optional checks; `config --yes` generates an empty
+list. To change an existing list, edit its configuration file.
 
 ### Validation and private output settings
 
