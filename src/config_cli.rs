@@ -315,7 +315,7 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
     eprintln!(
         "Effective publish-remote: {} ({})",
         text(&roles.publish_remote),
-        publication_source(&roles)
+        source(&roles.sources.publish_remote)
     );
     eprintln!(
         "Effective base-remote: {} ({})",
@@ -384,7 +384,6 @@ fn reviewed_roles(plan: &config::GenerationPlan) -> settings::Settings {
     let mut roles = plan.proposed.clone();
     let shared = SettingSource::Shared(plan.destination());
     roles.sources.publish_remote = shared.clone();
-    roles.sources.publication_key = Some(settings::PublicationKey::PublishRemote);
     if roles.sources.base_remote.is_some() || roles.base_remote != roles.publish_remote {
         roles.sources.base_remote = Some(shared);
     }
@@ -392,7 +391,6 @@ fn reviewed_roles(plan: &config::GenerationPlan) -> settings::Settings {
     if matches!(private.sources.publish_remote, SettingSource::Local(_)) {
         roles.publish_remote = private.publish_remote.clone();
         roles.sources.publish_remote = private.sources.publish_remote.clone();
-        roles.sources.publication_key = private.sources.publication_key;
     }
     if matches!(private.sources.base_remote, Some(SettingSource::Local(_))) {
         roles.base_remote = private.base_remote.clone();
@@ -411,17 +409,13 @@ fn source(source: &SettingSource) -> String {
         SettingSource::Local(path) => format!("local: {}", text(path.display())),
     }
 }
-fn publication_source(settings: &settings::Settings) -> String {
-    let origin = source(&settings.sources.publish_remote);
-    match settings.sources.publication_key {
-        Some(key) => format!("{origin}; setting: {}", key.as_str()),
-        None => origin,
-    }
-}
 fn base_remote_source(settings: &settings::Settings) -> String {
     match &settings.sources.base_remote {
         Some(origin) => source(origin),
-        None => format!("follows publish-remote; {}", publication_source(settings)),
+        None => format!(
+            "follows publish-remote; {}",
+            source(&settings.sources.publish_remote)
+        ),
     }
 }
 fn layer(label: &str, file: Option<&Path>, root: Option<&Path>) {
@@ -438,7 +432,7 @@ fn show(inspection: &config::Inspection) {
     println!(
         "  publish-remote: {} ({})",
         text(&settings.publish_remote),
-        publication_source(settings)
+        source(&settings.sources.publish_remote)
     );
     println!(
         "  base-remote: {} ({})",
@@ -485,7 +479,7 @@ fn show(inspection: &config::Inspection) {
         Some(&inspection.repository.common_dir),
     );
     println!(
-        "Recognized files: git-oneflow.config.{{toml,yaml,yml,json}}; legacy local: oneflow.conf\nPrecedence: local overrides > shared settings > built-in defaults.\nAt one layer, publish-remote overrides remote; base-remote follows publication when absent from both layers.\nExplicit save/finish flags override their corresponding settings."
+        "Recognized files: git-oneflow.config.{{toml,yaml,yml,json}}\nPrecedence: local overrides > shared settings > built-in defaults.\nBase remote follows publication when base-remote is absent from both layers.\nExplicit save/finish flags override their corresponding settings."
     );
 }
 fn help() {
@@ -518,8 +512,7 @@ Details:
   Run from the root or any nested directory. Bare repositories support inspection.
   Generation creates git-oneflow.config.toml, .yaml, or .json at the working-tree root.
   Built-in defaults: publish-remote = origin; base-remote follows publication; base = main; save-action = ask.
-  remote is a publication compatibility setting; publish-remote takes precedence at the same layer.
-  Local publication settings override shared publication settings, including through remote.
+  Local publication settings override shared publication settings.
   Explicit base-remote resolves independently; start, save, and finish support separate roles.
   Finish defaults: finish-update = ask; finish-rewrite = ask.
   Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.

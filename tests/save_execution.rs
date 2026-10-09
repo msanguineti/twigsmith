@@ -903,8 +903,8 @@ fn stale_approval_refuses_changed_context_and_content_before_writes() {
                         repo.success(&["config", "branch.work.remote", "another"]);
                     }
                     "settings" => fs::write(
-                        repo.path().join(".git/oneflow.conf"),
-                        "save-action = stash\n",
+                        repo.path().join(".git/git-oneflow.config.toml"),
+                        "save-action = 'stash'\n",
                     )
                     .unwrap(),
                     "url" => {
@@ -1081,7 +1081,7 @@ fn changed_scope_or_context_from_commit_hooks_stops_before_next_mutation() {
                 "printf 'unapproved\\n' > tracked",
                 "printf 'new scope\\n' > new-file",
                 "git config branch.work.remote other",
-                "printf 'save-action = stash\\n' > .git/oneflow.conf",
+                "printf 'save-action = \"stash\"\\n' > .git/git-oneflow.config.toml",
                 "printf '{\"save-action\":\"stash\"}' > .git/git-oneflow.config.json",
                 "printf 'save-action = \"stash\"\\n' > git-oneflow.config.toml",
                 "git switch -c other",

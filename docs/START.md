@@ -64,17 +64,13 @@ its normal repository-selection environment is honored. Shared configuration
 lives at that root. Local overrides live in the common directory and apply across
 linked worktrees. Bare repositories have no shared layer. Parent/home inheritance,
 custom paths, environment-specific settings, and external imports are absent.
-See the [user guide](USAGE.md#repository-settings) for format examples and migration.
+See the [user guide](USAGE.md#repository-settings) for format examples.
 
 Each layer recognizes `git-oneflow.config.toml`, `git-oneflow.config.yaml`,
 `git-oneflow.config.yml`, and `git-oneflow.config.json`, independently. At most one
-recognized file may exist per layer; extensions have no priority. Local legacy
-`oneflow.conf` is a fallback only when no new local file exists. Coexistence is an
-error with explicit migration guidance. Legacy values remain literal unquoted
-`key = value` lines, split at the first `=`, with whitespace trimmed, LF/CRLF,
-blank lines, and whole-line `#` comments accepted.
+recognized file may exist per layer; extensions have no priority.
 
-- New formats require a flat mapping of string values under case-sensitive
+- Formats require a flat mapping of string values under case-sensitive
   supported settings keys, each at most once; see the
   [settings reference](USAGE.md#repository-settings). YAML uses scalar
   types rather than coercing numbers/booleans/null to strings; merge keys and
@@ -91,15 +87,13 @@ blank lines, and whole-line `#` comments accepted.
   with `-`, or be `.`. URLs, paths such as `../repo`, and invalid ref characters
   fail. Valid slash-separated remote names remain supported.
 - Resolved settings retain a source per key: built-in default, shared file path,
-  or local file path (including legacy). Prepared requests carry this information.
+  or local file path. Prepared requests carry this information.
   Revalidation compares resolved values and sources; comments/formatting changes
   with identical values and sources do not change the settings snapshot.
 
 `publish-remote` selects publication and remote resume; `base-remote` selects
 the project base. An omitted base remote follows the final publication selection.
-`remote` remains a publication input alias, with the precedence described in the
-[user guide](USAGE.md#repository-settings). Remote names have no special meaning
-and both roles may use the same remote.
+Remote names have no special meaning and both roles may use the same remote.
 
 Settings syntax validation does not require either remote to exist or the base
 branch to be present locally. Those checks need fresh remote information and

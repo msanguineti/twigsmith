@@ -71,8 +71,6 @@ fn assert_defaults(directory: &Path, filename: &str) {
     assert_eq!(loaded.sources.base_remote, None);
     let contents = fs::read_to_string(directory.join(filename)).unwrap();
     assert!(!contents.contains("base-remote"));
-    assert!(!contents.contains("\"remote\""));
-    assert!(!contents.contains("\nremote"));
     assert_eq!(loaded.base, defaults.base);
     assert_eq!(loaded.save_action, defaults.save_action);
     assert_eq!(loaded.finish_update, defaults.finish_update);
@@ -171,7 +169,7 @@ fn unattended_formats_generate_defaults_from_nested_unborn_worktrees() {
                     run(exe, &nested, &["config", "show"]),
                     0,
                     &[
-                        "remote: origin",
+                        "publish-remote: origin",
                         "base: main",
                         "save-action: ask",
                         "shared:",
@@ -197,7 +195,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                 run(exe, &nested, &["config", "show"]),
                 0,
                 &[
-                    "remote: origin (built-in default)",
+                    "publish-remote: origin (built-in default)",
                     "base: main (built-in default)",
                     "save-action: ask (built-in default)",
                     "finish-update: ask (built-in default)",
@@ -212,17 +210,17 @@ fn inspection_reports_sources_and_locations_read_only() {
             assert_eq!(snapshot(repo.path()), before);
             fs::write(
                 repo.path().join(CONFIG_FILES[2]),
-                "base: trunk\nremote: upstream\n",
+                "base: trunk\npublish-remote: upstream\n",
             )
             .unwrap();
-            let local = repo.path().join(".git/oneflow.conf");
-            fs::write(&local, "remote = private\n").unwrap();
+            let local = repo.path().join(".git/git-oneflow.config.toml");
+            fs::write(&local, "publish-remote = 'private'\n").unwrap();
             let before = snapshot(repo.path());
             check(
                 run(exe, &nested, &["config", "show"]),
                 0,
                 &[
-                    "remote: private (local:",
+                    "publish-remote: private (local:",
                     "base: trunk (shared:",
                     "save-action: ask (built-in default)",
                     "finish-update: ask (built-in default)",
@@ -233,11 +231,11 @@ fn inspection_reports_sources_and_locations_read_only() {
             );
             check(run(exe, &nested, &["config"]), 1, &["config --yes"]);
             assert_eq!(snapshot(repo.path()), before);
-            fs::write(&local, "save-action = invalid\n").unwrap();
+            fs::write(&local, "save-action = 'invalid'\n").unwrap();
             check(
                 run(exe, &nested, &["config", "show"]),
                 1,
-                &["invalid settings", "oneflow.conf", "save-action"],
+                &["invalid settings", "git-oneflow.config.toml", "save-action"],
             );
             fs::remove_file(&local).unwrap();
             fs::write(repo.path().join(CONFIG_FILES[0]), "").unwrap();
@@ -365,16 +363,52 @@ fn shared_symlinks_including_dangling_links_are_preserved() {
 }
 
 #[test]
+fn unsupported_settings_stop_workflows_before_fallback_publication() {
+    cases(
+        "unsupported_settings_stop_workflows_before_fallback_publication",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            commit(&repo);
+            repo.success(&["switch", "-c", "work"]);
+            repo.success(&["remote", "add", "origin", "ext::touch remote-was-contacted"]);
+            fs::write(
+                repo.path().join(".git").join(CONFIG_FILES[0]),
+                "remote = 'private'\npublish-remote = 'origin'\n",
+            )
+            .unwrap();
+            let before = snapshot(root);
+            for args in [
+                vec!["config", "show"],
+                vec!["start", "new-work"],
+                vec!["save", "--publish-only"],
+                vec!["finish", "--update", "none", "--allow-rewrite"],
+            ] {
+                check(
+                    run(exe, repo.path(), &args),
+                    1,
+                    &["unknown key \"remote\"", CONFIG_FILES[0]],
+                );
+                assert_eq!(snapshot(root), before, "{args:?}");
+            }
+        },
+    );
+}
+
+#[test]
 fn private_overrides_allow_generation_without_copying_values() {
     cases(
         "private_overrides_allow_generation_without_copying_values",
         true,
         |root, exe| {
             for (filename, content) in [
-                (CONFIG_FILES[0], "remote='private'\nsave-action='stash'\n"),
                 (
-                    "oneflow.conf",
-                    "remote = private\nsave-action = stash\nfinish-update = none\nfinish-rewrite = deny\n",
+                    CONFIG_FILES[0],
+                    "publish-remote='private'\nsave-action='stash'\n",
+                ),
+                (
+                    CONFIG_FILES[1],
+                    "publish-remote: private\nsave-action: stash\nfinish-update: none\nfinish-rewrite: deny\n",
                 ),
                 (CONFIG_FILES[3], "invalid JSON"),
             ] {
@@ -423,7 +457,7 @@ fn linked_worktrees_generate_at_their_root_and_inspect_common_overrides() {
             fs::write(repo.path().join(CONFIG_FILES[0]), "base='trunk'\n").unwrap();
             fs::write(
                 repo.path().join(".git").join(CONFIG_FILES[1]),
-                "remote: private\n",
+                "publish-remote: private\n",
             )
             .unwrap();
             let linked = root.join("linked");
@@ -457,7 +491,7 @@ fn linked_worktrees_generate_at_their_root_and_inspect_common_overrides() {
                 run(exe, &nested, &["config", "show"]),
                 0,
                 &[
-                    "remote: private (local:",
+                    "publish-remote: private (local:",
                     "base: main (shared:",
                     &linked.join(CONFIG_FILES[1]).display().to_string(),
                 ],
@@ -501,7 +535,7 @@ fn outside_and_bare_generation_fail_but_bare_inspection_works() {
                 &[
                     "base: trunk (local:",
                     "Shared file: unavailable",
-                    "remote: origin (built-in default)",
+                    "publish-remote: origin (built-in default)",
                 ],
             );
             assert_eq!(snapshot(&bare), before);
@@ -771,8 +805,8 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                 for custom in [false, true] {
                     let repo = Repository::new(root);
                     repo.success(&["remote", "add", "hint-only", "/unreachable/offline"]);
-                    let private = repo.path().join(".git/oneflow.conf");
-                    fs::write(&private, "remote = private\nsave-action = stash\nfinish-update = none\nfinish-rewrite = deny\n").unwrap();
+                    let private = repo.path().join(".git/git-oneflow.config.toml");
+                    fs::write(&private, "publish-remote = 'private'\nsave-action = 'stash'\nfinish-update = 'none'\nfinish-rewrite = 'deny'\n").unwrap();
                     let before_git = snapshot(&repo.path().join(".git"));
                     let mut terminal = terminal::Terminal::start(
                         exe,
@@ -984,7 +1018,11 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     let repo = Repository::new(root);
                     commit(&repo);
                     if mutation.starts_with("private-") {
-                        fs::write(repo.path().join(".git/oneflow.conf"), "base = main\n").unwrap();
+                        fs::write(
+                            repo.path().join(".git/git-oneflow.config.toml"),
+                            "base = 'main'\n",
+                        )
+                        .unwrap();
                     }
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                     terminal.until("Publication remote");
@@ -996,20 +1034,28 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                         "shared" => {
                             fs::write(repo.path().join(CONFIG_FILES[2]), "base: trunk\n").unwrap()
                         }
-                        "private" => {
-                            fs::write(repo.path().join(".git/oneflow.conf"), "base = trunk\n")
-                                .unwrap()
-                        }
+                        "private" => fs::write(
+                            repo.path().join(".git/git-oneflow.config.toml"),
+                            "base = 'trunk'\n",
+                        )
+                        .unwrap(),
                         "private-change" => {
-                            fs::write(repo.path().join(".git/oneflow.conf"), "base = trunk\n")
-                                .unwrap();
+                            fs::write(
+                                repo.path().join(".git/git-oneflow.config.toml"),
+                                "base = 'trunk'\n",
+                            )
+                            .unwrap();
                         }
                         "private-invalid" => {
-                            fs::write(repo.path().join(".git/oneflow.conf"), "unknown = value\n")
-                                .unwrap();
+                            fs::write(
+                                repo.path().join(".git/git-oneflow.config.toml"),
+                                "unknown = value\n",
+                            )
+                            .unwrap();
                         }
                         "private-remove" => {
-                            fs::remove_file(repo.path().join(".git/oneflow.conf")).unwrap();
+                            fs::remove_file(repo.path().join(".git/git-oneflow.config.toml"))
+                                .unwrap();
                         }
                         "remote" => {
                             repo.success(&["remote", "add", "new", "/offline"]);
@@ -1104,10 +1150,10 @@ fn config_show_reports_effective_finish_values_and_sources() {
                 "finish-update='merge'\nfinish-rewrite='deny'\n",
             )
             .unwrap();
-            for filename in [CONFIG_FILES[3], "oneflow.conf"] {
+            for filename in [CONFIG_FILES[3], "git-oneflow.config.toml"] {
                 let local = repo.path().join(".git").join(filename);
-                let contents = if filename == "oneflow.conf" {
-                    "finish-rewrite=allow\n"
+                let contents = if filename == "git-oneflow.config.toml" {
+                    "finish-rewrite='allow'\n"
                 } else {
                     "{\"finish-rewrite\":\"allow\"}"
                 };
@@ -1132,14 +1178,14 @@ fn config_show_reports_effective_finish_values_and_sources() {
 }
 
 #[test]
-fn config_show_identifies_remote_role_values_aliases_and_derived_sources() {
+fn config_show_identifies_remote_role_values_and_derived_sources() {
     cases(
-        "config_show_identifies_remote_role_values_aliases_and_derived_sources",
+        "config_show_identifies_remote_role_values_and_derived_sources",
         true,
         |root, exe| {
             let repo = Repository::new(root);
             let shared = repo.path().join(CONFIG_FILES[0]);
-            let local = repo.path().join(".git/oneflow.conf");
+            let local = repo.path().join(".git/git-oneflow.config.toml");
             check(
                 run(exe, repo.path(), &["config", "show"]),
                 0,
@@ -1153,16 +1199,13 @@ fn config_show_identifies_remote_role_values_aliases_and_derived_sources() {
                 "publish-remote='personal'\nbase-remote='project'\n",
             )
             .unwrap();
-            fs::write(&local, "remote=local\n").unwrap();
+            fs::write(&local, "publish-remote='local'\n").unwrap();
             let before = snapshot(root);
             check(
                 run(exe, repo.path(), &["config", "show"]),
                 0,
                 &[
-                    &format!(
-                        "publish-remote: local (local: {}; setting: remote)",
-                        local.display()
-                    ),
+                    &format!("publish-remote: local (local: {})", local.display()),
                     &format!("base-remote: project (shared: {})", shared.display()),
                 ],
             );
@@ -1172,23 +1215,20 @@ fn config_show_identifies_remote_role_values_aliases_and_derived_sources() {
                 run(exe, repo.path(), &["config", "show"]),
                 0,
                 &[&format!(
-                    "base-remote: local (follows publish-remote; local: {}; setting: remote)",
+                    "base-remote: local (follows publish-remote; local: {})",
                     local.display()
                 )],
             );
             fs::write(
                 &local,
-                "remote=local\npublish-remote=selected\nbase-remote=selected\n",
+                "publish-remote='selected'\nbase-remote='selected'\n",
             )
             .unwrap();
             check(
                 run(exe, repo.path(), &["config", "show"]),
                 0,
                 &[
-                    &format!(
-                        "publish-remote: selected (local: {}; setting: publish-remote)",
-                        local.display()
-                    ),
+                    &format!("publish-remote: selected (local: {})", local.display()),
                     &format!("base-remote: selected (local: {})", local.display()),
                 ],
             );
@@ -1207,8 +1247,8 @@ fn differing_remote_roles_preserve_finish_readiness_guards() {
             repo.success(&["switch", "-c", "work"]);
             fs::write(repo.path().join("tracked"), "dirty\n").unwrap();
             fs::write(
-                repo.path().join(".git/oneflow.conf"),
-                "publish-remote=personal\nbase-remote=project\n",
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "publish-remote='personal'\nbase-remote='project'\n",
             )
             .unwrap();
             repo.success(&["remote", "add", "personal", "/missing/personal"]);
@@ -1275,7 +1315,7 @@ fn guided_remote_roles_review_selected_intent_with_private_precedence() {
                 ("json", CONFIG_FILES[3]),
             ] {
                 for base_answer in ["", "personal", "project"] {
-                    for private_case in ["none", "alias", "both", "base"] {
+                    for private_case in ["none", "publication", "roles", "base"] {
                         let repo = Repository::new(root);
                         // Names are hints, not assigned roles.
                         for name in ["origin", "upstream", "fork"] {
@@ -1283,12 +1323,17 @@ fn guided_remote_roles_review_selected_intent_with_private_precedence() {
                         }
                         let (private_name, private_text, publication, private_base) =
                             match private_case {
-                                "alias" => ("oneflow.conf", "remote=private\n", "private", None),
-                                "both" => (
-                                    "oneflow.conf",
-                                    "remote=ignored\npublish-remote=selected\n",
-                                    "selected",
+                                "publication" => (
+                                    CONFIG_FILES[0],
+                                    "publish-remote='private'\n",
+                                    "private",
                                     None,
+                                ),
+                                "roles" => (
+                                    CONFIG_FILES[0],
+                                    "publish-remote='selected'\nbase-remote='local-base'\n",
+                                    "selected",
+                                    Some("local-base"),
                                 ),
                                 "base" => (
                                     CONFIG_FILES[0],
@@ -1332,18 +1377,6 @@ fn guided_remote_roles_review_selected_intent_with_private_precedence() {
                             "{}",
                             term.output
                         );
-                        if private_case == "alias" || private_case == "both" {
-                            let key = if private_case == "alias" {
-                                "remote"
-                            } else {
-                                "publish-remote"
-                            };
-                            assert!(
-                                term.output.contains(&format!("setting: {key}")),
-                                "{}",
-                                term.output
-                            );
-                        }
                         term.send(b"yes\n");
                         assert!(term.finish().success(), "{}", term.output);
                         let contents = fs::read_to_string(repo.path().join(filename)).unwrap();

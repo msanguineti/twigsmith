@@ -163,16 +163,6 @@ impl Fixture {
             .path()
             .join(".git/oneflow-finish/branches/feature/work/rewrite.json")
     }
-    fn legacy(&self) {
-        // Exact v1 shape from the preceding implementation: retain observations,
-        // identity, attempts and reflog anchors; no fabricated role bindings.
-        let mut record: serde_json::Value =
-            serde_json::from_slice(&fs::read(self.record()).unwrap()).unwrap();
-        assert_eq!(record["version"], 2);
-        record["version"] = 1.into();
-        record.as_object_mut().unwrap().remove("roles");
-        fs::write(self.record(), serde_json::to_vec(&record).unwrap()).unwrap();
-    }
 }
 
 #[test]
@@ -580,25 +570,28 @@ fn new_fork_work_cannot_borrow_project_or_rewrite_observations() {
 }
 
 #[test]
-fn legacy_records_retry_only_with_original_equal_roles_and_destinations() {
+fn current_records_require_complete_matching_bindings_and_verified_history() {
     isolated(
-        "legacy_records_retry_only_with_original_equal_roles_and_destinations",
+        "current_records_require_complete_matching_bindings_and_verified_history",
         true,
         |root| {
             for change in [
-                "compatible",
+                "verified",
                 "base-role",
                 "publish-role",
                 "destination",
                 "original",
                 "reflog",
                 "missing-bindings",
-                "unknown-version",
+                "unsupported-version",
+                "previous-version",
+                "previous-shape",
+                "malformed",
+                "unknown-field",
             ] {
                 let f = Fixture::new(root, true, false, false);
                 prepared(&f.local, FinishUpdate::Rebase);
-                f.legacy();
-                let legacy = fs::read(f.record()).unwrap();
+                let recorded = fs::read(f.record()).unwrap();
                 let other = Repository::new(root);
                 match change {
                     "base-role" => f.settings(PROJECT, PUBLISH),
@@ -626,15 +619,33 @@ fn legacy_records_retry_only_with_original_equal_roles_and_destinations() {
                         ]);
                     }
                     "original" => {
-                        let mut value: serde_json::Value = serde_json::from_slice(&legacy).unwrap();
+                        let mut value: serde_json::Value =
+                            serde_json::from_slice(&recorded).unwrap();
                         value["original"] = serde_json::to_value(oid(&f.local, "HEAD")).unwrap();
                         fs::write(f.record(), serde_json::to_vec(&value).unwrap()).unwrap();
                     }
-                    "missing-bindings" | "unknown-version" => {
-                        let mut value: serde_json::Value = serde_json::from_slice(&legacy).unwrap();
-                        value["version"] = if change == "missing-bindings" { 2 } else { 99 }.into();
+                    "missing-bindings"
+                    | "unsupported-version"
+                    | "previous-version"
+                    | "previous-shape"
+                    | "unknown-field" => {
+                        let mut value: serde_json::Value =
+                            serde_json::from_slice(&recorded).unwrap();
+                        match change {
+                            "missing-bindings" => {
+                                value.as_object_mut().unwrap().remove("roles");
+                            }
+                            "unsupported-version" => value["version"] = 99.into(),
+                            "previous-version" => value["version"] = 1.into(),
+                            "previous-shape" => {
+                                value["version"] = 1.into();
+                                value.as_object_mut().unwrap().remove("roles");
+                            }
+                            _ => value["permission"] = true.into(),
+                        }
                         fs::write(f.record(), serde_json::to_vec(&value).unwrap()).unwrap();
                     }
+                    "malformed" => fs::write(f.record(), "{").unwrap(),
                     "reflog" => {
                         f.local
                             .success(&["reflog", "expire", "--expire=now", "--all"]);
@@ -642,15 +653,44 @@ fn legacy_records_retry_only_with_original_equal_roles_and_destinations() {
                     _ => (),
                 }
                 let plan = fresh(&f.local, &request(FinishUpdate::None));
-                if change == "compatible" {
+                if change == "verified" {
                     assert!(matches!(plan.recovery, Recovery::Verified(_)), "{plan:#?}");
                     assert_eq!(plan.destinations[0].mode, PublicationMode::VerifiedRewrite);
                     succeeds(cli(&f.local, "none"));
-                    assert_eq!(fs::read(f.record()).unwrap(), legacy);
+                    assert_eq!(fs::read(f.record()).unwrap(), recorded);
                 } else {
                     assert_eq!(plan.recovery, Recovery::Invalid, "{change}");
                     assert!(!plan.is_ready(), "{change}: {plan:#?}");
+                    let stopped = publication::publish(f.local.path(), &plan);
+                    assert!(!stopped.is_complete());
+                    assert!(stopped.destinations.iter().all(|d| d.commands.is_empty()));
                     assert_eq!(oid(&f.fork, REF), f.original);
+                    if matches!(
+                        change,
+                        "missing-bindings"
+                            | "unsupported-version"
+                            | "previous-version"
+                            | "previous-shape"
+                            | "malformed"
+                            | "unknown-field"
+                    ) {
+                        let invalid_record = fs::read(f.record()).unwrap();
+                        f.local.success(&[
+                            "merge",
+                            "--no-edit",
+                            std::str::from_utf8(&f.original).unwrap(),
+                        ]);
+                        let ordinary = fresh(&f.local, &request(FinishUpdate::None));
+                        assert_eq!(ordinary.recovery, Recovery::Invalid);
+                        assert!(ordinary.is_ready(), "{change}: {ordinary:#?}");
+                        assert_eq!(
+                            ordinary.destinations[0].mode,
+                            PublicationMode::FastForwardOrUnchanged
+                        );
+                        succeeds(cli(&f.local, "none"));
+                        assert_eq!(oid(&f.fork, REF), ordinary.commit);
+                        assert_eq!(fs::read(f.record()).unwrap(), invalid_record);
+                    }
                 }
             }
         },
@@ -723,13 +763,13 @@ fn split_role_executor_death_and_lost_acknowledgement_need_no_final_write() {
 }
 
 #[test]
-fn advancing_project_extends_split_and_legacy_recovery_without_upgrading_old_bindings() {
+fn advancing_base_extends_recovery_with_equal_and_split_roles() {
     isolated(
-        "advancing_project_extends_split_and_legacy_recovery_without_upgrading_old_bindings",
+        "advancing_base_extends_recovery_with_equal_and_split_roles",
         true,
         |root| {
-            for legacy in [false, true] {
-                let f = Fixture::new(root, legacy, true, false);
+            for equal_roles in [false, true] {
+                let f = Fixture::new(root, equal_roles, true, false);
                 let second = Repository::new(root);
                 seed(&f.local, &second);
                 f.local.success(&[
@@ -739,9 +779,6 @@ fn advancing_project_extends_split_and_legacy_recovery_without_upgrading_old_bin
                     second.path().to_str().unwrap(),
                 ]);
                 prepared(&f.local, FinishUpdate::Rebase);
-                if legacy {
-                    f.legacy();
-                }
                 second.success(&[
                     "fetch",
                     f.local.path().to_str().unwrap(),
@@ -766,9 +803,9 @@ fn advancing_project_extends_split_and_legacy_recovery_without_upgrading_old_bin
                 );
                 let record: serde_json::Value =
                     serde_json::from_slice(&fs::read(f.record()).unwrap()).unwrap();
-                assert_eq!(record["version"], if legacy { 1 } else { 2 });
+                assert_eq!(record["version"], 2);
                 assert_eq!(record["attempts"].as_array().unwrap().len(), 2);
-                assert_eq!(record.get("roles").is_some(), !legacy);
+                assert!(record.get("roles").is_some());
                 succeeds(cli(&f.local, "none"));
                 assert_eq!(oid(&f.fork, REF), p.commit);
                 assert_eq!(oid(&second, REF), p.commit);

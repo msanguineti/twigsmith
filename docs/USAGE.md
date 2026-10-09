@@ -250,10 +250,9 @@ gof config --yes --format json
 
 `config show` displays the effective `publish-remote`, `base-remote`, `base`,
 `save-action`, `finish-update`, and `finish-rewrite`, identifying each value's
-shared file, local file, or built-in default. Publication also identifies whether
-`publish-remote` or the compatibility key `remote` supplied the value. An inherited
-base remote identifies the publication setting and source it follows. Inspection
-lists discovered files and the directories searched when a layer is absent.
+shared file, local file, or built-in default. An inherited base remote identifies
+the publication source it follows. Inspection lists discovered files and the
+directories searched when a layer is absent.
 Settings resolve from local overrides, shared settings, then defaults. Explicit
 save/finish flags take precedence over their corresponding settings. Inspection uses shared workflow
 validation and diagnostics. Its output is intended for people.
@@ -356,9 +355,8 @@ Bare repositories have the local layer and defaults available for `config show`;
 start/save/finish and configuration generation require a working tree.
 
 Settings resolve through **explicit command flags > local overrides >
-shared settings > defaults**. The remote-role rules below resolve the publication
-aliases together and the base remote independently. Save's existing action flags
-override `save-action`.
+shared settings > defaults**. Each remote role resolves independently; an omitted
+base remote follows publication. Save's action flags override `save-action`.
 Finish's update and rewrite flags override their respective settings.
 Start has no setting override flags. Parent directories and the home directory
 supply no additional settings.
@@ -392,10 +390,8 @@ the same remote or different remotes. All names are literal named Git remotes;
 `origin`, `upstream`, and `fork` have no special role or provider meaning.
 `base` is a branch name such as `trunk`.
 
-`remote` remains a compatibility setting for publication. At one layer,
-`publish-remote` takes precedence over `remote`. A local publication setting
-wins over either shared publication setting, including when the local setting
-uses `remote`. Publication defaults to `origin` when both keys are absent.
+`publish-remote` resolves from local overrides, then shared settings, and defaults
+to `origin`.
 
 `base-remote` resolves independently from local, then shared settings. When it
 is absent everywhere, the base remote follows the resolved publication remote.
@@ -405,23 +401,19 @@ publication; only a `base-remote` override changes that selection.
 | Settings | Publication remote | Base remote |
 | --- | --- | --- |
 | No remote settings | `origin` | `origin` |
-| `remote = team` | `team` | `team` |
 | `publish-remote = personal` | `personal` | `personal` |
 | `publish-remote = personal`, `base-remote = project` | `personal` | `project` |
 
-Both named settings work in every shared/local format and legacy local
-`oneflow.conf`. Every present value is validated, including a `remote` overridden
-by `publish-remote` at the same layer. Configuration inspection is local and
-read-only; configure remote availability in Git for the workflows that use it.
+Both named settings work in every shared/local format. Every present value is
+validated, including values overridden by a higher-priority layer. Configuration
+inspection is local and read-only; configure remote availability in Git for the workflows that use it.
 
 Start creates new work from `base-remote` and resumes published work from
 `publish-remote`; save publishes through `publish-remote`. The roles may match
 or differ. Finish prepares against `base-remote` and publishes through
 `publish-remote`. Use `gof config show` to inspect both roles and
 their sources. Guided setup generates `publish-remote` and writes `base-remote`
-only when you select a different base source. New files use the publication key
-without a redundant compatibility `remote` entry. Existing files remain supported
-and setup preserves them.
+only when you select a different base source. Setup preserves existing files.
 
 ### Single-repository and fork workflows
 
@@ -511,20 +503,6 @@ remote availability is checked by the workflow that needs it. Save rechecks
 settings before affected operations, including after local preservation. If a
 stash or hook changes effective settings, save stops with completed effects
 retained; inspect the report and current settings before retrying.
-
-### Legacy migration
-
-`<Git common directory>/oneflow.conf` continues to work as local overrides when
-that directory has no new-format file, including alongside shared configuration.
-It uses literal, unquoted `key = value` lines, with surrounding whitespace trimmed,
-blank lines and whole-line `#` comments accepted. Omitted keys inherit shared
-settings and defaults.
-
-To migrate, copy its settings into one new-format file in the Git common
-directory, using the matching format's string syntax, then remove or rename
-`oneflow.conf`. Coexisting legacy and new-format local files fail with migration
-guidance. Keep shared project settings in the working-tree root file and private
-values in the local file.
 
 ## Recovery
 

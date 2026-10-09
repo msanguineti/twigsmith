@@ -119,9 +119,9 @@ fn clean_always_publishes_without_checkpoint_or_message() {
                 SaveAction::Stash,
             ] {
                 fs::write(
-                    repo.path().join(".git/oneflow.conf"),
+                    repo.path().join(".git/git-oneflow.config.toml"),
                     format!(
-                        "save-action = {}",
+                        "save-action = '{}'",
                         match action {
                             SaveAction::Ask => "ask",
                             SaveAction::PublishOnly => "publish-only",
@@ -174,7 +174,11 @@ fn input_preferences_and_effects() {
             assess(root, repo.path(), &request(SaveAction::Staged)),
             Err(SaveError::NoStagedChanges)
         ));
-        fs::write(repo.path().join(".git/oneflow.conf"), "save-action=stash").unwrap();
+        fs::write(
+            repo.path().join(".git/git-oneflow.config.toml"),
+            "save-action='stash'",
+        )
+        .unwrap();
         let stash = assess(root, repo.path(), &Request::default()).unwrap();
         assert_eq!(stash.local_steps, [LocalStep::StashIncludingUntracked]);
         assert!(stash.publication.is_some()); // Stash and branch publication are separate.
@@ -228,7 +232,11 @@ fn input_preferences_and_effects() {
                 Err(SaveError::MessageNotApplicable)
             ));
         }
-        fs::write(repo.path().join(".git/oneflow.conf"), "save-action=nope").unwrap();
+        fs::write(
+            repo.path().join(".git/git-oneflow.config.toml"),
+            "save-action='nope'",
+        )
+        .unwrap();
         let err = assess(root, repo.path(), &request(SaveAction::PublishOnly)).unwrap_err();
         assert!(err.to_string().contains("save-action must be"));
     });
@@ -465,8 +473,8 @@ fn linked_worktrees_share_settings_but_keep_local_scope() {
             ]);
             repo.success(&["remote", "add", "team", "/missing/team"]);
             fs::write(
-                repo.path().join(".git/oneflow.conf"),
-                "remote=team\nbase=trunk\nsave-action=wip",
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "publish-remote='team'\nbase='trunk'\nsave-action='wip'",
             )
             .unwrap();
             fs::write(linked.join("untracked"), "work").unwrap();
@@ -525,9 +533,11 @@ fn revalidation_detects_content_index_head_settings_and_destination_changes() {
                     }
                     "untracked" => fs::write(repo.path().join("untracked"), "after\n").unwrap(),
                     "new-path" => fs::write(repo.path().join("another"), "new\n").unwrap(),
-                    "settings" => {
-                        fs::write(repo.path().join(".git/oneflow.conf"), "base=trunk").unwrap()
-                    }
+                    "settings" => fs::write(
+                        repo.path().join(".git/git-oneflow.config.toml"),
+                        "base='trunk'",
+                    )
+                    .unwrap(),
                     "head" => {
                         repo.success(&["commit", "-m", "checkpoint"]);
                     }
@@ -764,8 +774,8 @@ fn nested_scope_and_multiple_push_urls_revalidate() {
                 Err(SaveError::ContextChanged)
             ));
             fs::write(
-                repo.path().join(".git/oneflow.conf"),
-                "base=Feature/Exact_Name",
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "base='Feature/Exact_Name'",
             )
             .unwrap();
             assert!(matches!(

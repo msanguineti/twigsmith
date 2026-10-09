@@ -140,12 +140,12 @@ pub struct GenerationPlan {
 #[derive(Debug)]
 pub struct Generated {
     pub path: PathBuf,
-    /// Recognized private files at publication, including legacy overrides.
+    /// Recognized private files at publication.
     /// Generation does not need to parse or copy private values.
     pub local_files: Vec<PathBuf>,
 }
 fn require_absent(root: &Path) -> Result<(), ConfigError> {
-    let paths = settings::recognized_paths(root, false)?;
+    let paths = settings::recognized_paths(root)?;
     if paths.is_empty() {
         Ok(())
     } else {
@@ -318,7 +318,7 @@ pub fn generate(directory: &Path, plan: &GenerationPlan) -> Result<Generated, Co
     }
     require_absent(root)?;
     revalidate_review(directory, plan)?;
-    let local_files = settings::recognized_paths(&plan.repository.common_dir, true)?;
+    let local_files = settings::recognized_paths(&plan.repository.common_dir)?;
     publish(file, &path)?;
     Ok(Generated { path, local_files })
 }

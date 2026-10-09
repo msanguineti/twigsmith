@@ -106,8 +106,6 @@ impl From<InspectionError> for SettingsError {
     }
 }
 
-/// The legacy local filename; new configuration uses CONFIG_FILES.
-pub const SETTINGS_FILE: &str = "oneflow.conf";
 pub const CONFIG_FILES: [&str; 4] = [
     "git-oneflow.config.toml",
     "git-oneflow.config.yaml",
@@ -122,26 +120,9 @@ pub enum SettingSource {
     Local(PathBuf),
 }
 
-/// Publication aliases are resolved within each layer before applying precedence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublicationKey {
-    Remote,
-    PublishRemote,
-}
-impl PublicationKey {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Remote => "remote",
-            Self::PublishRemote => "publish-remote",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingSources {
     pub publish_remote: SettingSource,
-    /// The input key selecting publication; None denotes the built-in default.
-    pub publication_key: Option<PublicationKey>,
     /// None means the effective base remote follows publication.
     pub base_remote: Option<SettingSource>,
     pub base: SettingSource,
@@ -153,7 +134,6 @@ impl Default for SettingSources {
     fn default() -> Self {
         Self {
             publish_remote: SettingSource::BuiltIn,
-            publication_key: None,
             base_remote: None,
             base: SettingSource::BuiltIn,
             save_action: SettingSource::BuiltIn,
@@ -187,10 +167,9 @@ impl Default for Settings {
     }
 }
 
-/// One sparse schema for all formats, including the legacy compatibility boundary.
+/// One sparse schema for all supported formats.
 #[derive(Debug, Default)]
 struct Layer {
-    remote: Option<String>,
     publish_remote: Option<String>,
     base_remote: Option<String>,
     base: Option<String>,
@@ -202,7 +181,6 @@ struct Layer {
 impl Layer {
     fn slot(&mut self, key: &str) -> Result<&mut Option<String>, String> {
         match key {
-            "remote" => Ok(&mut self.remote),
             "publish-remote" => Ok(&mut self.publish_remote),
             "base-remote" => Ok(&mut self.base_remote),
             "base" => Ok(&mut self.base),
@@ -210,7 +188,7 @@ impl Layer {
             "finish-update" => Ok(&mut self.finish_update),
             "finish-rewrite" => Ok(&mut self.finish_rewrite),
             _ => Err(format!(
-                "unknown key {key:?} (supported keys: remote, publish-remote, base-remote, base, save-action, finish-update, finish-rewrite)"
+                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite; local-only: redact-credentials)"
             )),
         }
     }
@@ -222,7 +200,6 @@ impl Layer {
             ));
         }
         for (key, value) in [
-            ("remote", &self.remote),
             ("publish-remote", &self.publish_remote),
             ("base-remote", &self.base_remote),
         ] {
@@ -255,14 +232,9 @@ impl Layer {
         redact_credentials_source: &mut SettingSource,
         source: SettingSource,
     ) {
-        let publication = self
-            .publish_remote
-            .map(|value| (value, PublicationKey::PublishRemote))
-            .or_else(|| self.remote.map(|value| (value, PublicationKey::Remote)));
-        if let Some((remote, key)) = publication {
+        if let Some(remote) = self.publish_remote {
             settings.publish_remote = remote;
             settings.sources.publish_remote = source.clone();
-            settings.sources.publication_key = Some(key);
         }
         if let Some(remote) = self.base_remote {
             settings.base_remote = remote;
@@ -379,7 +351,7 @@ fn exists(path: &Path) -> Result<bool, SettingsError> {
         }),
     }
 }
-pub(crate) fn recognized_paths(root: &Path, local: bool) -> Result<Vec<PathBuf>, SettingsError> {
+pub(crate) fn recognized_paths(root: &Path) -> Result<Vec<PathBuf>, SettingsError> {
     let mut paths = Vec::new();
     for name in CONFIG_FILES {
         let path = root.join(name);
@@ -387,32 +359,18 @@ pub(crate) fn recognized_paths(root: &Path, local: bool) -> Result<Vec<PathBuf>,
             paths.push(path);
         }
     }
-    if local {
-        let legacy = root.join(SETTINGS_FILE);
-        if exists(&legacy)? {
-            paths.push(legacy);
-        }
-    }
     Ok(paths)
 }
 fn discover_layer(root: &Path, local: bool) -> Result<Option<PathBuf>, SettingsError> {
-    let mut paths = recognized_paths(root, local)?;
+    let mut paths = recognized_paths(root)?;
     if paths.len() > 1 {
         let files = paths
             .iter()
             .map(|p| p.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        let migration = if paths
-            .iter()
-            .any(|p| p.file_name().is_some_and(|n| n == SETTINGS_FILE))
-        {
-            " Migrate oneflow.conf values into one new-format local file, then remove or rename oneflow.conf."
-        } else {
-            " Keep exactly one recognized file in this layer; extensions have no priority."
-        };
         return Err(SettingsError::InvalidSettings(format!(
-            "multiple configuration files in {} layer: {files}.{migration}",
+            "multiple configuration files in {} layer: {files}. Keep exactly one recognized file in this layer; extensions have no priority.",
             if local { "local" } else { "shared" }
         )));
     }
@@ -434,43 +392,9 @@ fn read_layer(path: &Path) -> Result<Layer, SettingsError> {
             serde_saphyr::from_str_with_options::<Layer>(&contents, options)
                 .map_err(|e| e.to_string())
         }
-        _ => parse_legacy(&contents),
+        _ => unreachable!("discovered configuration format"),
     };
     result.map_err(|e| invalid(path, e))
-}
-fn parse_legacy(contents: &str) -> Result<Layer, String> {
-    let mut layer = Layer::default();
-    for (index, line) in contents.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let invalid = |reason: String| format!("line {}: {reason}", index + 1);
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| invalid("expected key = value".into()))?;
-        let value = value.trim();
-        if value.is_empty() {
-            return Err(invalid("empty value".into()));
-        }
-        if key.trim() == "redact-credentials" {
-            if layer.redact_credentials.is_some() {
-                return Err(invalid("duplicate key".into()));
-            }
-            layer.redact_credentials = Some(match value {
-                "true" => true,
-                "false" => false,
-                _ => return Err(invalid("redact-credentials must be true or false".into())),
-            });
-            continue;
-        }
-        let slot = layer.slot(key.trim()).map_err(invalid)?;
-        if slot.is_some() {
-            return Err(invalid("duplicate key".into()));
-        }
-        *slot = Some(value.into());
-    }
-    Ok(layer)
 }
 
 /// Validate every present file before sparse merging. Remote availability is

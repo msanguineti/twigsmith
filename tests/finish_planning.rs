@@ -657,14 +657,17 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
                     }
                     "settings" => {
                         fs::write(
-                            repo.path().join(".git/oneflow.conf"),
-                            "finish-rewrite=allow\n",
+                            repo.path().join(".git/git-oneflow.config.toml"),
+                            "finish-rewrite='allow'\n",
                         )
                         .unwrap();
                     }
                     "source" => {
-                        fs::write(repo.path().join(".git/oneflow.conf"), "finish-update=ask\n")
-                            .unwrap();
+                        fs::write(
+                            repo.path().join(".git/git-oneflow.config.toml"),
+                            "finish-update='ask'\n",
+                        )
+                        .unwrap();
                     }
                     "upstream" => {
                         repo.success(&["config", "branch.Feature/Exact_Name.remote", "other"]);
@@ -710,11 +713,11 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
             }
             // Formatting-only changes preserve settings values and sources.
             let (repo, base) = fixture(root);
-            let path = repo.path().join(".git/oneflow.conf");
-            fs::write(&path, "finish-update=none\n").unwrap();
+            let path = repo.path().join(".git/git-oneflow.config.toml");
+            fs::write(&path, "finish-update='none'\n").unwrap();
             let remote = evidence(base, RefObservation::Absent);
             let plan = assess(root, &repo, &Request::default(), Some(&remote)).unwrap();
-            fs::write(path, "# formatting\nfinish-update = none\n").unwrap();
+            fs::write(path, "# formatting\nfinish-update = 'none'\n").unwrap();
             revalidate(root, &repo, &plan, Some(&remote)).unwrap();
         },
     );
@@ -731,8 +734,8 @@ fn finish_request_overrides_config_without_hiding_invalid_settings() {
             repo.success(&["switch", "main"]);
             let base = commit(&repo, "base update");
             repo.success(&["switch", "Feature/Exact_Name"]);
-            let path = repo.path().join(".git/oneflow.conf");
-            fs::write(&path, "finish-update=rebase\nfinish-rewrite=allow\n").unwrap();
+            let path = repo.path().join(".git/git-oneflow.config.toml");
+            fs::write(&path, "finish-update='rebase'\nfinish-rewrite='allow'\n").unwrap();
             let remote = evidence(base, RefObservation::Commit(work));
             let configured = assess(root, &repo, &Request::default(), Some(&remote)).unwrap();
             assert!(configured.is_ready());
@@ -756,7 +759,7 @@ fn finish_request_overrides_config_without_hiding_invalid_settings() {
             assert!(explicit.is_ready());
             assert_eq!(explicit.update, FinishUpdate::None);
             assert_eq!(explicit.rewrite, FinishRewrite::Deny);
-            fs::write(path, "finish-update=invalid\n").unwrap();
+            fs::write(path, "finish-update='invalid'\n").unwrap();
             assert!(matches!(
                 assess(
                     root,

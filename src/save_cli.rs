@@ -248,7 +248,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             inspection_diagnostics(error);
         }
         SaveError::Settings(_) => eprintln!(
-            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, publish-remote, base-remote, base, save-action, finish-update, finish-rewrite"
+            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory; supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite; local-only: redact-credentials"
         ),
         SaveError::NoStagedChanges => eprintln!(
             "stage the intended selection yourself, or select --publish-only, --wip, or --stash"
@@ -586,10 +586,8 @@ Settings:
   git-oneflow.config.toml, .yaml, .yml, or .json: one file per layer
   Shared: working-tree root; local overrides: Git common directory
   Precedence: explicit action flag > local > shared > defaults
-  Legacy local oneflow.conf remains supported when no new local file exists
   publish-remote = origin; base-remote follows publication; base = main (defaults)
-  remote is a compatibility alias for publish-remote; save-action defaults to ask.
-  save-action: ask, publish-only, staged, wip, stash
+  save-action: ask (default), publish-only, staged, wip, stash
 
 Exit status:
   0  Selected action completed, including unchanged publication

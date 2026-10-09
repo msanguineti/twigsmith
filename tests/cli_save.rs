@@ -147,8 +147,8 @@ fn dirty(repo: &Repository, staged: bool, remaining: bool) {
 }
 fn settings(repo: &Repository, action: &str) {
     fs::write(
-        repo.path().join(".git/oneflow.conf"),
-        format!("save-action = {action}\n"),
+        repo.path().join(".git/git-oneflow.config.toml"),
+        format!("save-action = '{action}'\n"),
     )
     .unwrap();
 }

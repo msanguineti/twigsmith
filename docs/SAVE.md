@@ -92,11 +92,9 @@ snapshotted, so even a masked change requires reassessment. Ordinary upstream
 fallbacks, `push.default`, and expansive refspecs do not broaden the tool's
 explicit exact-branch publication, and no user routing configuration is rewritten.
 
-This expands the earlier publication-only tracking guard to accept project-base
-tracking. Existing valid tracking is retained through publication. It also changes
-compatibility for explicit push overrides: conflicting overrides now fail instead
-of being ignored. Start validates these same relationships on local resume and
-current-branch success, while preserving offline operation.
+Existing valid tracking is retained through publication. Start validates the
+same tracking and push-selection relationships on local resume and current-branch
+success, while preserving offline operation.
 
 `git remote get-url --push --all <name>` validates the named remote locally and
 captures all resolved push destinations, including ordinary URL rewriting.

@@ -6,18 +6,17 @@ pub use workflow::{
     execute,
 };
 
-use std::{fmt, io, path::Path};
+use std::{fmt, path::Path};
 
 use unicode_general_category::{GeneralCategory as Category, get_general_category};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::{
     repository::{self, InspectionError, RepositoryContext},
-    settings::{self, valid_branch},
+    settings::{self, Settings, SettingsError, valid_branch},
     tracking,
 };
 
-pub use crate::settings::{SETTINGS_FILE, Settings};
 pub use crate::tracking::Error as TrackingError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedRequest {
@@ -31,11 +30,7 @@ pub struct PreparedRequest {
 pub enum ResolveError {
     Repository(InspectionError),
     OutsideRepository,
-    SettingsIo {
-        path: std::path::PathBuf,
-        source: io::Error,
-    },
-    InvalidSettings(String),
+    Settings(SettingsError),
     UnusablePhrase,
     InvalidTarget(String),
     ProtectedBase(String),
@@ -46,12 +41,7 @@ impl fmt::Display for ResolveError {
         match self {
             Self::Repository(error) => write!(f, "{error}"),
             Self::OutsideRepository => write!(f, "start preparation requires a Git repository"),
-            Self::SettingsIo { path, source } => {
-                write!(f, "cannot read settings {}: {source}", path.display())
-            }
-            Self::InvalidSettings(reason) => {
-                write!(f, "invalid settings: {reason}")
-            }
+            Self::Settings(error) => write!(f, "{error}"),
             Self::UnusablePhrase => write!(f, "phrase contains no usable letters or numbers"),
             Self::InvalidTarget(name) => write!(f, "invalid target branch name: {name:?}"),
             Self::ProtectedBase(name) => {
@@ -65,7 +55,7 @@ impl std::error::Error for ResolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Repository(error) => Some(error),
-            Self::SettingsIo { source, .. } => Some(source),
+            Self::Settings(error) => Some(error),
             _ => None,
         }
     }
@@ -74,6 +64,11 @@ impl std::error::Error for ResolveError {
 impl From<InspectionError> for ResolveError {
     fn from(error: InspectionError) -> Self {
         Self::Repository(error)
+    }
+}
+impl From<SettingsError> for ResolveError {
+    fn from(error: SettingsError) -> Self {
+        Self::Settings(error)
     }
 }
 
@@ -124,13 +119,7 @@ fn phrase_slug(input: &str) -> Result<String, ResolveError> {
 pub fn prepare(directory: impl AsRef<Path>, input: &str) -> Result<PreparedRequest, ResolveError> {
     let directory = directory.as_ref();
     let repository = repository::discover(directory)?.ok_or(ResolveError::OutsideRepository)?;
-    let settings = settings::load(directory, &repository).map_err(|e| match e {
-        settings::SettingsError::Repository(e) => ResolveError::Repository(e),
-        settings::SettingsError::SettingsIo { path, source } => {
-            ResolveError::SettingsIo { path, source }
-        }
-        settings::SettingsError::InvalidSettings(e) => ResolveError::InvalidSettings(e),
-    })?;
+    let settings = settings::load(directory, &repository)?;
     let target = if input.contains(' ') {
         phrase_slug(input)?
     } else {

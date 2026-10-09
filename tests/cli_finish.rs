@@ -90,8 +90,8 @@ fn seed(local: &Repository, remote: &Repository) {
 }
 fn settings(repo: &Repository, update: &str, rewrite: &str) {
     fs::write(
-        repo.path().join(".git/oneflow.conf"),
-        format!("finish-update={update}\nfinish-rewrite={rewrite}\n"),
+        repo.path().join(".git/git-oneflow.config.toml"),
+        format!("finish-update='{update}'\nfinish-rewrite='{rewrite}'\n"),
     )
     .unwrap();
 }
@@ -126,7 +126,7 @@ fn finish_credential_redaction_defaults_local_override_and_flag_precedence() {
             );
 
             fs::write(
-                local.path().join(".git/oneflow.conf"),
+                local.path().join(".git/git-oneflow.config.toml"),
                 "redact-credentials=false\n",
             )
             .unwrap();

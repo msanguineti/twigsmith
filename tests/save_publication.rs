@@ -327,9 +327,11 @@ fn intended_head_settings_upstream_and_scope_are_revalidated() {
                     "branch" => {
                         repo.success(&["switch", "-c", "another"]);
                     }
-                    "settings" => {
-                        fs::write(repo.path().join(".git/oneflow.conf"), "base=trunk").unwrap()
-                    }
+                    "settings" => fs::write(
+                        repo.path().join(".git/git-oneflow.config.toml"),
+                        "base='trunk'",
+                    )
+                    .unwrap(),
                     "pushurl" => {
                         repo.success(&["config", "remote.origin.pushurl", "/missing/other"]);
                     }

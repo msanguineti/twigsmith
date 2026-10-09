@@ -24,7 +24,7 @@ The flat configuration schema includes:
 | `finish-update` | `ask`, `rebase`, `merge`, `none` | `ask` |
 | `finish-rewrite` | `ask`, `allow`, `deny` | `ask` |
 
-Shared TOML/YAML/YML/JSON, common-directory local files, and legacy `oneflow.conf`
+Shared and common-directory local TOML/YAML/YML/JSON files
 use the same strict validation and sparse per-key precedence. Every present value
 is validated, including overridden values. Sources retain defaults or exact
 shared/local paths. Explicit `finish::Request` choices override settings; their
@@ -397,7 +397,7 @@ pre-rebase commits, fetched base commits, and HEAD/branch reflog anchors. An
 operation-specific reflog action identifies the finish-initiated rebase start.
 No permission flag alone establishes rewrite eligibility.
 
-New records use version 2. In addition to the publication remote, exact refs,
+Records use version 2. In addition to the publication remote, exact refs,
 and ordered destination observations, they bind the base remote and resolved
 fetch endpoint. They snapshot both selected remotes' `remote.<name>.*` entries
 and all `url.*` rewrite entries, preserving configuration order and duplicates.
@@ -405,17 +405,8 @@ A changed role, endpoint, or recorded configuration invalidates this proof.
 Other effective configuration and settings remain part of plan revalidation;
 update/rewrite choices are resolved anew on retry and are not stored permission.
 
-Version-1 records retain their existing verifier when their original remote
-still supplies both roles, repository/worktree identities and refs match, and
-the ordered exact publication destinations remain unchanged. Original
-incorporation, every attempt, and reflog verification remain mandatory. These
-records did not capture historical base fetch endpoints or transport configuration;
-compatibility asserts only their recorded bindings, not those additional version-2
-properties. Compatible records are retained, including when extending a verified
-rebase chain, without synthesizing missing bindings or upgrading their format.
-A version-1 record cannot authorize a split-role retry or a new publication
-destination. Unsupported versions, incomplete version-2 bindings, and incompatible
-records fail closed for replacement; ordinary ancestry is assessed independently.
+Unsupported versions, missing bindings, and malformed records cannot authorize
+replacement; ordinary ancestry is assessed independently.
 
 Assessment corroborates records against Git. It verifies original ancestry,
 each attempt's observed destinations, anchored branch transitions, the unique

@@ -374,8 +374,8 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                 assert_eq!(snapshot(root), before, "{input:?}");
             }
             fs::write(
-                repo.path().join(".git/oneflow.conf"),
-                "base = main\nbase = trunk\n",
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "base = 'main'\nbase = 'trunk'\n",
             )
             .unwrap();
             let before = snapshot(root);
@@ -389,7 +389,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                 ],
             );
             assert_eq!(snapshot(root), before);
-            fs::remove_file(repo.path().join(".git/oneflow.conf")).unwrap();
+            fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
             check(
                 cli.start(&repo, "work"),
                 1,
@@ -406,7 +406,11 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                 &["Git refused", "ls-remote", "Completed steps: 0"],
             );
             let (remote, local) = pair(root);
-            fs::write(local.path().join(".git/oneflow.conf"), "base = absent\n").unwrap();
+            fs::write(
+                local.path().join(".git/git-oneflow.config.toml"),
+                "base = 'absent'\n",
+            )
+            .unwrap();
             check(
                 cli.start(&local, "work"),
                 1,
@@ -415,8 +419,8 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             remote.success(&["branch", "trunk"]);
             local.success(&["remote", "rename", "origin", "upstream"]);
             fs::write(
-                local.path().join(".git/oneflow.conf"),
-                "remote = upstream\nbase = trunk\n",
+                local.path().join(".git/git-oneflow.config.toml"),
+                "publish-remote = 'upstream'\nbase = 'trunk'\n",
             )
             .unwrap();
             check(
@@ -436,7 +440,11 @@ fn cli_start_help_is_independent_of_git_repository_and_settings() {
         true,
         |root, cli| {
             let repo = Repository::new(root);
-            fs::write(repo.path().join(".git/oneflow.conf"), "invalid settings").unwrap();
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "invalid settings",
+            )
+            .unwrap();
             for directory in [root, repo.path()] {
                 for args in [
                     vec!["--help"],
@@ -564,12 +572,12 @@ fn cli_start_occupied_worktree_paths_and_settings_paths_escape_controls() {
             );
             assert!(!output.contains('\x1b'));
             assert_eq!(snapshot(root), before);
-            let settings = repo.path().join(".git/oneflow.conf");
+            let settings = repo.path().join(".git/git-oneflow.config.toml");
             fs::create_dir(&settings).unwrap();
             check(
                 cli.start(&repo, "work"),
                 1,
-                &["cannot read settings", "oneflow.conf"],
+                &["cannot read settings", "git-oneflow.config.toml"],
             );
         },
     );

@@ -165,8 +165,8 @@ fn fresh_custom_base_leaves_local_base_and_unrelated_refs_untouched() {
             remote.success(&["tag", "feature/new"]); // A tag is never a branch counterpart.
             remote.success(&["branch", "unrelated"]);
             fs::write(
-                local.path().join(".git/oneflow.conf"),
-                "remote=team/upstream\nbase=trunk\n",
+                local.path().join(".git/git-oneflow.config.toml"),
+                "publish-remote='team/upstream'\nbase='trunk'\n",
             )
             .unwrap();
             let outcome = start(local.path(), "feature/new").unwrap();
@@ -464,7 +464,11 @@ fn real_operations_block_start_and_preserve_all_state() {
                 }
                 for target in ["main", "new"] {
                     // Choose main as target by changing the protected base setting.
-                    fs::write(repo.path().join(".git/oneflow.conf"), "base=trunk\n").unwrap();
+                    fs::write(
+                        repo.path().join(".git/git-oneflow.config.toml"),
+                        "base='trunk'\n",
+                    )
+                    .unwrap();
                     let failure = preserved_failure(root, repo.path(), target);
                     let StartError::Operation(ops) = failure.error else {
                         panic!("{operation}: {failure:?}")
@@ -698,7 +702,11 @@ fn old_or_forged_requests_are_revalidated() {
         let repo = Repository::new(root);
         commit(&repo, "tracked", "base\n");
         let request = start::prepare(repo.path(), "target").unwrap();
-        fs::write(repo.path().join(".git/oneflow.conf"), "base=trunk\n").unwrap();
+        fs::write(
+            repo.path().join(".git/git-oneflow.config.toml"),
+            "base='trunk'\n",
+        )
+        .unwrap();
         let before = snapshot(root);
         assert!(matches!(
             start::execute(repo.path(), &request).unwrap_err().error,
@@ -832,8 +840,8 @@ fn execution_rechecks_changes_after_remote_inspection_and_fetch() {
                         shell_path(&root.join("occupied tree"))
                     ),
                     _ => format!(
-                        "printf 'base=trunk\\n' > {}",
-                        shell_path(&local.path().join(".git/oneflow.conf"))
+                        "printf 'base=\"trunk\"\\n' > {}",
+                        shell_path(&local.path().join(".git/git-oneflow.config.toml"))
                     ),
                 };
                 transport_probe(&local, &on_fetch);

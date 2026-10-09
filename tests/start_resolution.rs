@@ -5,7 +5,8 @@ mod support;
 use git_oneflow::{
     git,
     repository::RepositoryKind,
-    start::{self, PreparedRequest, ResolveError, Settings},
+    settings::{Settings, SettingsError},
+    start::{self, PreparedRequest, ResolveError},
 };
 use preservation::snapshot;
 use std::{fs, path::Path};
@@ -171,10 +172,10 @@ fn phrase_conversion_and_literal_unicode_are_distinct_contracts() {
 fn settings_overrides_and_errors() {
     isolated("settings_overrides_and_errors", true, |root| {
         let repo = Repository::new(root);
-        let path = repo.path().join(".git/oneflow.conf");
+        let path = repo.path().join(".git/git-oneflow.config.toml");
         fs::write(
             &path,
-            "# repository settings\nremote = team/upstream\nbase = Feature/École\n",
+            "# repository settings\npublish-remote = 'team/upstream'\nbase = 'Feature/École'\n",
         )
         .unwrap();
         let request = preserved(root, repo.path(), "okay").unwrap();
@@ -186,7 +187,6 @@ fn settings_overrides_and_errors() {
                 base: "Feature/École".into(),
                 sources: git_oneflow::settings::SettingSources {
                     publish_remote: git_oneflow::settings::SettingSource::Local(path.clone()),
-                    publication_key: Some(git_oneflow::settings::PublicationKey::Remote),
                     base: git_oneflow::settings::SettingSource::Local(path.clone()),
                     ..Default::default()
                 },
@@ -198,49 +198,48 @@ fn settings_overrides_and_errors() {
             Err(ResolveError::ProtectedBase(_))
         ));
         // Phrase names receive the same protected-base check.
-        fs::write(&path, "base=okay-work").unwrap();
+        fs::write(&path, "base='okay-work'").unwrap();
         assert!(matches!(
             preserved(root, repo.path(), "okay work"),
             Err(ResolveError::ProtectedBase(_))
         ));
         for contents in [
-            "remote=",
+            "publish-remote=",
             "base=",
-            "remote=x\nremote=y",
-            "base=x\nbase=y",
+            "publish-remote='x'\npublish-remote='y'",
+            "base='x'\nbase='y'",
             "typo=x",
             "not settings",
-            "remote=-option",
-            "remote=.",
-            "remote=https://example.invalid/repo",
-            "remote=../repo",
-            "remote=bad remote",
-            "remote=bad\0name",
-            "base=HEAD",
-            "base=-option",
-            "base=@{-1}",
-            "base=bad..name",
-            "base=\"main\" # comment",
+            "publish-remote='-option'",
+            "publish-remote='.'",
+            "publish-remote='https://example.invalid/repo'",
+            "publish-remote='../repo'",
+            "publish-remote='bad remote'",
+            "publish-remote='bad\0name'",
+            "base='HEAD'",
+            "base='-option'",
+            "base='@{-1}'",
+            "base='bad..name'",
         ] {
             fs::write(&path, contents).unwrap();
             assert!(
                 matches!(
                     preserved(root, repo.path(), "okay"),
-                    Err(ResolveError::InvalidSettings(_))
+                    Err(ResolveError::Settings(SettingsError::InvalidSettings(_)))
                 ),
                 "{contents:?}"
             );
         }
-        fs::write(&path, b"remote=\xff").unwrap();
+        fs::write(&path, b"publish-remote=\xff").unwrap();
         assert!(matches!(
             preserved(root, repo.path(), "okay"),
-            Err(ResolveError::SettingsIo { .. })
+            Err(ResolveError::Settings(SettingsError::SettingsIo { .. }))
         ));
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(matches!(
             preserved(root, repo.path(), "okay"),
-            Err(ResolveError::SettingsIo { .. })
+            Err(ResolveError::Settings(SettingsError::SettingsIo { .. }))
         ));
         fs::remove_dir(&path).unwrap();
         #[cfg(unix)]
@@ -248,7 +247,7 @@ fn settings_overrides_and_errors() {
             std::os::unix::fs::symlink("absent", &path).unwrap();
             assert!(matches!(
                 preserved(root, repo.path(), "okay"),
-                Err(ResolveError::SettingsIo { .. })
+                Err(ResolveError::Settings(SettingsError::SettingsIo { .. }))
             ));
         }
     });
@@ -274,8 +273,8 @@ fn common_settings_in_linked_and_bare_contexts() {
             ]);
             fs::create_dir(linked.join("nested")).unwrap();
             fs::write(
-                repo.path().join(".git/oneflow.conf"),
-                "remote=upstream\nbase=trunk",
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "publish-remote='upstream'\nbase='trunk'",
             )
             .unwrap();
             repo.success(&["branch", "Fix"]);
@@ -287,7 +286,11 @@ fn common_settings_in_linked_and_bare_contexts() {
             assert_eq!(local.repository.common_dir, other.repository.common_dir);
             assert_eq!(local.settings, other.settings);
             // A worktree-private lookalike is ignored by the common-dir contract.
-            fs::write(other.repository.git_dir.join("oneflow.conf"), "base=wrong").unwrap();
+            fs::write(
+                other.repository.git_dir.join("git-oneflow.config.toml"),
+                "base='wrong'",
+            )
+            .unwrap();
             assert_eq!(
                 preserved(root, &linked, "Fix").unwrap().settings,
                 local.settings
@@ -299,7 +302,7 @@ fn common_settings_in_linked_and_bare_contexts() {
                 repo.path().as_os_str(),
                 bare.as_os_str(),
             ]);
-            fs::write(bare.join("oneflow.conf"), "base=trunk").unwrap();
+            fs::write(bare.join("git-oneflow.config.toml"), "base='trunk'").unwrap();
             let request = preserved(root, &bare, "Fix").unwrap();
             assert_eq!(request.repository.kind, RepositoryKind::Bare);
             assert_eq!(request.settings.base, "trunk");

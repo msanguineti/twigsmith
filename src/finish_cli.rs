@@ -748,7 +748,7 @@ Details:
 
 Settings:
   publish-remote: origin (default); base-remote follows publication unless configured
-  base: main (default); remote is a compatibility alias for publish-remote
+  base: main (default)
   finish-update: ask (default), rebase, merge, none
   finish-rewrite: ask (default), allow, deny
   allow is standing authorization for eligible replacement; remote safeguards remain.

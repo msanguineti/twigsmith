@@ -116,9 +116,7 @@ Settings:
   git-oneflow.config.toml, .yaml, .yml, or .json: one file per layer
   Shared: working-tree root; local overrides: Git common directory
   Precedence: local > shared > defaults
-  Legacy local oneflow.conf remains supported when no new local file exists
   publish-remote = origin; base-remote follows publication; base = main (defaults)
-  remote is a compatibility alias for publish-remote.
   Linked worktrees have separate shared files and common local overrides.
 
 Exit status:
@@ -151,9 +149,12 @@ fn resolve_guidance(error: &ResolveError) {
     match error {
         ResolveError::Repository(error) => inspection_error(error),
         ResolveError::OutsideRepository => eprintln!("enter a Git working tree and retry"),
-        ResolveError::SettingsIo { .. } | ResolveError::InvalidSettings(_) => {
+        ResolveError::Settings(crate::settings::SettingsError::Repository(error)) => {
+            inspection_error(error);
+        }
+        ResolveError::Settings(_) => {
             eprintln!(
-                "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory (legacy: oneflow.conf); supported keys: remote, publish-remote, base-remote, base, save-action, finish-update, finish-rewrite"
+                "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory; supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite; local-only: redact-credentials"
             );
         }
         ResolveError::UnusablePhrase

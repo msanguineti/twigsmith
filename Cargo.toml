@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 default-run = "git-oneflow"
 license = "MIT"
-description = "Development skeleton for the native git-oneflow CLI"
+description = "Git workflow CLI for starting, saving, and finishing work"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { version = "1.1", features = ["pty", "process"] }

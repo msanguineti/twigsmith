@@ -38,7 +38,7 @@ contract.
 ## Cross-cutting decisions
 
 - Rebuild the native tool in Rust in this repository, preserving the existing
-  Git history, project identity, and MIT license. Native/npm distribution and
+  Git history, project identity, and MIT license. Distribution and
   release automation are separate future work.
 - Provide a small lifecycle CLI. OneFlow informs the design; branch prefixes
   are naming conventions and have no operational role or persistent metadata.
@@ -102,8 +102,7 @@ the branch, each destination, pinned commit, and manual submission next step.
 Failure presentation retains backend effects and observed remaining state; Git
 handles conflicts and continuation/abort before rerunning finish.
 
-Finish-specific continuation/abort
-commands remain deferred. Submission is manual; provider integration remains
+Finish-specific continuation/abort commands remain deferred. Submission is manual; provider integration remains
 accepted future direction only when explicitly configured.
 
 Provider adapters and their settings remain undecided. Configurable checks,
@@ -113,24 +112,23 @@ operations, shell completion, installers, and distribution remain future work.
 ## Remote-role configuration
 
 Fork topology is independent of branching strategy and update/integration policy.
-The tool should distinguish the remote supplying the project base from the remote
+The tool distinguishes the remote supplying the project base from the remote
 receiving working-branch publication. These roles can refer to the same remote;
 remote names such as origin, upstream, and fork have no built-in special meaning.
 Configuration implements `publish-remote` and `base-remote` as effective named
-roles in one settings model. `remote` is an input compatibility alias for
-publication, not a separate effective remote. Within a layer, `publish-remote`
-wins over `remote`; layers apply from shared to local, so a local `remote` also
-wins over a shared `publish-remote`. Validate every supplied value before merging.
-An omitted base remote derives from the final publication selection; an explicit
-base remote resolves independently and stays selected across publication overrides.
+roles in one settings model. Layers apply from shared to local. Validate every
+supplied value before merging. An omitted base remote derives from the final
+publication selection; an explicit base remote resolves independently and stays
+selected across publication overrides.
 
-Settings retain publication file/layer and alias provenance, plus explicit base
+Settings retain publication file/layer provenance, plus explicit base
 provenance or the fact that the base follows publication. These participate in
 settings equality and existing plan/setup revalidation. Inspection reports both
 roles and their sources without checking availability. Generation emits
-`publish-remote` and preserves explicit base selection when rendering it. Guided setup asks for publication and a base source that follows
-publication or selects a different remote. Equal choices retain the derived
-relationship and omit `base-remote`; unattended generation uses `origin` with a
+`publish-remote` and preserves explicit base selection when rendering it. Guided
+setup asks for publication and a base source that follows publication or selects
+a different remote. Equal choices retain the derived relationship and omit
+`base-remote`; unattended generation uses `origin` with a
 derived base. Local remote names and refs are offline hints, never role assignments.
 Review resolves the proposed shared roles with validated private overrides and
 reports provenance without exporting private values. Existing files remain
@@ -145,11 +143,11 @@ access. Neither workflow synchronizes local base history or the fork base.
 Finish refreshes and prepares against `base-remote`, then publishes the exact
 working branch through `publish-remote`. Plans bind both names, the resolved base
 fetch endpoint, and ordered publication destinations. Version-2 durable rebase
-records also bind remote and URL-rewrite configuration; compatible version-1
-records retain their original same-remote verification boundary. The
-[finish contract](FINISH.md#durable-rewrite-verification) defines compatibility
-and its limits. Neither path lets project-base observations replace incorporation
-evidence at publication destinations.
+records bind both roles, endpoints, remote configuration, and URL-rewrite
+configuration. Unsupported or malformed records cannot authorize history
+replacement. The [finish contract](FINISH.md#durable-rewrite-verification) defines
+the verification boundaries. Project-base observations cannot replace
+incorporation evidence at publication destinations.
 
 The accepted workflow direction is: for a fork, new work starts from the project
 base, published work resumes from the publication remote, save publishes there,
@@ -174,4 +172,4 @@ overrides the last remote.pushDefault; a conflicting effective explicit value
 is rejected. The configured publication role remains destination authority.
 Implicit defaults do not broaden exact operations, and user-owned Git routing
 settings remain unchanged. The [save contract](SAVE.md#preconditions-and-local-evidence)
-records the Git evidence and compatibility effects of this policy.
+records the Git evidence behind this policy.
