@@ -227,7 +227,7 @@ fn scope_summary(plan: &Plan) {
     eprintln!(
         "Save branch {} to remote {}: {} staged, {} unstaged tracked, {} untracked paths (counts may overlap).",
         display(&plan.branch),
-        text(&plan.settings.remote),
+        text(&plan.settings.publish_remote),
         plan.scope.staged.len(),
         plan.scope.remaining_tracked.len(),
         plan.scope.untracked.len()

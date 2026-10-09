@@ -375,10 +375,10 @@ pub fn assess(
     let settings = local.settings.clone();
     let publication = local.publication.clone().expect("publish-only plan");
     let base_ref = format!("refs/heads/{}", settings.base).into_bytes();
-    let tracking_base = format!("refs/remotes/{}/{}", settings.remote, settings.base);
+    let tracking_base = format!("refs/remotes/{}/{}", settings.publish_remote, settings.base);
     let tracking_branch = [
         b"refs/remotes/".as_slice(),
-        settings.remote.as_bytes(),
+        settings.publish_remote.as_bytes(),
         b"/",
         &local.branch,
     ]
@@ -433,7 +433,7 @@ pub fn assess(
             .push(Constraint::FreshRemoteEvidenceRequired);
         return Ok(plan);
     };
-    if evidence.remote != settings.remote
+    if evidence.remote != settings.publish_remote
         || evidence.base_ref != base_ref
         || evidence.branch_ref != plan.publication.branch_ref
     {

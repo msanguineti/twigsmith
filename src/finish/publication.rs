@@ -139,7 +139,7 @@ fn transport(plan: &Plan, destination: &[u8]) -> Result<(Vec<OsString>, String),
     {
         name.push('-');
     }
-    let prefix = format!("remote.{}.", plan.settings.remote);
+    let prefix = format!("remote.{}.", plan.settings.publish_remote);
     let target = format!("remote.{name}.");
     let mut args = vec![];
     for (key, value) in &entries {
@@ -335,7 +335,7 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         .unwrap_or(directory);
     let before = shared::observe(root, &plan.local);
     let mut report = Report {
-        remote: plan.settings.remote.clone(),
+        remote: plan.settings.publish_remote.clone(),
         branch_ref: plan.publication.branch_ref.clone(),
         commit: plan.commit.clone(),
         state: PublicationState::NotAttempted,

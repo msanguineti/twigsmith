@@ -32,20 +32,23 @@ fn config(format: usize, pairs: &[(&str, &str)]) -> String {
     match format {
         0 => pairs
             .iter()
-            .map(|(k, v)| format!("{k} = {v:?}\n"))
+            .map(|(k, v)| format!("{k} = {}\n", serde_json::to_string(v).unwrap()))
             .collect(),
         1 | 2 => {
             if pairs.is_empty() {
                 "{}".into()
             } else {
-                pairs.iter().map(|(k, v)| format!("{k}: {v:?}\n")).collect()
+                pairs
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {}\n", serde_json::to_string(v).unwrap()))
+                    .collect()
             }
         }
         3 => format!(
             "{{{}}}",
             pairs
                 .iter()
-                .map(|(k, v)| format!("{k:?}: {v:?}"))
+                .map(|(k, v)| format!("{k:?}: {}", serde_json::to_string(v).unwrap()))
                 .collect::<Vec<_>>()
                 .join(",")
         ),
@@ -90,14 +93,17 @@ fn formats_share_sparse_resolution_defaults_and_sources() {
                     let before = snapshot(root);
                     let resolved = load(repo.path()).unwrap();
                     assert_eq!(snapshot(root), before);
-                    assert_eq!(resolved.remote, "private");
+                    assert_eq!(resolved.publish_remote, "private");
                     assert_eq!(resolved.base, "Feature/École");
                     assert_eq!(resolved.save_action, SaveAction::Wip);
                     assert_eq!(
-                        resolved.sources.remote,
+                        resolved.sources.publish_remote,
                         SettingSource::Local(common.join(local_file))
                     );
-                    assert_eq!(resolved.sources.save_action, resolved.sources.remote);
+                    assert_eq!(
+                        resolved.sources.save_action,
+                        resolved.sources.publish_remote
+                    );
                     assert_eq!(
                         resolved.sources.base,
                         SettingSource::Shared(repo.path().join(shared_file))
@@ -107,9 +113,9 @@ fn formats_share_sparse_resolution_defaults_and_sources() {
                 fs::remove_file(repo.path().join(shared_file)).unwrap();
                 write(repo.path(), shared, &[("base", "trunk")]);
                 let resolved = load(repo.path()).unwrap();
-                assert_eq!(resolved.remote, "origin");
+                assert_eq!(resolved.publish_remote, "origin");
                 assert_eq!(resolved.save_action, SaveAction::Ask);
-                assert_eq!(resolved.sources.remote, SettingSource::BuiltIn);
+                assert_eq!(resolved.sources.publish_remote, SettingSource::BuiltIn);
                 assert_eq!(resolved.sources.save_action, SettingSource::BuiltIn);
                 fs::remove_file(repo.path().join(shared_file)).unwrap();
             }
@@ -239,10 +245,10 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
             let shared = load(repo.path()).unwrap();
             // The local layer still overrides all three keys; inspect the shared
             // layer directly after removing the override to verify plain strings.
-            assert_eq!(shared.remote, "origin");
+            assert_eq!(shared.publish_remote, "origin");
             fs::remove_file(repo.path().join(".git").join(CONFIG_FILES[3])).unwrap();
             let shared = load(repo.path()).unwrap();
-            assert_eq!(shared.remote, "on");
+            assert_eq!(shared.publish_remote, "on");
             assert_eq!(shared.base, "yes");
             fs::remove_file(repo.path().join(CONFIG_FILES[1])).unwrap();
             // Invalid high-priority files fail too, even with an explicit save flag.
@@ -317,16 +323,16 @@ fn legacy_is_a_sparse_local_fallback_with_explicit_migration_conflicts() {
                 )
                 .unwrap();
                 let resolved = load(repo.path()).unwrap();
-                assert_eq!(resolved.remote, "private");
+                assert_eq!(resolved.publish_remote, "private");
                 assert_eq!(resolved.base, "trunk");
                 assert_eq!(resolved.save_action, SaveAction::Stash);
                 assert_eq!(
-                    resolved.sources.remote,
+                    resolved.sources.publish_remote,
                     SettingSource::Local(legacy.clone())
                 );
                 fs::write(&legacy, "# no overrides\n").unwrap();
                 assert_eq!(
-                    load(repo.path()).unwrap().sources.remote,
+                    load(repo.path()).unwrap().sources.publish_remote,
                     SettingSource::Shared(repo.path().join(CONFIG_FILES[format]))
                 );
                 write(&repo.path().join(".git"), format, &[]);
@@ -390,11 +396,11 @@ fn discovery_uses_git_roots_and_common_dir_without_inheritance() {
             let context = repository::discover(&linked).unwrap().unwrap();
             write(&context.git_dir, 3, &[("base", "ignored")]);
             write(&context.common_dir, 1, &[("remote", "private")]);
-            assert_eq!(load(&linked).unwrap().remote, "private");
-            assert_eq!(load(repo.path()).unwrap().remote, "private");
+            assert_eq!(load(&linked).unwrap().publish_remote, "private");
+            assert_eq!(load(repo.path()).unwrap().publish_remote, "private");
             assert_eq!(
-                load(&linked).unwrap().sources.remote,
-                load(repo.path()).unwrap().sources.remote
+                load(&linked).unwrap().sources.publish_remote,
+                load(repo.path()).unwrap().sources.publish_remote
             );
             assert_eq!(load(repo.path()).unwrap().base, "trunk");
             // Bare common-directory files form only the local layer, never both layers.
@@ -506,7 +512,7 @@ fn start_and_save_consume_each_format_and_existing_action_overrides() {
                 local.success(&["fetch", "team"]);
                 local.success(&["reset", "--hard", "refs/remotes/team/trunk"]);
                 let request = start::prepare(local.path(), "work").unwrap();
-                assert_eq!(request.settings.remote, "team");
+                assert_eq!(request.settings.publish_remote, "team");
                 assert_eq!(request.settings.base, "trunk");
                 let result = start::execute(local.path(), &request).unwrap();
                 assert_eq!(result.action, start::Action::Create);
@@ -908,6 +914,398 @@ fn credential_redaction_setting_is_private_and_strict() {
             let legacy = repo.path().join(".git/oneflow.conf");
             fs::write(&legacy, "redact-credentials=false\n").unwrap();
             assert!(!load_all(repo.path()).redact_credentials);
+        },
+    );
+}
+
+#[test]
+fn remote_roles_resolve_aliases_per_layer_and_derive_base_across_all_formats() {
+    isolated(
+        "remote_roles_resolve_aliases_per_layer_and_derive_base_across_all_formats",
+        true,
+        |root| {
+            use settings::PublicationKey::{PublishRemote, Remote};
+            let repo = Repository::new(root);
+            let common = repo.path().join(".git");
+            type Case<'a> = (
+                &'a [(&'a str, &'a str)],
+                &'a [(&'a str, &'a str)],
+                &'a str,
+                &'a str,
+                Option<settings::PublicationKey>,
+                bool,
+                Option<bool>,
+            );
+            let cases: &[Case<'_>] = &[
+                (&[], &[], "origin", "origin", None, false, None),
+                (
+                    &[("base-remote", "project")],
+                    &[],
+                    "origin",
+                    "project",
+                    None,
+                    false,
+                    Some(false),
+                ),
+                (
+                    &[("publish-remote", "personal"), ("remote", "team")],
+                    &[],
+                    "personal",
+                    "personal",
+                    Some(PublishRemote),
+                    false,
+                    None,
+                ),
+                (
+                    &[("remote", "team")],
+                    &[],
+                    "team",
+                    "team",
+                    Some(Remote),
+                    false,
+                    None,
+                ),
+                (
+                    &[("publish-remote", "personal")],
+                    &[],
+                    "personal",
+                    "personal",
+                    Some(PublishRemote),
+                    false,
+                    None,
+                ),
+                (
+                    &[("remote", "team"), ("publish-remote", "personal")],
+                    &[],
+                    "personal",
+                    "personal",
+                    Some(PublishRemote),
+                    false,
+                    None,
+                ),
+                (
+                    &[("publish-remote", "personal"), ("base-remote", "project")],
+                    &[],
+                    "personal",
+                    "project",
+                    Some(PublishRemote),
+                    false,
+                    Some(false),
+                ),
+                (
+                    &[("publish-remote", "shared")],
+                    &[("remote", "local")],
+                    "local",
+                    "local",
+                    Some(Remote),
+                    true,
+                    None,
+                ),
+                (
+                    &[("remote", "shared")],
+                    &[("publish-remote", "local")],
+                    "local",
+                    "local",
+                    Some(PublishRemote),
+                    true,
+                    None,
+                ),
+                (
+                    &[("publish-remote", "shared"), ("base-remote", "project")],
+                    &[("remote", "local"), ("publish-remote", "personal")],
+                    "personal",
+                    "project",
+                    Some(PublishRemote),
+                    true,
+                    Some(false),
+                ),
+                (
+                    &[("publish-remote", "shared"), ("base-remote", "project")],
+                    &[("base-remote", "local-base")],
+                    "shared",
+                    "local-base",
+                    Some(PublishRemote),
+                    false,
+                    Some(true),
+                ),
+                (
+                    &[("base-remote", "project")],
+                    &[("publish-remote", "personal")],
+                    "personal",
+                    "project",
+                    Some(PublishRemote),
+                    true,
+                    Some(false),
+                ),
+                (
+                    &[],
+                    &[("remote", "team")],
+                    "team",
+                    "team",
+                    Some(Remote),
+                    true,
+                    None,
+                ),
+            ];
+            for (shared_format, shared_file) in CONFIG_FILES.iter().enumerate() {
+                for (local_format, local_file) in CONFIG_FILES
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once(settings::SETTINGS_FILE))
+                    .enumerate()
+                {
+                    for &(shared, local, publication, base, key, publication_local, base_local) in
+                        cases
+                    {
+                        write(repo.path(), shared_format, shared);
+                        if local_format == CONFIG_FILES.len() {
+                            fs::write(
+                                common.join(local_file),
+                                local
+                                    .iter()
+                                    .map(|(k, v)| format!("{k} = {v}\n"))
+                                    .collect::<String>(),
+                            )
+                            .unwrap();
+                        } else {
+                            write(&common, local_format, local);
+                        }
+                        let before = snapshot(root);
+                        let resolved = load(repo.path()).unwrap();
+                        assert_eq!(snapshot(root), before);
+                        assert_eq!(resolved.publish_remote, publication);
+                        assert_eq!(resolved.base_remote, base);
+                        assert_eq!(resolved.sources.publication_key, key);
+                        assert_eq!(
+                            resolved.sources.publish_remote,
+                            if key.is_none() {
+                                SettingSource::BuiltIn
+                            } else if publication_local {
+                                SettingSource::Local(common.join(local_file))
+                            } else {
+                                SettingSource::Shared(repo.path().join(shared_file))
+                            }
+                        );
+                        assert_eq!(
+                            resolved.sources.base_remote,
+                            base_local.map(|local| if local {
+                                SettingSource::Local(common.join(local_file))
+                            } else {
+                                SettingSource::Shared(repo.path().join(shared_file))
+                            })
+                        );
+                        fs::remove_file(common.join(local_file)).unwrap();
+                        fs::remove_file(repo.path().join(shared_file)).unwrap();
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn remote_role_values_and_syntax_are_strict_even_when_overridden() {
+    isolated(
+        "remote_role_values_and_syntax_are_strict_even_when_overridden",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let common = repo.path().join(".git");
+            write(
+                &common,
+                3,
+                &[
+                    ("remote", "valid"),
+                    ("publish-remote", "valid"),
+                    ("base-remote", "valid"),
+                ],
+            );
+            for (format, file) in CONFIG_FILES.iter().enumerate() {
+                for key in ["remote", "publish-remote", "base-remote"] {
+                    for value in [
+                        "",
+                        "-option",
+                        ".",
+                        "../repo",
+                        "with space",
+                        "https://example.test/repo",
+                        "bad\0name",
+                    ] {
+                        write(
+                            repo.path(),
+                            format,
+                            &[
+                                (key, value),
+                                (
+                                    if key == "remote" {
+                                        "publish-remote"
+                                    } else {
+                                        "base"
+                                    },
+                                    "valid",
+                                ),
+                            ],
+                        );
+                        let error = load(repo.path()).unwrap_err().to_string();
+                        assert!(
+                            error.contains(&repo.path().join(file).display().to_string()),
+                            "{error}"
+                        );
+                        assert!(error.contains(&format!("invalid {key} name")), "{error}");
+                    }
+                    for (case, malformed) in [
+                        config(format, &[(key, "a"), (key, "b")]),
+                        match format {
+                            0 => format!("{key} = 42"),
+                            1 | 2 => format!("{key}: 42"),
+                            _ => format!("{{\"{key}\":42}}"),
+                        },
+                        match format {
+                            0 => format!("{key} ="),
+                            1 | 2 => format!("{key}: ["),
+                            _ => format!("{{\"{key}\":"),
+                        },
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        fs::write(repo.path().join(file), malformed).unwrap();
+                        let error = load(repo.path()).unwrap_err().to_string();
+                        if case == 0 {
+                            assert!(error.contains("duplicate"), "{error}");
+                        }
+                        assert!(
+                            error.contains(&repo.path().join(file).display().to_string()),
+                            "{error}"
+                        );
+                    }
+                }
+                fs::remove_file(repo.path().join(file)).unwrap();
+            }
+            fs::remove_file(common.join(CONFIG_FILES[3])).unwrap();
+            write(
+                repo.path(),
+                0,
+                &[("publish-remote", "valid"), ("base-remote", "valid")],
+            );
+            for key in ["remote", "publish-remote", "base-remote"] {
+                for contents in [
+                    format!("{key} = bad name"),
+                    format!("{key} = a\n{key} = b"),
+                    format!("{key} ="),
+                    key.into(),
+                ] {
+                    fs::write(common.join(settings::SETTINGS_FILE), contents).unwrap();
+                    assert!(
+                        load(repo.path())
+                            .unwrap_err()
+                            .to_string()
+                            .contains("oneflow.conf")
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn remote_role_changes_stop_all_unmigrated_execution_apis_before_effects() {
+    isolated(
+        "remote_role_changes_stop_all_unmigrated_execution_apis_before_effects",
+        true,
+        |root| {
+            use git_oneflow::finish;
+            let repo = Repository::new(root);
+            fs::write(repo.path().join("tracked"), "initial").unwrap();
+            commit(&repo);
+            repo.success(&["switch", "-c", "work"]);
+            let destination = root.join("publication.git");
+            assert!(
+                git::run(
+                    root,
+                    ["init".as_ref(), "--bare".as_ref(), destination.as_os_str()]
+                )
+                .unwrap()
+                .status
+                .success()
+            );
+            repo.success(&[
+                "remote".as_ref(),
+                "add".as_ref(),
+                "origin".as_ref(),
+                destination.as_os_str(),
+            ]);
+            let local = repo.path().join(".git");
+            write(&local, 0, &[("remote", "origin")]);
+            let start_plan = start::prepare(repo.path(), "new-work").unwrap();
+            let save_plan = save::assess(
+                repo.path(),
+                &Request {
+                    action: Some(SaveAction::PublishOnly),
+                    message: None,
+                },
+            )
+            .unwrap();
+            let finish_plan =
+                finish::assess(repo.path(), &finish::Request::default(), None).unwrap();
+
+            // Equal effective values still preserve alias and explicit-base provenance.
+            write(&local, 0, &[("publish-remote", "origin")]);
+            assert!(save::revalidate(repo.path(), &save_plan).is_err());
+            assert!(finish::revalidate(repo.path(), &finish_plan, None).is_err());
+            assert_ne!(start::prepare(repo.path(), "new-work").unwrap(), start_plan);
+            write(
+                &local,
+                0,
+                &[("remote", "origin"), ("base-remote", "origin")],
+            );
+            assert!(save::revalidate(repo.path(), &save_plan).is_err());
+            assert!(finish::revalidate(repo.path(), &finish_plan, None).is_err());
+
+            write(
+                &local,
+                0,
+                &[("publish-remote", "origin"), ("base-remote", "project")],
+            );
+            let before = snapshot(root);
+            assert!(matches!(
+                start::prepare(repo.path(), "new-work"),
+                Err(start::ResolveError::UnsupportedRemoteRoles(_))
+            ));
+            assert!(matches!(
+                save::assess(repo.path(), &Request::default()),
+                Err(SaveError::UnsupportedRemoteRoles(_))
+            ));
+            assert!(
+                finish::assess(repo.path(), &finish::Request::default(), None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("matching remote roles")
+            );
+            let failure = start::execute(repo.path(), &start_plan).unwrap_err();
+            assert!(failure.effects.is_empty());
+            let report = execution::execute(repo.path(), &save_plan);
+            assert!(report.error.is_some());
+            assert!(report.effects.is_empty());
+            assert!(report.commands.is_empty());
+            assert!(report.publication.is_none());
+            let report = save::publication::publish(repo.path(), &save_plan);
+            assert!(report.error.is_some());
+            assert!(report.push.is_none());
+            assert!(report.tracking.writes.is_empty());
+            for report in [
+                finish::preparation::refresh(repo.path(), &finish_plan),
+                finish::preparation::prepare(repo.path(), &finish_plan),
+            ] {
+                assert!(report.error.is_some());
+                assert!(report.commands.is_empty());
+                assert!(report.effects.is_empty());
+            }
+            let report = finish::publication::publish(repo.path(), &finish_plan);
+            assert!(report.error.is_some());
+            assert!(report.destinations.iter().all(|d| d.commands.is_empty()));
+            assert!(report.tracking.writes.is_empty());
+            assert_eq!(snapshot(root), before);
         },
     );
 }

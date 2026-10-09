@@ -201,7 +201,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             "Finish {} at {} to {} (base {}).",
             display(presentation, &plan.branch),
             display(presentation, &plan.commit),
-            text(presentation, &plan.settings.remote),
+            text(presentation, &plan.settings.publish_remote),
             text(presentation, &plan.settings.base)
         );
         let answer = match prompt(presentation, &plan, choice) {

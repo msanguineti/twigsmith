@@ -211,7 +211,7 @@ pub(crate) fn tracking_state(
         return TrackingState::Unavailable;
     };
     let upstream = &observation.upstream;
-    if upstream.remotes == [plan.settings.remote.as_bytes()]
+    if upstream.remotes == [plan.settings.publish_remote.as_bytes()]
         && upstream.merge_refs == [branch_ref(plan).as_slice()]
     {
         TrackingState::Matching
@@ -233,18 +233,18 @@ fn protect_tracking(directory: &Path, plan: &Plan) -> Result<(), PublishError> {
     // mappings, which config --get-all cannot observe. Do not bypass that guard.
     if super::config(
         directory,
-        format!("remote.{}.url", plan.settings.remote).as_bytes(),
+        format!("remote.{}.url", plan.settings.publish_remote).as_bytes(),
     )?
     .is_empty()
         && super::config(
             directory,
-            format!("remote.{}.pushurl", plan.settings.remote).as_bytes(),
+            format!("remote.{}.pushurl", plan.settings.publish_remote).as_bytes(),
         )?
         .is_empty()
     {
         return Err(PublishError::LegacyRemote);
     }
-    let key = format!("remote.{}.fetch", plan.settings.remote);
+    let key = format!("remote.{}.fetch", plan.settings.publish_remote);
     for raw in super::config(directory, key.as_bytes())? {
         let mapping = raw.strip_prefix(b"+").unwrap_or(&raw);
         if mapping.starts_with(b"^") {
@@ -375,7 +375,7 @@ fn revalidate_tracking(
         return super::revalidate(directory, plan);
     }
     let mut expected = plan.clone();
-    expected.snapshot.upstream.remotes = vec![plan.settings.remote.as_bytes().to_vec()];
+    expected.snapshot.upstream.remotes = vec![plan.settings.publish_remote.as_bytes().to_vec()];
     expected.publication.as_mut().unwrap().establish_upstream = false;
     let fresh =
         super::assess_with_upstream(directory, &plan.request, Some(&expected.snapshot.upstream))?;
@@ -392,7 +392,7 @@ pub(crate) fn establish_tracking(
     for (suffix, value, effect) in [
         (
             b".remote".as_slice(),
-            plan.settings.remote.as_bytes(),
+            plan.settings.publish_remote.as_bytes(),
             TrackingWrite::Remote,
         ),
         (
@@ -426,7 +426,7 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
     let directory = directory.as_ref();
     let before = observe(directory, plan);
     let mut report = Report {
-        remote: plan.settings.remote.clone(),
+        remote: plan.settings.publish_remote.clone(),
         branch_ref: branch_ref(plan),
         commit: plan.commit.clone(),
         state: PublicationState::NotAttempted,
@@ -462,7 +462,7 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         let refspec = [&plan.commit, b":".as_slice(), &report.branch_ref].concat();
         let arguments = vec![
             "-c".into(),
-            format!("remote.{}.mirror=false", plan.settings.remote).into(),
+            format!("remote.{}.mirror=false", plan.settings.publish_remote).into(),
             "-c".into(),
             "push.autoSetupRemote=false".into(),
             "push".into(),
@@ -471,7 +471,7 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             "--no-follow-tags".into(),
             submodules.into(),
             "--".into(),
-            plan.settings.remote.clone().into(),
+            plan.settings.publish_remote.clone().into(),
             repository::os(&refspec).map_err(SaveError::from)?,
         ];
         let push = git::workflow(root, &arguments);

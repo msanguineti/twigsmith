@@ -135,6 +135,7 @@ enum FileSnapshot {
 pub enum SaveError {
     Inspection(InspectionError),
     Settings(SettingsError),
+    UnsupportedRemoteRoles(settings::UnsupportedRemoteRoles),
     OutsideRepository,
     BareRepository,
     DetachedHead,
@@ -158,6 +159,7 @@ impl fmt::Display for SaveError {
         let text = match self {
             Self::Inspection(e) => return write!(f, "{e}"),
             Self::Settings(e) => return write!(f, "{e}"),
+            Self::UnsupportedRemoteRoles(e) => return write!(f, "{e}"),
             Self::OutsideRepository => "save requires a Git repository",
             Self::BareRepository => "save requires a working tree",
             Self::DetachedHead => "save requires an attached branch",
@@ -190,6 +192,7 @@ impl std::error::Error for SaveError {
         match self {
             Self::Inspection(e) => Some(e),
             Self::Settings(e) => Some(e),
+            Self::UnsupportedRemoteRoles(e) => Some(e),
             Self::InvalidRemote { source, .. } => Some(source),
             _ => None,
         }
@@ -292,6 +295,9 @@ fn assess_with_upstream(
         return Err(SaveError::BareRepository);
     }
     let settings = settings::load(directory, &repository)?;
+    settings
+        .require_single_remote()
+        .map_err(SaveError::UnsupportedRemoteRoles)?;
     let Observation::Repository(state) = repository::inspect_without_upstream(directory)? else {
         return Err(SaveError::OutsideRepository);
     };
@@ -340,7 +346,7 @@ fn assess_with_upstream(
     if expected_upstream.is_some_and(|expected| expected != &upstream)
         || (expected_upstream.is_none()
             && !absent
-            && (upstream.remotes != [settings.remote.as_bytes()]
+            && (upstream.remotes != [settings.publish_remote.as_bytes()]
                 || upstream.merge_refs != [branch_ref.as_slice()]))
     {
         return Err(SaveError::InvalidUpstream);
@@ -354,12 +360,12 @@ fn assess_with_upstream(
             "get-url".into(),
             "--push".into(),
             "--all".into(),
-            settings.remote.clone().into(),
+            settings.publish_remote.clone().into(),
         ],
     )
     .map_err(|error| match error {
         SaveError::Inspection(source @ InspectionError::Git { .. }) => SaveError::InvalidRemote {
-            name: settings.remote.clone(),
+            name: settings.publish_remote.clone(),
             source,
         },
         other => other,
@@ -421,7 +427,7 @@ fn assess_with_upstream(
         }
     };
     let publication = (required_input == RequiredInput::None).then(|| Publication {
-        remote: settings.remote.clone(),
+        remote: settings.publish_remote.clone(),
         branch_ref,
         establish_upstream: absent,
     });

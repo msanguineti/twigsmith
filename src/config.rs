@@ -33,13 +33,16 @@ pub fn render_defaults(format: Format) -> String {
 }
 
 pub fn render(format: Format, proposed: &settings::Settings) -> String {
-    let pairs = [
-        ("remote", proposed.remote.as_str()),
+    let mut pairs = vec![
+        ("publish-remote", proposed.publish_remote.as_str()),
         ("base", proposed.base.as_str()),
         ("save-action", proposed.save_action.as_str()),
         ("finish-update", proposed.finish_update.as_str()),
         ("finish-rewrite", proposed.finish_rewrite.as_str()),
     ];
+    if proposed.sources.base_remote.is_some() || proposed.base_remote != proposed.publish_remote {
+        pairs.insert(1, ("base-remote", proposed.base_remote.as_str()));
+    }
     // Valid ref names exclude controls/backslashes; JSON string quoting also
     // serves TOML and YAML for all accepted setting values.
     let quote = |s: &str| serde_json::to_string(s).expect("string serialization");
@@ -252,12 +255,14 @@ pub fn revalidate_review(directory: &Path, plan: &GenerationPlan) -> Result<(), 
     Ok(())
 }
 fn validate(directory: &Path, proposed: &settings::Settings) -> Result<(), ConfigError> {
-    if !settings::valid_remote(directory, &proposed.remote)?
+    if !settings::valid_remote(directory, &proposed.publish_remote)?
+        || !settings::valid_remote(directory, &proposed.base_remote)?
         || !settings::valid_branch(directory, &proposed.base)?
     {
-        return Err(
-            SettingsError::InvalidSettings("invalid proposed remote or base name".into()).into(),
-        );
+        return Err(SettingsError::InvalidSettings(
+            "invalid proposed publish-remote, base-remote, or base name".into(),
+        )
+        .into());
     }
     Ok(())
 }

@@ -33,6 +33,7 @@ pub enum ResolveError {
         source: io::Error,
     },
     InvalidSettings(String),
+    UnsupportedRemoteRoles(settings::UnsupportedRemoteRoles),
     UnusablePhrase,
     InvalidTarget(String),
     ProtectedBase(String),
@@ -49,6 +50,7 @@ impl fmt::Display for ResolveError {
             Self::InvalidSettings(reason) => {
                 write!(f, "invalid settings: {reason}")
             }
+            Self::UnsupportedRemoteRoles(error) => write!(f, "{error}"),
             Self::UnusablePhrase => write!(f, "phrase contains no usable letters or numbers"),
             Self::InvalidTarget(name) => write!(f, "invalid target branch name: {name:?}"),
             Self::ProtectedBase(name) => {
@@ -62,6 +64,7 @@ impl std::error::Error for ResolveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Repository(error) => Some(error),
+            Self::UnsupportedRemoteRoles(error) => Some(error),
             Self::SettingsIo { source, .. } => Some(source),
             _ => None,
         }
@@ -128,6 +131,9 @@ pub fn prepare(directory: impl AsRef<Path>, input: &str) -> Result<PreparedReque
         }
         settings::SettingsError::InvalidSettings(e) => ResolveError::InvalidSettings(e),
     })?;
+    settings
+        .require_single_remote()
+        .map_err(ResolveError::UnsupportedRemoteRoles)?;
     let target = if input.contains(' ') {
         phrase_slug(input)?
     } else {

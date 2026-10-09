@@ -229,12 +229,14 @@ gof config -y --format yaml
 gof config --yes --format json
 ```
 
-`config show` displays the effective `remote`, `base`, `save-action`,
-`finish-update`, and `finish-rewrite`, identifying
-each value's shared file, local file, or built-in default. It lists discovered
-files and the directories searched when a layer is absent. Each key resolves
-from local overrides, shared settings, then defaults. Explicit save/finish flags take
-precedence over their corresponding settings. Inspection uses shared workflow
+`config show` displays the effective `publish-remote`, `base-remote`, `base`,
+`save-action`, `finish-update`, and `finish-rewrite`, identifying each value's
+shared file, local file, or built-in default. Publication also identifies whether
+`publish-remote` or the compatibility key `remote` supplied the value. An inherited
+base remote identifies the publication setting and source it follows. Inspection
+lists discovered files and the directories searched when a layer is absent.
+Settings resolve from local overrides, shared settings, then defaults. Explicit
+save/finish flags take precedence over their corresponding settings. Inspection uses shared workflow
 validation and diagnostics. Its output is intended for people.
 
 `config` guides you through the remote used by start/save/finish, the base branch,
@@ -307,7 +309,8 @@ configuration is either absent or complete.
 
 ## Repository settings
 
-Defaults are `remote = origin`, `base = main`, `save-action = ask`,
+Defaults are `publish-remote = origin`, `base-remote` following publication,
+`base = main`, `save-action = ask`,
 `finish-update = ask`, and `finish-rewrite = ask`.
 Commit shared settings at the Git working-tree root. Keep private overrides in
 the Git common directory, usually `.git`. Each directory accepts one of:
@@ -326,8 +329,10 @@ their own shared root files and the same private common-directory overrides.
 Bare repositories have the local layer and defaults available for `config show`;
 start/save/finish and configuration generation require a working tree.
 
-Each key resolves independently: **explicit command flags > local overrides >
-shared settings > defaults**. Save's existing action flags override `save-action`.
+Settings resolve through **explicit command flags > local overrides >
+shared settings > defaults**. The remote-role rules below resolve the publication
+aliases together and the base remote independently. Save's existing action flags
+override `save-action`.
 Finish's update and rewrite flags override their respective settings.
 Start has no setting override flags. Parent directories and the home directory
 supply no additional settings.
@@ -336,7 +341,7 @@ Use a flat mapping of case-sensitive keys with string values. These examples
 are equivalent; save each under its matching filename:
 
 ```toml
-remote = "upstream"
+publish-remote = "team"
 base = "trunk"
 save-action = "ask"
 finish-update = "ask"
@@ -344,7 +349,7 @@ finish-rewrite = "ask"
 ```
 
 ```yaml
-remote: "upstream"
+publish-remote: "team"
 base: "trunk"
 save-action: "ask"
 finish-update: "ask"
@@ -352,11 +357,43 @@ finish-rewrite: "ask"
 ```
 
 ```json
-{"remote": "upstream", "base": "trunk", "save-action": "ask", "finish-update": "ask", "finish-rewrite": "ask"}
+{"publish-remote": "team", "base": "trunk", "save-action": "ask", "finish-update": "ask", "finish-rewrite": "ask"}
 ```
 
-`remote` is a Git remote name. Configure it in Git; its base branch must exist
-remotely when creating new work. `base` is a branch name such as `trunk`.
+`publish-remote` names the Git remote receiving working branches. `base-remote`
+names the Git remote supplying the configured `base` branch. The roles can select
+the same remote or different remotes. All names are literal named Git remotes;
+`origin`, `upstream`, and `fork` have no special role or provider meaning.
+`base` is a branch name such as `trunk`.
+
+`remote` remains a compatibility setting for publication. At one layer,
+`publish-remote` takes precedence over `remote`. A local publication setting
+wins over either shared publication setting, including when the local setting
+uses `remote`. Publication defaults to `origin` when both keys are absent.
+
+`base-remote` resolves independently from local, then shared settings. When it
+is absent everywhere, the base remote follows the resolved publication remote.
+An explicit shared base remote stays selected when a local override changes only
+publication; only a `base-remote` override changes that selection.
+
+| Settings | Publication remote | Base remote |
+| --- | --- | --- |
+| No remote settings | `origin` | `origin` |
+| `remote = team` | `team` | `team` |
+| `publish-remote = personal` | `personal` | `personal` |
+| `publish-remote = personal`, `base-remote = project` | `personal` | `project` |
+
+Both named settings work in every shared/local format and legacy local
+`oneflow.conf`. Every present value is validated, including a `remote` overridden
+by `publish-remote` at the same layer. Configuration inspection is local and
+read-only; configure remote availability in Git for the workflows that use it.
+
+Start, save, and finish currently require the effective remote roles to match.
+Differing roles stop these commands before workflow mutations. Use
+`gof config show` to inspect the roles and their sources. Guided setup keeps its
+single-remote question and generates `publish-remote`; the base remote follows it.
+Separate-role workflow execution is deferred.
+
 `save-action` accepts `ask`, `publish-only`, `staged`, `wip`, or `stash`.
 `finish-update` accepts `ask`, `rebase`, `merge`, or `none`. `finish-rewrite`
 accepts `ask`, `allow`, or `deny`. Update selects branch preparation against the

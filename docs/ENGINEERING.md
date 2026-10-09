@@ -108,22 +108,41 @@ Provider adapters and their settings remain undecided. Configurable checks,
 integration into the base branch, tagging, cleanup, workflow profiles, release
 operations, shell completion, installers, and distribution remain future work.
 
-## Remote-role design
+## Remote-role configuration
 
 Fork topology is independent of branching strategy and update/integration policy.
 The tool should distinguish the remote supplying the project base from the remote
 receiving working-branch publication. These roles can refer to the same remote;
 remote names such as origin, upstream, and fork have no built-in special meaning.
-This distinction is accepted direction, not yet implemented by the current
-single-remote configuration.
+Configuration implements `publish-remote` and `base-remote` as effective named
+roles in one settings model. `remote` is an input compatibility alias for
+publication, not a separate effective remote. Within a layer, `publish-remote`
+wins over `remote`; layers apply from shared to local, so a local `remote` also
+wins over a shared `publish-remote`. Validate every supplied value before merging.
+An omitted base remote derives from the final publication selection; an explicit
+base remote resolves independently and stays selected across publication overrides.
 
-For a fork, new work starts from the project base, published work resumes from the
-publication remote, save publishes there, and finish prepares against the project
+Settings retain publication file/layer and alias provenance, plus explicit base
+provenance or the fact that the base follows publication. These participate in
+settings equality and existing plan/setup revalidation. Inspection reports both
+roles and their sources without checking availability. Generation emits the
+publication key and preserves explicit base selection when rendering it; guided
+setup retains its single-remote question and leaves base selection derived.
+
+Workflow migration remains deferred. Start preparation and save assessment reject
+differing effective roles; finish assessment reuses save's guard. Execution,
+refresh, preparation, and publication revalidate through those assessment paths
+before affected mutations. This boundary also stops changed or caller-modified
+plans from executing with differing roles. Matching roles preserve current
+single-remote behavior.
+
+The accepted workflow direction is: for a fork, new work starts from the project
+base, published work resumes from the publication remote, save publishes there,
+and finish prepares against the project
 base before publishing to the publication remote. Manual submission guidance must
 identify the project base separately from the published branch. Fork synchronization
 and provider integration are separate future capabilities.
 
-Preserve existing single-remote configuration behaviour when introducing roles.
 Remote-role changes must participate in revalidation and verified rewrite recovery;
 new publication destinations cannot inherit proof or authorization from old ones.
 

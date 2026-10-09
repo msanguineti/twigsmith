@@ -218,12 +218,12 @@ fn refresh_inner(
     let base = observe(
         root,
         plan,
-        plan.settings.remote.as_bytes(),
+        plan.settings.publish_remote.as_bytes(),
         &base_ref,
         report,
     )?;
     let mut evidence = RemoteEvidence {
-        remote: plan.settings.remote.clone(),
+        remote: plan.settings.publish_remote.clone(),
         base_ref,
         branch_ref: plan.publication.branch_ref.clone(),
         base,

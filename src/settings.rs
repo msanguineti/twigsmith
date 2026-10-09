@@ -122,9 +122,28 @@ pub enum SettingSource {
     Local(PathBuf),
 }
 
+/// Publication aliases are resolved within each layer before applying precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationKey {
+    Remote,
+    PublishRemote,
+}
+impl PublicationKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::PublishRemote => "publish-remote",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingSources {
-    pub remote: SettingSource,
+    pub publish_remote: SettingSource,
+    /// The input key selecting publication; None denotes the built-in default.
+    pub publication_key: Option<PublicationKey>,
+    /// None means the effective base remote follows publication.
+    pub base_remote: Option<SettingSource>,
     pub base: SettingSource,
     pub save_action: SettingSource,
     pub finish_update: SettingSource,
@@ -133,7 +152,9 @@ pub struct SettingSources {
 impl Default for SettingSources {
     fn default() -> Self {
         Self {
-            remote: SettingSource::BuiltIn,
+            publish_remote: SettingSource::BuiltIn,
+            publication_key: None,
+            base_remote: None,
             base: SettingSource::BuiltIn,
             save_action: SettingSource::BuiltIn,
             finish_update: SettingSource::BuiltIn,
@@ -144,7 +165,8 @@ impl Default for SettingSources {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
-    pub remote: String,
+    pub publish_remote: String,
+    pub base_remote: String,
     pub base: String,
     pub save_action: SaveAction,
     pub finish_update: FinishUpdate,
@@ -154,7 +176,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            remote: "origin".into(),
+            publish_remote: "origin".into(),
+            base_remote: "origin".into(),
             base: "main".into(),
             save_action: SaveAction::Ask,
             finish_update: FinishUpdate::Ask,
@@ -164,10 +187,41 @@ impl Default for Settings {
     }
 }
 
+/// Temporary workflow boundary until each workflow supports separate roles.
+#[derive(Debug)]
+pub struct UnsupportedRemoteRoles {
+    base_remote: String,
+    publish_remote: String,
+}
+impl fmt::Display for UnsupportedRemoteRoles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "start, save, and finish currently require matching remote roles; base-remote is {:?}, publish-remote is {:?}; inspect settings with gof config show",
+            self.base_remote, self.publish_remote
+        )
+    }
+}
+impl std::error::Error for UnsupportedRemoteRoles {}
+impl Settings {
+    pub(crate) fn require_single_remote(&self) -> Result<(), UnsupportedRemoteRoles> {
+        if self.base_remote == self.publish_remote {
+            Ok(())
+        } else {
+            Err(UnsupportedRemoteRoles {
+                base_remote: self.base_remote.clone(),
+                publish_remote: self.publish_remote.clone(),
+            })
+        }
+    }
+}
+
 /// One sparse schema for all formats, including the legacy compatibility boundary.
 #[derive(Debug, Default)]
 struct Layer {
     remote: Option<String>,
+    publish_remote: Option<String>,
+    base_remote: Option<String>,
     base: Option<String>,
     save_action: Option<String>,
     finish_update: Option<String>,
@@ -178,12 +232,14 @@ impl Layer {
     fn slot(&mut self, key: &str) -> Result<&mut Option<String>, String> {
         match key {
             "remote" => Ok(&mut self.remote),
+            "publish-remote" => Ok(&mut self.publish_remote),
+            "base-remote" => Ok(&mut self.base_remote),
             "base" => Ok(&mut self.base),
             "save-action" => Ok(&mut self.save_action),
             "finish-update" => Ok(&mut self.finish_update),
             "finish-rewrite" => Ok(&mut self.finish_rewrite),
             _ => Err(format!(
-                "unknown key {key:?} (supported keys: remote, base, save-action, finish-update, finish-rewrite)"
+                "unknown key {key:?} (supported keys: remote, publish-remote, base-remote, base, save-action, finish-update, finish-rewrite)"
             )),
         }
     }
@@ -194,10 +250,16 @@ impl Layer {
                 "redact-credentials is a private local setting",
             ));
         }
-        if let Some(remote) = &self.remote
-            && !valid_remote(directory, remote)?
-        {
-            return Err(invalid(path, format!("invalid remote name: {remote:?}")));
+        for (key, value) in [
+            ("remote", &self.remote),
+            ("publish-remote", &self.publish_remote),
+            ("base-remote", &self.base_remote),
+        ] {
+            if let Some(remote) = value
+                && !valid_remote(directory, remote)?
+            {
+                return Err(invalid(path, format!("invalid {key} name: {remote:?}")));
+            }
         }
         if let Some(base) = &self.base
             && !valid_branch(directory, base)?
@@ -222,9 +284,18 @@ impl Layer {
         redact_credentials_source: &mut SettingSource,
         source: SettingSource,
     ) {
-        if let Some(remote) = self.remote {
-            settings.remote = remote;
-            settings.sources.remote = source.clone();
+        let publication = self
+            .publish_remote
+            .map(|value| (value, PublicationKey::PublishRemote))
+            .or_else(|| self.remote.map(|value| (value, PublicationKey::Remote)));
+        if let Some((remote, key)) = publication {
+            settings.publish_remote = remote;
+            settings.sources.publish_remote = source.clone();
+            settings.sources.publication_key = Some(key);
+        }
+        if let Some(remote) = self.base_remote {
+            settings.base_remote = remote;
+            settings.sources.base_remote = Some(source.clone());
         }
         if let Some(base) = self.base {
             settings.base = base;
@@ -477,6 +548,9 @@ pub fn load_with_files(
                 source,
             );
         }
+    }
+    if settings.sources.base_remote.is_none() {
+        settings.base_remote = settings.publish_remote.clone();
     }
     Ok(LoadedSettings {
         settings,

@@ -417,7 +417,7 @@ impl Workflow<'_> {
             if !initial_upstream.remotes.is_empty() || !initial_upstream.merge_refs.is_empty() {
                 return Err(StartError::ExistingUpstreamConfiguration);
             }
-            let remote = &self.request.settings.remote;
+            let remote = &self.request.settings.publish_remote;
             self.read(&["remote", "get-url", remote])?; // Named remote, never a path fallback.
             let target_ref = format!("refs/heads/{}", self.request.target);
             let base_ref = format!("refs/heads/{}", self.request.settings.base);
@@ -548,7 +548,7 @@ impl Workflow<'_> {
         let state = self.validated()?;
         let expected_upstream = if matches!(self.action, Some(Action::ResumeRemote)) {
             TargetUpstream {
-                remotes: vec![self.request.settings.remote.as_bytes().to_vec()],
+                remotes: vec![self.request.settings.publish_remote.as_bytes().to_vec()],
                 merge_refs: vec![format!("refs/heads/{}", self.request.target).into_bytes()],
             }
         } else {

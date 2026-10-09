@@ -181,10 +181,12 @@ fn settings_overrides_and_errors() {
         assert_eq!(
             request.settings,
             Settings {
-                remote: "team/upstream".into(),
+                publish_remote: "team/upstream".into(),
+                base_remote: "team/upstream".into(),
                 base: "Feature/École".into(),
                 sources: git_oneflow::settings::SettingSources {
-                    remote: git_oneflow::settings::SettingSource::Local(path.clone()),
+                    publish_remote: git_oneflow::settings::SettingSource::Local(path.clone()),
+                    publication_key: Some(git_oneflow::settings::PublicationKey::Remote),
                     base: git_oneflow::settings::SettingSource::Local(path.clone()),
                     ..Default::default()
                 },

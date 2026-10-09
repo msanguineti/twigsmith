@@ -182,18 +182,19 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
     loop {
         let Some(answer) = input(&format!(
             "Remote used by start, save, and finish [{}]: ",
-            text(&defaults.remote)
+            text(&defaults.publish_remote)
         ))?
         else {
             return cancelled();
         };
         let value = if answer.is_empty() {
-            &defaults.remote
+            &defaults.publish_remote
         } else {
             &answer
         };
         if settings::valid_remote(directory, value)? {
-            plan.proposed.remote = value.into();
+            plan.proposed.publish_remote = value.into();
+            plan.proposed.base_remote = value.into();
             break;
         }
         eprintln!(
@@ -297,9 +298,9 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         let effective = &review.overrides;
         for (key, value, origin) in [
             (
-                "remote",
-                effective.remote.as_str(),
-                &effective.sources.remote,
+                "publish-remote",
+                effective.publish_remote.as_str(),
+                &effective.sources.publish_remote,
             ),
             ("base", effective.base.as_str(), &effective.sources.base),
             (
@@ -321,6 +322,16 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
             if matches!(origin, SettingSource::Local(_)) {
                 eprintln!("  Effective {key}: {} ({})", text(value), source(origin));
             }
+        }
+        if matches!(effective.sources.base_remote, Some(SettingSource::Local(_)))
+            || (effective.sources.base_remote.is_none()
+                && matches!(effective.sources.publish_remote, SettingSource::Local(_)))
+        {
+            eprintln!(
+                "  Effective base-remote: {} ({})",
+                text(&effective.base_remote),
+                base_remote_source(effective)
+            );
         }
         if matches!(review.redact_credentials_source, SettingSource::Local(_)) {
             eprintln!(
@@ -357,6 +368,19 @@ fn source(source: &SettingSource) -> String {
         SettingSource::Local(path) => format!("local: {}", text(path.display())),
     }
 }
+fn publication_source(settings: &settings::Settings) -> String {
+    let origin = source(&settings.sources.publish_remote);
+    match settings.sources.publication_key {
+        Some(key) => format!("{origin}; setting: {}", key.as_str()),
+        None => origin,
+    }
+}
+fn base_remote_source(settings: &settings::Settings) -> String {
+    match &settings.sources.base_remote {
+        Some(origin) => source(origin),
+        None => format!("follows publish-remote; {}", publication_source(settings)),
+    }
+}
 fn layer(label: &str, file: Option<&Path>, root: Option<&Path>) {
     match (file, root) {
         (Some(file), _) => println!("{label}: {}", text(file.display())),
@@ -369,9 +393,14 @@ fn show(inspection: &config::Inspection) {
     let settings = &loaded.settings;
     println!("Effective configuration:");
     println!(
-        "  remote: {} ({})",
-        text(&settings.remote),
-        source(&settings.sources.remote)
+        "  publish-remote: {} ({})",
+        text(&settings.publish_remote),
+        publication_source(settings)
+    );
+    println!(
+        "  base-remote: {} ({})",
+        text(&settings.base_remote),
+        base_remote_source(settings)
     );
     println!(
         "  base: {} ({})",
@@ -413,7 +442,7 @@ fn show(inspection: &config::Inspection) {
         Some(&inspection.repository.common_dir),
     );
     println!(
-        "Recognized files: git-oneflow.config.{{toml,yaml,yml,json}}; legacy local: oneflow.conf\nPrecedence per key: local overrides > shared settings > built-in defaults.\nExplicit save/finish flags override their corresponding settings."
+        "Recognized files: git-oneflow.config.{{toml,yaml,yml,json}}; legacy local: oneflow.conf\nPrecedence: local overrides > shared settings > built-in defaults.\nAt one layer, publish-remote overrides remote; base-remote follows publication when absent from both layers.\nExplicit save/finish flags override their corresponding settings."
     );
 }
 fn help() {
@@ -445,7 +474,10 @@ Details:
   Precedence per key: explicit workflow flags > local > shared > built-in defaults.
   Run from the root or any nested directory. Bare repositories support inspection.
   Generation creates git-oneflow.config.toml, .yaml, or .json at the working-tree root.
-  Built-in defaults: remote = origin; base = main; save-action = ask.
+  Built-in defaults: publish-remote = origin; base-remote follows publication; base = main; save-action = ask.
+  remote is a publication compatibility setting; publish-remote takes precedence at the same layer.
+  Local publication settings override shared publication settings, including through remote.
+  Explicit base-remote resolves independently; start/save/finish currently require matching remote roles.
   Finish defaults: finish-update = ask; finish-rewrite = ask.
   Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.
   Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.

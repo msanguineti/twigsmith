@@ -66,13 +66,13 @@ fn commit(repo: &Repository) {
 fn assert_defaults(directory: &Path, filename: &str) {
     let loaded = load(directory);
     let defaults = Settings::default();
-    assert_eq!(loaded.remote, defaults.remote);
+    assert_eq!(loaded.publish_remote, defaults.publish_remote);
     assert_eq!(loaded.base, defaults.base);
     assert_eq!(loaded.save_action, defaults.save_action);
     assert_eq!(loaded.finish_update, defaults.finish_update);
     assert_eq!(loaded.finish_rewrite, defaults.finish_rewrite);
     let source = SettingSource::Shared(directory.join(filename));
-    assert_eq!(loaded.sources.remote, source);
+    assert_eq!(loaded.sources.publish_remote, source);
     assert_eq!(loaded.sources.base, source);
     assert_eq!(loaded.sources.save_action, source);
     assert_eq!(loaded.sources.finish_update, source);
@@ -200,7 +200,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                     "Local file: none",
                     &repo.path().display().to_string(),
                     &repo.path().join(".git").display().to_string(),
-                    "Precedence per key",
+                    "Precedence:",
                 ],
             );
             assert_eq!(snapshot(repo.path()), before);
@@ -391,7 +391,7 @@ fn private_overrides_allow_generation_without_copying_values() {
                     config::render_defaults(Format::Toml)
                 );
                 if filename != CONFIG_FILES[3] {
-                    assert_eq!(load(repo.path()).remote, "private");
+                    assert_eq!(load(repo.path()).publish_remote, "private");
                     assert_eq!(load(repo.path()).save_action, SaveAction::Stash);
                     assert_eq!(load(repo.path()).base, "main");
                 } else {
@@ -445,7 +445,7 @@ fn linked_worktrees_generate_at_their_root_and_inspect_common_overrides() {
                 ],
             );
             assert_eq!(snapshot(repo.path()), before);
-            assert_eq!(load(&nested).remote, "private");
+            assert_eq!(load(&nested).publish_remote, "private");
             assert_eq!(load(&nested).base, "main");
             check(
                 run(exe, &nested, &["config", "show"]),
@@ -782,12 +782,17 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     });
                     terminal.until("Create this file?");
                     assert!(!repo.path().join(filename).exists());
-                    assert!(terminal.output.contains("Effective remote: private"));
+                    assert!(
+                        terminal
+                            .output
+                            .contains("Effective publish-remote: private")
+                    );
                     assert!(terminal.output.contains("Effective save-action: stash"));
                     assert!(terminal.output.contains("Effective finish-update: none"));
                     assert!(terminal.output.contains("Effective finish-rewrite: deny"));
                     let proposed = Settings {
-                        remote: if custom { "future-remote" } else { "origin" }.into(),
+                        publish_remote: if custom { "future-remote" } else { "origin" }.into(),
+                        base_remote: if custom { "future-remote" } else { "origin" }.into(),
                         base: if custom { "future/base" } else { "main" }.into(),
                         save_action: if custom {
                             SaveAction::Wip
@@ -824,7 +829,7 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     );
                     assert_eq!(snapshot(&repo.path().join(".git")), before_git);
                     let effective = load(repo.path());
-                    assert_eq!(effective.remote, "private");
+                    assert_eq!(effective.publish_remote, "private");
                     assert_eq!(effective.base, proposed.base);
                     assert_eq!(effective.finish_update, FinishUpdate::None);
                     assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
@@ -844,11 +849,11 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     assert_eq!(save.action, SaveAction::Stash);
                     fs::remove_file(private).unwrap();
                     let effective = load(repo.path());
-                    assert_eq!(effective.remote, proposed.remote);
+                    assert_eq!(effective.publish_remote, proposed.publish_remote);
                     assert_eq!(effective.save_action, proposed.save_action);
                     assert_eq!(effective.finish_update, proposed.finish_update);
                     assert_eq!(effective.finish_rewrite, proposed.finish_rewrite);
-                    repo.success(&["remote", "add", &proposed.remote, "/offline"]);
+                    repo.success(&["remote", "add", &proposed.publish_remote, "/offline"]);
                     let save = git_oneflow::save::assess(repo.path(), &Default::default()).unwrap();
                     assert_eq!(save.settings, effective);
                     assert_eq!(save.action, proposed.save_action);
@@ -890,7 +895,7 @@ fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
             terminal.send(b"yes\n");
             assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
             let settings = load(repo.path());
-            assert_eq!(settings.remote, "upstream");
+            assert_eq!(settings.publish_remote, "upstream");
             assert_eq!(settings.base, "trunk");
             assert_eq!(settings.save_action, SaveAction::Staged);
             assert_eq!(settings.finish_update, FinishUpdate::None);
@@ -1112,6 +1117,144 @@ fn config_show_reports_effective_finish_values_and_sources() {
                 assert!(text.contains(&local.display().to_string()));
                 assert_eq!(snapshot(root), before);
                 fs::remove_file(local).unwrap();
+            }
+        },
+    );
+}
+
+#[test]
+fn config_show_identifies_remote_role_values_aliases_and_derived_sources() {
+    cases(
+        "config_show_identifies_remote_role_values_aliases_and_derived_sources",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let shared = repo.path().join(CONFIG_FILES[0]);
+            let local = repo.path().join(".git/oneflow.conf");
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[
+                    "publish-remote: origin (built-in default)",
+                    "base-remote: origin (follows publish-remote; built-in default)",
+                ],
+            );
+            fs::write(
+                &shared,
+                "publish-remote='personal'\nbase-remote='project'\n",
+            )
+            .unwrap();
+            fs::write(&local, "remote=local\n").unwrap();
+            let before = snapshot(root);
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[
+                    &format!(
+                        "publish-remote: local (local: {}; setting: remote)",
+                        local.display()
+                    ),
+                    &format!("base-remote: project (shared: {})", shared.display()),
+                ],
+            );
+            assert_eq!(snapshot(root), before);
+            fs::write(&shared, "publish-remote='personal'\n").unwrap();
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[&format!(
+                    "base-remote: local (follows publish-remote; local: {}; setting: remote)",
+                    local.display()
+                )],
+            );
+            fs::write(
+                &local,
+                "remote=local\npublish-remote=selected\nbase-remote=selected\n",
+            )
+            .unwrap();
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[
+                    &format!(
+                        "publish-remote: selected (local: {}; setting: publish-remote)",
+                        local.display()
+                    ),
+                    &format!("base-remote: selected (local: {})", local.display()),
+                ],
+            );
+        },
+    );
+}
+
+#[test]
+fn differing_remote_roles_refuse_lifecycle_commands_without_mutation() {
+    cases(
+        "differing_remote_roles_refuse_lifecycle_commands_without_mutation",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            commit(&repo);
+            repo.success(&["switch", "-c", "work"]);
+            fs::write(repo.path().join("tracked"), "dirty\n").unwrap();
+            fs::write(
+                repo.path().join(".git/oneflow.conf"),
+                "publish-remote=personal\nbase-remote=project\n",
+            )
+            .unwrap();
+            let before = snapshot(root);
+            for args in [
+                vec!["start", "new-work"],
+                vec!["s", "work"],
+                vec!["save", "--wip"],
+                vec!["v", "--stash"],
+                vec!["finish", "--update", "none", "--allow-rewrite"],
+                vec!["f"],
+            ] {
+                check(
+                    run(exe, repo.path(), &args),
+                    1,
+                    &[
+                        "matching remote roles",
+                        "project",
+                        "personal",
+                        "gof config show",
+                    ],
+                );
+                assert_eq!(snapshot(root), before);
+            }
+        },
+    );
+}
+
+#[test]
+fn generated_remote_roles_round_trip_in_each_format() {
+    isolated(
+        "generated_remote_roles_round_trip_in_each_format",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            for format in [Format::Toml, Format::Yaml, Format::Json] {
+                for explicit_base in [None, Some("project"), Some("personal")] {
+                    let mut proposed = Settings {
+                        publish_remote: "personal".into(),
+                        base_remote: explicit_base.unwrap_or("personal").into(),
+                        ..Settings::default()
+                    };
+                    if explicit_base.is_some() {
+                        proposed.sources.base_remote = Some(SettingSource::BuiltIn);
+                    }
+                    let rendered = config::render(format, &proposed);
+                    fs::write(repo.path().join(format.filename()), rendered).unwrap();
+                    let resolved = load(repo.path());
+                    assert_eq!(resolved.publish_remote, "personal");
+                    assert_eq!(resolved.base_remote, explicit_base.unwrap_or("personal"));
+                    assert_eq!(
+                        resolved.sources.base_remote.is_some(),
+                        explicit_base.is_some()
+                    );
+                    fs::remove_file(repo.path().join(format.filename())).unwrap();
+                }
             }
         },
     );
