@@ -142,12 +142,18 @@ Preserve dirty submodule work within its own repository.
 
 ```sh
 gof finish
-gof f --update merge
-gof finish --update rebase --allow-rewrite
-gof finish --update none --no-rewrite
+gof f --mode review --update merge
+gof finish --mode review --update rebase --allow-rewrite
+gof finish --mode review --update none --no-rewrite
 ```
 
-`finish` (shorthand: `f`) prepares the current clean branch against `base-remote`
+`finish` (shorthand: `f`) selects completion through `finish-mode` or
+`--mode <review|integrate>`. The default `ask` prompts at a terminal; unattended
+execution requires a configured mode or explicit override. Mode resolves before
+remote refresh. Direct integration is not available yet: selecting `integrate`
+stops before workflow mutations, checks, fetches, or remote publication.
+
+Review mode prepares the current clean branch against `base-remote`
 and publishes it through `publish-remote`, then reports the branch, destinations,
 and commit with a manual submission next step into the configured base remote
 and branch. It runs configured validation checks after preparing the branch and
@@ -209,8 +215,8 @@ Duplicate options, unsupported values, and positional arguments are syntax error
 For unattended execution, resolve relevant choices through flags or configuration:
 
 ```sh
-gof finish --update rebase --allow-rewrite
-gof finish --update merge --no-rewrite
+gof finish --mode review --update rebase --allow-rewrite
+gof finish --mode review --update merge --no-rewrite
 ```
 
 Publication targets the same branch at each configured push URL. Each destination
@@ -256,8 +262,9 @@ gof config --yes --format json
 ```
 
 `config show` displays the effective `publish-remote`, `base-remote`, `base`,
-`save-action`, `finish-update`, `finish-rewrite`, and ordered `finish-checks`,
-identifying each value's shared file, local file, or built-in default. An inherited base remote identifies
+`save-action`, the finish completion and preparation policies, and ordered
+`finish-checks`, identifying each value's shared file, local file, or built-in
+default. An inherited base remote identifies
 the publication source it follows. Inspection lists discovered files and the
 directories searched when a layer is absent.
 Settings resolve from local overrides, shared settings, then defaults. Explicit
@@ -267,12 +274,12 @@ executing them or checking executable availability. Its output is intended for p
 
 `config` guides you through the publication remote for working branches, the
 base source remote, the base branch, the default save action, and the finish
-update and rewrite policies. Publication starts at `origin`; the base source
-follows publication. Press Enter at the base-source prompt to keep that
+update, rewrite, and completion policies. Publication starts at `origin`; the base
+source follows publication. Press Enter at the base-source prompt to keep that
 relationship, or enter another remote for a separate source. Entering the same
 remote also keeps the follow-publication relationship. The base branch starts
-at `main`, and all three policies start at `ask`. Press Enter to keep a default,
-or enter a replacement. Local remote configuration and branch references provide
+at `main`; save, update, rewrite, and completion choices start at `ask`. Press Enter
+to keep a default, or enter a replacement. Local remote configuration and branch references provide
 offline hints; they never change the defaults. Valid names can be configured before
 the remote or branch exists.
 
@@ -293,6 +300,13 @@ Finish update choices are `ask`, `rebase`, `merge`, and `none`. Rewrite choices 
 `ask`, `allow`, and `deny`; setup describes `allow` as standing authorization for
 eligible replacement with remote safeguards retained. See
 [finish](#prepare-and-publish-finished-work) for their effects.
+
+Setup asks integration, message, checkout, and cleanup preferences when completion
+is `ask` or `integrate`. Review delivery asks none of those questions and omits
+those settings from the generated file. Fast-forward-only integration skips and
+omits message policy. Review displays the effective policies and sources after
+private overrides, including which policies are inactive. Unattended generation
+keeps the unresolved `ask` policies and the default `target` checkout.
 
 Setup offers optional finish checks, starting with an empty list. Enter each
 check's display name and then a JSON array containing the executable and each
@@ -365,7 +379,9 @@ configuration is either absent or complete.
 
 Defaults are `publish-remote = origin`, `base-remote` following publication,
 `base = main`, `save-action = ask`,
-`finish-update = ask`, `finish-rewrite = ask`, and `finish-checks = []`.
+`finish-mode = ask`, `finish-integration = ask`, `finish-message = ask`,
+`finish-checkout = target`, `finish-cleanup = ask`, `finish-update = ask`,
+`finish-rewrite = ask`, and `finish-checks = []`.
 Commit shared settings at the Git working-tree root. Keep private overrides in
 the Git common directory, usually `.git`. Each directory accepts one of:
 
@@ -386,7 +402,9 @@ start/save/finish and configuration generation require a working tree.
 Settings resolve through **explicit command flags > local overrides >
 shared settings > defaults**. Each remote role resolves independently; an omitted
 base remote follows publication. Save's action flags override `save-action`.
-Finish's update and rewrite flags override their respective settings.
+Finish's mode, integration, checkout, cleanup, update, and rewrite flags override
+their respective settings. `-m/--message` supplies the final integration message
+instead of the configured message policy.
 Start has no setting override flags. Parent directories and the home directory
 supply no additional settings.
 
@@ -398,6 +416,7 @@ are equivalent; save each under its matching filename:
 publish-remote = "team"
 base = "trunk"
 save-action = "ask"
+finish-mode = "review"
 finish-update = "ask"
 finish-rewrite = "ask"
 finish-checks = []
@@ -407,13 +426,14 @@ finish-checks = []
 publish-remote: "team"
 base: "trunk"
 save-action: "ask"
+finish-mode: "review"
 finish-update: "ask"
 finish-rewrite: "ask"
 finish-checks: []
 ```
 
 ```json
-{"publish-remote": "team", "base": "trunk", "save-action": "ask", "finish-update": "ask", "finish-rewrite": "ask", "finish-checks": []}
+{"publish-remote": "team", "base": "trunk", "save-action": "ask", "finish-mode": "review", "finish-update": "ask", "finish-rewrite": "ask", "finish-checks": []}
 ```
 
 `publish-remote` names the Git remote receiving working branches. `base-remote`
@@ -478,7 +498,7 @@ gof start work/parser-fix
 git add parser.rs
 git commit -m "Fix parser"
 gof save
-gof finish --update merge
+gof finish --mode review --update merge
 ```
 
 New work uses the fresh project base. Local work resumes from local history;
@@ -515,6 +535,37 @@ remote base; rewrite supplies independent permission for eligible replacement.
 Guided setup offers both with `ask` defaults, and `config --yes` writes those
 explicit defaults. See [finish](#prepare-and-publish-finished-work) and the
 [finish contract](FINISH.md).
+
+### Finish completion
+
+| Setting | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| `finish-mode` | `ask`, `review`, `integrate` | `ask` | Review delivery or direct integration |
+| `finish-integration` | `ask`, `ff-only`, `merge`, `squash` | `ask` | Final integration into the project target |
+| `finish-message` | `ask`, `auto` | `ask` | Editable message suggestion or generated integration message |
+| `finish-checkout` | `target`, `work` | `target` | Target branch or original work branch after confirmed target publication |
+| `finish-cleanup` | `ask`, `keep`, `local`, `both` | `ask` | Ask at a terminal, retain branches, delete local work, or delete local and published work |
+
+Review delivery publishes the working branch and keeps it checked out and available.
+Integration policies describe the direct completion contract; direct integration
+execution is currently blocked before workflow effects.
+
+`--integration <ff-only|merge|squash>`, `--checkout <target|work>`, and
+`--cleanup <keep|local|both>` override those policies. `merge` means a merge commit,
+including when fast-forward is possible; `finish-update = merge` separately
+incorporates the base into the working branch. `ff-only` creates no integration
+commit and needs no message; `squash` creates one commit containing the work.
+
+`-m/--message <text>` supplies the final integration commit message with literal
+whitespace preserved. It never amends existing work commits or supplies a pull
+request description. Without that override, `ask` offers an editable suggestion
+when a final commit is required; `auto` selects a generated message.
+
+Explicit integration, message, checkout, or cleanup options require integrate
+mode. They do not imply a mode choice. Valid integration settings remain inactive
+in review mode, and every supplied layer is strictly validated, including inactive
+and overridden values. Review delivery asks no integration, message, checkout, or
+cleanup questions. Both executables and the `f` alias share this contract.
 
 ### Finish checks
 
@@ -626,8 +677,8 @@ retained; inspect the report and current settings before retrying.
   For a write failure, check the reported working-tree path and directory access.
 - **Save needs input:** select an action explicitly or configure `save-action`.
   Supply a nonblank `--message` for an unattended staged checkpoint.
-- **Finish needs input:** select `--update rebase|merge|none` and, when replacement
-  is required, `--allow-rewrite` or `--no-rewrite`; or configure the corresponding
+- **Finish needs input:** select `--mode review` or configure `finish-mode`; select
+  `--update rebase|merge|none` and, when replacement is required, `--allow-rewrite` or `--no-rewrite`; or configure the corresponding
   finish settings. Rebase selection supplies no replacement authorization.
 - **Finish conflicts:** resolve the reported conflicts, stage resolutions, and use
   `git rebase --continue` or `git merge --continue`. Use `git rebase --abort` or

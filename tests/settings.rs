@@ -1126,3 +1126,200 @@ fn remote_role_changes_revalidate_workflow_apis() {
         },
     );
 }
+
+fn completion_values(settings: &Settings) -> [(&str, &SettingSource); 5] {
+    [
+        (settings.finish_mode.as_str(), &settings.sources.finish_mode),
+        (
+            settings.finish_integration.as_str(),
+            &settings.sources.finish_integration,
+        ),
+        (
+            settings.finish_message.as_str(),
+            &settings.sources.finish_message,
+        ),
+        (
+            settings.finish_checkout.as_str(),
+            &settings.sources.finish_checkout,
+        ),
+        (
+            settings.finish_cleanup.as_str(),
+            &settings.sources.finish_cleanup,
+        ),
+    ]
+}
+const COMPLETION_SETTINGS: [(&str, &[&str]); 5] = [
+    ("finish-mode", &["ask", "review", "integrate"]),
+    ("finish-integration", &["ask", "ff-only", "merge", "squash"]),
+    ("finish-message", &["ask", "auto"]),
+    ("finish-checkout", &["target", "work"]),
+    ("finish-cleanup", &["ask", "keep", "local", "both"]),
+];
+
+#[test]
+fn completion_settings_round_trip_layer_precedence_and_provenance() {
+    isolated(
+        "completion_settings_round_trip_layer_precedence_and_provenance",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let defaults = load(repo.path()).unwrap();
+            for ((value, source), expected) in completion_values(&defaults)
+                .iter()
+                .zip(["ask", "ask", "ask", "target", "ask"])
+            {
+                assert_eq!(*value, expected);
+                assert_eq!(**source, SettingSource::BuiltIn);
+            }
+            for (format, filename) in CONFIG_FILES.iter().enumerate() {
+                for (index, (key, values)) in COMPLETION_SETTINGS.iter().enumerate() {
+                    for value in *values {
+                        write(repo.path(), format, &[(key, value)]);
+                        let loaded = load(repo.path()).unwrap();
+                        assert_eq!(completion_values(&loaded)[index].0, *value);
+                        // General rendering preserves inactive settings too.
+                        let rendered = git_oneflow::config::render(
+                            match format {
+                                0 => git_oneflow::config::Format::Toml,
+                                1 | 2 => git_oneflow::config::Format::Yaml,
+                                _ => git_oneflow::config::Format::Json,
+                            },
+                            &loaded,
+                        );
+                        fs::write(repo.path().join(filename), rendered).unwrap();
+                        assert_eq!(
+                            completion_values(&load(repo.path()).unwrap()).map(|(value, _)| value),
+                            completion_values(&loaded).map(|(value, _)| value)
+                        );
+                    }
+                }
+                fs::remove_file(repo.path().join(filename)).unwrap();
+            }
+            for (shared, shared_file) in CONFIG_FILES.iter().enumerate() {
+                let pairs: Vec<_> = COMPLETION_SETTINGS
+                    .iter()
+                    .map(|(key, values)| (*key, values[1]))
+                    .collect();
+                write(repo.path(), shared, &pairs);
+                for (local, local_file) in CONFIG_FILES.iter().enumerate() {
+                    for (index, (key, values)) in COMPLETION_SETTINGS.iter().enumerate() {
+                        let common = repo.path().join(".git");
+                        write(&common, local, &[(key, values[0])]);
+                        let before = snapshot(root);
+                        let loaded = load(repo.path()).unwrap();
+                        assert_eq!(snapshot(root), before);
+                        for (i, (value, source)) in completion_values(&loaded).iter().enumerate() {
+                            assert_eq!(*value, if i == index { values[0] } else { pairs[i].1 });
+                            assert_eq!(
+                                **source,
+                                if i == index {
+                                    SettingSource::Local(common.join(local_file))
+                                } else {
+                                    SettingSource::Shared(repo.path().join(shared_file))
+                                }
+                            );
+                        }
+                        fs::remove_file(common.join(local_file)).unwrap();
+                    }
+                }
+                fs::remove_file(repo.path().join(shared_file)).unwrap();
+            }
+        },
+    );
+}
+
+#[test]
+fn completion_settings_validate_inactive_overridden_duplicate_and_typed_fields() {
+    isolated(
+        "completion_settings_validate_inactive_overridden_duplicate_and_typed_fields",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            for (format, filename) in CONFIG_FILES.iter().enumerate() {
+                for (key, values) in COMPLETION_SETTINGS {
+                    for local in [false, true] {
+                        let directory = if local {
+                            repo.path().join(".git")
+                        } else {
+                            repo.path().to_owned()
+                        };
+                        // All integration policies must validate even in review mode,
+                        // and valid local overrides cannot hide invalid shared values.
+                        for invalid_value in ["", "ASK", "unknown", "true", "review # comment"] {
+                            write(&directory, format, &[(key, invalid_value)]);
+                            if !local {
+                                let overrides = if key == "finish-mode" {
+                                    vec![("finish-mode", "review")]
+                                } else {
+                                    vec![("finish-mode", "review"), (key, values[0])]
+                                };
+                                write(&repo.path().join(".git"), format, &overrides);
+                            }
+                            let before = snapshot(root);
+                            let error = load(repo.path()).unwrap_err().to_string();
+                            assert!(error.contains(key) && error.contains(filename), "{error}");
+                            assert_eq!(snapshot(root), before);
+                            fs::remove_file(directory.join(filename)).unwrap();
+                            if !local {
+                                fs::remove_file(repo.path().join(".git").join(filename)).unwrap();
+                            }
+                        }
+                        for invalid in [
+                            config(format, &[(key, values[0]), (key, values[0])]),
+                            match format {
+                                0 => format!("{key}=false"),
+                                1 | 2 => format!("{key}: false"),
+                                _ => format!("{{{key:?}:false}}"),
+                            },
+                            match format {
+                                0 => format!("{key}=[]"),
+                                1 | 2 => format!("{key}: null"),
+                                _ => format!("{{{key:?}:null}}"),
+                            },
+                        ] {
+                            fs::write(directory.join(filename), &invalid).unwrap();
+                            assert!(load(repo.path()).is_err(), "{invalid}");
+                            fs::remove_file(directory.join(filename)).unwrap();
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn completion_settings_and_sources_revalidate_workflows_and_guided_review() {
+    isolated(
+        "completion_settings_and_sources_revalidate_workflows_and_guided_review",
+        true,
+        |root| {
+            for (key, values) in COMPLETION_SETTINGS {
+                for value in [values[0], values[1]] {
+                    let repo = Repository::new(root);
+                    fs::write(repo.path().join("tracked"), "initial").unwrap();
+                    commit(&repo);
+                    repo.success(&["switch", "-c", "work"]);
+                    repo.success(&["remote", "add", "origin", "/offline"]);
+                    let start = start::prepare(repo.path(), "another").unwrap();
+                    let save = save::assess(repo.path(), &Request::default()).unwrap();
+                    let finish =
+                        git_oneflow::finish::assess(repo.path(), &Default::default(), None)
+                            .unwrap();
+                    let setup = git_oneflow::config::prepare_guided(
+                        repo.path(),
+                        git_oneflow::config::Format::Toml,
+                    )
+                    .unwrap();
+                    write(&repo.path().join(".git"), 0, &[(key, value)]);
+                    let before = snapshot(root);
+                    assert!(start::execute(repo.path(), &start).is_err());
+                    assert!(save::revalidate(repo.path(), &save).is_err());
+                    assert!(git_oneflow::finish::revalidate(repo.path(), &finish, None).is_err());
+                    assert!(git_oneflow::config::revalidate_review(repo.path(), &setup).is_err());
+                    assert_eq!(snapshot(root), before);
+                }
+            }
+        },
+    );
+}

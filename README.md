@@ -14,13 +14,15 @@ Once a built executable is on PATH, run these commands from your Git checkout:
 gof start "add user avatars"
 # Work and make normal Git commits
 gof save
-gof finish
+gof finish --mode review
 gof status
 ```
 
 `start` creates or resumes a branch. `save` publishes progress and offers
 checkpoint choices for uncommitted work. `finish` prepares, runs configured checks,
-and publishes a clean branch for manual submission. `status` summarizes the current checkout.
+and publishes a clean branch for manual submission in review mode. Completion mode
+comes from configuration or `--mode`; an unresolved mode asks at a terminal.
+`status` summarizes the current checkout.
 
 | Command | Shorthand | Purpose |
 | --- | --- | --- |

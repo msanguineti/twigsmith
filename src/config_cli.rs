@@ -149,6 +149,21 @@ fn cancelled() -> Result<(), ConfigError> {
     eprintln!("Setup cancelled; no configuration created.");
     Ok(())
 }
+fn policy<T>(
+    label: &str,
+    default: &str,
+    parse: impl Fn(&str) -> Result<T, String>,
+) -> Result<Option<T>, ConfigError> {
+    loop {
+        let Some(answer) = input(&format!("Default {label} [{default}]: "))? else {
+            return Ok(None);
+        };
+        match parse(if answer.is_empty() { default } else { &answer }) {
+            Ok(value) => return Ok(Some(value)),
+            Err(reason) => eprintln!("{reason}; or enter cancel."),
+        }
+    }
+}
 fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
     let mut plan = config::prepare_guided(directory, format)?;
     let defaults = settings::Settings::default();
@@ -305,6 +320,70 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         }
     }
     eprintln!(
+        "Finish completion:\n  ask        Choose review or integrate at a terminal.\n  review     Prepare and publish the working branch for manual review.\n  integrate  Integrate into the project target and publish it. Direct integration is not available yet; finish stops before workflow effects."
+    );
+    let Some(mode) = policy(
+        "finish mode",
+        defaults.finish_mode.as_str(),
+        settings::parse_mode,
+    )?
+    else {
+        return cancelled();
+    };
+    plan.proposed.finish_mode = mode;
+    if mode != settings::FinishMode::Review {
+        eprintln!(
+            "Final integration method (separate from finish-update):\n  ask      Choose at a terminal.\n  ff-only  Fast-forward only; creates no integration commit.\n  merge    Create a merge commit, including when fast-forward is possible.\n  squash   Create one commit containing the integrated work."
+        );
+        let Some(integration) = policy(
+            "finish integration",
+            defaults.finish_integration.as_str(),
+            settings::parse_integration,
+        )?
+        else {
+            return cancelled();
+        };
+        plan.proposed.finish_integration = integration;
+        if integration != settings::FinishIntegration::FfOnly {
+            eprintln!(
+                "Final integration commit message:\n  ask   Offer an editable suggestion at a terminal.\n  auto  Use the generated message.\nfinish -m/--message supplies the final integration commit message; existing work commits and review descriptions are unchanged."
+            );
+            let Some(message) = policy(
+                "finish message",
+                defaults.finish_message.as_str(),
+                settings::parse_message,
+            )?
+            else {
+                return cancelled();
+            };
+            plan.proposed.finish_message = message;
+        }
+        eprintln!(
+            "After confirmed target publication, finish checkout selects target (the local integration target) or work (the working branch)."
+        );
+        let Some(checkout) = policy(
+            "finish checkout",
+            defaults.finish_checkout.as_str(),
+            settings::parse_checkout,
+        )?
+        else {
+            return cancelled();
+        };
+        plan.proposed.finish_checkout = checkout;
+        eprintln!(
+            "After confirmed target publication, finish cleanup selects ask (choose at a terminal), keep (retain work branches), local (delete the local work branch), or both (delete local and published work branches)."
+        );
+        let Some(cleanup) = policy(
+            "finish cleanup",
+            defaults.finish_cleanup.as_str(),
+            settings::parse_cleanup,
+        )?
+        else {
+            return cancelled();
+        };
+        plan.proposed.finish_cleanup = cleanup;
+    }
+    eprintln!(
         "Optional finish checks run in order after preparation and before publication. Setup only records commands; it never runs them or probes executables.\nEnter a name, then a JSON array of strings: [\"cargo\", \"test\", \"--locked\"]. The first string is the executable; each remaining string is one literal argument. Shell features require an explicit shell."
     );
     loop {
@@ -370,6 +449,17 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         text(&roles.base_remote),
         base_remote_source(&roles)
     );
+    let effective_completion = reviewed_completion(&plan);
+    for (key, value, origin) in completion_values(&effective_completion) {
+        eprintln!("Effective {key}: {value} ({})", source(origin));
+    }
+    if effective_completion.finish_mode == settings::FinishMode::Review {
+        eprintln!(
+            "Integration method, message, checkout, and cleanup settings are inactive for review delivery."
+        );
+    } else if effective_completion.finish_integration == settings::FinishIntegration::FfOnly {
+        eprintln!("Message policy is inactive for fast-forward-only integration.");
+    }
     if let Some(path) = &review.local {
         eprintln!(
             "Private overrides: {} (take precedence; values are not copied).",
@@ -470,6 +560,90 @@ fn reviewed_roles(plan: &config::GenerationPlan) -> settings::Settings {
     roles
 }
 
+fn completion_values(
+    settings: &settings::Settings,
+) -> [(&'static str, &'static str, &SettingSource); 5] {
+    [
+        (
+            "finish-mode",
+            settings.finish_mode.as_str(),
+            &settings.sources.finish_mode,
+        ),
+        (
+            "finish-integration",
+            settings.finish_integration.as_str(),
+            &settings.sources.finish_integration,
+        ),
+        (
+            "finish-message",
+            settings.finish_message.as_str(),
+            &settings.sources.finish_message,
+        ),
+        (
+            "finish-checkout",
+            settings.finish_checkout.as_str(),
+            &settings.sources.finish_checkout,
+        ),
+        (
+            "finish-cleanup",
+            settings.finish_cleanup.as_str(),
+            &settings.sources.finish_cleanup,
+        ),
+    ]
+}
+fn reviewed_completion(plan: &config::GenerationPlan) -> settings::Settings {
+    let mut effective = plan.proposed.clone();
+    let private = &plan.review().overrides;
+    let shared = SettingSource::Shared(plan.destination());
+    effective.sources.finish_mode = shared.clone();
+    if matches!(private.sources.finish_mode, SettingSource::Local(_)) {
+        effective.finish_mode = private.finish_mode;
+        effective.sources.finish_mode = private.sources.finish_mode.clone();
+    }
+    effective.sources.finish_integration =
+        if plan.proposed.finish_mode != settings::FinishMode::Review {
+            shared.clone()
+        } else {
+            SettingSource::BuiltIn
+        };
+    if matches!(private.sources.finish_integration, SettingSource::Local(_)) {
+        effective.finish_integration = private.finish_integration;
+        effective.sources.finish_integration = private.sources.finish_integration.clone();
+    }
+    effective.sources.finish_message = if plan.proposed.finish_mode != settings::FinishMode::Review
+        && plan.proposed.finish_integration != settings::FinishIntegration::FfOnly
+    {
+        shared.clone()
+    } else {
+        SettingSource::BuiltIn
+    };
+    if matches!(private.sources.finish_message, SettingSource::Local(_)) {
+        effective.finish_message = private.finish_message;
+        effective.sources.finish_message = private.sources.finish_message.clone();
+    }
+    effective.sources.finish_checkout = if plan.proposed.finish_mode != settings::FinishMode::Review
+    {
+        shared.clone()
+    } else {
+        SettingSource::BuiltIn
+    };
+    if matches!(private.sources.finish_checkout, SettingSource::Local(_)) {
+        effective.finish_checkout = private.finish_checkout;
+        effective.sources.finish_checkout = private.sources.finish_checkout.clone();
+    }
+    effective.sources.finish_cleanup = if plan.proposed.finish_mode != settings::FinishMode::Review
+    {
+        shared.clone()
+    } else {
+        SettingSource::BuiltIn
+    };
+    if matches!(private.sources.finish_cleanup, SettingSource::Local(_)) {
+        effective.finish_cleanup = private.finish_cleanup;
+        effective.sources.finish_cleanup = private.sources.finish_cleanup.clone();
+    }
+    effective
+}
+
 fn source(source: &SettingSource) -> String {
     match source {
         SettingSource::BuiltIn => "built-in default".into(),
@@ -555,6 +729,9 @@ fn show(inspection: &config::Inspection) {
     ] {
         println!("  {key}: {value} ({})", source(origin));
     }
+    for (key, value, origin) in completion_values(settings) {
+        println!("  {key}: {value} ({})", source(origin));
+    }
     println!(
         "  redact-credentials: {} ({})",
         loaded.redact_credentials,
@@ -611,7 +788,17 @@ Details:
   Built-in defaults: publish-remote = origin; base-remote follows publication; base = main; save-action = ask.
   Local publication settings override shared publication settings.
   Explicit base-remote resolves independently; start, save, and finish support separate roles.
-  Finish defaults: finish-update = ask; finish-rewrite = ask.
+  Finish defaults: finish-mode = ask; finish-update = ask; finish-rewrite = ask.
+  finish-mode: ask, review, integrate. Review prepares and publishes for manual review.
+  Direct integration is not available yet; integrate stops before workflow effects.
+  finish-integration: ask (default), ff-only, merge (merge commit), squash.
+  finish-message: ask (default; editable suggestion), auto (generated message).
+  finish-checkout: target (default), work; applies after target publication.
+  finish-cleanup: ask (default), keep, local, both; applies after target publication.
+  local deletes local work; both deletes local and published work; keep retains branches.
+  Guided review delivery omits integration settings and questions.
+  Other modes ask integration policies; ff-only omits the message policy.
+  --yes retains unresolved ask policies and the target checkout default.
   finish-checks is an ordered list of objects with a name string and command list.
   command is a nonempty executable-and-argument list; shell syntax requires an explicit shell.
   Defaults contain no checks. A local list replaces the shared list; [] disables inherited checks.

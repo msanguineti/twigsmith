@@ -36,6 +36,124 @@ pub enum FinishRewrite {
     Deny,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishMode {
+    Ask,
+    Review,
+    Integrate,
+}
+impl FinishMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Review => "review",
+            Self::Integrate => "integrate",
+        }
+    }
+}
+pub(crate) fn parse_mode(value: &str) -> Result<FinishMode, String> {
+    match value {
+        "ask" => Ok(FinishMode::Ask),
+        "review" => Ok(FinishMode::Review),
+        "integrate" => Ok(FinishMode::Integrate),
+        _ => Err("finish-mode must be ask, review, or integrate".into()),
+    }
+}
+/// Final target integration is separate from updating the working branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishIntegration {
+    Ask,
+    FfOnly,
+    /// Create a merge commit, including when fast-forward is possible.
+    Merge,
+    Squash,
+}
+impl FinishIntegration {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::FfOnly => "ff-only",
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+        }
+    }
+}
+pub(crate) fn parse_integration(value: &str) -> Result<FinishIntegration, String> {
+    match value {
+        "ask" => Ok(FinishIntegration::Ask),
+        "ff-only" => Ok(FinishIntegration::FfOnly),
+        "merge" => Ok(FinishIntegration::Merge),
+        "squash" => Ok(FinishIntegration::Squash),
+        _ => Err("finish-integration must be ask, ff-only, merge, or squash".into()),
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishMessage {
+    Ask,
+    Auto,
+}
+impl FinishMessage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+        }
+    }
+}
+pub(crate) fn parse_message(value: &str) -> Result<FinishMessage, String> {
+    match value {
+        "ask" => Ok(FinishMessage::Ask),
+        "auto" => Ok(FinishMessage::Auto),
+        _ => Err("finish-message must be ask or auto".into()),
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishCheckout {
+    Target,
+    Work,
+}
+impl FinishCheckout {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Target => "target",
+            Self::Work => "work",
+        }
+    }
+}
+pub(crate) fn parse_checkout(value: &str) -> Result<FinishCheckout, String> {
+    match value {
+        "target" => Ok(FinishCheckout::Target),
+        "work" => Ok(FinishCheckout::Work),
+        _ => Err("finish-checkout must be target or work".into()),
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishCleanup {
+    Ask,
+    Keep,
+    Local,
+    Both,
+}
+impl FinishCleanup {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Keep => "keep",
+            Self::Local => "local",
+            Self::Both => "both",
+        }
+    }
+}
+pub(crate) fn parse_cleanup(value: &str) -> Result<FinishCleanup, String> {
+    match value {
+        "ask" => Ok(FinishCleanup::Ask),
+        "keep" => Ok(FinishCleanup::Keep),
+        "local" => Ok(FinishCleanup::Local),
+        "both" => Ok(FinishCleanup::Both),
+        _ => Err("finish-cleanup must be ask, keep, local, or both".into()),
+    }
+}
+
 /// An exact process argument vector; shell syntax requires an explicit shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FinishCheck {
@@ -180,6 +298,11 @@ pub struct SettingSources {
     pub base_remote: Option<SettingSource>,
     pub base: SettingSource,
     pub save_action: SettingSource,
+    pub finish_mode: SettingSource,
+    pub finish_integration: SettingSource,
+    pub finish_message: SettingSource,
+    pub finish_checkout: SettingSource,
+    pub finish_cleanup: SettingSource,
     pub finish_update: SettingSource,
     pub finish_rewrite: SettingSource,
     pub finish_checks: SettingSource,
@@ -191,6 +314,11 @@ impl Default for SettingSources {
             base_remote: None,
             base: SettingSource::BuiltIn,
             save_action: SettingSource::BuiltIn,
+            finish_mode: SettingSource::BuiltIn,
+            finish_integration: SettingSource::BuiltIn,
+            finish_message: SettingSource::BuiltIn,
+            finish_checkout: SettingSource::BuiltIn,
+            finish_cleanup: SettingSource::BuiltIn,
             finish_update: SettingSource::BuiltIn,
             finish_rewrite: SettingSource::BuiltIn,
             finish_checks: SettingSource::BuiltIn,
@@ -204,6 +332,11 @@ pub struct Settings {
     pub base_remote: String,
     pub base: String,
     pub save_action: SaveAction,
+    pub finish_mode: FinishMode,
+    pub finish_integration: FinishIntegration,
+    pub finish_message: FinishMessage,
+    pub finish_checkout: FinishCheckout,
+    pub finish_cleanup: FinishCleanup,
     pub finish_update: FinishUpdate,
     pub finish_rewrite: FinishRewrite,
     pub finish_checks: Vec<FinishCheck>,
@@ -216,6 +349,11 @@ impl Default for Settings {
             base_remote: "origin".into(),
             base: "main".into(),
             save_action: SaveAction::Ask,
+            finish_mode: FinishMode::Ask,
+            finish_integration: FinishIntegration::Ask,
+            finish_message: FinishMessage::Ask,
+            finish_checkout: FinishCheckout::Target,
+            finish_cleanup: FinishCleanup::Ask,
             finish_update: FinishUpdate::Ask,
             finish_rewrite: FinishRewrite::Ask,
             finish_checks: Vec::new(),
@@ -231,6 +369,11 @@ struct Layer {
     base_remote: Option<String>,
     base: Option<String>,
     save_action: Option<String>,
+    finish_mode: Option<String>,
+    finish_integration: Option<String>,
+    finish_message: Option<String>,
+    finish_checkout: Option<String>,
+    finish_cleanup: Option<String>,
     finish_update: Option<String>,
     finish_rewrite: Option<String>,
     finish_checks: Option<Vec<FinishCheck>>,
@@ -243,10 +386,15 @@ impl Layer {
             "base-remote" => Ok(&mut self.base_remote),
             "base" => Ok(&mut self.base),
             "save-action" => Ok(&mut self.save_action),
+            "finish-mode" => Ok(&mut self.finish_mode),
+            "finish-integration" => Ok(&mut self.finish_integration),
+            "finish-message" => Ok(&mut self.finish_message),
+            "finish-checkout" => Ok(&mut self.finish_checkout),
+            "finish-cleanup" => Ok(&mut self.finish_cleanup),
             "finish-update" => Ok(&mut self.finish_update),
             "finish-rewrite" => Ok(&mut self.finish_rewrite),
             _ => Err(format!(
-                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite, finish-checks; local-only: redact-credentials)"
+                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-mode, finish-integration, finish-message, finish-checkout, finish-cleanup, finish-update, finish-rewrite, finish-checks; local-only: redact-credentials)"
             )),
         }
     }
@@ -274,6 +422,21 @@ impl Layer {
         }
         if let Some(action) = &self.save_action {
             parse_action(action).map_err(|e| invalid(path, e))?;
+        }
+        if let Some(value) = &self.finish_mode {
+            parse_mode(value).map_err(|e| invalid(path, e))?;
+        }
+        if let Some(value) = &self.finish_integration {
+            parse_integration(value).map_err(|e| invalid(path, e))?;
+        }
+        if let Some(value) = &self.finish_message {
+            parse_message(value).map_err(|e| invalid(path, e))?;
+        }
+        if let Some(value) = &self.finish_checkout {
+            parse_checkout(value).map_err(|e| invalid(path, e))?;
+        }
+        if let Some(value) = &self.finish_cleanup {
+            parse_cleanup(value).map_err(|e| invalid(path, e))?;
         }
         if let Some(update) = &self.finish_update {
             parse_update(update).map_err(|e| invalid(path, e))?;
@@ -308,6 +471,26 @@ impl Layer {
         if let Some(action) = self.save_action {
             settings.save_action = parse_action(&action).expect("validated layer");
             settings.sources.save_action = source.clone();
+        }
+        if let Some(value) = self.finish_mode {
+            settings.finish_mode = parse_mode(&value).expect("validated layer");
+            settings.sources.finish_mode = source.clone();
+        }
+        if let Some(value) = self.finish_integration {
+            settings.finish_integration = parse_integration(&value).expect("validated layer");
+            settings.sources.finish_integration = source.clone();
+        }
+        if let Some(value) = self.finish_message {
+            settings.finish_message = parse_message(&value).expect("validated layer");
+            settings.sources.finish_message = source.clone();
+        }
+        if let Some(value) = self.finish_checkout {
+            settings.finish_checkout = parse_checkout(&value).expect("validated layer");
+            settings.sources.finish_checkout = source.clone();
+        }
+        if let Some(value) = self.finish_cleanup {
+            settings.finish_cleanup = parse_cleanup(&value).expect("validated layer");
+            settings.sources.finish_cleanup = source.clone();
         }
         if let Some(update) = self.finish_update {
             settings.finish_update = parse_update(&update).expect("validated layer");

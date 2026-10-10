@@ -6,7 +6,9 @@ use crate::{
         publication,
     },
     repository::{self, Head, InspectionError, Observation},
-    settings::{self, FinishRewrite, FinishUpdate},
+    settings::{
+        FinishCheckout, FinishCleanup, FinishIntegration, FinishMode, FinishRewrite, FinishUpdate,
+    },
     status::display as terminal_display,
 };
 use std::{
@@ -83,8 +85,32 @@ fn redact_url_userinfo(value: &str) -> String {
     }
     output
 }
-fn parse(args: &[OsString]) -> Result<(Request, bool, bool), &'static str> {
+#[derive(Debug, Default)]
+struct Completion {
+    mode: Option<FinishMode>,
+    integration: Option<FinishIntegration>,
+    message: Option<String>,
+    checkout: Option<FinishCheckout>,
+    cleanup: Option<FinishCleanup>,
+}
+impl Completion {
+    fn validate(&self, mode: FinishMode) -> Result<(), &'static str> {
+        if mode == FinishMode::Review
+            && (self.integration.is_some()
+                || self.message.is_some()
+                || self.checkout.is_some()
+                || self.cleanup.is_some())
+        {
+            return Err(
+                "--integration, --message, --checkout, and --cleanup require integrate mode",
+            );
+        }
+        Ok(())
+    }
+}
+fn parse(args: &[OsString]) -> Result<(Request, Completion, bool, bool), &'static str> {
     let mut request = Request::default();
+    let mut completion = Completion::default();
     let mut show_credentials = false;
     let mut skip_checks = false;
     let mut args = args.iter();
@@ -94,6 +120,61 @@ fn parse(args: &[OsString]) -> Result<(Request, bool, bool), &'static str> {
             Some("--skip-checks") => return Err("duplicate --skip-checks"),
             Some("--show-credentials") if !show_credentials => show_credentials = true,
             Some("--show-credentials") => return Err("duplicate --show-credentials"),
+            Some("--mode") => {
+                if completion.mode.is_some() {
+                    return Err("duplicate --mode");
+                }
+                completion.mode = Some(match args.next().and_then(|arg| arg.to_str()) {
+                    Some("review") => FinishMode::Review,
+                    Some("integrate") => FinishMode::Integrate,
+                    _ => return Err("--mode requires review or integrate"),
+                });
+            }
+            Some("--integration") => {
+                if completion.integration.is_some() {
+                    return Err("duplicate --integration");
+                }
+                completion.integration = Some(match args.next().and_then(|arg| arg.to_str()) {
+                    Some("ff-only") => FinishIntegration::FfOnly,
+                    Some("merge") => FinishIntegration::Merge,
+                    Some("squash") => FinishIntegration::Squash,
+                    _ => return Err("--integration requires ff-only, merge, or squash"),
+                });
+            }
+            Some("--checkout") => {
+                if completion.checkout.is_some() {
+                    return Err("duplicate --checkout");
+                }
+                completion.checkout = Some(match args.next().and_then(|arg| arg.to_str()) {
+                    Some("target") => FinishCheckout::Target,
+                    Some("work") => FinishCheckout::Work,
+                    _ => return Err("--checkout requires target or work"),
+                });
+            }
+            Some("--cleanup") => {
+                if completion.cleanup.is_some() {
+                    return Err("duplicate --cleanup");
+                }
+                completion.cleanup = Some(match args.next().and_then(|arg| arg.to_str()) {
+                    Some("keep") => FinishCleanup::Keep,
+                    Some("local") => FinishCleanup::Local,
+                    Some("both") => FinishCleanup::Both,
+                    _ => return Err("--cleanup requires keep, local, or both"),
+                });
+            }
+            Some("-m" | "--message") => {
+                if completion.message.is_some() {
+                    return Err("duplicate --message/-m");
+                }
+                let Some(message) = args
+                    .next()
+                    .and_then(|arg| arg.to_str())
+                    .filter(|value| !value.trim().is_empty() && !value.contains('\0'))
+                else {
+                    return Err("--message/-m requires nonblank text");
+                };
+                completion.message = Some(message.into());
+            }
             Some("--update") => {
                 if request.update.is_some() {
                     return Err("duplicate --update");
@@ -118,7 +199,8 @@ fn parse(args: &[OsString]) -> Result<(Request, bool, bool), &'static str> {
             _ => return Err("unknown or malformed finish argument"),
         }
     }
-    Ok((request, show_credentials, skip_checks))
+    completion.validate(completion.mode.unwrap_or(FinishMode::Ask))?;
+    Ok((request, completion, show_credentials, skip_checks))
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -126,7 +208,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         help();
         return ExitCode::SUCCESS;
     }
-    let (mut request, show_credentials, skip_checks) = match parse(args) {
+    let (mut request, completion, show_credentials, skip_checks) = match parse(args) {
         Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("error: {error}; use finish --help (alias: f)");
@@ -144,11 +226,59 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !show_credentials
-        && let Ok(Some(context)) = repository::discover(&directory)
-        && let Ok(configured) = settings::load_with_files(&directory, &context)
-    {
-        presentation = resolve_presentation(show_credentials, Some(configured.redact_credentials));
+    // Completion resolves before remote refresh or any workflow effects. Loading
+    // validates every supplied layer, even settings inactive for review delivery.
+    let configured = match crate::config::inspect(&directory) {
+        Ok(configured) => configured,
+        Err(error) => {
+            eprintln!("error: {}", text(presentation, &error));
+            error_diagnostics(presentation, &error);
+            return ExitCode::FAILURE;
+        }
+    };
+    presentation =
+        resolve_presentation(show_credentials, Some(configured.loaded.redact_credentials));
+    let mut mode = completion
+        .mode
+        .unwrap_or(configured.loaded.settings.finish_mode);
+    if mode == FinishMode::Ask {
+        if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+            eprintln!(
+                "error: unresolved completion mode; select --mode <review|integrate> or configure finish-mode. Terminal input and stderr are required to ask."
+            );
+            return ExitCode::FAILURE;
+        }
+        eprintln!(
+            "Finish completion:\n  review     Prepare and publish the working branch for manual review.\n  integrate  Direct integration is not available yet; stops before workflow effects.\n  cancel     Stop finish."
+        );
+        let answer = match read_answer(presentation, "Completion mode (review/integrate/cancel): ")
+        {
+            Ok(answer) => answer,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        mode = match answer.as_str() {
+            "review" => FinishMode::Review,
+            "integrate" => FinishMode::Integrate,
+            _ => {
+                eprintln!(
+                    "error: invalid completion mode; rerun finish to choose review or integrate."
+                );
+                return ExitCode::FAILURE;
+            }
+        };
+    }
+    if let Err(error) = completion.validate(mode) {
+        eprintln!("error: {error}; use finish --help (alias: f)");
+        return ExitCode::from(2);
+    }
+    if mode == FinishMode::Integrate {
+        eprintln!(
+            "error: direct integration is not available yet. Finish made no workflow changes or remote publication; use --mode review for review delivery."
+        );
+        return ExitCode::FAILURE;
     }
     let initial = match finish::assess(&directory, &request, None) {
         Ok(plan) => plan,
@@ -162,6 +292,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if initial.repository != configured.repository || initial.settings != configured.loaded.settings
+    {
+        eprintln!(
+            "error: repository or settings changed while resolving completion mode; rerun finish."
+        );
+        return ExitCode::FAILURE;
+    }
     let refresh = preparation::refresh(&directory, &initial);
     let Some(mut plan) = refresh.plan.clone().filter(|_| refresh.error.is_none()) else {
         preparation_failure(presentation, &refresh, None);
@@ -502,6 +639,9 @@ fn prompt(
             "Replace published history (allow/deny/cancel): "
         }
     };
+    read_answer(presentation, prompt)
+}
+fn read_answer(presentation: Presentation, prompt: &str) -> Result<String, String> {
     eprint!("{prompt}");
     io::stderr().flush().map_err(|e| {
         format!(
@@ -843,11 +983,19 @@ fn error_diagnostics(presentation: Presentation, error: &(dyn std::error::Error 
 }
 fn help() {
     println!(
-        "Prepare and publish the current branch for submission. Alias: f.
+        "Complete the current working branch. Alias: f.
 
-Usage: git-oneflow finish [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
+Usage: git-oneflow finish [--mode <review|integrate>] [--integration <ff-only|merge|squash>]
+                          [-m|--message <text>] [--checkout <target|work>] [--cleanup <keep|local|both>]
+                          [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
 
 Options:
+  --mode <review|integrate>   Override finish-mode
+  --integration <ff-only|merge|squash>
+                             Select the final target integration method
+  -m, --message <text>        Supply the final integration commit message
+  --checkout <target|work>    Select checkout after target publication
+  --cleanup <keep|local|both> Select work-branch retention after target publication
   --update <rebase|merge|none>  Override finish-update
   --allow-rewrite             Authorize eligible published-history replacement
   --no-rewrite                Deny published-history replacement
@@ -857,12 +1005,19 @@ Options:
 
 Examples:
   gof finish
-  gof f --update merge
-  git-oneflow finish --update rebase --allow-rewrite
+  gof f --mode review --update merge
+  git-oneflow finish --mode review --update rebase --allow-rewrite
   gof finish --update none --no-rewrite
   gof finish --skip-checks
 
 Details:
+  Completion mode resolves before remote refresh. ask needs terminal input and stderr.
+  review prepares and publishes the work branch for manual review, keeping it checked out.
+  Direct integration is not available yet; integrate stops before workflow effects.
+  Integration options require integrate mode; valid inactive settings remain validated.
+  Integration merge means a merge commit; --update merge prepares the work branch.
+  -m supplies a literal nonblank final integration message, retaining its whitespace.
+  It never amends work commits or supplies a review description.
   Requires a clean, attached working branch with a commit, separate from the base.
   Runs configured checks in order from the working-tree root after preparation.
   Commands inherit the environment, receive EOF on stdin, and stream stdout/stderr.
@@ -890,6 +1045,14 @@ Details:
 Settings:
   publish-remote: origin (default); base-remote follows publication unless configured
   base: main (default)
+  finish-mode: ask (default), review, integrate
+  finish-integration: ask (default), ff-only, merge, squash
+  finish-message: ask (default; editable suggestion), auto (generated message)
+  finish-checkout: target (default), work
+  finish-cleanup: ask (default), keep, local, both
+  Checkout and cleanup apply after confirmed target publication.
+  ff-only creates no commit and needs no message.
+  cleanup local deletes local work; both deletes local and published work; keep retains both.
   finish-update: ask (default), rebase, merge, none
   finish-rewrite: ask (default), allow, deny
   finish-checks: [] (default); ordered name/command objects in repository configuration
@@ -985,5 +1148,81 @@ mod presentation_tests {
             raw,
         );
         assert!(unredacted.contains("synthetic-password"));
+    }
+}
+
+#[cfg(test)]
+mod grammar_tests {
+    use super::*;
+    fn parsed(args: &[&str]) -> Result<(Request, Completion, bool, bool), &'static str> {
+        parse(&args.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+    #[test]
+    fn completion_grammar_valid_values_and_literal_messages() {
+        for integration in ["ff-only", "merge", "squash"] {
+            for checkout in ["target", "work"] {
+                for cleanup in ["keep", "local", "both"] {
+                    for flag in ["-m", "--message"] {
+                        let (_, completion, _, _) = parsed(&[
+                            "--integration",
+                            integration,
+                            flag,
+                            "literal\n message",
+                            "--cleanup",
+                            cleanup,
+                            "--checkout",
+                            checkout,
+                            "--mode",
+                            "integrate",
+                        ])
+                        .unwrap();
+                        assert_eq!(completion.mode, Some(FinishMode::Integrate));
+                        assert_eq!(completion.integration.unwrap().as_str(), integration);
+                        assert_eq!(completion.checkout.unwrap().as_str(), checkout);
+                        assert_eq!(completion.cleanup.unwrap().as_str(), cleanup);
+                        assert_eq!(completion.message.as_deref(), Some("literal\n message"));
+                    }
+                }
+            }
+        }
+        assert!(parsed(&["--mode", "review", "--update", "merge", "--no-rewrite"]).is_ok());
+        assert!(parsed(&["-m", "-literal"]).is_ok());
+    }
+    #[test]
+    fn completion_grammar_missing_invalid_duplicate_and_conflicting_arguments() {
+        for (flag, valid) in [
+            ("--mode", "review"),
+            ("--integration", "merge"),
+            ("--checkout", "target"),
+            ("--cleanup", "keep"),
+        ] {
+            assert!(parsed(&[flag]).is_err());
+            assert!(parsed(&[flag, "ask"]).is_err());
+            assert!(parsed(&[flag, "INVALID"]).is_err());
+            assert!(parsed(&[flag, valid, flag, valid]).is_err());
+            assert!(parsed(&[flag, "--mode", "integrate"]).is_err());
+        }
+        for flag in ["-m", "--message"] {
+            assert!(parsed(&[flag]).is_err());
+            for invalid in ["", " \n", "nul\0"] {
+                assert!(parsed(&[flag, invalid]).is_err());
+            }
+            for other in ["-m", "--message"] {
+                assert!(parsed(&[flag, "first", other, "second"]).is_err());
+            }
+            assert!(parsed(&["--mode", "review", flag, "message"]).is_err());
+        }
+        for (flag, value) in [
+            ("--integration", "merge"),
+            ("--checkout", "target"),
+            ("--cleanup", "both"),
+        ] {
+            assert!(parsed(&[flag, value, "--mode", "review"]).is_err());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            assert!(parse(&[OsString::from("-m"), OsString::from_vec(vec![255])]).is_err());
+        }
     }
 }

@@ -65,7 +65,14 @@ fn prepared(local: &Repository, update: FinishUpdate) -> Plan {
 fn cli(local: &Repository, update: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
         .current_dir(local.path())
-        .args(["finish", "--update", update, "--allow-rewrite"])
+        .args([
+            "finish",
+            "--mode",
+            "review",
+            "--update",
+            update,
+            "--allow-rewrite",
+        ])
         .output()
         .unwrap()
 }
@@ -737,7 +744,14 @@ fn split_role_executor_death_and_lost_acknowledgement_need_no_final_write() {
                 .unwrap();
                 let out = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
                     .current_dir(f.local.path())
-                    .args(["finish", "--update", "rebase", "--allow-rewrite"])
+                    .args([
+                        "finish",
+                        "--mode",
+                        "review",
+                        "--update",
+                        "rebase",
+                        "--allow-rewrite",
+                    ])
                     .env("PATH", paths)
                     .output()
                     .unwrap();
@@ -867,7 +881,14 @@ fn base_endpoint_rewrites_and_role_diagnostics_keep_credentials_redacted() {
             );
             let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
                 .current_dir(f.local.path())
-                .args(["finish", "--update", "none", "--show-credentials"])
+                .args([
+                    "finish",
+                    "--mode",
+                    "review",
+                    "--update",
+                    "none",
+                    "--show-credentials",
+                ])
                 .output()
                 .unwrap();
             assert!(String::from_utf8_lossy(&output.stderr).contains("role-secret"));

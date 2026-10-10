@@ -14,7 +14,8 @@ The finish library provides read-only
 assessment, controlled remote refresh, branch preparation, verified durable rebase recovery,
 configured checks of prepared work, and exact publication with destination-specific
 safeguards. The finish CLI composes these backends and resolves consequential choices through flags, settings,
-or terminal input. Guided setup exposes both finish policies with `ask` defaults.
+or terminal input. Guided setup exposes completion and preparation policies with
+conditional integration questions and `ask` defaults.
 
 The application separates repository observation and planning from effects and
 command presentation. Plans are revalidated before mutations. Multi-step
@@ -90,7 +91,8 @@ Reports separate confirmed effects, rejection, uncertainty, and tracking errors.
 Cross-destination publication is sequential and non-atomic; details and transport
 limits are in the finish contract.
 
-The CLI performs initial assessment and refresh, resolves only plan-required
+The CLI loads and resolves completion mode before refresh; review performs initial
+assessment and refresh, resolves only plan-required
 choices, then composes preparation, checks, and publication. It revalidates the
 reviewed plan around each input-driven reassessment; preparation repeats remote observation
 before branch execution. Rewrite authorization is independent of update selection.
@@ -254,7 +256,15 @@ The accepted command boundary is one `finish` command, with completion behavior
 selected through configuration and explicit per-run overrides. Ordinary work can
 end at delivery for manual review or at direct Git integration and publication of
 the project target. Unresolved required choices use the established interactive
-input policy. Direct integration is accepted direction, not implemented behavior.
+input policy. `finish-mode` selects `ask`, `review`, or `integrate`; explicit mode
+flags override
+local/shared/default settings. Review uses the existing backends. Direct integration
+is execution-blocked before refresh or workflow effects pending its complete backend.
+`finish-integration`, `finish-message`, `finish-checkout`, and `finish-cleanup` expose
+its invocation contract; every layer validates them even when inactive. Explicit
+integration options require integrate mode and do not imply completion selection.
+Settings and sources participate in equality/revalidation. Guided review omits
+integration-specific settings; unattended generation retains unresolved policies.
 
 Accepted ordinary-work completion policy:
 
@@ -316,7 +326,6 @@ merged ancestry against upstream or HEAD, which is not proof of squash integrati
 into the intended target. Recovery and cleanup need evidence connecting the exact
 source to its actual integration result and confirmed target publication.
 
-The configuration schema, completion/integration option names, detailed execution
-and publication sequencing, recovery verification, and cleanup safeguards remain
-to be specified before implementing ordinary-work integration. The existing contracts
-remain authoritative for implemented behavior.
+Detailed integration execution and publication sequencing, recovery verification,
+and cleanup safeguards remain to be specified before implementing ordinary-work
+integration. The existing contracts remain authoritative for implemented behavior.

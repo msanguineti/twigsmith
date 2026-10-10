@@ -33,6 +33,9 @@ pub fn render_defaults(format: Format) -> String {
 }
 
 pub fn render(format: Format, proposed: &settings::Settings) -> String {
+    render_document(format, proposed, false)
+}
+fn render_document(format: Format, proposed: &settings::Settings, guided: bool) -> String {
     // Serialize the schema in each format rather than sharing scalar quoting rules.
     #[derive(serde::Serialize)]
     #[serde(rename_all = "kebab-case")]
@@ -42,6 +45,15 @@ pub fn render(format: Format, proposed: &settings::Settings) -> String {
         base_remote: Option<&'a str>,
         base: &'a str,
         save_action: &'a str,
+        finish_mode: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_integration: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_message: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_checkout: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        finish_cleanup: Option<&'a str>,
         finish_update: &'a str,
         finish_rewrite: &'a str,
         finish_checks: &'a [settings::FinishCheck],
@@ -53,6 +65,17 @@ pub fn render(format: Format, proposed: &settings::Settings) -> String {
             .then_some(proposed.base_remote.as_str()),
         base: &proposed.base,
         save_action: proposed.save_action.as_str(),
+        finish_mode: proposed.finish_mode.as_str(),
+        finish_integration: (!guided || proposed.finish_mode != settings::FinishMode::Review)
+            .then_some(proposed.finish_integration.as_str()),
+        finish_message: (!guided
+            || (proposed.finish_mode != settings::FinishMode::Review
+                && proposed.finish_integration != settings::FinishIntegration::FfOnly))
+            .then_some(proposed.finish_message.as_str()),
+        finish_checkout: (!guided || proposed.finish_mode != settings::FinishMode::Review)
+            .then_some(proposed.finish_checkout.as_str()),
+        finish_cleanup: (!guided || proposed.finish_mode != settings::FinishMode::Review)
+            .then_some(proposed.finish_cleanup.as_str()),
         finish_update: proposed.finish_update.as_str(),
         finish_rewrite: proposed.finish_rewrite.as_str(),
         finish_checks: &proposed.finish_checks,
@@ -237,7 +260,7 @@ impl GenerationPlan {
             .join(self.format.filename())
     }
     pub fn contents(&self) -> String {
-        render(self.format, &self.proposed)
+        render_document(self.format, &self.proposed, self.review.is_some())
     }
     pub fn review(&self) -> &Review {
         self.review.as_ref().expect("guided plan")

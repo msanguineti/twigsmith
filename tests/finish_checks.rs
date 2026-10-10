@@ -533,7 +533,7 @@ fn cli_inspects_literal_checks_start_and_save_ignore_them() {
                     repo.success(&["add", filename]);
                     repo.success(&["commit", "-m", "shared checks"]);
                     write(&repo.path().join(".git"), index, &[]);
-                    let finished = run(&["finish", "--update", "none"]);
+                    let finished = run(&["finish", "--mode", "review", "--update", "none"]);
                     assert!(finished.status.success(), "{finished:?}");
                     assert!(!repo.path().join("check-was-executed").exists());
                 }
@@ -546,6 +546,7 @@ fn finish_cli(repo: &Repository, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_gof"))
         .current_dir(repo.path())
         .arg("finish")
+        .args(["--mode", "review"])
         .args(args)
         .output()
         .unwrap()
@@ -604,6 +605,7 @@ fn real_checks_use_literal_arguments_root_environment_and_order() {
                 .current_dir(&nested)
                 .env("CHECK_ENV", "inherited value")
                 .arg("f")
+                .args(["--mode", "review"])
                 .output()
                 .unwrap();
             assert!(output.status.success(), "{output:?}");
@@ -834,7 +836,7 @@ fn skip_checks_all_tool_aliases_reports_bypass_and_keeps_hooks_active() {
                     let run = || {
                         Command::new(executable)
                             .current_dir(repo.path())
-                            .args([alias, "--skip-checks"])
+                            .args([alias, "--mode", "review", "--skip-checks"])
                             .output()
                             .unwrap()
                     };
@@ -944,7 +946,7 @@ fn cancellation_stops_check_group_retains_preparation_and_blocks_publication() {
             let mut term = terminal::Terminal::start(
                 env!("CARGO_BIN_EXE_gof"),
                 repo.path(),
-                &["finish", "--update", "rebase"],
+                &["finish", "--mode", "review", "--update", "rebase"],
             );
             term.until("CHECK-READY");
             term.interrupt();
@@ -1064,8 +1066,11 @@ fn check_output_without_newline_is_live_and_fragmented_credentials_are_redacted(
                     "printf 'REA%s' DY; while ! test -f .git/continue; do sleep 0.01; done; printf 'https://user:synthetic-fragment'; sleep 0.05; printf 'ed-secret@example.invalid/path\\n'; exit 1",
                 )],
             );
-            let mut term =
-                terminal::Terminal::start(env!("CARGO_BIN_EXE_gof"), repo.path(), &["finish"]);
+            let mut term = terminal::Terminal::start(
+                env!("CARGO_BIN_EXE_gof"),
+                repo.path(),
+                &["finish", "--mode", "review"],
+            );
             term.until("READY");
             fs::write(repo.path().join(".git/continue"), "").unwrap();
             assert_eq!(term.finish().code(), Some(1), "{}", term.output);
@@ -1109,6 +1114,7 @@ fn relative_executable_runs_from_discovered_linked_worktree_root() {
             let output = Command::new(env!("CARGO_BIN_EXE_gof"))
                 .current_dir(nested)
                 .arg("finish")
+                .args(["--mode", "review"])
                 .output()
                 .unwrap();
             assert!(output.status.success(), "{output:?}");

@@ -76,6 +76,36 @@ fn assert_defaults(directory: &Path, filename: &str) {
     assert_eq!(loaded.finish_update, defaults.finish_update);
     assert_eq!(loaded.finish_rewrite, defaults.finish_rewrite);
     assert!(loaded.finish_checks.is_empty());
+    for (value, expected, origin) in [
+        (
+            loaded.finish_mode.as_str(),
+            "ask",
+            &loaded.sources.finish_mode,
+        ),
+        (
+            loaded.finish_integration.as_str(),
+            "ask",
+            &loaded.sources.finish_integration,
+        ),
+        (
+            loaded.finish_message.as_str(),
+            "ask",
+            &loaded.sources.finish_message,
+        ),
+        (
+            loaded.finish_checkout.as_str(),
+            "target",
+            &loaded.sources.finish_checkout,
+        ),
+        (
+            loaded.finish_cleanup.as_str(),
+            "ask",
+            &loaded.sources.finish_cleanup,
+        ),
+    ] {
+        assert_eq!(value, expected);
+        assert_eq!(*origin, SettingSource::Shared(directory.join(filename)));
+    }
     let source = SettingSource::Shared(directory.join(filename));
     assert_eq!(loaded.sources.publish_remote, source);
     assert_eq!(loaded.sources.base, source);
@@ -384,7 +414,14 @@ fn unsupported_settings_stop_workflows_before_fallback_publication() {
                 vec!["config", "show"],
                 vec!["start", "new-work"],
                 vec!["save", "--publish-only"],
-                vec!["finish", "--update", "none", "--allow-rewrite"],
+                vec![
+                    "finish",
+                    "--mode",
+                    "review",
+                    "--update",
+                    "none",
+                    "--allow-rewrite",
+                ],
             ] {
                 check(
                     run(exe, repo.path(), &args),
@@ -818,9 +855,9 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     terminal.until("Publication remote");
                     assert!(terminal.output.contains("hint-only"));
                     terminal.send(if custom {
-                        b"future-remote\n\nfuture/base\nwip\nmerge\nallow\n\n"
+                        b"future-remote\n\nfuture/base\nwip\nmerge\nallow\n\n\n\n\n\n\n"
                     } else {
-                        b"\n\n\n\n\n\n\n"
+                        b"\n\n\n\n\n\n\n\n\n\n\n\n"
                     });
                     terminal.until("Create this file?");
                     assert!(!repo.path().join(filename).exists());
@@ -935,7 +972,7 @@ fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
             terminal.until("finish-update must be");
             terminal.send(b"none\ninvalid\n");
             terminal.until("finish-rewrite must be");
-            terminal.send(b"deny\n\n");
+            terminal.send(b"deny\n\n\n\n\n\n\n");
             terminal.until("Create this file?");
             terminal.send(b"y\n");
             terminal.until("Enter yes to create");
@@ -966,13 +1003,18 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
                 ("\n\n\n", "Default save action"),
                 ("\n\n\n\n", "Default finish update"),
                 ("\n\n\n\n\n", "Default finish rewrite"),
-                ("\n\n\n\n\n\n", "Finish check name"),
-                ("\n\n\n\n\n\nCheck\n", "Command as JSON"),
+                ("\n\n\n\n\n\n", "Default finish mode"),
+                ("\n\n\n\n\n\n\n", "Default finish integration"),
+                ("\n\n\n\n\n\n\n\n", "Default finish message"),
+                ("\n\n\n\n\n\n\n\n\n", "Default finish checkout"),
+                ("\n\n\n\n\n\n\n\n\n\n", "Default finish cleanup"),
+                ("\n\n\n\n\n\n\n\n\n\n\n", "Finish check name"),
+                ("\n\n\n\n\n\n\n\n\n\n\nCheck\n", "Command as JSON"),
                 (
-                    "\n\n\n\n\n\nCheck\n[\"missing\"]\n",
+                    "\n\n\n\n\n\n\n\n\n\n\nCheck\n[\"missing\"]\n",
                     "Finish check name [Enter to finish]:",
                 ),
-                ("\n\n\n\n\n\n\n", "Create this file?"),
+                ("\n\n\n\n\n\n\n\n\n\n\n\n", "Create this file?"),
             ] {
                 for cancel in [b"cancel\n".as_slice(), b"\x04", b"partial\x04\x04"] {
                     let repo = Repository::new(root);
@@ -999,7 +1041,7 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
                 let before = snapshot(repo.path());
                 let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                 terminal.until("Publication remote");
-                terminal.send(b"\n\n\n\n\n\n\n");
+                terminal.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
                 terminal.until("Create this file?");
                 terminal.send(answer);
                 assert_eq!(terminal.finish().code(), Some(0));
@@ -1039,7 +1081,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                     terminal.until("Publication remote");
                     if confirmation {
-                        terminal.send(b"\n\n\n\n\n\n\n");
+                        terminal.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
                         terminal.until("Create this file?");
                     }
                     match mutation {
@@ -1086,7 +1128,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     terminal.send(if confirmation {
                         b"yes\n"
                     } else {
-                        b"\n\n\n\n\n\n\n"
+                        b"\n\n\n\n\n\n\n\n\n\n\n\n"
                     });
                     assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
                     assert_eq!(snapshot(repo.path()), before);
@@ -1267,8 +1309,15 @@ fn differing_remote_roles_preserve_finish_readiness_guards() {
             repo.success(&["remote", "add", "project", "/missing/project"]);
             let before = snapshot(root);
             for args in [
-                vec!["finish", "--update", "none", "--allow-rewrite"],
-                vec!["f"],
+                vec![
+                    "finish",
+                    "--mode",
+                    "review",
+                    "--update",
+                    "none",
+                    "--allow-rewrite",
+                ],
+                vec!["f", "--mode", "review"],
             ] {
                 check(
                     run(exe, repo.path(), &args),
@@ -1365,7 +1414,9 @@ fn guided_remote_roles_review_selected_intent_with_private_precedence() {
                             &["config", "--format", format],
                         );
                         term.until("Publication remote");
-                        term.send(format!("personal\n{base_answer}\n\n\n\n\n\n").as_bytes());
+                        term.send(
+                            format!("personal\n{base_answer}\n{}", "\n".repeat(10)).as_bytes(),
+                        );
                         term.until("Create this file?");
                         let split = base_answer == "project";
                         let base =
@@ -1469,7 +1520,7 @@ fn guided_checks_preserve_order_arguments_and_private_list_replacement() {
                         &["config", "--format", format],
                     );
                     term.until("Publication remote");
-                    let mut answers = "\n\n\n\n\n\n".to_string();
+                    let mut answers = "\n\n\n\n\n\n\n\n\n\n\n".to_string();
                     for check in &checks {
                         answers.push_str(&check.name);
                         answers.push('\n');
@@ -1537,7 +1588,7 @@ fn guided_invalid_check_entries_can_be_corrected() {
             let repo = Repository::new(root);
             let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
             term.until("Publication remote");
-            term.send(b"\n\n\n\n\n\n   \n");
+            term.send(b"\n\n\n\n\n\n\n\n\n\n\n   \n");
             term.until("Use a nonblank display name");
             term.send(b"Tests\ncargo test\n[1]\nnull\n{\"command\": []}\n");
             term.until("Use a JSON array of strings");
@@ -1554,6 +1605,126 @@ fn guided_invalid_check_entries_can_be_corrected() {
                     command: vec!["cargo".into(), "test".into(), "".into()],
                 }]
             );
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn guided_completion_questions_generation_and_effective_private_review() {
+    cases(
+        "guided_completion_questions_generation_and_effective_private_review",
+        true,
+        |root, exe| {
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                for (mode, method, message) in [
+                    ("review", "ask", "ask"),
+                    ("integrate", "ff-only", "ask"),
+                    ("integrate", "merge", "auto"),
+                    ("ask", "squash", "ask"),
+                ] {
+                    let repo = Repository::new(root);
+                    fs::write(repo.path().join(".git/git-oneflow.config.toml"), "finish-mode='integrate'\nfinish-integration='squash'\nfinish-message='auto'\nfinish-checkout='work'\nfinish-cleanup='both'\n").unwrap();
+                    let before = snapshot(&repo.path().join(".git"));
+                    let mut term = terminal::Terminal::start(
+                        exe,
+                        repo.path(),
+                        &["config", "--format", format],
+                    );
+                    term.until("Publication remote");
+                    let mut answers = format!("{}{}\n", "\n".repeat(6), mode);
+                    if mode != "review" {
+                        answers.push_str(&format!("{method}\n"));
+                        if method != "ff-only" {
+                            answers.push_str(&format!("{message}\n"));
+                        }
+                        answers.push_str("target\nlocal\n");
+                    }
+                    answers.push('\n'); // no checks
+                    term.send(answers.as_bytes());
+                    term.until("Create this file?");
+                    assert_eq!(
+                        term.output.contains("Default finish integration"),
+                        mode != "review",
+                        "{}",
+                        term.output
+                    );
+                    assert_eq!(
+                        term.output.contains("Default finish message"),
+                        mode != "review" && method != "ff-only",
+                        "{}",
+                        term.output
+                    );
+                    assert_eq!(
+                        term.output.contains("Default finish checkout"),
+                        mode != "review",
+                        "{}",
+                        term.output
+                    );
+                    assert_eq!(
+                        term.output.contains("Default finish cleanup"),
+                        mode != "review",
+                        "{}",
+                        term.output
+                    );
+                    for (key, value) in [
+                        ("mode", "integrate"),
+                        ("integration", "squash"),
+                        ("message", "auto"),
+                        ("checkout", "work"),
+                        ("cleanup", "both"),
+                    ] {
+                        assert!(
+                            term.output
+                                .contains(&format!("Effective finish-{key}: {value} (local:")),
+                            "{}",
+                            term.output
+                        );
+                    }
+                    term.send(b"yes\n");
+                    assert!(term.finish().success(), "{}", term.output);
+                    assert_eq!(snapshot(&repo.path().join(".git")), before);
+                    let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
+                    for key in ["finish-integration", "finish-checkout", "finish-cleanup"] {
+                        assert_eq!(contents.contains(key), mode != "review", "{contents}");
+                    }
+                    assert_eq!(
+                        contents.contains("finish-message"),
+                        mode != "review" && method != "ff-only"
+                    );
+                    fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+                    let shared = load(repo.path());
+                    assert_eq!(shared.finish_mode.as_str(), mode);
+                    assert_eq!(shared.finish_integration.as_str(), method);
+                    assert_eq!(shared.finish_message.as_str(), message);
+                    assert_eq!(shared.finish_checkout.as_str(), "target");
+                    assert_eq!(
+                        shared.finish_cleanup.as_str(),
+                        if mode == "review" { "ask" } else { "local" }
+                    );
+                }
+            }
+            // Review with no private override accurately shows omitted policies as built-ins.
+            let repo = Repository::new(root);
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Publication remote");
+            term.send(b"\n\n\n\n\n\nreview\n\n");
+            term.until("Create this file?");
+            assert!(
+                term.output
+                    .contains("Effective finish-mode: review (shared:")
+            );
+            assert!(
+                term.output
+                    .contains("Effective finish-cleanup: ask (built-in default)")
+            );
+            assert!(term.output.contains("inactive for review delivery"));
+            term.send(b"no\n");
+            assert!(term.finish().success());
         },
     );
 }

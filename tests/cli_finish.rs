@@ -30,6 +30,11 @@ fn run_command(exe: &str, directory: &Path, command: &str, args: &[&str]) -> Out
         .current_dir(directory)
         .arg(command)
         .args(args)
+        .args(if matches!(args, ["--help" | "-h"]) {
+            vec![]
+        } else {
+            vec!["--mode", "review"]
+        })
         .stdin(Stdio::null())
         .output()
         .unwrap()
@@ -484,7 +489,11 @@ fn finish_terminal_choices_and_separate_authorization() {
                 for update in ["rebase", "merge", "none"] {
                     let (local, remote) = fixture(root, true, true);
                     let before = work_snapshot(&local);
-                    let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
+                    let mut term = terminal::Terminal::start(
+                        exe,
+                        local.path(),
+                        &[command, "--mode", "review"],
+                    );
                     term.until("Update (rebase/merge/none/cancel)");
                     contains(
                         &term.output,
@@ -507,8 +516,11 @@ fn finish_terminal_choices_and_separate_authorization() {
             }
             let (local, _remote) = fixture(root, true, true);
             let before = work_snapshot(&local);
-            let mut term =
-                terminal::Terminal::start(exe, local.path(), &["finish", "--update", "rebase"]);
+            let mut term = terminal::Terminal::start(
+                exe,
+                local.path(),
+                &["finish", "--mode", "review", "--update", "rebase"],
+            );
             term.until("Replace published history (");
             term.send(b"deny\n");
             assert_eq!(term.finish().code(), Some(1));
@@ -527,7 +539,8 @@ fn finish_terminal_cancel_eof_and_invalid_input_preserve_branch_work() {
         |root, exe| {
             let (local, _remote) = fixture(root, true, true);
             let before = work_snapshot(&local);
-            let mut term = terminal::Terminal::start(exe, local.path(), &["finish"]);
+            let mut term =
+                terminal::Terminal::start(exe, local.path(), &["finish", "--mode", "review"]);
             term.until("Update (");
             term.interrupt();
             assert!(!term.finish().success());
@@ -542,9 +555,9 @@ fn finish_terminal_cancel_eof_and_invalid_input_preserve_branch_work() {
                     let (local, remote) = fixture(root, true, true);
                     let before = work_snapshot(&local);
                     let args = if rewrite {
-                        vec!["finish", "--update", "rebase"]
+                        vec!["finish", "--mode", "review", "--update", "rebase"]
                     } else {
-                        vec!["finish"]
+                        vec!["finish", "--mode", "review"]
                     };
                     let mut term = terminal::Terminal::start(exe, local.path(), &args);
                     term.until(if rewrite {
@@ -589,9 +602,9 @@ fn finish_terminal_revalidates_local_and_remote_changes_during_input() {
                 ] {
                     let (local, remote) = fixture(root, true, true);
                     let args = if rewrite {
-                        vec!["finish", "--update", "rebase"]
+                        vec!["finish", "--mode", "review", "--update", "rebase"]
                     } else {
-                        vec!["finish"]
+                        vec!["finish", "--mode", "review"]
                     };
                     let mut term = terminal::Terminal::start(exe, local.path(), &args);
                     term.until(if rewrite {
@@ -787,6 +800,176 @@ fn finish_shorthand_publishes_with_identical_options() {
                     0,
                     &["unchanged (already published)"],
                 );
+            }
+        },
+    );
+}
+
+// Completion tests invoke the public grammar without the review helper's override.
+fn completion_run(exe: &str, directory: &Path, command: &str, args: &[&str]) -> Output {
+    Command::new(exe)
+        .current_dir(directory)
+        .arg(command)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn completion_unresolved_and_integration_boundary_are_effect_free_with_all_aliases() {
+    cases(
+        "completion_unresolved_and_integration_boundary_are_effect_free_with_all_aliases",
+        true,
+        |root, exe| {
+            for command in ["finish", "f"] {
+                let (local, _remote) = fixture(root, false, true);
+                let private = local.path().join(".git/git-oneflow.config.toml");
+                for policy in [
+                    "",
+                    "finish-mode='ask'\n",
+                    "finish-mode='review'\n",
+                    "finish-mode='integrate'\n",
+                ] {
+                    fs::write(&private, format!("{policy}finish-update='rebase'\nfinish-rewrite='allow'\n[[finish-checks]]\nname='Must not run'\ncommand=['sh','-c','touch .git/check-ran']\n")).unwrap();
+                    let before = preservation::snapshot(root);
+                    check(
+                        completion_run(
+                            exe,
+                            local.path(),
+                            command,
+                            &[
+                                "--mode",
+                                "integrate",
+                                "--integration",
+                                "merge",
+                                "-m",
+                                "Final integration",
+                                "--checkout",
+                                "work",
+                                "--cleanup",
+                                "both",
+                            ],
+                        ),
+                        1,
+                        &["direct integration is not available", "no workflow changes"],
+                    );
+                    assert_eq!(preservation::snapshot(root), before);
+                    if !policy.contains("review") {
+                        check(
+                            completion_run(exe, local.path(), command, &[]),
+                            1,
+                            &[if policy.contains("integrate") {
+                                "direct integration is not available"
+                            } else {
+                                "unresolved completion mode"
+                            }],
+                        );
+                        assert_eq!(preservation::snapshot(root), before);
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn completion_mode_layers_flag_precedence_review_conflicts_and_inactive_validation() {
+    cases(
+        "completion_mode_layers_flag_precedence_review_conflicts_and_inactive_validation",
+        true,
+        |root, exe| {
+            for command in ["finish", "f"] {
+                let (local, remote) = fixture(root, false, false);
+                fs::write(
+                    local.path().join("git-oneflow.config.toml"),
+                    "finish-mode='integrate'\n",
+                )
+                .unwrap();
+                local.success(&["add", "git-oneflow.config.toml"]);
+                local.success(&["commit", "-m", "shared completion"]);
+                let private = local.path().join(".git/git-oneflow.config.json");
+                fs::write(&private, r#"{"finish-mode":"review","finish-integration":"squash","finish-message":"auto","finish-checkout":"work","finish-cleanup":"both"}"#).unwrap();
+                let before = preservation::snapshot(root);
+                check(
+                    completion_run(exe, local.path(), command, &["--integration", "merge"]),
+                    2,
+                    &["require integrate mode"],
+                );
+                assert_eq!(preservation::snapshot(root), before);
+                check(
+                    completion_run(exe, local.path(), command, &[]),
+                    0,
+                    &["Published", "for review"],
+                );
+                published(&local, &remote);
+                fs::write(&private, r#"{"finish-mode":"integrate"}"#).unwrap();
+                check(
+                    completion_run(exe, local.path(), command, &["--mode", "review"]),
+                    0,
+                    &["already published"],
+                );
+                fs::write(
+                    &private,
+                    r#"{"finish-mode":"review","finish-cleanup":"invalid"}"#,
+                )
+                .unwrap();
+                let before = preservation::snapshot(root);
+                check(
+                    completion_run(exe, local.path(), command, &["--mode", "review"]),
+                    1,
+                    &["invalid settings", "finish-cleanup"],
+                );
+                assert_eq!(preservation::snapshot(root), before);
+            }
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
+    cases(
+        "completion_terminal_mode_choices_cancellation_and_settings_revalidation",
+        true,
+        |root, exe| {
+            for command in ["finish", "f"] {
+                for answer in [
+                    b"integrate\n".as_slice(),
+                    b"cancel\n",
+                    b"\x04",
+                    b"review\x04\x04",
+                    b"invalid\n",
+                ] {
+                    let (local, _remote) = fixture(root, false, true);
+                    let before = preservation::snapshot(root);
+                    let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
+                    term.until("Completion mode (");
+                    term.send(answer);
+                    assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+                    assert!(!term.output.contains("Default finish message"));
+                    assert_eq!(preservation::snapshot(root), before);
+                }
+                let (local, remote) = fixture(root, false, false);
+                let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
+                term.until("Completion mode (");
+                term.send(b"review\n");
+                assert!(term.finish().success(), "{}", term.output);
+                assert!(!term.output.contains("Integration commit message"));
+                published(&local, &remote);
+                let (local, _remote) = fixture(root, false, true);
+                let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
+                term.until("Completion mode (");
+                fs::write(
+                    local.path().join(".git/git-oneflow.config.toml"),
+                    "finish-mode='integrate'\n",
+                )
+                .unwrap();
+                let before = preservation::snapshot(root);
+                term.send(b"review\n");
+                assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+                assert!(term.output.contains("settings changed"), "{}", term.output);
+                assert_eq!(preservation::snapshot(root), before);
             }
         },
     );

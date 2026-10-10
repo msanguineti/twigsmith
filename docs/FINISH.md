@@ -1,7 +1,7 @@
 # Finish contract
 
-Finish prepares and publishes the current working branch for delivery. This
-contract is implemented through read-only assessment/revalidation, controlled
+In review mode, finish prepares and publishes the current working branch for
+delivery. This contract is implemented through read-only assessment/revalidation, controlled
 remote refresh, branch preparation, configured checks, durable rebase recovery
 evidence, and exact publication, exposed identically by `git-oneflow finish` and
 `gof finish`.
@@ -22,15 +22,22 @@ The configuration schema includes:
 
 | Setting | Values | Default |
 | --- | --- | --- |
+| `finish-mode` | `ask`, `review`, `integrate` | `ask` |
+| `finish-integration` | `ask`, `ff-only`, `merge`, `squash` | `ask` |
+| `finish-message` | `ask`, `auto` | `ask` |
+| `finish-checkout` | `target`, `work` | `target` |
+| `finish-cleanup` | `ask`, `keep`, `local`, `both` | `ask` |
 | `finish-update` | `ask`, `rebase`, `merge`, `none` | `ask` |
 | `finish-rewrite` | `ask`, `allow`, `deny` | `ask` |
 | `finish-checks` | Ordered list of `{ name, command }` objects | `[]` |
 
 Shared and common-directory local TOML/YAML/YML/JSON files
 use the same strict validation and sparse per-key precedence. Every present value
-is validated, including overridden values. Sources retain defaults or exact
-shared/local paths. Explicit `finish::Request` choices override settings; their
+is validated, including overridden and inactive integration values. Sources retain
+defaults or exact shared/local paths. Explicit `finish::Request` choices override settings; their
 provenance is `Request`. The CLI accepts `finish` (alias: `f`), `finish --help` (also `-h`),
+`--mode <review|integrate>`, `--integration <ff-only|merge|squash>`,
+`-m/--message <text>`, `--checkout <target|work>`, `--cleanup <keep|local|both>`,
 `--update <rebase|merge|none>`, either `--allow-rewrite` or `--no-rewrite`,
 `--skip-checks`, and `--show-credentials`.
 Update and rewrite flags combine in either order. Rewrite flags are mutually
@@ -51,7 +58,7 @@ An omitted local list inherits the shared list. A supplied local list replaces
 it completely; an empty list disables inherited checks. Both layers are validated
 even when overridden. The effective ordered list and its whole-list source are
 part of settings equality and plan/setup revalidation. Generated defaults contain
-an explicit empty list; guided check entry is deferred.
+an explicit empty list; guided setup accepts ordered check entries.
 
 The execution pipeline is refresh → prepare → configured checks → revalidate →
 publish. Start, save, and configuration inspection never execute finish checks.
@@ -74,9 +81,27 @@ contain independent constraints at the same time.
 
 ## CLI interaction and outcomes
 
-The CLI assesses local readiness, refreshes remote observations/objects, and then
-presents only choices required by the resulting plan. Independent constraints
-stop execution without asking choices that cannot make the plan ready. Update
+The CLI first loads every configuration layer and resolves completion mode from
+`--mode`, local, shared, or built-in `ask`. Unresolved mode prompts with review,
+integrate, and cancel under the same complete-line terminal input policy as other
+choices; unattended mode fails with flags/settings guidance. Integration selection
+stops before remote refresh, workflow mutations, checks, or publication until its
+complete backend is available. Explicit integration, message, checkout, or cleanup
+options require integrate mode and do not imply it; configured inactive values are
+validated and retained. `-m` is literal nonblank UTF-8 text for the final integration
+commit, never an amendment or review description. `merge` integration specifies a
+merge commit independently of work-branch `finish-update`. Fast-forward-only
+integration requires no message. Checkout and cleanup policies apply after
+confirmed target publication.
+
+Completion resolution is CLI policy; library assessment, preparation, and
+publication APIs remain review backends. The CLI compares repository context and
+all effective settings/provenance after mode input with the initial snapshot before
+refresh, then the existing plan guards protect subsequent effects.
+
+For review delivery, the CLI assesses local readiness, refreshes remote
+observations/objects, and then presents only choices required by the resulting
+plan. Independent constraints stop execution without asking choices that cannot make the plan ready. Update
 `ask` offers rebase, merge, none, and cancellation with brief effects. A required
 replacement with rewrite `ask` receives separate allow/deny/cancel input, including
 when rebase was selected explicitly. Resolved flags/settings require no further
@@ -95,8 +120,14 @@ fails with the applicable flags and setting names. Cancellation and unresolved
 input leave branch history, index, and working-tree content unchanged by finish;
 already completed remote observations/fetches are retained and reported.
 
-Guided `config` exposes both finish settings, defaulting to `ask`; every generated
-format includes them. `config --yes` stays prompt-free and writes explicit defaults.
+Guided `config` asks completion mode and conditional integration policies. Review
+omits integration-specific questions/settings; other modes ask the integration
+method, message policy when a commit may be created, checkout, and cleanup.
+Fast-forward-only omits message policy. Effective review merges private overrides
+with proposed shared values and reports inactive settings and provenance.
+`config --yes` stays prompt-free and writes explicit built-in defaults, including
+unresolved `ask` policies. All five settings and their sources participate in
+workflow and guided-setup revalidation.
 
 Exit status is `0` only for confirmed complete publication (including unchanged
 publication and matching tracking), `1` for operational failure, unresolved input,

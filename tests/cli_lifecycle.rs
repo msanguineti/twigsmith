@@ -159,6 +159,7 @@ fn lifecycle(root: &Path, exe: &str, split: bool, base_tracking: bool) {
     let blocked = Command::new(exe)
         .current_dir(local.path())
         .arg("finish")
+        .args(["--mode", "review"])
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -175,7 +176,14 @@ fn lifecycle(root: &Path, exe: &str, split: bool, base_tracking: bool) {
     cli(
         exe,
         &local,
-        &["finish", "--update", "merge", "--no-rewrite"],
+        &[
+            "finish",
+            "--mode",
+            "review",
+            "--update",
+            "merge",
+            "--no-rewrite",
+        ],
         &format!("Next: submit {publish}/{BRANCH} for review into {base}/main."),
     );
     assert_eq!(
@@ -272,7 +280,7 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
                         &["config", "--format", format],
                     );
                     term.until("Publication remote");
-                    let mut answers = "\n\n\n\nmerge\ndeny\n".to_string();
+                    let mut answers = "\n\n\n\nmerge\ndeny\nreview\n".to_string();
                     for check in &checks {
                         answers.push_str(&check.name);
                         answers.push('\n');
@@ -296,6 +304,7 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
                     let output = Command::new(exe)
                         .current_dir(local.path())
                         .arg("finish")
+                        .args(["--mode", "review"])
                         .stdin(Stdio::null())
                         .output()
                         .unwrap();
