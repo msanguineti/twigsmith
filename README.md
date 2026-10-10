@@ -34,17 +34,17 @@ comes from configuration or `--mode`; an unresolved mode asks at a terminal.
 
 Run `gof config` to choose a publication remote and a base source for a single
 repository or a fork. Use `gof config show` to inspect effective roles and sources.
-See the [user guide](docs/USAGE.md#single-repository-and-fork-workflows) for both
+See the [user guide](docs/USAGE.md#remote-roles-and-fork-workflows) for both
 workflows and tracking styles.
 
 Use `gof --help` or `gof <command> --help` for a quick reference.
 
 ## Documentation
 
-- [User guide](docs/USAGE.md): commands, settings, automation, and recovery.
+- [User manual](docs/USAGE.md): commands, settings, automation, and recovery.
 - [Contributor guide](docs/DEVELOPMENT.md): setup, builds, checks, and
   troubleshooting.
-- [Architecture and design](docs/ENGINEERING.md): project structure, decisions,
-  and current implementation boundaries.
+- [Technical manual](docs/ENGINEERING.md): architecture, workflow invariants,
+  failure handling, and implementation diagnosis.
 
 Licensed under [MIT](LICENSE).

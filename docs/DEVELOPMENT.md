@@ -27,9 +27,16 @@ Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 
 ## Development
 
-Run `./dev check` before handing off changes. This is also the CI entry point:
-it checks formatting, builds both executables, runs tests,
-and runs Clippy with warnings treated as errors.
+For implementation, dependency, configuration, or tooling changes, run
+one complete `./dev check` against the final result. Repeat it after subsequent
+changes, failures, or unresolved concerns that warrant fresh validation. This is
+also the CI entry point: it checks formatting, builds both executables, runs
+Clippy with warnings treated as errors, and runs all tests.
+
+For documentation-only changes, check links and anchors, examples and command
+syntax, technical claims against source and existing tests, and whitespace with
+`git diff --check`. Builds, application tests, Rust formatting, and Clippy are
+unnecessary when executable behaviour and tooling are unchanged.
 
 | Command | Purpose |
 | --- | --- |
@@ -92,12 +99,10 @@ and test-harness arguments after `--`:
 before forwarding the remaining arguments. Additional selectors can expand the
 selection. An unknown or missing group fails with usage guidance.
 
-Run one complete `./dev check` against the final implementation before handoff.
-Repeat complete validation when subsequent changes, failures, or unresolved
-concerns warrant it. Focused tests support iteration and preserve comprehensive
-final validation: `./dev test` without arguments and `./dev check` run every
-Cargo-discovered test target, including CLI smoke and end-to-end tests. New tests
-participate in full runs regardless of group membership; update the group
+Focused tests support iteration. The full commands, `./dev test` without
+arguments and `./dev check`, run every Cargo-discovered test target, including
+CLI smoke and end-to-end tests. New tests participate in full runs regardless
+of group membership; update the group
 definitions in `dev` when a target is useful for focused iteration.
 
 ## Run a build
@@ -132,11 +137,15 @@ For optimized executables:
   repeat `./dev check`.
 - **Corrupt tools/build outputs:** remove the affected tool/cache directories
   under `.dev/` and build outputs under `target/`, then bootstrap, build, and check
-  again.
+  again. Remove only the affected cache or tool directory; `.dev/` may also contain
+  unrelated local files.
 
 ## Contributing
 
-Use `./dev check` before handing off changes. The [engineering reference](ENGINEERING.md)
-summarizes the architecture and current implementation boundaries. Detailed
-workflow invariants are documented in the [start](START.md), [save](SAVE.md),
-and [finish](FINISH.md) contracts.
+Keep documentation aligned with substantive changes. The [user manual](USAGE.md)
+explains observable command behaviour, configuration, and recovery; the
+[technical manual](ENGINEERING.md) explains implementation responsibilities,
+invariants, and rationale. Update or remove superseded explanations instead of
+adding change histories. Keep setup and validation instructions in this guide.
+
+Use the validation appropriate to the change described above.
