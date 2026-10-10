@@ -66,7 +66,7 @@ test_group() {
             ;;
         finish)
             group_description='Finish planning, preparation, publication, recovery, and command interaction'
-            group_targets='finish_planning finish_preparation finish_publication finish_roles finish_checks cli_finish'
+            group_targets='finish_integration finish_planning finish_preparation finish_publication finish_roles finish_checks cli_finish'
             ;;
         config)
             group_description='Settings, setup, and cross-command finish-check configuration'

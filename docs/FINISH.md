@@ -5,8 +5,10 @@ delivery. This contract is implemented through read-only assessment/revalidation
 remote refresh, branch preparation, configured checks, durable rebase recovery
 evidence, and exact publication, exposed identically by `git-oneflow finish` and
 `gof finish`.
-External integrations, provider submission, integration into the base, tagging,
-and cleanup are deferred.
+Direct integration has a separate read-only planning and recovery model in
+`finish::integration`. Its execution, remote refresh, record writes, checks,
+publication, cleanup, and CLI enablement are deferred. Provider submission and
+tagging are also outside the implemented boundary.
 
 ## Configuration and choices
 
@@ -94,8 +96,9 @@ merge commit independently of work-branch `finish-update`. Fast-forward-only
 integration requires no message. Checkout and cleanup policies apply after
 confirmed target publication.
 
-Completion resolution is CLI policy; library assessment, preparation, and
-publication APIs remain review backends. The CLI compares repository context and
+Completion resolution is CLI policy. The root `finish::assess`, preparation, and
+publication APIs are review backends; `finish::integration::assess` models direct
+integration separately and has no executor. The CLI compares repository context and
 all effective settings/provenance after mode input with the initial snapshot before
 refresh, then the existing plan guards protect subsequent effects.
 
@@ -546,6 +549,145 @@ replacement. These checks protect against stale or inconsistent local evidence;
 they do not authenticate against someone able to forge both Git history/logs and
 private metadata. Repository observation remains a sequence of reads, not a lock
 against concurrent external mutation.
+
+## Direct integration plans
+
+`finish::integration::assess(directory, request, evidence)` models ordinary work
+ending at the configured project target: the exact `refs/heads/<base>` at
+`base-remote`. It does not call review delivery's working-branch publication
+planner. Branch prefixes have no operational meaning. The request resolves update,
+integration, message, checkout, and cleanup independently of CLI mode dispatch.
+The CLI continues to stop integrate mode before effects.
+
+A plan names the source ref/version, local target version, target fetch endpoint,
+and ordered target push endpoints. Fresh `RemoteEvidence` binds those selections
+and, for published-work cleanup, the exact source ref at `publish-remote`'s push
+endpoints. Neither conventional nor custom remote-tracking caches supply this
+evidence. The caller is responsible for observation freshness; assessment checks
+bindings and local objects without contacting a remote. Unavailable, ambiguous,
+missing, or mismatched evidence blocks the affected stage explicitly.
+
+Fresh target observations must agree at the fetch endpoint and every push
+endpoint. Missing target branches require resolution outside this model. A local
+target may be absent, equal to the observed target, or behind it by proven
+ancestry. Local target commits beyond that observation, symbolic refs, and a
+target checked out in another worktree block integration. These are conservative
+product policies protecting shared history and unrelated local work; remote
+names, branch upstreams, and work-branch rewrite permission cannot broaden the
+selected effects.
+
+The plan separates work preparation from target integration:
+
+- A source already contained in the observed target needs no update, integration
+  method choice, or new commit message. It is `AlreadyIntegrated`.
+- Otherwise, a source containing the target needs no preparation. Divergent work
+  resolves `finish-update` independently: `none`, `merge`, or `rebase`.
+- A preparation plan exposes only `UpdateWork`. The actual prepared graph must be
+  reassessed before integration. It does not predict a rebase result or attach
+  target/publication authority to that prediction.
+- With preparation resolved to `none`, `ff-only` requires the target to be an
+  ancestor of the source. Failure is `FastForwardRequired`, never an implicit
+  switch to merge or squash. `merge` plans a two-parent non-fast-forward commit;
+  `squash` plans a new single-parent commit on the target.
+- A message choice is required only for a prospective new integration commit
+  when neither a literal message nor the automatic policy supplies it. Cleanup
+  `ask` remains a separate choice. Keeping the work branch checked out conflicts
+  with deleting that local branch and yields an explicit blocker.
+
+Plans expose typed required input, blockers, state, and prospective effects.
+`permitted_effects()` is empty while any choice or blocker remains. A fresh
+resolved plan permits only preparation or local integration. Publication effects
+require a corroborated result; completion effects require freshly confirmed
+publication at every target endpoint. `is_ready()` describes the current stage,
+not an executed operation or a reusable push/delete authorization. Direct
+integration never plans working-branch publication, so it does not request
+permission to replace that remote branch. Cleanup independently requires proof
+that the exact published work version is included in the pinned source; a
+rewritten source cannot inherit that proof just from an old observation.
+
+### Private integration recovery evidence
+
+The read-only model recognizes version-1 records at
+`<worktree-git-dir>/oneflow-integration/branches/<source>/attempt.json`.
+`Record::for_plan` builds evidence in memory for a resolved fresh integration
+stage; it writes nothing and refuses to replace a selected existing record.
+Records bind repository/worktree identity, exact source and target refs/commits,
+local target expectation, resolved endpoints, effective settings and provenance,
+Git configuration, invocation choices, source/target/HEAD reflog anchors, and the
+observed source versions relevant to cleanup. A unique attempt token identifies
+the intended target transition. An optional result OID acknowledges the result;
+there are no stored publication-success flags or reusable permissions.
+
+An attached work branch selects only its own record in its own worktree.
+Attempt A cannot intercept work on B, and B has a distinct record path. On the
+integration target, `active.json` must name the source, retain a valid HEAD
+reflog anchor, and corroborate a source-to-target checkout after that attempt's
+HEAD anchor. A target name, a stale selector, or a checkout from another work
+branch is insufficient. A selector for the current source with a missing record
+is a blocker. Detached or otherwise unassociated HEAD cannot authorize recovery;
+active Git operations remain visible as blockers. Record paths must be private
+on Unix and contain no symlinks.
+
+Recovery verifies the exact source version and target transition before accepting
+an integration result. For a new result, the target reflog must extend its anchor
+by exactly one transition from the expected local target to the result, carrying
+the expected old/new commit IDs. The actual commit must have the required shape: source equality plus target
+ancestry for fast-forward, exact target/source parents for merge, or the exact
+target as sole parent for squash. Squash additionally requires an action marker
+binding the attempt token, source OID, target OID, and method. It uses that exact
+operation-marked result OID; source ancestry cannot substitute for it. Ordinary
+Git merge continuation can be corroborated by the exact merge parents and anchored
+transition without preserving a custom reflog action. An already-integrated source can be
+corroborated through ancestry and the unchanged or marked target version.
+A completed marked transition can establish the result even if its optional
+acknowledgement was never written. Unmarked manual squash results remain
+unverifiable. The HEAD selector accepts anchored continuation on the target while
+a later checkout from another work branch breaks the association.
+
+The model distinguishes these states:
+
+| State | Assessment |
+| --- | --- |
+| `Fresh` | No selected attempt, or a corroborated intent with no Git effect yet |
+| `IncompleteOperation` | Active Git machinery or unfinished recorded integration/index work; no execution authority |
+| `PreparedResult` | Verified local result, requiring fresh destination evidence |
+| `PendingPublication` | One or more exact target endpoints still at the original target; checks and conditional publication remain |
+| `Published` | Every target endpoint confirms the result; only checkout/cleanup remain |
+| `Complete` | Publication and selected completion effects are observed complete |
+| `ChangedOrUnverifiable` | Context, history, or recovery evidence no longer establishes the intended attempt |
+
+During recovery, an endpoint may show either the original target or the exact
+result. Mixed observations permit only the still-pending destinations; other
+movement stops the attempt. The fetch endpoint may lag at the original target.
+Pending publication includes a check stage and literal expected target versions.
+After confirmed publication, checkout pins its destination commit, local deletion
+pins the original source, and remote deletion pins each originally observed
+source version. A source checked out in another worktree blocks its update,
+checkout, or local deletion. Missing branches count as completed cleanup only in
+this verified context. New work, changed destinations, or uncertain evidence cannot be deleted.
+A failed/uncertain publication cannot authorize cleanup. Completion does not
+repeat integration or publication already corroborated by fresh observations.
+
+Integration revalidation repeats assessment and compares the request, Git state,
+index, source/target/HEAD reflogs, worktree occupancy, settings and provenance,
+committed settings, effective Git configuration, history boundaries, selected
+record bytes, and supplied remote evidence. Relevant changes invalidate the plan,
+including a branch moved away and back while its reflog records those updates.
+Other branches' records and tracking caches are not selected authority. All
+inspection uses the no-write/no-lazy-fetch boundary. Fixtures compare contents,
+permissions, timestamps, and directory entries around assessment and revalidation.
+
+Git documents [merge modes and squash's lack of
+`MERGE_HEAD`](https://git-scm.com/docs/git-merge), [reflog entries and HEAD branch
+switches](https://git-scm.com/docs/git-reflog), and [literal expected-ref
+leases](https://git-scm.com/docs/git-push). These establish Git capabilities, not
+workflow prevalence. Our exact transition marker and conservative target/version
+checks are product safeguards verified by real-Git fixtures. Reflogs and private
+records cannot authenticate against someone able to forge both; missing objects
+or expired/altered anchors block recovery. Observations are not atomic, and remote
+leases cannot detect a ref that moved away and back to the same OID. Execution
+must reacquire remote observations and enforce exact conditional effects; this
+module supplies no transport, writer, or mutation implementation.
 
 ## Revalidation and read-only invariants
 

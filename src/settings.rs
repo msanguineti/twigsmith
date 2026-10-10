@@ -12,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SaveAction {
     Ask,
     PublishOnly,
@@ -22,21 +22,21 @@ pub enum SaveAction {
 }
 
 /// Update policy is independent of permission to replace published history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishUpdate {
     Ask,
     Rebase,
     Merge,
     None,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishRewrite {
     Ask,
     Allow,
     Deny,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishMode {
     Ask,
     Review,
@@ -60,7 +60,7 @@ pub(crate) fn parse_mode(value: &str) -> Result<FinishMode, String> {
     }
 }
 /// Final target integration is separate from updating the working branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishIntegration {
     Ask,
     FfOnly,
@@ -87,7 +87,7 @@ pub(crate) fn parse_integration(value: &str) -> Result<FinishIntegration, String
         _ => Err("finish-integration must be ask, ff-only, merge, or squash".into()),
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishMessage {
     Ask,
     Auto,
@@ -107,7 +107,7 @@ pub(crate) fn parse_message(value: &str) -> Result<FinishMessage, String> {
         _ => Err("finish-message must be ask or auto".into()),
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishCheckout {
     Target,
     Work,
@@ -127,7 +127,7 @@ pub(crate) fn parse_checkout(value: &str) -> Result<FinishCheckout, String> {
         _ => Err("finish-checkout must be target or work".into()),
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishCleanup {
     Ask,
     Keep,
@@ -284,14 +284,14 @@ pub const CONFIG_FILES: [&str; 4] = [
     "git-oneflow.config.json",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SettingSource {
     BuiltIn,
     Shared(PathBuf),
     Local(PathBuf),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingSources {
     pub publish_remote: SettingSource,
     /// None means the effective base remote follows publication.
@@ -326,7 +326,7 @@ impl Default for SettingSources {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub publish_remote: String,
     pub base_remote: String,

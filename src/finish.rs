@@ -9,6 +9,7 @@ use crate::{
 use std::{ffi::OsString, fmt, fs, io, path::Path};
 
 pub mod checks;
+pub mod integration;
 pub mod preparation;
 pub mod publication;
 mod recovery;
