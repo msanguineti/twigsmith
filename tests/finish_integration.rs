@@ -291,7 +291,7 @@ fn divergent_history_requires_independent_update_and_ff_proof() {
                     ..
                 }]
             ));
-            assert!(Record::for_plan(&prepare, "early").is_err());
+            assert!(Record::for_plan(&prepare, "early").is_ok());
             // Real preparation confirms the relationship needed for ff-only.
             f.repo.success(&["rebase", "main"]);
             let prepared = assess(root, &f, &req, Some(&e));
@@ -995,6 +995,851 @@ fn confirmed_delivery_preserves_work_checked_out_elsewhere() {
                     .contains(&Blocker::SourceInAnotherWorktree)
             );
             assert!(delivered.permitted_effects().is_empty());
+        },
+    );
+}
+
+use integration::execution;
+fn prepare_local(f: &Fixture, req: &Request) -> execution::Report {
+    let e = evidence(f, req);
+    let p = integration::assess(f.repo.path(), req, Some(&e)).unwrap();
+    execution::prepare(f.repo.path(), &p)
+}
+fn hook(f: &Fixture, name: &str, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = f.repo.success(&["config", "core.hooksPath"]);
+    let path = Path::new(text(hooks.stdout.strip_suffix(b"\n").unwrap())).join(name);
+    fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    path
+}
+fn diverge(f: &Fixture, conflict: bool) {
+    f.repo.success(&["switch", "main"]);
+    commit(
+        &f.repo,
+        if conflict { "work" } else { "target" },
+        "target work",
+    );
+    publish(f);
+    f.repo.success(&["switch", "A"]);
+}
+#[test]
+fn local_executor_prepares_all_methods_and_reuses_results() {
+    isolated(
+        "local_executor_prepares_all_methods_and_reuses_results",
+        true,
+        |root| {
+            for method in [
+                FinishIntegration::FfOnly,
+                FinishIntegration::Merge,
+                FinishIntegration::Squash,
+            ] {
+                for update in [
+                    FinishUpdate::None,
+                    FinishUpdate::Merge,
+                    FinishUpdate::Rebase,
+                ] {
+                    let f = fixture(root);
+                    if update != FinishUpdate::None {
+                        diverge(&f, false);
+                    }
+                    let original = oid(&f.repo, "A");
+                    let base = oid(&f.repo, "main");
+                    let remote_before = preservation::snapshot(f.project.path());
+                    let fork_before = preservation::snapshot(f.fork.path());
+                    let mut req = request(method);
+                    req.update = Some(update);
+                    req.message = Some("Final message\n\nLiteral `text` $value".into());
+                    let report = prepare_local(&f, &req);
+                    assert!(report.is_prepared(), "{report:#?}");
+                    let p = report.plan.unwrap();
+                    let result = p.result.clone().unwrap();
+                    assert_eq!(result, oid(&f.repo, "HEAD"));
+                    assert_eq!(
+                        fs::read_to_string(f.repo.path().join("work")).unwrap(),
+                        "work A"
+                    );
+                    if update != FinishUpdate::None {
+                        assert!(f.repo.path().join("target").exists());
+                    }
+                    let parents = f
+                        .repo
+                        .success(&["show", "-s", "--format=%P", text(&result)])
+                        .stdout;
+                    let prepared = oid(&f.repo, "A");
+                    match method {
+                        FinishIntegration::FfOnly => assert_eq!(result, prepared),
+                        FinishIntegration::Merge => assert_eq!(
+                            text(&parents).trim(),
+                            format!("{} {}", text(&base), text(&prepared))
+                        ),
+                        FinishIntegration::Squash => assert_eq!(text(&parents).trim(), text(&base)),
+                        _ => unreachable!(),
+                    }
+                    if method != FinishIntegration::FfOnly {
+                        assert_eq!(
+                            text(
+                                &f.repo
+                                    .success(&["show", "-s", "--format=%B", "HEAD"])
+                                    .stdout
+                            )
+                            .trim(),
+                            req.message.as_deref().unwrap()
+                        );
+                    }
+                    let record: Record = serde_json::from_slice(
+                        &fs::read(p.recovery_path.as_ref().unwrap()).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(oid(&f.repo, &record.original_ref()), original);
+                    assert_eq!(oid(&f.repo, &record.result_ref()), result);
+                    assert!(
+                        execution::check(f.repo.path(), &p, false, |_| {})
+                            .checks
+                            .error
+                            .is_none()
+                    );
+                    let retried = prepare_local(&f, &req);
+                    assert!(retried.is_prepared(), "{retried:#?}");
+                    assert_eq!(retried.plan.unwrap().result, Some(result));
+                    assert_eq!(preservation::snapshot(f.project.path()), remote_before);
+                    assert_eq!(preservation::snapshot(f.fork.path()), fork_before);
+                }
+            }
+        },
+    );
+}
+#[test]
+fn local_executor_handles_missing_behind_and_already_integrated_targets() {
+    isolated(
+        "local_executor_handles_missing_behind_and_already_integrated_targets",
+        true,
+        |root| {
+            for case in ["missing", "behind", "already"] {
+                let f = fixture(root);
+                let req = request(FinishIntegration::Merge);
+                match case {
+                    "missing" => {
+                        f.repo.success(&["branch", "-D", "main"]);
+                    }
+                    "behind" => {
+                        let old = oid(&f.repo, "main");
+                        diverge(&f, false);
+                        f.repo.success(&["merge", "--no-edit", "main"]);
+                        f.repo.success(&["branch", "-f", "main", text(&old)]);
+                    }
+                    _ => {
+                        f.repo.success(&["push", "project", "A:main"]);
+                    }
+                }
+                let r = prepare_local(&f, &req);
+                assert!(r.is_prepared(), "{case}: {r:#?}");
+                assert!(
+                    execution::check(f.repo.path(), r.plan.as_ref().unwrap(), false, |_| {})
+                        .checks
+                        .error
+                        .is_none()
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn local_executor_conflicts_use_git_continuation_and_retain_original_work() {
+    isolated(
+        "local_executor_conflicts_use_git_continuation_and_retain_original_work",
+        true,
+        |root| {
+            for (update, method) in [
+                (FinishUpdate::None, FinishIntegration::Merge),
+                (FinishUpdate::None, FinishIntegration::Squash),
+                (FinishUpdate::Rebase, FinishIntegration::FfOnly),
+                (FinishUpdate::Merge, FinishIntegration::Squash),
+            ] {
+                let f = fixture(root);
+                diverge(&f, true);
+                let original = oid(&f.repo, "A");
+                let mut req = request(method);
+                req.update = Some(update);
+                let failed = prepare_local(&f, &req);
+                assert!(failed.error.is_some(), "{failed:#?}");
+                assert_eq!(
+                    failed.plan.as_ref().unwrap().state,
+                    State::IncompleteOperation,
+                    "{failed:#?}"
+                );
+                assert!(
+                    failed
+                        .guidance()
+                        .contains(if update == FinishUpdate::Rebase {
+                            "git rebase --continue"
+                        } else if update == FinishUpdate::Merge
+                            || method == FinishIntegration::Merge
+                        {
+                            "git merge --continue"
+                        } else {
+                            "Squash has no merge continuation"
+                        })
+                );
+                fs::write(f.repo.path().join("work"), "resolved work").unwrap();
+                f.repo.success(&["add", "work"]);
+                if update == FinishUpdate::Rebase {
+                    f.repo
+                        .success(&["-c", "core.editor=true", "rebase", "--continue"]);
+                } else if update == FinishUpdate::Merge || method == FinishIntegration::Merge {
+                    f.repo
+                        .success(&["-c", "core.editor=true", "merge", "--continue"]);
+                } else {
+                    let record: Record = serde_json::from_slice(
+                        &fs::read(
+                            failed
+                                .plan
+                                .as_ref()
+                                .unwrap()
+                                .recovery_path
+                                .as_ref()
+                                .unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    marked(&f, &record, &["commit", "-m", "resolved squash"]);
+                }
+                let complete = prepare_local(&f, &req);
+                assert!(complete.is_prepared(), "{complete:#?}");
+                assert_eq!(
+                    fs::read_to_string(f.repo.path().join("work")).unwrap(),
+                    "resolved work"
+                );
+                let record: Record = serde_json::from_slice(
+                    &fs::read(complete.plan.unwrap().recovery_path.unwrap()).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(oid(&f.repo, &record.original_ref()), original);
+            }
+        },
+    );
+}
+#[test]
+fn local_executor_abort_never_counts_as_integration() {
+    isolated(
+        "local_executor_abort_never_counts_as_integration",
+        true,
+        |root| {
+            for update in [
+                FinishUpdate::None,
+                FinishUpdate::Merge,
+                FinishUpdate::Rebase,
+            ] {
+                let f = fixture(root);
+                diverge(&f, true);
+                let mut req = request(FinishIntegration::Merge);
+                req.update = Some(update);
+                let failed = prepare_local(&f, &req);
+                assert!(failed.error.is_some());
+                f.repo.success(&[
+                    if update == FinishUpdate::Rebase {
+                        "rebase"
+                    } else {
+                        "merge"
+                    },
+                    "--abort",
+                ]);
+                let e = evidence(&f, &req);
+                let p = integration::assess(f.repo.path(), &req, Some(&e)).unwrap();
+                assert!(p.result.is_none(), "{p:#?}");
+                assert!(!matches!(
+                    p.state,
+                    State::PendingPublication | State::Complete | State::PreparedResult
+                ));
+                assert!(
+                    !p.effects
+                        .iter()
+                        .any(|e| matches!(e, Effect::PublishTarget { .. }))
+                );
+                assert!(p.is_ready(), "{:?} {:?}", p.state, p.blockers);
+                let retry = execution::prepare(f.repo.path(), &p);
+                assert_eq!(
+                    retry.plan.as_ref().unwrap().state,
+                    State::IncompleteOperation
+                );
+                assert!(
+                    retry
+                        .commands
+                        .iter()
+                        .any(|c| c.arguments.iter().any(|a| a == "merge" || a == "rebase"))
+                );
+            }
+        },
+    );
+}
+#[test]
+fn local_executor_hooks_messages_and_unresolved_input_preserve_state() {
+    isolated(
+        "local_executor_hooks_messages_and_unresolved_input_preserve_state",
+        true,
+        |root| {
+            for method in [FinishIntegration::Merge, FinishIntegration::Squash] {
+                let f = fixture(root);
+                let req = request(method);
+                let path = hook(&f, "commit-msg", "exit 1");
+                let failed = prepare_local(&f, &req);
+                assert!(failed.error.is_some());
+                assert_eq!(
+                    failed.plan.as_ref().unwrap().state,
+                    State::IncompleteOperation,
+                    "{failed:#?}"
+                );
+                assert!(
+                    failed
+                        .effects
+                        .iter()
+                        .any(|e| matches!(e, execution::Effect::Retained { .. }))
+                );
+                fs::remove_file(path).unwrap();
+                if method == FinishIntegration::Merge {
+                    f.repo
+                        .success(&["-c", "core.editor=true", "merge", "--continue"]);
+                } else {
+                    let record: Record = serde_json::from_slice(
+                        &fs::read(failed.plan.unwrap().recovery_path.unwrap()).unwrap(),
+                    )
+                    .unwrap();
+                    marked(&f, &record, &["commit", "-m", "finished squash"]);
+                }
+                assert!(prepare_local(&f, &req).is_prepared());
+            }
+            let f = fixture(root);
+            fs::write(
+                f.repo.path().join(".git/git-oneflow.config.toml"),
+                "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
+            )
+            .unwrap();
+            let mut req = request(FinishIntegration::Merge);
+            let e = evidence(&f, &req);
+            let p = integration::assess(f.repo.path(), &req, Some(&e)).unwrap();
+            assert!(p.required_input.contains(&RequiredInput::Message));
+            let before = preservation::snapshot(root);
+            let failed = execution::prepare(f.repo.path(), &p);
+            assert!(failed.commands.is_empty());
+            assert_eq!(preservation::snapshot(root), before);
+            req.integration = Some(FinishIntegration::FfOnly);
+            assert!(prepare_local(&f, &req).is_prepared());
+        },
+    );
+}
+#[test]
+fn local_executor_interrupted_a_can_be_followed_by_b() {
+    isolated(
+        "local_executor_interrupted_a_can_be_followed_by_b",
+        true,
+        |root| {
+            let f = fixture(root);
+            let req = request(FinishIntegration::Merge);
+            let path = hook(&f, "post-checkout", "exit 1");
+            let stopped = prepare_local(&f, &req);
+            assert!(stopped.error.is_some());
+            assert!(
+                stopped
+                    .effects
+                    .iter()
+                    .any(|e| matches!(e, execution::Effect::CheckedOut { .. }))
+            );
+            fs::remove_file(path).unwrap();
+            let record_path = stopped.plan.unwrap().recovery_path.unwrap();
+            let bytes = fs::read(&record_path).unwrap();
+            f.repo.success(&["switch", "-c", "B", "main"]);
+            commit(&f.repo, "B", "work B");
+            let b = prepare_local(&f, &req);
+            assert!(b.is_prepared(), "{b:#?}");
+            assert_eq!(b.plan.unwrap().source_ref, b"refs/heads/B");
+            assert_eq!(fs::read(record_path).unwrap(), bytes);
+            assert!(!f.repo.path().join("work").exists());
+            assert!(observed(f.repo.path(), b"refs/heads/A") != RefObservation::Absent);
+        },
+    );
+}
+fn configure_checks(f: &Fixture, commands: &[&str]) {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(f.repo.path().join(".git/git-oneflow.config.toml"))
+        .unwrap();
+    for command in commands {
+        writeln!(
+            file,
+            "[[finish-checks]]\nname='Check'\ncommand=['sh', '-c', {}]",
+            serde_json::to_string(command).unwrap()
+        )
+        .unwrap();
+    }
+}
+#[test]
+fn candidate_checks_inspect_the_result_and_retain_it_on_failure() {
+    isolated(
+        "candidate_checks_inspect_the_result_and_retain_it_on_failure",
+        true,
+        |root| {
+            for script in [
+                "test -f target && test -f work",
+                "exit 9",
+                "git switch A",
+                "echo changed >> work",
+                "git config finish.changed true",
+                "git update-index --assume-unchanged work",
+                "git commit --allow-empty -m unexpected",
+                "git update-ref refs/heads/A HEAD",
+            ] {
+                let f = fixture(root);
+                diverge(&f, false);
+                configure_checks(&f, &[script, "exit 0"]);
+                let req = request(FinishIntegration::Squash);
+                let report = prepare_local(&f, &req);
+                assert!(report.is_prepared(), "{report:#?}");
+                let p = report.plan.unwrap();
+                let result = p.result.clone().unwrap();
+                let remote_before = preservation::snapshot(f.project.path());
+                let checks = execution::check(f.repo.path(), &p, false, |_| {}).checks;
+                if script.starts_with("test ") {
+                    assert_eq!(checks.completed, 2, "{checks:#?}");
+                    assert!(checks.error.is_none());
+                    assert_eq!(
+                        execution::check(f.repo.path(), &p, false, |_| {})
+                            .checks
+                            .completed,
+                        2
+                    );
+                } else {
+                    assert!(checks.error.is_some(), "{script}: {checks:#?}");
+                    assert_eq!(checks.completed, 0);
+                }
+                let record: Record =
+                    serde_json::from_slice(&fs::read(p.recovery_path.unwrap()).unwrap()).unwrap();
+                assert_eq!(oid(&f.repo, &record.result_ref()), result);
+                assert_eq!(preservation::snapshot(f.project.path()), remote_before);
+            }
+        },
+    );
+}
+
+fn evidence_at(path: &Path, req: &Request) -> RemoteEvidence {
+    let plan = integration::assess(path, req, None).unwrap();
+    RemoteEvidence {
+        fetched: observed(
+            Path::new(text(&plan.target.fetch_destination)),
+            &plan.target.reference,
+        ),
+        targets: plan
+            .target
+            .push_destinations
+            .iter()
+            .map(|d| DestinationEvidence {
+                destination: d.clone(),
+                branch: observed(Path::new(text(d)), &plan.target.reference),
+            })
+            .collect(),
+        target: plan.target,
+        work_remote: plan.settings.publish_remote,
+        work_ref: plan.source_ref,
+        work: vec![],
+    }
+}
+#[test]
+fn local_executor_new_process_recovers_a_completed_unacknowledged_commit() {
+    if let Some(path) = std::env::var_os("ONEFLOW_RESUME_REPO") {
+        let path = Path::new(&path);
+        let req = request(
+            if std::env::var("ONEFLOW_RESUME_METHOD").unwrap() == "merge" {
+                FinishIntegration::Merge
+            } else {
+                FinishIntegration::Squash
+            },
+        );
+        let e = evidence_at(path, &req);
+        let p = integration::assess(path, &req, Some(&e)).unwrap();
+        assert_eq!(p.state, State::PendingPublication, "{p:#?}");
+        let before = p.result.clone();
+        let p = if !p.is_ready() {
+            let stopped = execution::prepare(path, &p);
+            assert!(stopped.guidance().contains("git merge --quit"));
+            assert!(
+                git::run(path, ["merge", "--quit"])
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            integration::assess(path, &req, Some(&e)).unwrap()
+        } else {
+            p
+        };
+        let r = execution::prepare(path, &p);
+        assert!(
+            r.is_prepared(),
+            "{:?} {:?}",
+            r.error,
+            r.plan.as_ref().map(|p| (&p.state, &p.blockers))
+        );
+        assert_eq!(r.plan.unwrap().result, before);
+        return;
+    }
+    isolated(
+        "local_executor_new_process_recovers_a_completed_unacknowledged_commit",
+        true,
+        |root| {
+            for method in [FinishIntegration::Merge, FinishIntegration::Squash] {
+                let f = fixture(root);
+                let req = request(method);
+                let hook = hook(
+                    &f,
+                    if method == FinishIntegration::Merge {
+                        "post-merge"
+                    } else {
+                        "post-commit"
+                    },
+                    "kill -TERM \"$PPID\"",
+                );
+                let failed = prepare_local(&f, &req);
+                assert!(failed.error.is_some(), "{failed:#?}");
+                let p = failed.plan.unwrap();
+                assert_eq!(p.state, State::PendingPublication, "{p:#?}");
+                assert!(
+                    failed
+                        .effects
+                        .iter()
+                        .any(|e| matches!(e, execution::Effect::Integrated { .. }))
+                );
+                fs::remove_file(hook).unwrap();
+                let target_log = fs::read(f.repo.path().join(".git/logs/refs/heads/main")).unwrap();
+                let output = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "local_executor_new_process_recovers_a_completed_unacknowledged_commit",
+                        "--nocapture",
+                    ])
+                    .env("ONEFLOW_RESUME_REPO", f.repo.path())
+                    .env("ONEFLOW_RESUME_METHOD", method.as_str())
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    text(&output.stdout),
+                    text(&output.stderr)
+                );
+                assert_eq!(
+                    fs::read(f.repo.path().join(".git/logs/refs/heads/main")).unwrap(),
+                    target_log
+                );
+            }
+        },
+    );
+}
+#[test]
+fn local_executor_interruption_before_history_and_changed_evidence_stop_safely() {
+    isolated(
+        "local_executor_interruption_before_history_and_changed_evidence_stop_safely",
+        true,
+        |root| {
+            let f = fixture(root);
+            let req = request(FinishIntegration::Merge);
+            let hook = hook(
+                &f,
+                "reference-transaction",
+                "if test \"$1\" = prepared; then exit 1; fi",
+            );
+            let failed = prepare_local(&f, &req);
+            assert!(failed.error.is_some());
+            assert!(
+                failed
+                    .effects
+                    .iter()
+                    .any(|e| matches!(e, execution::Effect::Recorded(_)))
+            );
+            assert_eq!(
+                text(&f.repo.success(&["branch", "--show-current"]).stdout).trim(),
+                "A"
+            );
+            fs::remove_file(hook).unwrap();
+            let retried = prepare_local(&f, &req);
+            assert!(retried.is_prepared(), "{retried:#?}");
+            let p = retried.plan.unwrap();
+            let rec: Record =
+                serde_json::from_slice(&fs::read(p.recovery_path.as_ref().unwrap()).unwrap())
+                    .unwrap();
+            f.repo.success(&["update-ref", &rec.original_ref(), "main"]);
+            let before = preservation::snapshot(root);
+            let stopped = execution::prepare(f.repo.path(), &p);
+            assert!(stopped.error.is_some());
+            assert!(stopped.commands.is_empty());
+            assert_eq!(preservation::snapshot(root), before);
+            let fresh =
+                integration::assess(f.repo.path(), &req, Some(&evidence(&f, &req))).unwrap();
+            assert!(
+                fresh
+                    .blockers
+                    .contains(&Blocker::Recovery(Problem::InvalidResult))
+            );
+        },
+    );
+}
+#[test]
+fn local_executor_revalidates_remote_and_unrelated_local_target_history() {
+    isolated(
+        "local_executor_revalidates_remote_and_unrelated_local_target_history",
+        true,
+        |root| {
+            for remote_change in [false, true] {
+                let f = fixture(root);
+                let req = request(FinishIntegration::Merge);
+                let e = evidence(&f, &req);
+                let p = integration::assess(f.repo.path(), &req, Some(&e)).unwrap();
+                if remote_change {
+                    f.repo.success(&["push", "project", "A:main"]);
+                } else {
+                    f.repo.success(&["switch", "main"]);
+                    commit(&f.repo, "unrelated", "unrelated local target work");
+                    f.repo.success(&["switch", "A"]);
+                }
+                let target = oid(&f.repo, "main");
+                let stopped = execution::prepare(f.repo.path(), &p);
+                assert!(stopped.error.is_some());
+                assert!(stopped.effects.is_empty());
+                assert_eq!(oid(&f.repo, "main"), target);
+                assert!(!p.recovery_path.unwrap().exists());
+            }
+        },
+    );
+}
+#[test]
+fn candidate_checks_cancel_skip_and_revalidate_each_attempt() {
+    isolated(
+        "candidate_checks_cancel_skip_and_revalidate_each_attempt",
+        true,
+        |root| {
+            let f = fixture(root);
+            configure_checks(
+                &f,
+                &[
+                    "kill -TERM $PPID; while :; do sleep 1; done",
+                    "touch .git/later",
+                ],
+            );
+            let req = request(FinishIntegration::Squash);
+            let p = prepare_local(&f, &req).plan.unwrap();
+            let r = execution::check(f.repo.path(), &p, false, |_| {}).checks;
+            assert!(r.error.is_some(), "{r:#?}");
+            assert_eq!(r.completed, 0);
+            assert!(!f.repo.path().join(".git/later").exists());
+            assert_eq!(oid(&f.repo, "main"), p.result.clone().unwrap());
+            let skipped = execution::check(f.repo.path(), &p, true, |_| {}).checks;
+            assert!(skipped.skipped && skipped.error.is_none());
+            // Check observations do not modify the plan or become stored authority.
+            integration::revalidate(f.repo.path(), &p, p.evidence.as_ref()).unwrap();
+        },
+    );
+}
+#[test]
+fn preparation_can_resolve_final_message_after_git_recovery() {
+    isolated(
+        "preparation_can_resolve_final_message_after_git_recovery",
+        true,
+        |root| {
+            let f = fixture(root);
+            diverge(&f, false);
+            fs::write(
+                f.repo.path().join(".git/git-oneflow.config.toml"),
+                "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
+            )
+            .unwrap();
+            let mut req = request(FinishIntegration::Merge);
+            req.update = Some(FinishUpdate::Rebase);
+            let prepared = prepare_local(&f, &req);
+            assert!(prepared.error.is_some());
+            assert!(
+                prepared
+                    .plan
+                    .as_ref()
+                    .unwrap()
+                    .required_input
+                    .contains(&RequiredInput::Message)
+            );
+            assert_eq!(
+                oid(&f.repo, "main"),
+                commit_oid(&evidence(&f, &req).fetched)
+            );
+            req.message = Some("Resolved final message".into());
+            let done = prepare_local(&f, &req);
+            assert!(done.is_prepared(), "{done:#?}");
+        },
+    );
+}
+
+#[test]
+fn local_executor_keeps_signing_effective_and_refuses_non_ff_history() {
+    isolated(
+        "local_executor_keeps_signing_effective_and_refuses_non_ff_history",
+        true,
+        |root| {
+            let f = fixture(root);
+            diverge(&f, false);
+            let req = request(FinishIntegration::FfOnly);
+            let p = integration::assess(f.repo.path(), &req, Some(&evidence(&f, &req))).unwrap();
+            let before = preservation::snapshot(root);
+            let r = execution::prepare(f.repo.path(), &p);
+            assert!(r.error.is_some());
+            assert!(r.commands.is_empty());
+            assert_eq!(preservation::snapshot(root), before);
+            let signer = hook(
+                &f,
+                "fixture-signer",
+                "echo fixture-signing-attempt >&2; exit 1",
+            );
+            f.repo
+                .success(&["config", "gpg.program", signer.to_str().unwrap()]);
+            f.repo.success(&["config", "commit.gpgsign", "true"]);
+            f.repo.success(&["config", "user.signingkey", "fixture"]);
+            let r = prepare_local(&f, &request(FinishIntegration::Merge));
+            assert!(r.error.is_some());
+            assert!(r.commands.iter().any(|c| {
+                c.result
+                    .as_ref()
+                    .is_ok_and(|o| text(&o.stderr).contains("fixture-signing-attempt"))
+            }));
+            assert_eq!(r.plan.unwrap().state, State::IncompleteOperation);
+        },
+    );
+}
+#[test]
+fn local_executor_recovers_preparation_when_git_stops_before_target_work() {
+    isolated(
+        "local_executor_recovers_preparation_when_git_stops_before_target_work",
+        true,
+        |root| {
+            let f = fixture(root);
+            diverge(&f, false);
+            let original = oid(&f.repo, "A");
+            let mut req = request(FinishIntegration::Merge);
+            req.update = Some(FinishUpdate::Rebase);
+            // post-checkout is reached only after the rebase has been verified and
+            // before integration. It deterministically loses the checkout acknowledgement.
+            let h = hook(&f, "post-checkout", "exit 1");
+            let stopped = prepare_local(&f, &req);
+            assert!(stopped.error.is_some());
+            fs::remove_file(h).unwrap();
+            let updated = oid(&f.repo, "A");
+            assert_ne!(updated, original);
+            let source_log = fs::read(f.repo.path().join(".git/logs/refs/heads/A")).unwrap();
+            let done = prepare_local(&f, &req);
+            assert!(
+                done.is_prepared(),
+                "{:?} {:?}",
+                done.error,
+                done.plan.as_ref().map(|p| (&p.state, &p.blockers))
+            );
+            assert_eq!(
+                fs::read(f.repo.path().join(".git/logs/refs/heads/A")).unwrap(),
+                source_log
+            );
+        },
+    );
+}
+#[test]
+fn local_executor_records_are_scoped_to_linked_worktrees() {
+    isolated(
+        "local_executor_records_are_scoped_to_linked_worktrees",
+        true,
+        |root| {
+            let f = fixture(root);
+            f.repo.success(&["switch", "-c", "B", "main"]);
+            let linked = root.join("linked integration");
+            f.repo
+                .success(&["worktree", "add", linked.to_str().unwrap(), "A"]);
+            let req = request(FinishIntegration::Squash);
+            let e = evidence_at(&linked, &req);
+            let p = integration::assess(&linked, &req, Some(&e)).unwrap();
+            let done = execution::prepare(&linked, &p);
+            assert!(
+                done.is_prepared(),
+                "{:?} {:?}",
+                done.error,
+                done.plan.as_ref().map(|p| (&p.state, &p.blockers))
+            );
+            let selected = done.plan.unwrap();
+            assert!(
+                selected
+                    .recovery_path
+                    .unwrap()
+                    .starts_with(f.repo.path().join(".git/worktrees"))
+            );
+            assert_eq!(
+                text(&f.repo.success(&["branch", "--show-current"]).stdout).trim(),
+                "B"
+            );
+            assert_eq!(
+                integration::assess(f.repo.path(), &req, None)
+                    .unwrap()
+                    .source_ref,
+                b"refs/heads/B"
+            );
+        },
+    );
+}
+
+#[test]
+fn local_effects_survive_a_hook_invalidating_configuration() {
+    isolated(
+        "local_effects_survive_a_hook_invalidating_configuration",
+        true,
+        |root| {
+            let f = fixture(root);
+            let req = request(FinishIntegration::Merge);
+            let original = oid(&f.repo, "main");
+            hook(
+                &f,
+                "post-merge",
+                "printf 'invalid = [' > \"$(git rev-parse --git-common-dir)/git-oneflow.config.toml\"",
+            );
+            let r = prepare_local(&f, &req);
+            assert!(r.error.is_some());
+            assert!(r.plan.is_none());
+            let result = oid(&f.repo, "main");
+            assert_ne!(result, original);
+            assert!(r.effects.contains(&execution::Effect::TargetChanged {
+                before: RefObservation::Commit(original),
+                after: RefObservation::Commit(result),
+            }));
+        },
+    );
+}
+
+#[test]
+fn local_target_alignment_updates_its_worktree_when_resuming_on_target() {
+    isolated(
+        "local_target_alignment_updates_its_worktree_when_resuming_on_target",
+        true,
+        |root| {
+            let f = fixture(root);
+            let old = oid(&f.repo, "main");
+            diverge(&f, false);
+            let base = oid(&f.repo, "main");
+            f.repo.success(&["branch", "-f", "main", text(&old)]);
+            let req = request(FinishIntegration::Merge);
+            let e = evidence(&f, &req);
+            let p = integration::assess(f.repo.path(), &req, Some(&e)).unwrap();
+            record(&f, &p);
+            f.repo.success(&["switch", "main"]);
+            select(&f, &p);
+            let r = prepare_local(&f, &req);
+            assert!(
+                r.is_prepared(),
+                "{:?} {:?}",
+                r.error,
+                r.plan.as_ref().map(|p| (&p.state, &p.blockers))
+            );
+            assert_eq!(oid(&f.repo, "main^1"), base);
+            assert!(f.repo.path().join("target").exists());
+            assert!(f.repo.success(&["status", "--porcelain"]).stdout.is_empty());
         },
     );
 }

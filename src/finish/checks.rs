@@ -63,38 +63,51 @@ impl From<check_process::Error> for Error {
 /// Results are reports only; publication never accepts them as reusable authority.
 /// Every publish invocation executes this stage again, unless explicitly skipped.
 pub fn run(directory: &Path, plan: &Plan, skip: bool, mut event: impl FnMut(Event<'_>)) -> Report {
-    let mut report = Report::default();
-    report.error = (|| -> Result<(), Error> {
-        let root = plan
-            .repository
-            .working_tree_root
-            .as_deref()
-            .unwrap_or(directory);
+    let root = plan
+        .repository
+        .working_tree_root
+        .as_deref()
+        .unwrap_or(directory);
+    run_guarded(root, &plan.settings.finish_checks, skip, &mut event, || {
         revalidate_prepared(directory, plan)?;
         revalidate_prepared(root, plan)?;
         if !plan.is_ready() || plan.update != FinishUpdate::None {
             return Err(Error::Unprepared);
         }
+        Ok(())
+    })
+}
+
+pub(crate) fn run_guarded(
+    root: &Path,
+    checks: &[FinishCheck],
+    skip: bool,
+    mut event: impl FnMut(Event<'_>),
+    mut guard: impl FnMut() -> Result<(), Error>,
+) -> Report {
+    let mut report = Report::default();
+    report.error = (|| -> Result<(), Error> {
+        guard()?;
         if skip {
             report.skipped = true;
-            if !plan.settings.finish_checks.is_empty() {
+            if !checks.is_empty() {
                 event(Event::Skipped {
-                    count: plan.settings.finish_checks.len(),
+                    count: checks.len(),
                 });
             }
             return Ok(());
         }
-        if plan.settings.finish_checks.is_empty() {
+        if checks.is_empty() {
             return Ok(());
         }
         let cancellation = check_process::Cancellation::new()?;
-        for (index, check) in plan.settings.finish_checks.iter().enumerate() {
+        for (index, check) in checks.iter().enumerate() {
             report.failed = Some(index);
             cancellation.check()?;
-            revalidate_prepared(root, plan)?;
+            guard()?;
             event(Event::Started {
                 index,
-                total: plan.settings.finish_checks.len(),
+                total: checks.len(),
                 check,
             });
             let status =
@@ -104,7 +117,7 @@ pub fn run(directory: &Path, plan: &Plan, skip: bool, mut event: impl FnMut(Even
             if !status.success() {
                 return Err(Error::Failed(status));
             }
-            revalidate_prepared(root, plan)?;
+            guard()?;
             cancellation.check()?;
             report.completed += 1;
             event(Event::Passed { index });

@@ -1,4 +1,4 @@
-//! Versioned private evidence, with no writer or executor. Reflog corroboration
+//! Versioned private operation evidence. Reflog corroboration
 //! protects against stale/inconsistent records, not malicious local fabrication.
 use super::*;
 use std::{fs, io};
@@ -60,10 +60,10 @@ pub struct Record {
     common_dir: PathBuf,
     root: PathBuf,
     source_ref: Vec<u8>,
-    source: Vec<u8>,
+    pub(super) source: Vec<u8>,
     source_version: LogVersion,
     target: Target,
-    target_before: Vec<u8>,
+    pub(super) target_before: Vec<u8>,
     local_before: RefObservation,
     target_version: LogVersion,
     head_version: LogVersion,
@@ -77,18 +77,18 @@ pub struct Record {
     /// Exact originally observed published source versions, for conditional deletion.
     work: Vec<DestinationEvidence>,
     token: String,
+    preparation: Option<Preparation>,
+    pub(super) retained: bool,
     /// Optional acknowledgement. A lost write can be recovered from the exact
     /// operation-marked target reflog transition and the actual commit graph.
     pub result: Option<Vec<u8>>,
 }
 impl Record {
-    /// Build evidence in memory only. Future execution must persist it privately
-    /// before effects and use marker() for the target transition's reflog action.
+    /// Build evidence in memory. Execution persists it before effects.
     pub fn for_plan(plan: &Plan, token: &str) -> Result<Self, FinishError> {
         if !plan.is_ready()
             || plan.state != State::Fresh
             || plan.record.is_some()
-            || plan.integration == Integration::AfterPreparation
             || token.is_empty()
             || !token
                 .bytes()
@@ -104,7 +104,7 @@ impl Record {
         // Capture cleanup destinations before integration; a later destination
         // or branch version can never inherit deletion authority.
         Ok(Self {
-            version: 1,
+            version: 2,
             git_dir: plan.repository.git_dir.clone(),
             common_dir: plan.repository.common_dir.clone(),
             root: plan.repository.working_tree_root.clone().expect("worktree"),
@@ -129,7 +129,14 @@ impl Record {
             message: plan.request.message.clone(),
             work: e.work.clone(),
             token: token.into(),
+            preparation: (plan.integration == Integration::AfterPreparation).then(|| Preparation {
+                method: plan.update,
+                original: commit(&plan.source).expect("ready source").to_vec(),
+                source_version: LogVersion::of(plan.snapshot.source_log.as_deref()),
+                head_version: LogVersion::of(plan.snapshot.head_log.as_deref()),
+            }),
             result: None,
+            retained: false,
         })
     }
     pub fn marker(&self) -> String {
@@ -299,7 +306,7 @@ pub(super) fn select(
         return Ok(selected);
     };
     if !valid_ref(directory, &record.target.reference)?
-        || record.version != 1
+        || record.version != 2
         || record.source_ref != *reference
         || record.source_ref == record.target.reference
     {
@@ -321,9 +328,16 @@ pub(super) fn select(
             .filter_map(|l| l.split(|b| *b == b'\t').nth(1))
             .filter(|m| m.starts_with(b"checkout: "))
             .last();
+        let rebase_source = metadata(directory, "rebase-merge/head-name")?
+            .or(metadata(directory, "rebase-apply/head-name")?);
+        let rebasing = state.operations.rebase
+            && record.preparation.is_some()
+            && rebase_source.as_deref()
+                == Some([record.source_ref.as_slice(), b"\n"].concat().as_slice());
         if !record.head_version.prefix(Some(&head))
-            || last_checkout != Some(checkout.as_slice())
-            || current_ref(state).as_deref() != Some(record.target.reference.as_slice())
+            || (!rebasing
+                && (last_checkout != Some(checkout.as_slice())
+                    || current_ref(state).as_deref() != Some(record.target.reference.as_slice())))
         {
             selected.problem = Some(Problem::UnassociatedHead);
             return Ok(selected);
@@ -337,30 +351,46 @@ fn fail(plan: &mut Plan, problem: Problem) {
     plan.blockers.push(Blocker::Recovery(problem));
     plan.effects.clear();
 }
+fn base_transition(message: &[u8], record: &Record) -> bool {
+    message == record.base_marker().as_bytes()
+        || message == format!("{}: Fast-forward", record.base_marker()).as_bytes()
+}
 fn transition(record: &Record, plan: &Plan, result: &[u8]) -> bool {
-    let current = LogVersion::of(plan.snapshot.target_log.as_deref());
     if !record
         .target_version
         .prefix(plan.snapshot.target_log.as_deref())
-        || current.count != record.target_version.count + 1
     {
         return false;
     }
-    let Some(tab) = current.last.iter().position(|b| *b == b'\t') else {
+    let entries = entries(plan.snapshot.target_log.as_deref());
+    let Some(mut tail) = entries.get(record.target_version.count..) else {
         return false;
     };
-    let (fields, message) = (&current.last[..tab], &current.last[tab + 1..]);
-    let mut ids = fields.split(|b| *b == b' ');
-    let old = commit(&record.local_before)
+    let mut old = commit(&record.local_before)
         .map(<[u8]>::to_vec)
         .unwrap_or_else(|| vec![b'0'; result.len()]);
-    ids.next() == Some(old.as_slice())
-        && ids.next() == Some(result)
+    if old != record.target_before
+        && tail.first().is_some_and(|e| {
+            e.old == old && e.new == record.target_before && base_transition(e.message, record)
+        })
+    {
+        old = record.target_before.clone();
+        tail = &tail[1..];
+    }
+    let tail: Vec<_> = tail
+        .iter()
+        .filter(|e| !aborted_reset(e, &record.target_before))
+        .collect();
+    tail.len() == 1
+        && tail[0].old == old
+        && tail[0].new == result
         && (matches!(
             record.method,
             FinishIntegration::FfOnly | FinishIntegration::Merge
-        ) || message == record.marker().as_bytes()
-            || message.starts_with(format!("{}: ", record.marker()).as_bytes()))
+        ) || tail[0].message == record.marker().as_bytes()
+            || tail[0]
+                .message
+                .starts_with(format!("{}: ", record.marker()).as_bytes()))
 }
 fn valid_result(directory: &Path, record: &Record, result: &[u8]) -> Result<bool, FinishError> {
     if !valid_oid(result, record.source.len()) {
@@ -415,11 +445,19 @@ pub(super) fn assess(
         || record.requested_update != plan.request.update
         || record.checkout != plan.checkout
         || record.cleanup != plan.cleanup
-        || record.message != plan.request.message
+        || (record.message != plan.request.message
+            && !(record.message.is_none()
+                && record.preparation.is_some()
+                && plan.local_target == record.local_before
+                && record.target_version == LogVersion::of(plan.snapshot.target_log.as_deref())))
         || !valid_oid(&record.source, record.target_before.len())
         || !valid_oid(&record.target_before, record.source.len())
         || !matches!(record.source.len(), 40 | 64)
         || record.token.is_empty()
+        || !record
+            .token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         fail(plan, Problem::ChangedBinding);
         return Ok(());
@@ -447,6 +485,44 @@ pub(super) fn assess(
         fail(plan, Problem::MissingHistory);
         return Ok(());
     }
+    for (reference, expected, required) in [
+        (record.original_ref(), record.original(), record.retained),
+        (
+            record.result_ref(),
+            record.result.as_deref().unwrap_or_default(),
+            record.result.is_some(),
+        ),
+    ] {
+        if !required {
+            continue;
+        }
+        let pin = hint(directory, reference.as_bytes())?;
+        let bytes = log(directory, reference.as_bytes())?;
+        let entries = entries(bytes.as_deref());
+        if symbolic(directory, reference.as_bytes())?
+            || pin != RefObservation::Commit(expected.to_vec())
+            || entries.len() != 1
+            || entries[0].old != vec![b'0'; expected.len()]
+            || entries[0].new != expected
+            || entries[0].message != b"oneflow retain"
+        {
+            fail(plan, Problem::InvalidResult);
+            return Ok(());
+        }
+    }
+    let mut verified = record.clone();
+    if let Some(preparation) = &record.preparation {
+        if !verify_preparation(directory, plan, record, preparation)? {
+            fail(plan, Problem::ChangedSource);
+            return Ok(());
+        }
+        verified.source = commit(&plan.source).unwrap_or(&record.source).to_vec();
+        verified.source_version = LogVersion::of(plan.snapshot.source_log.as_deref());
+    }
+    let record = &verified;
+    // Keep the corroborated source available to execution without requiring an
+    // acknowledgement write after Git finishes.
+    plan.record = Some(verified.clone());
     let source_absent = plan.source == RefObservation::Absent;
     if (!source_absent
         && (plan.source != RefObservation::Commit(record.source.clone())
@@ -458,16 +534,11 @@ pub(super) fn assess(
     }
     let no_op = plan.local_target == RefObservation::Commit(record.target_before.clone())
         && ancestor(directory, &record.source, &record.target_before)? == Some(true);
-    let unchanged_target = plan.local_target == record.local_before
-        && record.target_version == LogVersion::of(plan.snapshot.target_log.as_deref());
+    let unchanged_target = target_unintegrated(record, plan);
     let result = commit(&plan.local_target).map(<[u8]>::to_vec);
     if !(no_op && unchanged_target) && result.as_ref().is_none_or(|r| !transition(record, plan, r))
     {
-        if plan.local_target == record.local_before
-            && record.target_version == LogVersion::of(plan.snapshot.target_log.as_deref())
-            && record.result.is_none()
-            && !source_absent
-        {
+        if unchanged_target && record.result.is_none() && !source_absent {
             if plan.snapshot.state.operations.is_active()
                 || plan
                     .snapshot
@@ -632,5 +703,233 @@ pub(super) fn assess(
     if plan.effects.is_empty() && plan.blockers.is_empty() && plan.required_input.is_empty() {
         plan.state = State::Complete;
     }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Preparation {
+    method: FinishUpdate,
+    original: Vec<u8>,
+    source_version: LogVersion,
+    head_version: LogVersion,
+}
+struct Entry<'a> {
+    old: &'a [u8],
+    new: &'a [u8],
+    message: &'a [u8],
+}
+fn entries(bytes: Option<&[u8]>) -> Vec<Entry<'_>> {
+    bytes
+        .unwrap_or_default()
+        .split(|b| *b == b'\n')
+        .filter_map(|line| {
+            let (fields, message) = line.split_at(line.iter().position(|b| *b == b'\t')?);
+            let mut ids = fields.split(|b| *b == b' ');
+            Some(Entry {
+                old: ids.next()?,
+                new: ids.next()?,
+                message: &message[1..],
+            })
+        })
+        .collect()
+}
+fn verify_preparation(
+    directory: &Path,
+    plan: &Plan,
+    record: &Record,
+    prep: &Preparation,
+) -> Result<bool, FinishError> {
+    if !matches!(prep.method, FinishUpdate::Merge | FinishUpdate::Rebase) {
+        return Ok(false);
+    }
+    if !prep
+        .source_version
+        .prefix(plan.snapshot.source_log.as_deref())
+        || !prep.head_version.prefix(plan.snapshot.head_log.as_deref())
+    {
+        return Ok(false);
+    }
+    let branch = entries(plan.snapshot.source_log.as_deref());
+    let Some(tail) = branch.get(prep.source_version.count..) else {
+        return Ok(false);
+    };
+    let tail: Vec<_> = tail
+        .iter()
+        .filter(|e| !aborted_reset(e, &prep.original))
+        .collect();
+    let Some(source) = commit(&plan.source) else {
+        return Ok(false);
+    };
+    if tail.is_empty() {
+        return Ok(source == prep.original);
+    }
+    if tail.len() != 1
+        || tail[0].old != prep.original
+        || tail[0].new != source
+        || ancestor(directory, &record.target_before, source)? != Some(true)
+    {
+        return Ok(false);
+    }
+    if prep.method == FinishUpdate::Merge {
+        return Ok(ancestor(directory, &prep.original, source)? == Some(true)
+            && (tail[0]
+                .message
+                .starts_with(record.prepare_marker().as_bytes())
+                || tail[0].message.starts_with(b"commit (merge): ")));
+    }
+    if prep.method != FinishUpdate::Rebase {
+        return Ok(false);
+    }
+    let finish = |action: &str| {
+        [
+            action.as_bytes(),
+            b" (finish): ",
+            &record.source_ref,
+            b" onto ",
+            &record.target_before,
+        ]
+        .concat()
+    };
+    if tail[0].message != finish("rebase") && tail[0].message != finish(&record.prepare_marker()) {
+        return Ok(false);
+    }
+    let head = entries(plan.snapshot.head_log.as_deref());
+    let Some(interval) = head.get(prep.head_version.count..) else {
+        return Ok(false);
+    };
+    let start = [
+        record.prepare_marker().as_bytes(),
+        b" (start): checkout ",
+        &record.target_before,
+    ]
+    .concat();
+    let Some(begin) = interval.iter().rposition(|e| {
+        e.old == prep.original && e.new == record.target_before && e.message == start
+    }) else {
+        return Ok(false);
+    };
+    let end_message = |action: &str| {
+        [
+            action.as_bytes(),
+            b" (finish): returning to ",
+            &record.source_ref,
+        ]
+        .concat()
+    };
+    let Some(end) = interval[begin + 1..].iter().position(|e| {
+        e.new == source
+            && (e.message == end_message("rebase")
+                || e.message == end_message(&record.prepare_marker()))
+    }) else {
+        return Ok(false);
+    };
+    Ok(!interval[begin + 1..begin + 1 + end].iter().any(|e| {
+        e.message
+            .windows(8)
+            .any(|w| w == b"(abort):" || w == b"(start):")
+    }))
+}
+fn aborted_reset(entry: &Entry<'_>, oid: &[u8]) -> bool {
+    entry.old == oid
+        && entry.new == oid
+        && matches!(
+            entry.message,
+            b"reset: moving to ORIG_HEAD" | b"reset: moving to HEAD"
+        )
+}
+fn target_unintegrated(record: &Record, plan: &Plan) -> bool {
+    if !record
+        .target_version
+        .prefix(plan.snapshot.target_log.as_deref())
+    {
+        return false;
+    }
+    let log = entries(plan.snapshot.target_log.as_deref());
+    let Some(mut tail) = log.get(record.target_version.count..) else {
+        return false;
+    };
+    let old = commit(&record.local_before)
+        .map(<[u8]>::to_vec)
+        .unwrap_or_else(|| vec![b'0'; record.source.len()]);
+    let aligned = old != record.target_before
+        && tail.first().is_some_and(|e| {
+            e.old == old && e.new == record.target_before && base_transition(e.message, record)
+        });
+    if aligned {
+        tail = &tail[1..];
+    }
+    if tail.is_empty() && !aligned {
+        return plan.local_target == record.local_before;
+    }
+    plan.local_target == RefObservation::Commit(record.target_before.clone())
+        && tail.iter().all(|e| aborted_reset(e, &record.target_before))
+}
+
+impl Record {
+    pub(super) fn prepare_marker(&self) -> String {
+        format!("oneflow-prepare-{}", self.token)
+    }
+    pub(super) fn base_marker(&self) -> String {
+        format!("oneflow-base-{}", self.token)
+    }
+    pub fn original_ref(&self) -> String {
+        format!("refs/oneflow/integration/{}/original", self.token)
+    }
+    pub fn result_ref(&self) -> String {
+        format!("refs/oneflow/integration/{}/result", self.token)
+    }
+    pub(super) fn original(&self) -> &[u8] {
+        self.preparation
+            .as_ref()
+            .map_or(&self.source, |p| &p.original)
+    }
+    pub(super) fn bind_message(&mut self, message: Option<String>) {
+        self.message = message;
+    }
+}
+
+/// Write a complete private record before Git effects. Callers revalidate the
+/// selected bytes first. Temporary files and parent directories are synced.
+pub(super) fn write<T: Serialize>(
+    root: &Path,
+    path: &Path,
+    value: &T,
+    replace: bool,
+) -> Result<(), FinishError> {
+    use std::io::Write;
+    private_read(root, path).map_err(|_| FinishError::InvalidEvidence("unsafe recovery path"))?;
+    let relative = path
+        .parent()
+        .unwrap()
+        .strip_prefix(root)
+        .map_err(|_| FinishError::InvalidEvidence("invalid recovery path"))?;
+    let mut current = root.to_owned();
+    for part in relative.components() {
+        current.push(part);
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&current) {
+            Ok(()) => {
+                fs::File::open(current.parent().unwrap())?.sync_all()?;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    private_read(root, path).map_err(|_| FinishError::InvalidEvidence("unsafe recovery path"))?;
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    file.write_all(&serde_json::to_vec(value).map_err(io::Error::other)?)?;
+    file.as_file().sync_all()?;
+    if replace {
+        file.persist(path).map_err(|e| e.error)?;
+    } else {
+        file.persist_noclobber(path).map_err(|e| e.error)?;
+    }
+    fs::File::open(path.parent().unwrap())?.sync_all()?;
     Ok(())
 }

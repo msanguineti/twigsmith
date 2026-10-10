@@ -11,10 +11,11 @@ workflow invariants are in the [start](START.md), [save](SAVE.md), and
 The native Rust CLI is invoked as `git-oneflow` or `gof`. It provides `start`,
 `save`, `finish`, `status`, and `config`, with lifecycle aliases `s`, `v`, and `f`.
 The finish library provides separate read-only review and direct-integration
-assessment, controlled review remote refresh, branch preparation, verified durable rebase recovery,
+assessment, recoverable local integration execution, controlled review remote refresh,
+branch preparation, verified durable rebase recovery,
 configured checks of prepared work, and exact publication with destination-specific
-safeguards. The finish CLI composes these backends and resolves consequential choices through flags, settings,
-or terminal input. Guided setup exposes completion and preparation policies with
+safeguards. The finish CLI composes the review backends and resolves consequential
+choices through flags, settings, or terminal input. Guided setup exposes completion and preparation policies with
 conditional integration questions and `ask` defaults.
 
 The application separates repository observation and planning from effects and
@@ -31,7 +32,7 @@ contract.
 | Git process boundary and repository observation | `src/git.rs`, `src/repository.rs` |
 | Start | `src/start.rs`, `src/start/workflow.rs` |
 | Save and publication | `src/save.rs`, `src/save/execution.rs`, `src/save/publication.rs` |
-| Finish planning, preparation, checks, publication, and recovery | `src/finish.rs`, `src/finish/integration.rs`, `src/finish/integration/recovery.rs`, `src/finish/preparation.rs`, `src/finish/checks.rs`, `src/check_process.rs`, `src/finish/publication.rs`, `src/finish/recovery.rs` |
+| Finish planning, preparation, checks, publication, and recovery | `src/finish.rs`, `src/finish/integration.rs`, `src/finish/integration/recovery.rs`, `src/finish/integration/execution.rs`, `src/finish/preparation.rs`, `src/finish/checks.rs`, `src/check_process.rs`, `src/finish/publication.rs`, `src/finish/recovery.rs` |
 | Shared branch tracking and push selection | `src/tracking.rs` |
 | Shared exact-ref push response decoding | `src/publication.rs` |
 | Isolated Git and terminal fixtures | `tests/support/` |
@@ -61,13 +62,18 @@ technical specifications here.
 ## Finish architecture and limits
 
 Finish preparation and publication are review library APIs separate from CLI policy.
-Direct integration has its own read-only plan and private-record verification model
-in `finish::integration`. It shares Git observation/ancestry primitives with review,
+Direct integration has its own read-only plan, local executor, and private-record
+verification model in `finish::integration`. It shares Git observation/ancestry
+primitives with review,
 not its working-branch publication assumptions. Plans separate preparation, local
 target integration, pinned-result publication, and confirmed-delivery completion.
 The [finish contract](FINISH.md#direct-integration-plans) defines stage effects,
-recovery selection, exact target/version guards, and evidence limits. Integration
-execution, record writing, refresh, and CLI enablement remain deferred.
+recovery selection, exact target/version guards, and evidence limits. Local execution
+retains original work and the integration result in private refs, writes versioned
+operation evidence before history changes, and corroborates Git continuation from
+reflogs and actual parentage. The target checkout is a candidate workspace; final
+checkout policy remains part of future completion. Remote refresh, target
+publication, cleanup, and CLI enablement remain deferred.
 
 Refresh observes the base remote and the publication remote's exact push
 destinations, fetches the observed objects without changing branch/tag refs, and
@@ -130,7 +136,8 @@ no command execution or executable availability checks.
 Finish publication executes the effective checks on every attempt, after
 preparation and before any destination transport. `check_process` owns literal
 process execution, streamed output events, and cancellation cleanup;
-`finish::checks` owns sequencing and prepared-context revalidation; the CLI owns
+`finish::checks` owns shared sequencing and review-context revalidation; direct
+integration supplies its own candidate guard to that same runner; the CLI owns
 progress, credential presentation, and `--skip-checks`. Publication invokes the
 stage itself so library retries cannot reuse successful results. Check reports
 are observations, never reusable publication authority. The default publication
@@ -158,7 +165,7 @@ as non-authoritative hints. Relevant local mutations invalidate the attempt;
 remote-only movement is detected by publication's destination observations and
 exact leases. Checks cannot renew those observations or rewrite evidence.
 
-Integration into the base branch, tagging, cleanup, workflow bundles, release
+Target publication and completion, tagging, cleanup, workflow bundles, release
 operations, shell completion, installers, and distribution remain future work.
 Custom
 configuration paths and `--config` are not implemented.
@@ -296,9 +303,9 @@ integration. A small private operation record binds the source, target, integrat
 result, and remaining steps. Resume must corroborate the record against current
 Git and remote state; it supplies neither reusable permission nor authority to
 delete changed branches. Git remains responsible for conflict resolution and
-continuation/abort of operations it supports. The read-only integration model
-implements these recovery assessment boundaries separately from review's durable
-rebase evidence. Execution remains deferred.
+continuation/abort of operations it supports. The integration model implements these recovery assessment boundaries separately
+from review's durable rebase evidence. Its library executor prepares and verifies
+local results; publication and completion remain deferred.
 
 Automatic recovery selection is scoped to the current work branch and worktree.
 An unfinished attempt for branch A must not intercept `finish` on branch B, nor
@@ -336,6 +343,7 @@ into the intended target. Recovery and cleanup need evidence connecting the exac
 source to its actual integration result and confirmed target publication.
 
 The finish contract specifies implemented integration planning, recovery
-verification, and prospective cleanup safeguards. Integration execution and its
-publication sequencing remain future work. The existing contracts remain
+verification, local execution, candidate checks, and prospective cleanup
+safeguards. Target publication sequencing and completion remain future work.
+The existing contracts remain
 authoritative for implemented behavior.

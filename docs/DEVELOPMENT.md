@@ -130,8 +130,9 @@ For optimized executables:
   development files; on Debian/Ubuntu these are supplied by `build-essential`.
 - **Formatting/lint failure:** run `./dev fmt`, address Clippy diagnostics, and
   repeat `./dev check`.
-- **Corrupt tools/build outputs:** remove `.dev/` and `target/` from the project
-  root, then bootstrap, build, and check again.
+- **Corrupt tools/build outputs:** remove the affected tool/cache directories
+  under `.dev/` and build outputs under `target/`, then bootstrap, build, and check
+  again.
 
 ## Contributing
 

@@ -1,4 +1,4 @@
-//! Read-only ordinary-work integration. These plans cannot be passed to the
+//! Ordinary-work local integration. These plans cannot be passed to the
 //! review executor. Remote observations are supplied by the caller, never caches.
 use super::{DestinationEvidence, FinishError, RefObservation, Relationship};
 use super::{ancestor, hint, metadata, read, relationship, run, valid_oid};
@@ -13,6 +13,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod execution;
 pub mod recovery;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -179,6 +180,7 @@ struct Snapshot {
     worktrees: Vec<u8>,
     records: Vec<Option<Vec<u8>>>,
     committed_settings: Vec<u8>,
+    pins: Vec<(RefObservation, Option<Vec<u8>>)>,
 }
 fn branch_ref(branch: &[u8]) -> Vec<u8> {
     [b"refs/heads/", branch].concat()
@@ -289,6 +291,19 @@ pub fn assess(
         },
         target_log: log(directory, &target.reference)?,
         worktrees: read(directory, &["worktree", "list", "--porcelain", "-z"])?,
+        pins: if let Some(record) = &selection.record {
+            [record.original_ref(), record.result_ref()]
+                .iter()
+                .map(|r| {
+                    Ok((
+                        hint(directory, r.as_bytes())?,
+                        log(directory, r.as_bytes())?,
+                    ))
+                })
+                .collect::<Result<_, FinishError>>()?
+        } else {
+            vec![]
+        },
         records: selection.bytes,
         committed_settings: read(directory, &config_args)?,
     };
