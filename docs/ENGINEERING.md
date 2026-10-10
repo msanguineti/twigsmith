@@ -102,8 +102,11 @@ the branch, each destination, pinned commit, and manual submission next step.
 Failure presentation retains backend effects and observed remaining state; Git
 handles conflicts and continuation/abort before rerunning finish.
 
-Finish-specific continuation/abort commands remain deferred. Submission is manual; provider integration remains
-accepted future direction only when explicitly configured.
+Finish-specific continuation/abort commands remain deferred. Submission is manual.
+After completing its Git operations, the tool reports confirmed effects and concise
+workflow-specific next steps. Provider APIs, PR creation, and post-completion
+external-tool delegation are outside the accepted boundary. Configured validation
+checks remain part of finish before publication.
 
 Finish-check configuration is an ordered typed list of display labels and exact
 process argument vectors. The local list replaces the shared list as a whole;
@@ -145,9 +148,10 @@ as non-authoritative hints. Relevant local mutations invalidate the attempt;
 remote-only movement is detected by publication's destination observations and
 exact leases. Checks cannot renew those observations or rewrite evidence.
 
-Provider adapters and their settings remain undecided. Integration into the
-base branch, tagging, cleanup, workflow profiles, release
+Integration into the base branch, tagging, cleanup, workflow bundles, release
 operations, shell completion, installers, and distribution remain future work.
+Custom
+configuration paths and `--config` are not implemented.
 
 ## Remote-role configuration
 
@@ -195,8 +199,9 @@ and finish prepares against the project
 base before publishing to the publication remote. Manual submission guidance must
 identify both the publication-remote/branch and project-base-remote/branch.
 The configured publication role governs gof operations; ordinary Git commands
-continue to use the developer's Git configuration. Fork synchronization
-and provider integration are separate future capabilities.
+continue to use the developer's Git configuration. Fork synchronization remains
+separate future work. Provider submission follows the manual completion boundary
+described above.
 
 Remote-role changes must participate in revalidation and verified rewrite recovery;
 new publication destinations cannot inherit proof or authorization from old ones.
@@ -213,3 +218,105 @@ is rejected. The configured publication role remains destination authority.
 Implicit defaults do not broaden exact operations, and user-owned Git routing
 settings remain unchanged. The [save contract](SAVE.md#preconditions-and-local-evidence)
 records the Git evidence behind this policy.
+
+## Workflow design references
+
+### Evidence informing the design
+
+The authoritative references are Ruka's
+[2017 OneFlow description](https://www.endoflineblog.com/oneflow-a-git-branching-model-and-workflow)
+and [2021 hosted adaptation](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab).
+They describe variants, not one mandatory integration method.
+
+- The original ordinary-work options are rebase plus fast-forward integration,
+  merge without fast-forward, and rebase plus merge without fast-forward.
+- Releases start at a selected development-line commit; hotfixes start from a
+  released version. Both tag their tip before merge-back. The optional second
+  long-lived branch advances to the released tag as a marker.
+- The original hotfix guidance routes integration to an active release when one
+  exists. The hosted article does not restate that case; target selection needs
+  an explicit policy rather than branch-name inference.
+- Hosted ordinary review also supports squash integration. Tagged release/hotfix
+  merge-back uses a separate branch and non-fast-forward integration, preserving
+  the tagged source while conflicts are resolved.
+- Ordinary contributions can target a release or hotfix branch. Their target
+  differs from the primary development line without making the contribution
+  itself a release operation.
+
+Updating the work branch and integrating it into a target are separate decisions.
+Git's [merge contract](https://git-scm.com/docs/git-merge) distinguishes
+fast-forward-only integration, a merge commit, and squash followed by a new
+commit; message handling depends on whether a new commit is created. Existing
+finish update policies describe work-branch preparation, not these integration
+choices.
+
+The accepted command boundary is one `finish` command, with completion behavior
+selected through configuration and explicit per-run overrides. Ordinary work can
+end at delivery for manual review or at direct Git integration and publication of
+the project target. Unresolved required choices use the established interactive
+input policy. Direct integration is accepted direction, not implemented behavior.
+
+Accepted ordinary-work completion policy:
+
+- Offer fast-forward-only, merge-commit (non-fast-forward), and squash integration.
+  Configuration or flags select the method; an unresolved required selection
+  prompts rather than imposing a universal method.
+- `-m/--message` supplies the final integration commit message. Preparation merges
+  retain their own Git-generated messages. When a final integration commit is
+  needed and no message is supplied, offer an editable suggestion under the
+  established input policy. Fast-forward integration creates no commit and needs
+  no message. Message policy remains configurable.
+- After direct integration and confirmed target publication, finish on the local
+  integration target by default. Checkout behavior remains configurable.
+- The OneFlow bundle defaults to deleting completed local and published work
+  branches after confirmed target publication. Retention remains configurable.
+  Delivery for review keeps its source branch checked out and available.
+
+Rerunning `finish` should resume a verified unfinished direct-integration attempt,
+including pending publication and cleanup, instead of blindly creating another
+integration. A small private operation record binds the source, target, integration
+result, and remaining steps. Resume must corroborate the record against current
+Git and remote state; it supplies neither reusable permission nor authority to
+delete changed branches. Git remains responsible for conflict resolution and
+continuation/abort of operations it supports. This is accepted direction for
+integration recovery, separate from the currently implemented rebase evidence.
+
+Automatic recovery selection is scoped to the current work branch and worktree.
+An unfinished attempt for branch A must not intercept `finish` on branch B, nor
+may starting B's attempt overwrite A's recovery evidence. Records in another
+worktree do not select the current operation. A shared target branch such as
+`main` is insufficient by itself to identify an attempt; recovery after target
+checkout must retain an unambiguous association with the same interrupted attempt.
+
+Accepted ordinary-work failure policy:
+
+- Readiness failures stop before integration. Preserve actual Git state on
+  conflicts, hook failures, and interruption, and report completed effects.
+- Failed checks stop publication and cleanup. Validate the effective result
+  again before a later publication attempt.
+- A moving remote target stops the attempt pending fresh assessment. Preserve
+  shared target history and retain the recoverable integration result.
+- Rejected pushes retain local results and work branches. An uncertain push
+  requires remote observation before retry; confirmed publication resumes only
+  remaining completion steps.
+- Checkout or cleanup failure after publication reports delivered integration
+  with incomplete completion. Return nonzero while required steps remain.
+- Cleanup verifies the exact source/result and target publication, and deletes
+  only expected branch versions. Retain branches containing new work. Resume
+  interrupted cleanup without repeating integration.
+- Completed effects remain completed; do not automatically undo publication,
+  discard conflict resolutions, or reset unrelated local work.
+
+Recovery design must account for squash semantics. Git's
+[merge contract](https://git-scm.com/docs/git-merge) specifies that squash does not
+record `MERGE_HEAD`; normal merge continuation/abort instructions therefore do
+not describe squash recovery. A squash result cannot generally be verified through
+source ancestry. Git's [branch deletion check](https://git-scm.com/docs/git-branch) tests
+merged ancestry against upstream or HEAD, which is not proof of squash integration
+into the intended target. Recovery and cleanup need evidence connecting the exact
+source to its actual integration result and confirmed target publication.
+
+The configuration schema, completion/integration option names, detailed execution
+and publication sequencing, recovery verification, and cleanup safeguards remain
+to be specified before implementing ordinary-work integration. The existing contracts
+remain authoritative for implemented behavior.
