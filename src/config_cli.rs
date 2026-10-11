@@ -320,7 +320,7 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
         }
     }
     eprintln!(
-        "Finish completion:\n  ask        Choose review or integrate at a terminal.\n  review     Prepare and publish the working branch for manual review.\n  integrate  Integrate into the project target and publish it. Direct integration is not available yet; finish stops before workflow effects."
+        "Finish completion:\n  ask        Choose review or integrate at a terminal.\n  review     Prepare and publish the working branch for manual review.\n  integrate  Integrate into the project target, publish it, and complete checkout and cleanup."
     );
     let Some(mode) = policy(
         "finish mode",
@@ -790,7 +790,7 @@ Details:
   Explicit base-remote resolves independently; start, save, and finish support separate roles.
   Finish defaults: finish-mode = ask; finish-update = ask; finish-rewrite = ask.
   finish-mode: ask, review, integrate. Review prepares and publishes for manual review.
-  Direct integration is not available yet; integrate stops before workflow effects.
+  Integrate delivers to base-remote, then completes selected checkout and work cleanup.
   finish-integration: ask (default), ff-only, merge (merge commit), squash.
   finish-message: ask (default; editable suggestion), auto (generated message).
   finish-checkout: target (default), work; applies after target publication.

@@ -14,7 +14,7 @@ Read the architecture and Git boundary first, then follow the relevant workflow:
   [save](#save-preserve-selected-work-then-publish)
 - [Finish for review](#finish-for-review-prepare-check-and-deliver)
 - [Publication reports and failure diagnosis](#publication-reports-and-failure-diagnosis)
-- [Direct integration library](#direct-integration-library)
+- [Direct integration](#direct-integration)
 
 ## Architecture and execution model
 
@@ -59,19 +59,20 @@ remain reportable.
 ### Current capability boundary
 
 Start creates or resumes an exact work branch. Save preserves selected local
-progress and publishes the current branch. CLI finish prepares, checks, and
-publishes that branch for manual review. It leaves review submission to the
-developer and identifies the publication branch and project base in its handoff.
-It creates no pull request, tag, or release and invokes no provider submission tool.
+progress and publishes the current branch. CLI finish prepares and checks work,
+then publishes it for manual review or delivers its integrated result to the
+project base. Review mode leaves submission to the developer and identifies the
+publication branch and project base in its handoff. Finish creates no pull
+request, tag, or release and invokes no provider submission tool.
 
-Direct integration is a separate library capability in
+Direct integration uses its own workflow library in
 [`finish::integration`](../src/finish/integration.rs). It provides read-only
 planning and recovery assessment, explicit remote refresh, local work preparation
 and target integration, guarded publication of the verified candidate, and
-verified final checkout and work-branch cleanup. Although the CLI parses
-integration options and configuration, selecting integrate mode stops before
-workflow effects. Review plans cannot be passed to the integration executor or
-used as target publication authority.
+verified final checkout and work-branch cleanup. The CLI coordinates this library
+for integrate mode, including relevant choices, message editing, delivery, and
+completion. Review plans cannot be passed to the integration executor or used as
+target publication authority.
 
 ## Repository state and the Git boundary
 
@@ -365,8 +366,8 @@ single-branch push can change local branch history through a fetch mapping.
 
 ## Finish for review: prepare, check, and deliver
 
-The CLI resolves completion mode before refresh. Integrate stops at the capability
-boundary; review composes the following library stages:
+The CLI resolves completion mode before refresh and revalidates the selected
+local plan across the mode prompt. Review composes the following library stages:
 
 ```text
 assess local readiness → refresh exact remote evidence → resolve required choices
@@ -579,7 +580,7 @@ Hooks, filters, servers, and helpers are trusted Git components whose arbitrary
 effects cannot be prevented or exhaustively observed. No completed effect is
 automatically rolled back.
 
-## Direct integration library
+## Direct integration
 
 Direct integration uses the shared Git observation/ancestry primitives and check
 runner, with its own plans and private recovery evidence. It targets the exact
@@ -587,6 +588,38 @@ configured base head at `base-remote`, rather than review's work-branch publicat
 destination. Updating the work branch and integrating into the target are
 independent decisions. The target is shared history, so working-branch rewrite
 permission cannot broaden allowed target effects.
+
+### CLI coordination and input
+
+[`finish_cli.rs`](../src/finish_cli.rs) selects the workflow before remote effects;
+[`finish_cli_integration.rs`](../src/finish_cli_integration.rs) coordinates direct
+delivery. Integration resolves only input relevant to the observed graph, prepares
+work, reassesses the actual result, publishes through the API that runs candidate
+checks, and
+completes checkout/cleanup only after an error-free delivery report. Interrupted
+result retention is repaired from a corroborated target transition before delivery
+or completion; pending delivery restores the candidate checkout when needed for
+checks. Already-delivered retries leave checkout to the completion policy. The CLI
+uses the verified root after switching branches. Review retains its independent pipeline.
+
+Choice resolution revalidates the presented plan before and after reassessment.
+New input changes only its selected choice; concurrent context changes cannot
+become fresh authorization through a prompt. Accepted method/message input after
+verified preparation is retained through a guarded private-record write before
+target effects, even if subsequent input is cancelled. A message editor follows
+Git’s editor preference resolution, documented in [git-var](https://git-scm.com/docs/git-var.html).
+The editor receives a private message file and inherited terminal I/O for normal
+interactive editor operation; message text is never shell input. Finish redacts
+its own rendered output, while the external editor controls its terminal display.
+Messages are required only for new merge/squash commits. Git commit hooks,
+message cleanup, and signing remain effective.
+
+Retained intent supplies omitted integration choices and accepted messages on
+retry. The record alone grants no authority: settings/configuration, identity,
+refs/reflogs, operation transitions, and retained commits must still corroborate
+the attempt. Explicit conflicts remain blockers. Preparation can expose an
+integration method or message choice later; only an unchanged pre-integration
+target permits binding those choices to the prepared attempt.
 
 ### Planning stages
 
@@ -758,7 +791,8 @@ An absent/behind local target is conditionally created/advanced to the observed
 target with a marked reflog transition and exact old-OID expectation. If resuming
 on the checked-out target, Git fast-forwards ref, index, and tree together.
 The executor checks out the target to construct the candidate; this temporary
-workspace choice does not execute the configured final checkout policy.
+workspace choice does not execute the configured final checkout policy. Both
+initial and recovered candidate switches protect ignored files from overwrite.
 
 Integration runs Git `--ff-only`, `--no-ff` with message, or squash followed by a
 guarded commit. The automatic message is `Integrate <source> into <target>`.

@@ -50,7 +50,7 @@ Usage: git-oneflow [OPTIONS]
 Commands:
   start, s         Create or resume a workstream
   save, v          Preserve progress and publish the current branch
-  finish, f        Prepare and publish the current branch for submission
+  finish, f        Deliver finished work for review or integration
   status           Summarize local repository state
   config           Set up or inspect shared settings
 

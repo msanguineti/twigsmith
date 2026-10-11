@@ -319,7 +319,7 @@ fn execute(root: &Path, approved: &Plan, report: &mut Report) -> Result<(), Erro
         record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
     }
     // Persist the corroborated prepared source and resolved message before target effects.
-    record.bind_message(plan.request.message.clone());
+    record.bind_choices(&plan);
     guard(root, &plan)?;
     recovery::write(
         &plan.repository.git_dir,
@@ -374,6 +374,7 @@ fn execute(root: &Path, approved: &Plan, report: &mut Report) -> Result<(), Erro
             "submodule.recurse=false",
             "switch",
             "--no-guess",
+            "--no-overwrite-ignore",
             "--",
         ]);
         a.push(repository::os(
@@ -386,13 +387,11 @@ fn execute(root: &Path, approved: &Plan, report: &mut Report) -> Result<(), Erro
     if plan.result.is_some() && plan.state != State::Fresh {
         return finish_result(root, plan, report);
     }
-    let message = plan.request.message.clone().unwrap_or_else(|| {
-        format!(
-            "Integrate {} into {}",
-            String::from_utf8_lossy(&plan.source_ref[b"refs/heads/".len()..]),
-            plan.settings.base
-        )
-    });
+    let message = plan
+        .request
+        .message
+        .clone()
+        .unwrap_or_else(|| plan.message_suggestion());
     let mut a = args(&[
         "--no-replace-objects",
         "-c",
@@ -464,7 +463,9 @@ fn finish_result(root: &Path, mut plan: Plan, report: &mut Report) -> Result<(),
         plan = fresh(root, &plan)?;
     }
     guard(root, &plan)?;
-    if current_ref(&plan.snapshot.state).as_ref() != Some(&plan.target.reference) {
+    if !matches!(plan.state, State::Published | State::Complete)
+        && current_ref(&plan.snapshot.state).as_ref() != Some(&plan.target.reference)
+    {
         let selection = recovery::Selection::observe(
             root,
             std::str::from_utf8(&plan.source_ref[b"refs/heads/".len()..])
@@ -483,6 +484,7 @@ fn finish_result(root: &Path, mut plan: Plan, report: &mut Report) -> Result<(),
             "submodule.recurse=false",
             "switch",
             "--no-guess",
+            "--no-overwrite-ignore",
             "--",
         ]);
         a.push(repository::os(

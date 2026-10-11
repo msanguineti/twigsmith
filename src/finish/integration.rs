@@ -171,6 +171,57 @@ impl Plan {
     pub fn permitted_effects(&self) -> &[Effect] {
         if self.is_ready() { &self.effects } else { &[] }
     }
+    /// Effective request, including intent recovered from the associated attempt.
+    pub fn request(&self) -> &Request {
+        &self.request
+    }
+    pub fn message(&self) -> Option<&str> {
+        self.request.message.as_deref()
+    }
+    pub fn message_suggestion(&self) -> String {
+        format!(
+            "Integrate {} into {}",
+            String::from_utf8_lossy(
+                self.source_ref
+                    .strip_prefix(b"refs/heads/")
+                    .unwrap_or(&self.source_ref)
+            ),
+            self.settings.base
+        )
+    }
+    /// Whether accepted input can be recorded before remaining message input.
+    pub fn can_retain_choices(&self) -> bool {
+        self.record
+            .clone()
+            .is_some_and(|mut record| record.retain_choices(self).is_ok())
+    }
+    /// A corroborated transition can survive a process stopping before its
+    /// retention ref or private result acknowledgement was written.
+    pub fn needs_result_retention(&self) -> bool {
+        self.result.as_ref().is_some_and(|result| {
+            self.record.as_ref().is_some_and(|record| {
+                record.result.as_ref() != Some(result)
+                    || self
+                        .snapshot
+                        .pins
+                        .get(1)
+                        .is_none_or(|(pin, _)| *pin != RefObservation::Commit(result.clone()))
+            })
+        })
+    }
+    /// Pending delivery checks inspect the exact candidate, even when a retry
+    /// starts on the unchanged source. Delivered attempts need only completion.
+    pub fn needs_candidate_checkout(&self) -> bool {
+        let head = match &self.snapshot.state.head {
+            repository::Head::Attached { commit, .. } | repository::Head::Detached { commit } => {
+                Some(commit)
+            }
+            _ => None,
+        };
+        self.state == State::PendingPublication
+            && self.result.is_some()
+            && self.result.as_ref() != head
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Snapshot {
@@ -269,6 +320,19 @@ pub fn assess(
         push_destinations: urls(directory, &settings.base_remote, true)?,
     };
     let selection = recovery::select(directory, &repository, &state, &target.reference)?;
+    // Stored intent supplies omitted input, never proof. Recovery below must
+    // corroborate its bindings and Git transitions before permitting any effect.
+    let request = selection
+        .record
+        .as_ref()
+        .map_or_else(|| request.clone(), |record| record.request(request));
+    if request
+        .message
+        .as_ref()
+        .is_some_and(|m| m.trim().is_empty() || m.contains('\0'))
+    {
+        return Err(SaveError::BlankMessage.into());
+    }
     let source_ref = selection
         .source_ref
         .clone()
@@ -331,7 +395,7 @@ pub fn assess(
         effects: vec![],
         recovery_path: selection.path,
         evidence: evidence.cloned(),
-        request: request.clone(),
+        request,
         snapshot,
         record: selection.record,
     };
@@ -514,11 +578,9 @@ fn assess_fresh(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
             if plan.update == FinishUpdate::Ask {
                 plan.required_input.push(RequiredInput::Update);
             }
-            if plan.method == FinishIntegration::Ask {
-                plan.required_input.push(RequiredInput::Integration);
-            }
             if matches!(plan.update, FinishUpdate::Merge | FinishUpdate::Rebase) {
                 plan.integration = Integration::AfterPreparation;
+                completion_choices(plan);
                 if in_another_worktree(plan, &plan.source_ref) {
                     plan.blockers.push(Blocker::SourceInAnotherWorktree);
                 }
@@ -531,6 +593,9 @@ fn assess_fresh(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
                 // Prepared work requires its own assessment; no target/publication
                 // authority is attached to a predicted update result.
                 return Ok(());
+            }
+            if plan.method == FinishIntegration::Ask {
+                plan.required_input.push(RequiredInput::Integration);
             }
             plan.integration = match plan.method {
                 FinishIntegration::Ask => Integration::Unresolved,
@@ -592,4 +657,67 @@ pub fn revalidate(
         return Err(FinishError::ContextChanged);
     }
     Ok(())
+}
+
+/// Resolve input against the exact context presented to the caller. Answering a
+/// prompt or editing a message cannot approve concurrent local context changes.
+/// Supplied remote evidence remains the caller's observation, not a remote lock.
+pub fn resolve(
+    directory: impl AsRef<Path>,
+    reviewed: &Plan,
+    request: &Request,
+) -> Result<Plan, FinishError> {
+    let directory = directory.as_ref();
+    revalidate(directory, reviewed, reviewed.evidence.as_ref())?;
+    let resolved = assess(directory, request, reviewed.evidence.as_ref())?;
+    revalidate(directory, reviewed, reviewed.evidence.as_ref())?;
+    Ok(resolved)
+}
+
+/// Retain accepted input after verified preparation, including a method selected
+/// before message editing is cancelled. This writes private intent only; pending
+/// input continues to prohibit target effects. Fresh attempts are recorded by
+/// the executor rather than this API.
+pub fn retain_choices(directory: impl AsRef<Path>, plan: &Plan) -> Result<Plan, FinishError> {
+    let directory = directory.as_ref();
+    revalidate(directory, plan, plan.evidence.as_ref())?;
+    let root = plan
+        .repository
+        .working_tree_root
+        .as_deref()
+        .expect("worktree");
+    revalidate(root, plan, plan.evidence.as_ref())?;
+    let mut record = plan.record.clone().ok_or(FinishError::InvalidEvidence(
+        "retaining choices requires verified preparation",
+    ))?;
+    record.retain_choices(plan)?;
+    let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+    recovery::write(
+        &plan.repository.git_dir,
+        plan.recovery_path
+            .as_ref()
+            .ok_or(FinishError::InvalidEvidence("recovery path missing"))?,
+        &record,
+        true,
+    )?;
+    let next = assess(root, &plan.request, plan.evidence.as_ref())?;
+    let mut expected_snapshot = plan.snapshot.clone();
+    // Selection reads its association before the record when HEAD has left the
+    // source. The branch record is always the last selected snapshot entry.
+    *expected_snapshot
+        .records
+        .last_mut()
+        .ok_or(FinishError::InvalidEvidence("recovery snapshot missing"))? = Some(bytes);
+    if next.repository != plan.repository
+        || next.settings != plan.settings
+        || next.source_ref != plan.source_ref
+        || next.source != plan.source
+        || next.target != plan.target
+        || next.local_target != plan.local_target
+        || next.snapshot != expected_snapshot
+        || next.record.as_ref() != Some(&record)
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    Ok(next)
 }

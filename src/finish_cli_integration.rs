@@ -1,0 +1,768 @@
+//! Interactive direct integration orchestration and reports. Workflow libraries
+//! retain all authority for local effects, delivery, checkout, and deletion.
+use super::*;
+use integration::{Blocker, Plan, RequiredInput, State, completion, execution, remote};
+use std::{
+    fs,
+    process::{Command, Stdio},
+};
+
+pub(super) fn run(
+    directory: &Path,
+    initial: Plan,
+    presentation: Presentation,
+    skip_checks: bool,
+) -> ExitCode {
+    let root = initial
+        .repository
+        .working_tree_root
+        .clone()
+        .expect("working repository");
+    let mut history = String::new();
+    let Some(mut plan) = refresh(directory, &initial, presentation, &mut history) else {
+        return ExitCode::FAILURE;
+    };
+    // Preparation may expose new choices on the actual graph. It occurs at most
+    // once before those choices, then once to create/retain the integration result.
+    let mut preparations = 0;
+    loop {
+        if !plan.blockers.is_empty() {
+            for blocker in &plan.blockers {
+                blocker_message(presentation, &mut history, blocker);
+            }
+            let observed = repository::inspect(&root);
+            let report = execution::Report {
+                plan: Some(plan.clone()),
+                commands: vec![],
+                effects: vec![],
+                remaining: observed,
+                error: None,
+            };
+            let _ = writeln!(history, "{}", text(presentation, report.guidance()));
+            return failure(
+                presentation,
+                &history,
+                "preparation/integration",
+                &report.remaining,
+            );
+        }
+        if let Some(choice) = plan.required_input.first().copied() {
+            let request = match choose(&root, &plan, choice, presentation) {
+                Ok(request) => request,
+                Err(error) => {
+                    let _ = writeln!(history, "{error}");
+                    return failure(presentation, &history, "input", &repository::inspect(&root));
+                }
+            };
+            plan = match integration::resolve(&root, &plan, &request) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    let _ = writeln!(history, "error: {}", text(presentation, error));
+                    return failure(presentation, &history, "input", &repository::inspect(&root));
+                }
+            };
+            if plan.can_retain_choices() {
+                plan = match integration::retain_choices(&root, &plan) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        let _ = writeln!(history, "error: {}", text(presentation, error));
+                        return failure(
+                            presentation,
+                            &history,
+                            "retaining input",
+                            &repository::inspect(&root),
+                        );
+                    }
+                };
+            }
+            // Choosing published-work cleanup introduces another remote role.
+            // Only refresh that newly required evidence after the input guard.
+            if choice == RequiredInput::Cleanup && plan.cleanup == FinishCleanup::Both {
+                let previous_evidence = plan.evidence.clone();
+                let Some(refreshed) = refresh(&root, &plan, presentation, &mut history) else {
+                    return ExitCode::FAILURE;
+                };
+                if previous_evidence
+                    .as_ref()
+                    .zip(refreshed.evidence.as_ref())
+                    .is_none_or(|(old, new)| {
+                        old.target != new.target
+                            || old.fetched != new.fetched
+                            || old.targets != new.targets
+                    })
+                {
+                    history.push_str("error: target observations changed while resolving cleanup; rerun finish.\n");
+                    return failure(presentation, &history, "input", &repository::inspect(&root));
+                }
+                plan = refreshed;
+            }
+            continue;
+        }
+        // An interrupted merge can leave a corroborated result before its pin
+        // or record acknowledgement was written. Finish retaining that result
+        // before either delivery or completion can acquire authority.
+        if !plan.needs_result_retention() && !plan.needs_candidate_checkout() {
+            if matches!(plan.state, State::Published | State::Complete) {
+                return complete(&root, &plan, presentation, history);
+            }
+            if plan.state == State::PendingPublication {
+                break;
+            }
+        }
+        if preparations == 2 {
+            history.push_str("error: local integration did not reach a deliverable result; inspect retained state before retrying.\n");
+            return failure(
+                presentation,
+                &history,
+                "preparation/integration",
+                &repository::inspect(&root),
+            );
+        }
+        preparations += 1;
+        let prepared = execution::prepare(&root, &plan);
+        preparation_effects(presentation, &mut history, &prepared);
+        command_diagnostics(presentation, &mut history, &prepared.commands);
+        let needs_input = matches!(prepared.error, Some(execution::Error::UnresolvedPlan))
+            && prepared
+                .plan
+                .as_ref()
+                .is_some_and(|p| p.blockers.is_empty() && !p.required_input.is_empty());
+        if let Some(error) = &prepared.error
+            && !needs_input
+        {
+            let _ = writeln!(history, "error: {}", text(presentation, error));
+            let _ = writeln!(history, "{}", text(presentation, prepared.guidance()));
+            return failure(
+                presentation,
+                &history,
+                "preparation/integration",
+                &prepared.remaining,
+            );
+        }
+        let Some(next) = prepared.plan else {
+            history.push_str("error: prepared state could not be assessed.\n");
+            return failure(
+                presentation,
+                &history,
+                "preparation/integration",
+                &prepared.remaining,
+            );
+        };
+        plan = next;
+    }
+    let mut output = CheckOutput::new(presentation);
+    let delivered =
+        integration::publication::publish_with_checks(&root, &plan, skip_checks, |event| {
+            check_event(presentation, &mut output, event);
+        });
+    output.flush();
+    let _ = writeln!(history, "Target delivery: {:?}.", delivered.state);
+    for destination in &delivered.destinations {
+        let _ = writeln!(
+            history,
+            "  {}: {}",
+            display(presentation, &destination.destination),
+            match destination.state {
+                integration::publication::DestinationState::NotAttempted => "not attempted",
+                integration::publication::DestinationState::Advanced => "advanced",
+                integration::publication::DestinationState::Unchanged =>
+                    "unchanged; delivery confirmed",
+                integration::publication::DestinationState::Rejected => "rejected",
+                integration::publication::DestinationState::Unconfirmed => "unconfirmed",
+            }
+        );
+        if let Some(error) = &destination.error {
+            let _ = writeln!(history, "  error: {}", text(presentation, error));
+        }
+        if !destination.detail.is_empty() {
+            let _ = writeln!(
+                history,
+                "  Git: {}",
+                display(presentation, &destination.detail)
+            );
+        }
+        command_diagnostics(presentation, &mut history, &destination.commands);
+    }
+    if let Some(error) = &delivered.checks.error {
+        let _ = writeln!(history, "Checks stopped: {}", text(presentation, error));
+    }
+    if !delivered.is_complete() {
+        if let Some(error) = &delivered.error {
+            let _ = writeln!(history, "error: {}", text(presentation, error));
+        }
+        let stage = if delivered.checks.error.is_some() {
+            "checks"
+        } else {
+            "target delivery"
+        };
+        return failure(presentation, &history, stage, &delivered.remaining);
+    }
+    match delivered.plan {
+        Ok(plan) => complete(&root, &plan, presentation, history),
+        Err(error) => {
+            let _ = writeln!(history, "error: {}", text(presentation, error));
+            failure(
+                presentation,
+                &history,
+                "post-delivery assessment",
+                &delivered.remaining,
+            )
+        }
+    }
+}
+
+fn refresh(
+    directory: &Path,
+    plan: &Plan,
+    presentation: Presentation,
+    history: &mut String,
+) -> Option<Plan> {
+    let report = remote::refresh(directory, plan);
+    for effect in &report.effects {
+        match effect {
+            remote::Effect::Observed {
+                destination,
+                reference,
+                value,
+            } => {
+                let _ = writeln!(
+                    history,
+                    "Observed {} at {}: {}.",
+                    display(presentation, reference),
+                    display(presentation, destination),
+                    observation(presentation, value)
+                );
+            }
+            remote::Effect::Fetched {
+                destination,
+                commit,
+            } => {
+                let _ = writeln!(
+                    history,
+                    "Fetched objects for {} from {}.",
+                    display(presentation, commit),
+                    display(presentation, destination)
+                );
+            }
+        }
+    }
+    command_diagnostics(presentation, history, &report.commands);
+    if let Some(error) = &report.error {
+        let _ = writeln!(history, "error: {}", text(presentation, error));
+        failure(presentation, history, "remote refresh", &report.remaining);
+        return None;
+    }
+    if report.plan.is_none() {
+        history.push_str("error: refreshed integration state is unavailable.\n");
+        failure(presentation, history, "remote refresh", &report.remaining);
+    }
+    report.plan
+}
+
+fn choose(
+    root: &Path,
+    plan: &Plan,
+    choice: RequiredInput,
+    presentation: Presentation,
+) -> Result<integration::Request, String> {
+    let guidance = match choice {
+        RequiredInput::Update => "select --update <rebase|merge|none> or configure finish-update",
+        RequiredInput::Integration => {
+            "select --integration <ff-only|merge|squash> or configure finish-integration"
+        }
+        RequiredInput::Message => "supply -m/--message <text> or configure finish-message = auto",
+        RequiredInput::Cleanup => "select --cleanup <keep|local|both> or configure finish-cleanup",
+    };
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Err(format!(
+            "error: unresolved {} input; terminal input and stderr are required; {guidance}.",
+            match choice {
+                RequiredInput::Update => "update",
+                RequiredInput::Integration => "integration",
+                RequiredInput::Message => "message",
+                RequiredInput::Cleanup => "cleanup",
+            }
+        ));
+    }
+    eprintln!(
+        "Integrate {} into {}/{}.",
+        display(presentation, &plan.source_ref),
+        text(presentation, &plan.target.remote),
+        text(presentation, &plan.settings.base)
+    );
+    let mut request = plan.request().clone();
+    if choice == RequiredInput::Message {
+        request.message = Some(edit_message(root, plan, presentation)?);
+        return Ok(request);
+    }
+    let prompt = match choice {
+        RequiredInput::Update => {
+            eprintln!(
+                "  rebase  Replay work commits onto the target.\n  merge   Incorporate the target into the work branch.\n  none    Retain the current work history.\n  cancel  Stop finish."
+            );
+            "Update (rebase/merge/none/cancel): "
+        }
+        RequiredInput::Integration => {
+            eprintln!(
+                "  ff-only  Advance the target only when it can fast-forward.\n  merge    Create an integration merge commit.\n  squash   Create one integration commit from the work changes.\n  cancel   Stop finish."
+            );
+            "Integration (ff-only/merge/squash/cancel): "
+        }
+        RequiredInput::Cleanup => {
+            eprintln!(
+                "  keep    Retain local and published work branches.\n  local   Delete the local work branch after delivery.\n  both    Delete local and published work branches after delivery.\n  cancel  Stop finish."
+            );
+            "Cleanup (keep/local/both/cancel): "
+        }
+        RequiredInput::Message => unreachable!(),
+    };
+    let answer = read_answer_with_cancellation(
+        presentation,
+        prompt,
+        "Finish cancelled; completed effects and retained work remain available.",
+    )?;
+    let invalid = || format!("error: invalid choice; rerun finish and {guidance}.");
+    match choice {
+        RequiredInput::Update => {
+            request.update = Some(match answer.as_str() {
+                "rebase" => FinishUpdate::Rebase,
+                "merge" => FinishUpdate::Merge,
+                "none" => FinishUpdate::None,
+                _ => return Err(invalid()),
+            })
+        }
+        RequiredInput::Integration => {
+            request.integration = Some(match answer.as_str() {
+                "ff-only" => FinishIntegration::FfOnly,
+                "merge" => FinishIntegration::Merge,
+                "squash" => FinishIntegration::Squash,
+                _ => return Err(invalid()),
+            })
+        }
+        RequiredInput::Cleanup => {
+            request.cleanup = Some(match answer.as_str() {
+                "keep" => FinishCleanup::Keep,
+                "local" => FinishCleanup::Local,
+                "both" => FinishCleanup::Both,
+                _ => return Err(invalid()),
+            })
+        }
+        RequiredInput::Message => unreachable!(),
+    }
+    Ok(request)
+}
+
+fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<String, String> {
+    eprintln!(
+        "Edit the integration message with your Git editor. Save and exit to accept; delete all message text or exit unsuccessfully to cancel. Use -m/--message to supply text without editing."
+    );
+    let fail = |error: &dyn std::fmt::Display| {
+        format!(
+            "error: integration message editing failed: {}; supply -m/--message or rerun finish.",
+            text(presentation, error)
+        )
+    };
+    let editor = crate::git::inspect(root, ["var", "GIT_EDITOR"]).map_err(|e| fail(&e))?;
+    if !editor.status.success() {
+        return Err(fail(&display(presentation, &editor.stderr)));
+    }
+    let editor = String::from_utf8(editor.stdout).map_err(|e| fail(&e))?;
+    let editor = editor.strip_suffix('\n').unwrap_or(&editor);
+    if editor.trim().is_empty() || editor.contains('\0') {
+        return Err(fail(&"Git selected an empty or invalid editor"));
+    }
+    integration::revalidate(root, plan, plan.evidence.as_ref()).map_err(|e| fail(&e))?;
+    let mut file = tempfile::Builder::new()
+        .prefix("oneflow-message-")
+        .tempfile_in(&plan.repository.git_dir)
+        .map_err(|e| fail(&e))?;
+    writeln!(file, "{}", plan.message_suggestion()).map_err(|e| fail(&e))?;
+    file.flush().map_err(|e| fail(&e))?;
+    // Git editor values are shell commands. Only that configured value is shell
+    // syntax; the pathname is a positional argument and message bytes never enter
+    // the command. The temporary file also permits editor atomic-save replacement.
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$@\""))
+        .arg("oneflow-editor")
+        .arg(file.path())
+        .current_dir(root)
+        .status()
+        .map_err(|e| fail(&e))?;
+    if !status.success() {
+        return Err(fail(&status));
+    }
+    integration::revalidate(root, plan, plan.evidence.as_ref()).map_err(|e| fail(&e))?;
+    if !fs::symlink_metadata(file.path())
+        .map_err(|e| fail(&e))?
+        .file_type()
+        .is_file()
+    {
+        return Err(fail(&"the editor did not leave a regular message file"));
+    }
+    let bytes = fs::read(file.path()).map_err(|e| fail(&e))?;
+    let raw = String::from_utf8(bytes).map_err(|e| fail(&e))?;
+    if raw.contains('\0') {
+        return Err(fail(&"the message contains NUL"));
+    }
+    let message = cleanup_message(root, raw).map_err(|e| fail(&e))?;
+    if message.trim().is_empty() {
+        return Err("error: integration message is blank; finish cancelled. Supply -m/--message or rerun finish.".into());
+    }
+    Ok(message)
+}
+
+fn config_value(root: &Path, key: &str) -> Result<Option<String>, String> {
+    let output = crate::git::inspect(root, ["config", "--get", key]).map_err(|e| e.to_string())?;
+    match output.status.code() {
+        Some(1) => Ok(None),
+        Some(0) => String::from_utf8(output.stdout)
+            .map(|v| Some(v.strip_suffix('\n').unwrap_or(&v).to_owned()))
+            .map_err(|e| e.to_string()),
+        _ => Err(String::from_utf8_lossy(&output.stderr).into_owned()),
+    }
+}
+
+// These keys are ordered aliases in Git; the last effective occurrence wins.
+fn comment_prefix(root: &Path) -> Result<String, String> {
+    let output = crate::git::inspect(
+        root,
+        [
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^core\.(commentchar|commentstring)$",
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    if output.status.code() == Some(1) {
+        return Ok("#".into());
+    }
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    let entry = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .rfind(|entry| !entry.is_empty())
+        .ok_or("Git returned no comment configuration")?;
+    let separator = entry
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or("Git returned malformed comment configuration")?;
+    let value = String::from_utf8(entry[separator + 1..].to_vec()).map_err(|e| e.to_string())?;
+    // Git chooses auto's marker before editing. Our generated suggestion has no
+    // comment lines, so its first available marker is '#'.
+    Ok(
+        if &entry[..separator] == b"core.commentchar" && value == "auto" {
+            "#".into()
+        } else {
+            value
+        },
+    )
+}
+
+fn cleanup_message(root: &Path, mut raw: String) -> Result<String, String> {
+    let cleanup = config_value(root, "commit.cleanup")?.unwrap_or_else(|| "default".into());
+    if cleanup == "verbatim" {
+        return Ok(raw);
+    }
+    if cleanup == "scissors" {
+        let comment = comment_prefix(root)?;
+        let marker = format!("{comment} ------------------------ >8 ------------------------");
+        if let Some(start) = raw
+            .split_inclusive('\n')
+            .scan(0, |offset, line| {
+                let start = *offset;
+                *offset += line.len();
+                Some((start, line))
+            })
+            .find_map(|(offset, line)| {
+                (line.trim_end_matches(['\r', '\n']) == marker).then_some(offset)
+            })
+        {
+            raw.truncate(start);
+        }
+    }
+    let mut command = Command::new("git");
+    command.current_dir(root).arg("stripspace");
+    match cleanup.as_str() {
+        "default" | "strip" => {
+            command.arg("--strip-comments");
+        }
+        "whitespace" | "scissors" => {}
+        _ => return Err(format!("invalid commit.cleanup value: {cleanup}")),
+    }
+    // A file avoids a pipe deadlock for large messages while collecting Git's output.
+    use std::io::{Seek, SeekFrom};
+    let mut input = tempfile::tempfile().map_err(|e| e.to_string())?;
+    input.write_all(raw.as_bytes()).map_err(|e| e.to_string())?;
+    input.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    let output = command
+        .stdin(Stdio::from(input))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    String::from_utf8(output.stdout).map_err(|e| e.to_string())
+}
+
+fn check_event(presentation: Presentation, output: &mut CheckOutput, event: checks::Event<'_>) {
+    match event {
+        checks::Event::Started {
+            index,
+            total,
+            check,
+        } => eprintln!(
+            "Check {}/{}: {} — {}",
+            index + 1,
+            total,
+            text(presentation, &check.name),
+            text(
+                presentation,
+                serde_json::to_string(&check.command).expect("command JSON")
+            )
+        ),
+        checks::Event::Output { stream, bytes } => output.write(stream, bytes),
+        checks::Event::Passed { index } => {
+            output.flush();
+            eprintln!("Check {} passed.", index + 1);
+        }
+        checks::Event::Skipped { count } => {
+            eprintln!("Skipped {count} configured finish check(s) (--skip-checks).")
+        }
+    }
+}
+
+fn complete(root: &Path, plan: &Plan, presentation: Presentation, mut history: String) -> ExitCode {
+    let report = completion::complete(root, plan);
+    for effect in &report.effects {
+        match effect {
+            completion::Effect::CheckedOut { after, .. } => {
+                let _ = writeln!(history, "Final checkout: {}.", head(presentation, after));
+            }
+            completion::Effect::SourceEvidenceRetained => {
+                history.push_str("Retained work evidence before local deletion.\n")
+            }
+            completion::Effect::LocalWorkDeleted {
+                reference,
+                expected,
+            } => {
+                let _ = writeln!(
+                    history,
+                    "Deleted local work {} at {}.",
+                    display(presentation, reference),
+                    display(presentation, expected)
+                );
+            }
+        }
+    }
+    command_diagnostics(presentation, &mut history, &report.commands);
+    for destination in &report.destinations {
+        let _ = writeln!(
+            history,
+            "Published-work cleanup at {}: {}.",
+            display(presentation, &destination.destination),
+            match destination.state {
+                completion::DestinationState::NotAttempted => "not attempted",
+                completion::DestinationState::Deleted => "deleted",
+                completion::DestinationState::Absent => "already absent",
+                completion::DestinationState::Rejected => "rejected",
+                completion::DestinationState::Unconfirmed => "unconfirmed",
+            }
+        );
+        if let Some(error) = &destination.error {
+            let _ = writeln!(history, "  error: {}", text(presentation, error));
+        }
+        command_diagnostics(presentation, &mut history, &destination.commands);
+    }
+    if !report.is_complete() {
+        if let Some(error) = &report.error {
+            let _ = writeln!(history, "error: {}", text(presentation, error));
+        }
+        if let Err(error) = &report.plan {
+            let _ = writeln!(
+                history,
+                "Completion assessment unavailable: {}",
+                text(presentation, error)
+            );
+        }
+        for (label, value) in [("Work ref", &report.source), ("Target ref", &report.target)] {
+            match value {
+                Ok(value) => {
+                    let _ = writeln!(history, "{label}: {}.", observation(presentation, value));
+                }
+                Err(error) => {
+                    let _ = writeln!(
+                        history,
+                        "{label} observation unavailable: {}",
+                        text(presentation, error)
+                    );
+                }
+            }
+        }
+        let _ = writeln!(history, "{}", text(presentation, report.guidance()));
+        return failure(
+            presentation,
+            &history,
+            "checkout/cleanup",
+            &report.remaining,
+        );
+    }
+    println!(
+        "Integrated {} at {} into {}/{}.",
+        display(presentation, &plan.source_ref),
+        display(
+            presentation,
+            plan.result.as_deref().expect("verified result")
+        ),
+        text(presentation, &plan.target.remote),
+        text(presentation, &plan.settings.base)
+    );
+    for destination in &report.targets {
+        println!(
+            "  {}: delivery confirmed at {}.",
+            display(presentation, &destination.destination),
+            observation(presentation, &destination.branch)
+        );
+    }
+    for destination in &report.destinations {
+        println!(
+            "  Published work at {}: {}.",
+            display(presentation, &destination.destination),
+            match destination.state {
+                completion::DestinationState::Deleted => "deleted",
+                completion::DestinationState::Absent => "already absent",
+                _ => unreachable!("complete cleanup"),
+            }
+        );
+    }
+    if let Ok(Observation::Repository(state)) = &report.remaining {
+        println!("Final checkout: {}.", head(presentation, &state.head));
+    }
+    println!(
+        "Work branches: {}.",
+        match plan.cleanup {
+            FinishCleanup::Keep => "local and published retained",
+            FinishCleanup::Local => "local deleted; published retained",
+            FinishCleanup::Both => "local and published deleted or already absent",
+            FinishCleanup::Ask => unreachable!("resolved cleanup"),
+        }
+    );
+    ExitCode::SUCCESS
+}
+
+fn failure(
+    presentation: Presentation,
+    history: &str,
+    stage: &str,
+    observed: &Result<Observation, InspectionError>,
+) -> ExitCode {
+    let mut output = format!("Finish integration incomplete during {stage}.\n{history}");
+    remaining_state(presentation, &mut output, observed, false);
+    output.push_str("Resolve the reported problem, then rerun finish --mode integrate. Completed effects and retained work remain available; verified retries reuse the attempt's choices and result.\n");
+    eprint!("{output}");
+    ExitCode::FAILURE
+}
+
+fn head(presentation: Presentation, value: &Head) -> String {
+    match value {
+        Head::Attached { branch, commit } => format!(
+            "{} at {}",
+            display(presentation, branch),
+            display(presentation, commit)
+        ),
+        Head::Detached { commit } => format!("detached at {}", display(presentation, commit)),
+        Head::Unborn { branch } => format!("unborn {}", display(presentation, branch)),
+    }
+}
+fn observation(presentation: Presentation, value: &finish::RefObservation) -> String {
+    match value {
+        finish::RefObservation::Commit(oid) => display(presentation, oid),
+        finish::RefObservation::Absent => "absent".into(),
+        finish::RefObservation::Unavailable => "unavailable".into(),
+        finish::RefObservation::Ambiguous => "ambiguous".into(),
+    }
+}
+fn preparation_effects(
+    presentation: Presentation,
+    output: &mut String,
+    report: &execution::Report,
+) {
+    for effect in &report.effects {
+        use execution::Effect::*;
+        match effect {
+            Recorded(path) => {
+                let _ = writeln!(
+                    output,
+                    "Retained integration recovery evidence: {}.",
+                    text(presentation, path.display())
+                );
+            }
+            Retained { reference, commit } => {
+                let _ = writeln!(
+                    output,
+                    "Retained {} at {}.",
+                    text(presentation, reference),
+                    display(presentation, commit)
+                );
+            }
+            WorkChanged { before, after } => {
+                let _ = writeln!(
+                    output,
+                    "Prepared work: {} -> {}.",
+                    observation(presentation, before),
+                    observation(presentation, after)
+                );
+            }
+            TargetChanged { before, after } => {
+                let _ = writeln!(
+                    output,
+                    "Local target: {} -> {}.",
+                    observation(presentation, before),
+                    observation(presentation, after)
+                );
+            }
+            CheckedOut { reference } => {
+                let _ = writeln!(output, "Checked out {}.", display(presentation, reference));
+            }
+            Integrated { commit } => {
+                let _ = writeln!(
+                    output,
+                    "Retained integration result: {}.",
+                    display(presentation, commit)
+                );
+            }
+            Reused { commit } => {
+                let _ = writeln!(
+                    output,
+                    "Reused integration result: {}.",
+                    display(presentation, commit)
+                );
+            }
+        }
+    }
+}
+fn blocker_message(presentation: Presentation, output: &mut String, blocker: &Blocker) {
+    let message = match blocker {
+        Blocker::FreshRemoteEvidenceRequired => "fresh target observations are required; rerun finish".into(),
+        Blocker::InvalidEvidence => "remote observations do not match the selected attempt; inspect destinations and retry".into(),
+        Blocker::TargetUnavailable => "the target branch is unavailable at its configured remote".into(),
+        Blocker::HistoryUnavailable => "required commit history is unavailable; obtain the history before retrying".into(),
+        Blocker::UnrelatedHistory => "work and target have unrelated histories".into(),
+        Blocker::FastForwardRequired => "ff-only requires the target to be an ancestor of the work; choose a work update or another integration method".into(),
+        Blocker::LocalTargetWork => "the local target contains work outside the remote target; preserve and reconcile it before retrying".into(),
+        Blocker::TargetInAnotherWorktree => "the target is checked out in another worktree".into(),
+        Blocker::SourceInAnotherWorktree => "the work branch is checked out in another worktree".into(),
+        Blocker::SymbolicReference => "a source or target reference is symbolic; inspect the branch refs".into(),
+        Blocker::DirtyTree => "the index or working tree contains changes; commit or preserve them before retrying".into(),
+        Blocker::GitOperation => "a Git operation is active; complete or abandon that operation before retrying".into(),
+        Blocker::GraftedHistory => "grafted history cannot establish integration authority".into(),
+        Blocker::CheckoutCleanupConflict => "checkout work is incompatible with cleanup local or both; select --checkout target or --cleanup keep".into(),
+        Blocker::TargetChanged(destination) => format!("target destinations disagree or changed at {}; inspect the target before retrying", display(presentation, destination)),
+        Blocker::WorkBranchChanged(destination) => format!("published work changed or is not incorporated at {}; retain it and inspect the work branch", display(presentation, destination)),
+        Blocker::Recovery(problem) => format!("retained integration recovery cannot be verified ({problem:?}); inspect branch history, settings, endpoints, and retained evidence before retrying"),
+    };
+    let _ = writeln!(output, "error: {message}.");
+}

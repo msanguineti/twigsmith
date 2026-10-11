@@ -2,8 +2,8 @@
 //! are relevant; preparation and publication own all workflow effects and guards.
 use crate::{
     finish::{
-        self, Constraint, FinishError, Plan, Request, RequiredInput, checks, preparation,
-        publication,
+        self, Constraint, FinishError, Plan, Request, RequiredInput, checks, integration,
+        preparation, publication,
     },
     repository::{self, Head, InspectionError, Observation},
     settings::{
@@ -19,6 +19,9 @@ use std::{
     path::Path,
     process::ExitCode,
 };
+
+#[path = "finish_cli_integration.rs"]
+mod integration_cli;
 
 #[derive(Clone, Copy)]
 struct Presentation {
@@ -103,6 +106,16 @@ impl Completion {
         {
             return Err(
                 "--integration, --message, --checkout, and --cleanup require integrate mode",
+            );
+        }
+        if self.checkout == Some(FinishCheckout::Work)
+            && matches!(
+                self.cleanup,
+                Some(FinishCleanup::Local | FinishCleanup::Both)
+            )
+        {
+            return Err(
+                "--checkout work is incompatible with --cleanup local or both; select --checkout target or --cleanup keep",
             );
         }
         Ok(())
@@ -241,6 +254,22 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let mut mode = completion
         .mode
         .unwrap_or(configured.loaded.settings.finish_mode);
+    let integration_request = integration::Request {
+        update: request.update,
+        integration: completion.integration,
+        message: completion.message.clone(),
+        checkout: completion.checkout,
+        cleanup: completion.cleanup,
+    };
+    // Snapshot each selectable workflow before asking. The selected workflow's
+    // full guard prevents mode input from adopting concurrent unrelated changes.
+    // Assessment failure in an unselected workflow does not affect the choice.
+    let mode_snapshot = (mode == FinishMode::Ask).then(|| {
+        (
+            finish::assess(&directory, &request, None),
+            integration::assess(&directory, &integration_request, None),
+        )
+    });
     if mode == FinishMode::Ask {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             eprintln!(
@@ -249,7 +278,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         eprintln!(
-            "Finish completion:\n  review     Prepare and publish the working branch for manual review.\n  integrate  Direct integration is not available yet; stops before workflow effects.\n  cancel     Stop finish."
+            "Finish completion:\n  review     Prepare and publish the working branch for manual review.\n  integrate  Deliver to the project base, then complete checkout and cleanup.\n  cancel     Stop finish."
         );
         let answer = match read_answer(presentation, "Completion mode (review/integrate/cancel): ")
         {
@@ -274,13 +303,63 @@ pub fn run(args: &[OsString]) -> ExitCode {
         eprintln!("error: {error}; use finish --help (alias: f)");
         return ExitCode::from(2);
     }
-    if mode == FinishMode::Integrate {
-        eprintln!(
-            "error: direct integration is not available yet. Finish made no workflow changes or remote publication; use --mode review for review delivery."
-        );
-        return ExitCode::FAILURE;
+    if let Some((review, integrate)) = &mode_snapshot {
+        let guarded = match mode {
+            FinishMode::Review => {
+                review
+                    .as_ref()
+                    .map_err(|e| text(presentation, e))
+                    .and_then(|p| {
+                        finish::revalidate(&directory, p, p.evidence.as_ref())
+                            .map_err(|e| text(presentation, e))
+                    })
+            }
+            FinishMode::Integrate => integrate
+                .as_ref()
+                .map_err(|e| text(presentation, e))
+                .and_then(|p| {
+                    integration::revalidate(&directory, p, p.evidence.as_ref())
+                        .map_err(|e| text(presentation, e))
+                }),
+            FinishMode::Ask => unreachable!("mode resolved"),
+        };
+        if let Err(error) = guarded {
+            eprintln!(
+                "error: completion mode context could not be retained: {error}; rerun finish."
+            );
+            return ExitCode::FAILURE;
+        }
     }
-    let initial = match finish::assess(&directory, &request, None) {
+    let (review_initial, integrate_initial) = match mode_snapshot {
+        Some((review, integrate)) => (Some(review), Some(integrate)),
+        None => (None, None),
+    };
+    if mode == FinishMode::Integrate {
+        let initial = match integrate_initial
+            .unwrap_or_else(|| integration::assess(&directory, &integration_request, None))
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                eprintln!("error: {}", text(presentation, &error));
+                error_diagnostics(presentation, &error);
+                let mut output = String::new();
+                remaining(presentation, &mut output, &repository::inspect(&directory));
+                eprint!("{output}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if initial.repository != configured.repository
+            || initial.settings != configured.loaded.settings
+        {
+            eprintln!(
+                "error: repository or settings changed while resolving completion mode; rerun finish."
+            );
+            return ExitCode::FAILURE;
+        }
+        return integration_cli::run(&directory, initial, presentation, skip_checks);
+    }
+    let initial = match review_initial.unwrap_or_else(|| finish::assess(&directory, &request, None))
+    {
         Ok(plan) => plan,
         Err(error) => {
             eprintln!("error: {}", text(presentation, &error));
@@ -642,6 +721,17 @@ fn prompt(
     read_answer(presentation, prompt)
 }
 fn read_answer(presentation: Presentation, prompt: &str) -> Result<String, String> {
+    read_answer_with_cancellation(
+        presentation,
+        prompt,
+        "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
+    )
+}
+fn read_answer_with_cancellation(
+    presentation: Presentation,
+    prompt: &str,
+    cancellation: &str,
+) -> Result<String, String> {
     eprint!("{prompt}");
     io::stderr().flush().map_err(|e| {
         format!(
@@ -654,7 +744,7 @@ fn read_answer(presentation: Presentation, prompt: &str) -> Result<String, Strin
         .read_line(&mut line)
         .map_err(|e| format!("error: cannot read finish input: {}", text(presentation, e)))?;
     if count == 0 || !line.ends_with('\n') || line.trim() == "cancel" {
-        return Err("Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.".into());
+        return Err(cancellation.into());
     }
     Ok(line.trim().into())
 }
@@ -904,6 +994,14 @@ fn remaining(
     out: &mut String,
     observation: &Result<Observation, InspectionError>,
 ) {
+    remaining_state(presentation, out, observation, true);
+}
+fn remaining_state(
+    presentation: Presentation,
+    out: &mut String,
+    observation: &Result<Observation, InspectionError>,
+    operation_guidance: bool,
+) {
     let _ = writeln!(out, "Remaining state (observed):");
     match observation {
         Ok(Observation::Repository(state)) => {
@@ -943,13 +1041,13 @@ fn remaining(
                     "none detected"
                 }
             );
-            if state.operations.rebase {
+            if operation_guidance && state.operations.rebase {
                 let _ = writeln!(
                     out,
                     "Resolve conflicts and use git rebase --continue or git rebase --abort, then rerun finish."
                 );
             }
-            if state.operations.merge {
+            if operation_guidance && state.operations.merge {
                 let _ = writeln!(
                     out,
                     "Resolve conflicts and use git merge --continue or git merge --abort, then rerun finish."
@@ -1009,22 +1107,33 @@ Examples:
   git-oneflow finish --mode review --update rebase --allow-rewrite
   gof finish --update none --no-rewrite
   gof finish --skip-checks
+  gof f --mode integrate --integration ff-only --cleanup local
+  gof finish --mode integrate --integration squash -m \"Complete feature\" --cleanup keep
 
 Details:
   Completion mode resolves before remote refresh. ask needs terminal input and stderr.
   review prepares and publishes the work branch for manual review, keeping it checked out.
-  Direct integration is not available yet; integrate stops before workflow effects.
+  integrate delivers the verified result to base-remote, then applies checkout and cleanup.
+  Integration retries reuse the verified attempt's choices and accepted message.
+  Delivered retries complete remaining checkout/cleanup without repeating checks or publication.
   Integration options require integrate mode; valid inactive settings remain validated.
   Integration merge means a merge commit; --update merge prepares the work branch.
   -m supplies a literal nonblank final integration message, retaining its whitespace.
   It never amends work commits or supplies a review description.
-  Requires a clean, attached working branch with a commit, separate from the base.
+  Ask opens Git's selected editor with a suggested merge/squash message.
+  Save and exit to accept; clear all message text or exit unsuccessfully to cancel.
+  Editing follows commit.cleanup and Git comment settings; auto uses the suggestion.
+  ff-only, already-integrated work, and retained results need no message editing.
+  New attempts require a clean, attached working branch with a commit, separate from the base.
+  Integration recovery also supports an associated target checkout after local work deletion.
   Runs configured checks in order from the working-tree root after preparation.
   Commands inherit the environment, receive EOF on stdin, and stream stdout/stderr.
   Arguments are literal; shell features require an explicit shell.
   A failed, interrupted, or state-changing check stops before publication.
   --skip-checks reports the bypass; Git hooks and all other guards remain active.
-  Observes and fetches base from base-remote and each exact publish-remote push destination.
+  Review observes the base and each exact publish-remote push destination.
+  Integration observes the base-remote target destinations and, for both cleanup,
+  the publish-remote work destinations. It never publishes rewritten work history.
   Rebase replays commits onto the remote base; merge incorporates it; none retains history.
   Branches already including the base need no update choice.
   Explicit flags override settings; rewrite flags are mutually exclusive.
@@ -1032,11 +1141,13 @@ Details:
   HTTP(S) URL credentials are redacted by default; redact-credentials is a private local setting.
   --show-credentials overrides that setting for this invocation. Output and captured logs can expose credentials.
   Rebase selection and replacement authorization are separate choices.
-  Required choices resolve before branch execution; changed context stops execution.
-  Cancellation retains preparation and check effects; rerunning executes all checks again.
+  Choices resolve before their dependent effects; preparation can reveal method/message input.
+  Changed context while answering or editing stops execution.
+  Cancellation retains preparation and check effects. Pending delivery reruns checks.
   Scripts must resolve relevant choices with flags or settings.
   Publication uses incorporation proof and exact destination leases for replacement.
-  Success reports branch, destination, commit, and a manual submission next step.
+  Review success reports branch, destination, commit, and a manual submission next step.
+  Integration success reports result, target, final checkout, and work retention.
   Recover conflicts with Git, then rerun finish. Failures retain completed effects.
   Submit the published branch manually for review into the project base.
   Existing publication-branch or project-base tracking is retained.
@@ -1051,6 +1162,7 @@ Settings:
   finish-checkout: target (default), work
   finish-cleanup: ask (default), keep, local, both
   Checkout and cleanup apply after confirmed target publication.
+  checkout work requires cleanup keep; local and both require checkout target.
   ff-only creates no commit and needs no message.
   cleanup local deletes local work; both deletes local and published work; keep retains both.
   finish-update: ask (default), rebase, merge, none
@@ -1061,7 +1173,7 @@ Settings:
   Use gof config for guided setup or gof config show to inspect values.
 
 Exit status:
-  0  Confirmed complete publication, including unchanged publication
+  0  Confirmed complete review publication or integration with checkout and cleanup
   1  Failure, unresolved input, cancellation, or incomplete execution
   2  Invalid syntax
 
@@ -1163,6 +1275,12 @@ mod grammar_tests {
             for checkout in ["target", "work"] {
                 for cleanup in ["keep", "local", "both"] {
                     for flag in ["-m", "--message"] {
+                        if checkout == "work" && cleanup != "keep" {
+                            assert!(
+                                parsed(&["--checkout", checkout, "--cleanup", cleanup]).is_err()
+                            );
+                            continue;
+                        }
                         let (_, completion, _, _) = parsed(&[
                             "--integration",
                             integration,

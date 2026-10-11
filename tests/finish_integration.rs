@@ -365,6 +365,283 @@ fn no_op_and_meaningful_choices() {
         );
     });
 }
+
+#[test]
+fn guarded_choice_resolution_rejects_changes_during_input() {
+    isolated(
+        "guarded_choice_resolution_rejects_changes_during_input",
+        true,
+        |root| {
+            for changed in [false, true] {
+                let f = fixture(root);
+                let req = Request::default();
+                let p = assess(root, &f, &req, Some(&evidence(&f, &req)));
+                assert!(p.required_input.contains(&RequiredInput::Integration));
+                if changed {
+                    f.repo.success(&["config", "oneflow.concurrent", "changed"]);
+                }
+                let resolved =
+                    integration::resolve(f.repo.path(), &p, &request(FinishIntegration::FfOnly));
+                if changed {
+                    assert!(matches!(
+                        resolved,
+                        Err(git_oneflow::finish::FinishError::ContextChanged)
+                    ));
+                } else {
+                    assert!(resolved.unwrap().is_ready());
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn preparation_resolves_integration_and_message_against_actual_graph() {
+    isolated(
+        "preparation_resolves_integration_and_message_against_actual_graph",
+        true,
+        |root| {
+            let f = fixture(root);
+            diverge(&f, false);
+            fs::write(
+                f.repo.path().join(".git/git-oneflow.config.toml"),
+                "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
+            )
+            .unwrap();
+            let req = Request {
+                update: Some(FinishUpdate::Rebase),
+                cleanup: Some(FinishCleanup::Keep),
+                ..Request::default()
+            };
+            let initial = assess(root, &f, &req, Some(&evidence(&f, &req)));
+            assert!(initial.is_ready(), "{initial:#?}");
+            assert_eq!(initial.integration, Integration::AfterPreparation);
+            let prepared = execution::prepare(f.repo.path(), &initial);
+            let prepared = prepared.plan.unwrap();
+            assert_eq!(prepared.required_input, [RequiredInput::Integration]);
+            let mut choices = prepared.request().clone();
+            choices.integration = Some(FinishIntegration::Merge);
+            let reviewed = integration::resolve(f.repo.path(), &prepared, &choices).unwrap();
+            assert_eq!(reviewed.required_input, [RequiredInput::Message]);
+            assert_eq!(reviewed.message_suggestion(), "Integrate A into main");
+            assert!(reviewed.can_retain_choices());
+            let reviewed = integration::retain_choices(f.repo.path(), &reviewed).unwrap();
+            let omitted = integration::assess(
+                f.repo.path(),
+                &Request::default(),
+                reviewed.evidence.as_ref(),
+            )
+            .unwrap();
+            assert_eq!(omitted.method, FinishIntegration::Merge);
+            assert_eq!(omitted.required_input, [RequiredInput::Message]);
+            choices.message = Some("Subject\n\nLiteral body with $() and `text`.".into());
+            let resolved = integration::resolve(f.repo.path(), &reviewed, &choices).unwrap();
+            assert!(resolved.is_ready(), "{resolved:#?}");
+            let done = execution::prepare(f.repo.path(), &resolved);
+            assert!(done.is_prepared(), "{done:#?}");
+            let retry = integration::assess(f.repo.path(), &Request::default(), None).unwrap();
+            assert!(retry.required_input.is_empty(), "{retry:#?}");
+            assert_eq!(retry.message(), choices.message.as_deref());
+            assert_eq!(retry.method, FinishIntegration::Merge);
+        },
+    );
+}
+
+#[test]
+fn retained_intent_supports_omitted_choices_and_blocks_conflicts_or_changed_settings() {
+    isolated(
+        "retained_intent_supports_omitted_choices_and_blocks_conflicts_or_changed_settings",
+        true,
+        |root| {
+            for method in [
+                FinishIntegration::FfOnly,
+                FinishIntegration::Merge,
+                FinishIntegration::Squash,
+            ] {
+                let f = fixture(root);
+                fs::write(
+                    f.repo.path().join(".git/git-oneflow.config.toml"),
+                    "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
+                )
+                .unwrap();
+                let mut req = request(method);
+                req.message = Some("Accepted integration\n\nRetained body".into());
+                let prepared = prepare_local(&f, &req);
+                assert!(prepared.is_prepared(), "{prepared:#?}");
+                let retry = refreshed(&f, &Request::default());
+                assert!(retry.is_ready(), "{retry:#?}");
+                assert_eq!(retry.result, prepared.plan.unwrap().result);
+                assert_eq!(retry.message(), req.message.as_deref());
+                assert_eq!(retry.method, method);
+                assert_eq!(retry.cleanup, FinishCleanup::Keep);
+                for conflict in [
+                    Request {
+                        integration: Some(if method == FinishIntegration::Merge {
+                            FinishIntegration::Squash
+                        } else {
+                            FinishIntegration::Merge
+                        }),
+                        ..Request::default()
+                    },
+                    Request {
+                        update: Some(FinishUpdate::Merge),
+                        ..Request::default()
+                    },
+                    Request {
+                        checkout: Some(FinishCheckout::Work),
+                        ..Request::default()
+                    },
+                    Request {
+                        cleanup: Some(FinishCleanup::Local),
+                        ..Request::default()
+                    },
+                    Request {
+                        message: Some("Different intent".into()),
+                        ..Request::default()
+                    },
+                ] {
+                    let blocked = assess(root, &f, &conflict, retry.evidence.as_ref());
+                    assert!(
+                        blocked
+                            .blockers
+                            .contains(&Blocker::Recovery(Problem::ChangedBinding)),
+                        "{blocked:#?}"
+                    );
+                    assert!(blocked.permitted_effects().is_empty());
+                }
+                fs::write(
+                    f.repo.path().join(".git/git-oneflow.config.toml"),
+                    "base-remote='project'\npublish-remote='fork'\nfinish-message='auto'\n",
+                )
+                .unwrap();
+                let blocked = assess(root, &f, &Request::default(), retry.evidence.as_ref());
+                assert!(
+                    blocked
+                        .blockers
+                        .contains(&Blocker::Recovery(Problem::ChangedBinding))
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn completed_attempt_reuses_omitted_intent_after_local_and_remote_cleanup() {
+    isolated(
+        "completed_attempt_reuses_omitted_intent_after_local_and_remote_cleanup",
+        true,
+        |root| {
+            let f = fixture(root);
+            f.repo.success(&["push", "fork", "A"]);
+            let req = completion_request(
+                FinishIntegration::Squash,
+                FinishCleanup::Both,
+                FinishCheckout::Target,
+            );
+            let delivered = delivered(&f, &req);
+            let completed = completion::complete(f.repo.path(), &delivered);
+            assert!(completed.is_complete(), "{completed:#?}");
+            let retry = refreshed(&f, &Request::default());
+            assert!(retry.is_ready(), "{retry:#?}");
+            assert_eq!(retry.state, State::Complete);
+            assert_eq!(retry.cleanup, FinishCleanup::Both);
+            assert_eq!(retry.source, RefObservation::Absent);
+            let done = completion::complete(f.repo.path(), &retry);
+            assert!(done.is_complete(), "{done:#?}");
+            assert!(done.effects.is_empty());
+            assert_eq!(completion_pushes(&done), 0);
+        },
+    );
+}
+
+#[test]
+fn corroborated_result_normalization_preserves_delivered_final_checkout() {
+    isolated(
+        "corroborated_result_normalization_preserves_delivered_final_checkout",
+        true,
+        |root| {
+            let f = fixture(root);
+            let req = completion_request(
+                FinishIntegration::Merge,
+                FinishCleanup::Keep,
+                FinishCheckout::Work,
+            );
+            let e = evidence(&f, &req);
+            let original = assess(root, &f, &req, Some(&e));
+            let (record, _) = record(&f, &original);
+            let result = integrate(&f, &original, &record);
+            let pending = refreshed(&f, &Request::default());
+            assert!(pending.needs_result_retention());
+            assert!(!pending.needs_candidate_checkout());
+            publish(&f);
+            f.repo.success(&["switch", "A"]);
+            let delivered = refreshed(&f, &Request::default());
+            assert_eq!(delivered.state, State::Complete);
+            assert!(delivered.needs_result_retention());
+            assert!(!delivered.needs_candidate_checkout());
+            let log = fs::read(f.repo.path().join(".git/logs/HEAD")).unwrap();
+            let normalized = execution::prepare(f.repo.path(), &delivered);
+            assert!(normalized.is_prepared(), "{normalized:#?}");
+            assert!(
+                !normalized
+                    .commands
+                    .iter()
+                    .any(|command| command.arguments.iter().any(|arg| arg == "switch"))
+            );
+            let plan = normalized.plan.unwrap();
+            assert_eq!(plan.result, Some(result));
+            assert!(!plan.needs_result_retention());
+            assert_eq!(fs::read(f.repo.path().join(".git/logs/HEAD")).unwrap(), log);
+            assert_eq!(f.repo.success(&["branch", "--show-current"]).stdout, b"A\n");
+        },
+    );
+}
+
+#[test]
+fn candidate_checkout_preserves_ignored_files_initially_and_on_pending_retry() {
+    isolated(
+        "candidate_checkout_preserves_ignored_files_initially_and_on_pending_retry",
+        true,
+        |root| {
+            for retry in [false, true] {
+                let f = fixture(root);
+                let req = request(FinishIntegration::Merge);
+                let path = if retry {
+                    diverge(&f, false);
+                    let prepared = prepare_local(&f, &req);
+                    assert!(prepared.is_prepared(), "{prepared:#?}");
+                    f.repo.success(&["switch", "A"]);
+                    "target"
+                } else {
+                    f.repo.success(&["rm", "base"]);
+                    f.repo.success(&["commit", "-m", "remove base"]);
+                    "base"
+                };
+                fs::create_dir_all(f.repo.path().join(".git/info")).unwrap();
+                fs::write(
+                    f.repo.path().join(".git/info/exclude"),
+                    format!("/{path}\n"),
+                )
+                .unwrap();
+                fs::write(f.repo.path().join(path), "protected ignored content\n").unwrap();
+                let p = refreshed(&f, &req);
+                assert!(p.is_ready(), "{p:#?}");
+                assert_eq!(p.needs_candidate_checkout(), retry);
+                let target = oid(&f.repo, "main");
+                let source = oid(&f.repo, "A");
+                let stopped = execution::prepare(f.repo.path(), &p);
+                assert!(stopped.error.is_some(), "{stopped:#?}");
+                assert_eq!(
+                    fs::read_to_string(f.repo.path().join(path)).unwrap(),
+                    "protected ignored content\n"
+                );
+                assert_eq!(f.repo.success(&["branch", "--show-current"]).stdout, b"A\n");
+                assert_eq!(oid(&f.repo, "main"), target);
+                assert_eq!(oid(&f.repo, "A"), source);
+            }
+        },
+    );
+}
 #[test]
 fn shared_history_and_unrelated_local_target_work_are_protected() {
     isolated(

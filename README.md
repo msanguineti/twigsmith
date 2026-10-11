@@ -20,7 +20,8 @@ gof status
 
 `start` creates or resumes a branch. `save` publishes progress and offers
 checkpoint choices for uncommitted work. `finish` prepares, runs configured checks,
-and publishes a clean branch for manual submission in review mode. Completion mode
+and publishes a clean branch for manual submission in review mode or delivers its
+integrated result to the project base in integrate mode. Completion mode
 comes from configuration or `--mode`; an unresolved mode asks at a terminal.
 `status` summarizes the current checkout.
 
@@ -28,7 +29,7 @@ comes from configuration or `--mode`; an unresolved mode asks at a terminal.
 | --- | --- | --- |
 | `start <branch-name-or-phrase>` | `s` | Create or resume a workstream |
 | `save [options]` | `v` | Preserve progress and publish the branch |
-| `finish [options]` | `f` | Prepare and publish the branch for submission |
+| `finish [options]` | `f` | Deliver finished work for review or integration |
 | `status` | | Inspect repository state |
 | `config` / `config show` / `config --yes` | | Set up or inspect shared settings |
 

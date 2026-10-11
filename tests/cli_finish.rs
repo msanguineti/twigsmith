@@ -817,57 +817,40 @@ fn completion_run(exe: &str, directory: &Path, command: &str, args: &[&str]) -> 
 }
 
 #[test]
-fn completion_unresolved_and_integration_boundary_are_effect_free_with_all_aliases() {
+fn completion_missing_mode_and_incompatible_choices_preserve_work() {
     cases(
-        "completion_unresolved_and_integration_boundary_are_effect_free_with_all_aliases",
+        "completion_missing_mode_and_incompatible_choices_preserve_work",
         true,
         |root, exe| {
             for command in ["finish", "f"] {
-                let (local, _remote) = fixture(root, false, true);
-                let private = local.path().join(".git/git-oneflow.config.toml");
-                for policy in [
-                    "",
-                    "finish-mode='ask'\n",
-                    "finish-mode='review'\n",
-                    "finish-mode='integrate'\n",
-                ] {
-                    fs::write(&private, format!("{policy}finish-update='rebase'\nfinish-rewrite='allow'\n[[finish-checks]]\nname='Must not run'\ncommand=['sh','-c','touch .git/check-ran']\n")).unwrap();
-                    let before = preservation::snapshot(root);
-                    check(
-                        completion_run(
-                            exe,
-                            local.path(),
-                            command,
-                            &[
-                                "--mode",
-                                "integrate",
-                                "--integration",
-                                "merge",
-                                "-m",
-                                "Final integration",
-                                "--checkout",
-                                "work",
-                                "--cleanup",
-                                "both",
-                            ],
-                        ),
-                        1,
-                        &["direct integration is not available", "no workflow changes"],
-                    );
-                    assert_eq!(preservation::snapshot(root), before);
-                    if !policy.contains("review") {
-                        check(
-                            completion_run(exe, local.path(), command, &[]),
-                            1,
-                            &[if policy.contains("integrate") {
-                                "direct integration is not available"
-                            } else {
-                                "unresolved completion mode"
-                            }],
-                        );
-                        assert_eq!(preservation::snapshot(root), before);
-                    }
-                }
+                let (local, remote) = fixture(root, false, true);
+                let before = preservation::snapshot(root);
+                check(
+                    completion_run(exe, local.path(), command, &[]),
+                    1,
+                    &["unresolved completion mode"],
+                );
+                assert_eq!(preservation::snapshot(root), before);
+                let result = completion_run(
+                    exe,
+                    local.path(),
+                    command,
+                    &[
+                        "--mode",
+                        "integrate",
+                        "--integration",
+                        "merge",
+                        "-m",
+                        "Final integration",
+                        "--checkout",
+                        "work",
+                        "--cleanup",
+                        "both",
+                    ],
+                );
+                assert_eq!(result.status.code(), Some(2), "{result:?}");
+                assert_eq!(preservation::snapshot(root), before);
+                assert_eq!(oid(&remote, REF), None);
             }
         },
     );
@@ -935,8 +918,7 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
         |root, exe| {
             for command in ["finish", "f"] {
                 for answer in [
-                    b"integrate\n".as_slice(),
-                    b"cancel\n",
+                    b"cancel\n".as_slice(),
                     b"\x04",
                     b"review\x04\x04",
                     b"invalid\n",
@@ -968,8 +950,974 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
                 let before = preservation::snapshot(root);
                 term.send(b"review\n");
                 assert_eq!(term.finish().code(), Some(1), "{}", term.output);
-                assert!(term.output.contains("settings changed"), "{}", term.output);
+                assert!(
+                    term.output.contains("context") && term.output.contains("changed"),
+                    "{}",
+                    term.output
+                );
                 assert_eq!(preservation::snapshot(root), before);
+            }
+        },
+    );
+}
+
+struct IntegrationFixture {
+    local: Repository,
+    project: tempfile::TempDir,
+    fork: tempfile::TempDir,
+}
+fn integration_fixture(root: &Path, advanced: bool) -> IntegrationFixture {
+    let local = Repository::new(root);
+    commit(&local, "base", "initial\n");
+    let project = tempfile::tempdir_in(root).unwrap();
+    let fork = tempfile::tempdir_in(root).unwrap();
+    for destination in [&project, &fork] {
+        local.success(&[
+            "clone".as_ref(),
+            "--bare".as_ref(),
+            local.path().as_os_str(),
+            destination.path().as_os_str(),
+        ]);
+    }
+    local.success(&["remote", "add", "project", project.path().to_str().unwrap()]);
+    local.success(&["remote", "add", "personal", fork.path().to_str().unwrap()]);
+    local.success(&["switch", "-c", BRANCH]);
+    commit(&local, "work", "feature\n");
+    local.success(&["push", "personal", &format!("HEAD:{REF}")]);
+    if advanced {
+        let upstream = Repository::new(root);
+        upstream.success(&["fetch", project.path().to_str().unwrap(), "main"]);
+        upstream.success(&["reset", "--hard", "FETCH_HEAD"]);
+        commit(&upstream, "upstream", "new base\n");
+        upstream.success(&[
+            "push",
+            project.path().to_str().unwrap(),
+            "HEAD:refs/heads/main",
+        ]);
+    }
+    fs::write(local.path().join(".git/git-oneflow.config.toml"),
+        "finish-mode='integrate'\nfinish-message='auto'\nbase-remote='project'\npublish-remote='personal'\n").unwrap();
+    IntegrationFixture {
+        local,
+        project,
+        fork,
+    }
+}
+fn remote_oid(path: &Path, reference: &str) -> Option<String> {
+    let result = git::run(path, ["rev-parse", "--verify", reference]).unwrap();
+    result
+        .status
+        .success()
+        .then(|| String::from_utf8(result.stdout).unwrap().trim().into())
+}
+fn integration_run(exe: &str, f: &IntegrationFixture, args: &[&str]) -> Output {
+    completion_run(exe, f.local.path(), "finish", args)
+}
+fn integration_status(output: Output, code: i32) -> String {
+    assert_eq!(output.status.code(), Some(code), "{output:?}");
+    format!(
+        "{}{}",
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap()
+    )
+}
+#[cfg(unix)]
+fn integration_hook(repo: &Repository, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = repo.path().join(".git/integration-cli-hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    repo.success(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    let path = hooks.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+#[cfg(unix)]
+fn bare_hook(path: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = path.join("hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join(name);
+    fs::write(&hook, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    hook
+}
+
+#[test]
+fn integration_methods_updates_completion_and_split_roles() {
+    cases(
+        "integration_methods_updates_completion_and_split_roles",
+        true,
+        |root, exe| {
+            for (command, method, checkout, cleanup) in [
+                ("finish", "ff-only", "target", "keep"),
+                ("f", "ff-only", "target", "local"),
+                ("finish", "ff-only", "target", "both"),
+                ("f", "ff-only", "work", "keep"),
+                ("finish", "merge", "target", "keep"),
+                ("f", "squash", "target", "keep"),
+            ] {
+                let f = integration_fixture(root, false);
+                let original = oid(&f.local, "HEAD").unwrap();
+                let base = remote_oid(f.project.path(), "refs/heads/main").unwrap();
+                let output = integration_status(
+                    completion_run(
+                        exe,
+                        f.local.path(),
+                        command,
+                        &[
+                            "--integration",
+                            method,
+                            "--checkout",
+                            checkout,
+                            "--cleanup",
+                            cleanup,
+                        ],
+                    ),
+                    0,
+                );
+                contains(&output, &[BRANCH, "project", "main"]);
+                let result = remote_oid(f.project.path(), "refs/heads/main").unwrap();
+                let parents = f.local.success(&["rev-list", "--parents", "-1", &result]);
+                let parents = String::from_utf8(parents.stdout).unwrap();
+                let parents: Vec<_> = parents.split_whitespace().collect();
+                match method {
+                    "ff-only" => assert_eq!(result, original),
+                    "merge" => assert_eq!(&parents[1..], &[base.as_str(), original.as_str()]),
+                    "squash" => assert_eq!(&parents[1..], &[base.as_str()]),
+                    _ => unreachable!(),
+                }
+                assert_eq!(oid(&f.local, REF).is_some(), cleanup == "keep");
+                assert_eq!(
+                    remote_oid(f.fork.path(), REF),
+                    (cleanup != "both").then_some(original)
+                );
+                assert_eq!(remote_oid(f.project.path(), REF), None);
+                assert_eq!(
+                    f.local.success(&["branch", "--show-current"]).stdout,
+                    format!("{}\n", if checkout == "target" { "main" } else { BRANCH }).as_bytes()
+                );
+                assert!(f.local.success(&["tag", "--list"]).stdout.is_empty());
+                assert!(
+                    !git::run(
+                        f.local.path(),
+                        ["config", "--get", &format!("branch.{BRANCH}.remote")]
+                    )
+                    .unwrap()
+                    .status
+                    .success()
+                );
+                let before = oid(&f.local, "HEAD");
+                integration_status(integration_run(exe, &f, &[]), 0);
+                assert_eq!(oid(&f.local, "HEAD"), before);
+            }
+            for update in ["rebase", "merge", "none"] {
+                let f = integration_fixture(root, true);
+                let published = remote_oid(f.fork.path(), REF);
+                let base = remote_oid(f.project.path(), "main").unwrap();
+                integration_status(
+                    integration_run(
+                        exe,
+                        &f,
+                        &[
+                            "--update",
+                            update,
+                            "--allow-rewrite",
+                            "--integration",
+                            "merge",
+                            "--cleanup",
+                            "keep",
+                        ],
+                    ),
+                    0,
+                );
+                f.local
+                    .success(&["merge-base", "--is-ancestor", &base, "HEAD"]);
+                assert_eq!(
+                    remote_oid(f.fork.path(), REF),
+                    published,
+                    "integration must not publish prepared work"
+                );
+            }
+            let f = integration_fixture(root, true);
+            let before = oid(&f.local, "HEAD");
+            integration_status(
+                integration_run(
+                    exe,
+                    &f,
+                    &[
+                        "--update",
+                        "none",
+                        "--integration",
+                        "ff-only",
+                        "--cleanup",
+                        "keep",
+                    ],
+                ),
+                1,
+            );
+            assert_eq!(oid(&f.local, "HEAD"), before);
+        },
+    );
+}
+
+#[test]
+fn integration_literal_multiline_and_already_incorporated_work() {
+    cases(
+        "integration_literal_multiline_and_already_incorporated_work",
+        true,
+        |root, exe| {
+            for method in ["merge", "squash"] {
+                let f = integration_fixture(root, false);
+                let message =
+                    "Integration subject\n\nLiteral `touch injected` and $(touch injected)\n";
+                integration_status(
+                    integration_run(
+                        exe,
+                        &f,
+                        &["--integration", method, "--cleanup", "keep", "-m", message],
+                    ),
+                    0,
+                );
+                assert_eq!(
+                    f.local.success(&["log", "-1", "--format=%B"]).stdout,
+                    format!("{message}\n").as_bytes()
+                );
+                assert!(!f.local.path().join("injected").exists());
+            }
+            let f = integration_fixture(root, false);
+            f.local
+                .success(&["push", "project", "HEAD:refs/heads/main"]);
+            // Method, update and message defaults are ask; incorporated work needs none.
+            fs::write(
+                f.local.path().join(".git/git-oneflow.config.toml"),
+                "finish-mode='integrate'\nbase-remote='project'\npublish-remote='personal'\n",
+            )
+            .unwrap();
+            integration_status(integration_run(exe, &f, &["--cleanup", "keep"]), 0);
+            assert_eq!(oid(&f.local, "HEAD"), remote_oid(f.fork.path(), REF));
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn integration_check_failure_reuses_result_and_delivered_retry_skips_effects() {
+    cases(
+        "integration_check_failure_reuses_result_and_delivered_retry_skips_effects",
+        true,
+        |root, exe| {
+            for skip in [false, true] {
+                let f = integration_fixture(root, false);
+                let base = remote_oid(f.project.path(), "main");
+                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let mut config = fs::read_to_string(&private).unwrap();
+                config.push_str("[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','echo check >> .git/check-count; echo streamed-candidate-output; test -f .git/check-pass']\n");
+                fs::write(private, config).unwrap();
+                let args = if skip {
+                    vec![
+                        "--integration",
+                        "merge",
+                        "--cleanup",
+                        "local",
+                        "--skip-checks",
+                    ]
+                } else {
+                    vec!["--integration", "merge", "--cleanup", "local"]
+                };
+                let output =
+                    integration_status(integration_run(exe, &f, &args), if skip { 0 } else { 1 });
+                if skip {
+                    assert!(output.to_lowercase().contains("skip"), "{output}");
+                    assert!(!f.local.path().join(".git/check-count").exists());
+                } else {
+                    contains(&output, &["streamed-candidate-output", "Candidate gate"]);
+                    assert_eq!(remote_oid(f.project.path(), "main"), base);
+                    let candidate = oid(&f.local, "HEAD");
+                    assert_eq!(
+                        fs::read_to_string(f.local.path().join(".git/check-count")).unwrap(),
+                        "check\n"
+                    );
+                    fs::write(f.local.path().join(".git/check-pass"), "").unwrap();
+                    // Recovery restores the retained candidate when the developer returned to work.
+                    f.local.success(&["switch", BRANCH]);
+                    integration_status(integration_run(exe, &f, &[]), 0);
+                    assert_eq!(oid(&f.local, "HEAD"), candidate);
+                    assert_eq!(
+                        fs::read_to_string(f.local.path().join(".git/check-count")).unwrap(),
+                        "check\ncheck\n"
+                    );
+                }
+                assert_eq!(oid(&f.local, REF), None);
+                // A fresh process on the target after deletion uses retained choices, with no check or push.
+                let count = fs::read(f.local.path().join(".git/check-count")).ok();
+                bare_hook(
+                    f.project.path(),
+                    "pre-receive",
+                    "echo duplicate-publication >&2; exit 1",
+                );
+                integration_status(integration_run(exe, &f, &[]), 0);
+                assert_eq!(
+                    fs::read(f.local.path().join(".git/check-count")).ok(),
+                    count
+                );
+            }
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn integration_partial_target_delivery_and_remote_cleanup_resume() {
+    cases(
+        "integration_partial_target_delivery_and_remote_cleanup_resume",
+        true,
+        |root, exe| {
+            for cleanup_failure in [false, true] {
+                let f = integration_fixture(root, false);
+                let second = tempfile::tempdir_in(root).unwrap();
+                let source = if cleanup_failure {
+                    f.fork.path()
+                } else {
+                    f.project.path()
+                };
+                f.local.success(&[
+                    "clone".as_ref(),
+                    "--bare".as_ref(),
+                    source.as_os_str(),
+                    second.path().as_os_str(),
+                ]);
+                let remote = if cleanup_failure {
+                    "personal"
+                } else {
+                    "project"
+                };
+                for destination in [source, second.path()] {
+                    f.local.success(&[
+                        "config",
+                        "--add",
+                        &format!("remote.{remote}.pushurl"),
+                        destination.to_str().unwrap(),
+                    ]);
+                }
+                let reject = bare_hook(
+                    second.path(),
+                    "pre-receive",
+                    "echo second-destination-rejected >&2; exit 1",
+                );
+                let original = oid(&f.local, "HEAD");
+                let first = integration_status(
+                    integration_run(
+                        exe,
+                        &f,
+                        &[
+                            "--integration",
+                            "squash",
+                            "-m",
+                            "Keep accepted message",
+                            "--cleanup",
+                            "both",
+                        ],
+                    ),
+                    1,
+                );
+                contains(
+                    &first,
+                    &[
+                        "second-destination-rejected",
+                        &second.path().display().to_string(),
+                    ],
+                );
+                let candidate = remote_oid(f.project.path(), "main").unwrap();
+                assert_eq!(oid(&f.local, "HEAD"), Some(candidate.clone()));
+                if cleanup_failure {
+                    assert_eq!(oid(&f.local, REF), None);
+                    assert_eq!(remote_oid(f.fork.path(), REF), None);
+                    assert_eq!(remote_oid(second.path(), REF), original);
+                } else {
+                    assert_eq!(oid(&f.local, REF), original);
+                    assert_ne!(remote_oid(second.path(), "main"), Some(candidate.clone()));
+                }
+                fs::remove_file(reject).unwrap();
+                integration_status(integration_run(exe, &f, &[]), 0);
+                assert_eq!(oid(&f.local, "HEAD"), Some(candidate.clone()));
+                assert_eq!(oid(&f.local, REF), None);
+                assert_eq!(remote_oid(f.fork.path(), REF), None);
+                if cleanup_failure {
+                    assert_eq!(remote_oid(second.path(), REF), None);
+                } else {
+                    assert_eq!(remote_oid(second.path(), "main"), Some(candidate));
+                }
+                assert_eq!(
+                    f.local.success(&["log", "-1", "--format=%s"]).stdout,
+                    b"Keep accepted message\n"
+                );
+                integration_status(integration_run(exe, &f, &[]), 0);
+            }
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn integration_checkout_failure_reports_delivery_and_retries_without_publication() {
+    cases(
+        "integration_checkout_failure_reports_delivery_and_retries_without_publication",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            // Target candidate checkout is the first hook; permit that and fail final work checkout.
+            integration_hook(
+                &f.local,
+                "post-checkout",
+                "test \"$(git branch --show-current)\" != 'fix/deployment-bug' || test -f .git/checkout-pass || { echo checkout-refused >&2; exit 1; }",
+            );
+            let output = integration_status(
+                integration_run(
+                    exe,
+                    &f,
+                    &[
+                        "--integration",
+                        "merge",
+                        "--checkout",
+                        "work",
+                        "--cleanup",
+                        "keep",
+                    ],
+                ),
+                1,
+            );
+            contains(
+                &output,
+                &[
+                    "checkout-refused",
+                    "Target delivery: Complete",
+                    &f.project.path().display().to_string(),
+                ],
+            );
+            let delivered = remote_oid(f.project.path(), "main");
+            assert_ne!(delivered, remote_oid(f.fork.path(), REF));
+            fs::write(f.local.path().join(".git/checkout-pass"), "").unwrap();
+            integration_status(integration_run(exe, &f, &[]), 0);
+            assert_eq!(remote_oid(f.project.path(), "main"), delivered);
+            assert_eq!(
+                f.local.success(&["branch", "--show-current"]).stdout,
+                format!("{BRANCH}\n").as_bytes()
+            );
+            assert_eq!(oid(&f.local, REF), remote_oid(f.fork.path(), REF));
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn integration_terminal_choices_are_relevant_and_context_bound() {
+    cases(
+        "integration_terminal_choices_are_relevant_and_context_bound",
+        true,
+        |root, exe| {
+            for choice in ["mode", "update", "method", "cleanup"] {
+                for mutation in ["cancel", "config", "head", "endpoint", "remote"] {
+                    if choice == "mode" && mutation == "remote" {
+                        continue;
+                    }
+                    let f = integration_fixture(root, choice == "update");
+                    let args = match choice {
+                        "mode" => vec!["finish", "--integration", "ff-only", "--cleanup", "keep"],
+                        "update" => vec!["finish", "--integration", "merge", "--cleanup", "keep"],
+                        "method" => vec!["finish", "--cleanup", "keep"],
+                        "cleanup" => vec!["finish", "--integration", "ff-only"],
+                        _ => unreachable!(),
+                    };
+                    if choice == "mode" {
+                        let private = f.local.path().join(".git/git-oneflow.config.toml");
+                        let settings = fs::read_to_string(&private)
+                            .unwrap()
+                            .replace("finish-mode='integrate'", "finish-mode='ask'");
+                        fs::write(private, settings).unwrap();
+                    }
+                    let prompt = match choice {
+                        "mode" => "Completion mode (",
+                        "update" => "Update (",
+                        "method" => "Integration (",
+                        "cleanup" => "Cleanup (",
+                        _ => unreachable!(),
+                    };
+                    let mut term = terminal::Terminal::start(exe, f.local.path(), &args);
+                    term.until(prompt);
+                    let work = oid(&f.local, REF);
+                    match mutation {
+                        "config" => {
+                            f.local
+                                .success(&["config", "fixture.concurrent-change", "true"]);
+                        }
+                        "head" => commit(&f.local, "concurrent", "concurrent commit\n"),
+                        "endpoint" => {
+                            f.local.success(&[
+                                "config",
+                                "remote.project.pushurl",
+                                f.fork.path().to_str().unwrap(),
+                            ]);
+                        }
+                        "remote" => {
+                            let upstream = Repository::new(root);
+                            upstream.success(&[
+                                "fetch",
+                                f.project.path().to_str().unwrap(),
+                                "main",
+                            ]);
+                            upstream.success(&["reset", "--hard", "FETCH_HEAD"]);
+                            commit(&upstream, "concurrent", "concurrent remote commit\n");
+                            upstream.success(&[
+                                "push",
+                                f.project.path().to_str().unwrap(),
+                                "HEAD:refs/heads/main",
+                            ]);
+                        }
+                        "cancel" => (),
+                        _ => unreachable!(),
+                    }
+                    let expected_work = oid(&f.local, REF);
+                    let expected_base = remote_oid(f.project.path(), "main");
+                    let before = work_snapshot(&f.local);
+                    term.send(if mutation != "cancel" {
+                        match choice {
+                            "mode" => b"integrate\n",
+                            "update" => b"merge\n",
+                            "method" => b"ff-only\n",
+                            "cleanup" => b"keep\n",
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        b"cancel\n"
+                    });
+                    assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+                    unchanged_work(&f.local, &before);
+                    assert_eq!(oid(&f.local, REF), expected_work);
+                    assert_eq!(remote_oid(f.project.path(), "main"), expected_base);
+                    assert_eq!(remote_oid(f.fork.path(), REF), work);
+                }
+            }
+            for answer in [b"ff-only\n".as_slice(), b"merge\n", b"squash\n"] {
+                let f = integration_fixture(root, false);
+                let mut term = terminal::Terminal::start(
+                    exe,
+                    f.local.path(),
+                    &["finish", "--cleanup", "keep"],
+                );
+                term.until("Integration (");
+                term.send(answer);
+                assert!(term.finish().success(), "{}", term.output);
+                assert!(!term.output.contains("Update ("), "{}", term.output);
+                assert!(!term.output.contains("Cleanup ("), "{}", term.output);
+                assert!(
+                    !term.output.contains("Replace published history ("),
+                    "{}",
+                    term.output
+                );
+            }
+            for answer in [b"bogus\n".as_slice(), b"\x04", b"ff-only\x04\x04"] {
+                let f = integration_fixture(root, false);
+                let before = work_snapshot(&f.local);
+                let mut term = terminal::Terminal::start(
+                    exe,
+                    f.local.path(),
+                    &["finish", "--cleanup", "keep"],
+                );
+                term.until("Integration (");
+                term.send(answer);
+                assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+                unchanged_work(&f.local, &before);
+            }
+        },
+    );
+}
+
+#[cfg(unix)]
+fn editor_script(root: &Path, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = root.join("message-editor");
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+#[cfg(unix)]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn integration_git_editor_suggestion_multiline_failure_and_context_guard() {
+    cases(
+        "integration_git_editor_suggestion_multiline_failure_and_context_guard",
+        true,
+        |root, exe| {
+            for scenario in ["accepted", "failed", "blank", "nul", "non-utf8", "changed"] {
+                let f = integration_fixture(root, false);
+                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                fs::write(
+                    &private,
+                    fs::read_to_string(&private)
+                        .unwrap()
+                        .replace("finish-message='auto'", "finish-message='ask'"),
+                )
+                .unwrap();
+                let editor = editor_script(
+                    root,
+                    match scenario {
+                        "accepted" => {
+                            "cp \"$1\" .git/editor-suggestion; printf 'Edited subject\\n\\nLiteral $(touch injected)\\n# comment\\n' > \"$1\""
+                        }
+                        "failed" => "exit 7",
+                        "blank" => "printf '\\n# comment only\\n' > \"$1\"",
+                        "nul" => "printf 'invalid\\000message\\n' > \"$1\"",
+                        "non-utf8" => "printf '\\377\\n' > \"$1\"",
+                        "changed" => {
+                            "git config fixture.editor-change true; printf 'Edited subject\\n' > \"$1\""
+                        }
+                        _ => unreachable!(),
+                    },
+                );
+                f.local.success(&[
+                    "config",
+                    "core.editor",
+                    &shell_quote(editor.to_str().unwrap()),
+                ]);
+                let before = oid(&f.local, "HEAD");
+                let base = remote_oid(f.project.path(), "main");
+                let mut term = terminal::Terminal::start(
+                    exe,
+                    f.local.path(),
+                    &["finish", "--integration", "merge", "--cleanup", "keep"],
+                );
+                assert_eq!(
+                    term.finish().code(),
+                    Some(if scenario == "accepted" { 0 } else { 1 }),
+                    "{}",
+                    term.output
+                );
+                if scenario == "accepted" {
+                    let suggestion =
+                        fs::read_to_string(f.local.path().join(".git/editor-suggestion")).unwrap();
+                    contains(&suggestion, &[BRANCH, "main"]);
+                    assert_eq!(
+                        f.local.success(&["log", "-1", "--format=%B"]).stdout,
+                        b"Edited subject\n\nLiteral $(touch injected)\n\n"
+                    );
+                    assert!(!f.local.path().join("injected").exists());
+                } else {
+                    assert_eq!(oid(&f.local, "HEAD"), before);
+                    assert_eq!(remote_oid(f.project.path(), "main"), base);
+                    assert_eq!(remote_oid(f.fork.path(), REF), before);
+                }
+            }
+            // GIT_EDITOR overrides core.editor; no separate oneflow editor preference is needed.
+            let f = integration_fixture(root, false);
+            let private = f.local.path().join(".git/git-oneflow.config.toml");
+            fs::write(
+                &private,
+                fs::read_to_string(&private)
+                    .unwrap()
+                    .replace("finish-message='auto'", "finish-message='ask'"),
+            )
+            .unwrap();
+            f.local.success(&["config", "core.editor", "false"]);
+            let editor = editor_script(root, "printf 'Git editor override\\n' > \"$1\"");
+            let wrapper = root.join("editor-environment-cli");
+            fs::write(
+                &wrapper,
+                format!(
+                    "#!/bin/sh\nexport GIT_EDITOR={}\nexec {} \"$@\"\n",
+                    shell_quote(&shell_quote(editor.to_str().unwrap())),
+                    shell_quote(exe)
+                ),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut term = terminal::Terminal::start(
+                wrapper.to_str().unwrap(),
+                f.local.path(),
+                &["finish", "--integration", "squash", "--cleanup", "keep"],
+            );
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(
+                f.local.success(&["log", "-1", "--format=%s"]).stdout,
+                b"Git editor override\n"
+            );
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn integration_cancelled_editor_after_preparation_retains_work_and_retries() {
+    cases(
+        "integration_cancelled_editor_after_preparation_retains_work_and_retries",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, true);
+            let private = f.local.path().join(".git/git-oneflow.config.toml");
+            fs::write(
+                &private,
+                fs::read_to_string(&private)
+                    .unwrap()
+                    .replace("finish-message='auto'", "finish-message='ask'"),
+            )
+            .unwrap();
+            let editor = editor_script(root, "exit 1");
+            f.local.success(&[
+                "config",
+                "core.editor",
+                &shell_quote(editor.to_str().unwrap()),
+            ]);
+            let original = oid(&f.local, REF);
+            let target = remote_oid(f.project.path(), "main");
+            let mut term = terminal::Terminal::start(
+                exe,
+                f.local.path(),
+                &["finish", "--update", "merge", "--cleanup", "keep"],
+            );
+            term.until("Integration (");
+            term.send(b"merge\n");
+            assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+            let prepared = oid(&f.local, REF);
+            assert_ne!(prepared, original);
+            assert_eq!(remote_oid(f.project.path(), "main"), target);
+            assert_eq!(remote_oid(f.fork.path(), REF), original);
+            integration_status(
+                integration_run(exe, &f, &["-m", "Accepted after preparation"]),
+                0,
+            );
+            assert_eq!(oid(&f.local, REF), prepared);
+        },
+    );
+}
+
+#[test]
+fn integration_streamed_credentials_follow_default_private_and_flag_preferences() {
+    cases(
+        "integration_streamed_credentials_follow_default_private_and_flag_preferences",
+        true,
+        |root, exe| {
+            for preference in ["default", "private", "flag"] {
+                let f = integration_fixture(root, false);
+                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let mut config = fs::read_to_string(&private).unwrap();
+                if preference == "private" {
+                    config.push_str("redact-credentials=false\n");
+                }
+                config.push_str("[[finish-checks]]\nname='Credential diagnostic'\ncommand=['sh','-c','echo https://synthetic-user:synthetic-secret@example.invalid/repository; exit 1']\n");
+                fs::write(private, config).unwrap();
+                let args = if preference == "flag" {
+                    vec![
+                        "--integration",
+                        "ff-only",
+                        "--cleanup",
+                        "keep",
+                        "--show-credentials",
+                    ]
+                } else {
+                    vec!["--integration", "ff-only", "--cleanup", "keep"]
+                };
+                let output = integration_status(integration_run(exe, &f, &args), 1);
+                if preference == "default" {
+                    assert!(!output.contains("synthetic-secret"), "{output}");
+                    assert!(!output.contains("synthetic-user"), "{output}");
+                    contains(&output, &["<redacted>@example.invalid/repository"]);
+                } else {
+                    contains(
+                        &output,
+                        &["synthetic-user:synthetic-secret@example.invalid/repository"],
+                    );
+                }
+                assert_ne!(oid(&f.local, "HEAD"), remote_oid(f.project.path(), "main"));
+            }
+        },
+    );
+}
+
+#[test]
+fn integration_completion_survives_removed_nested_caller_directory() {
+    cases(
+        "integration_completion_survives_removed_nested_caller_directory",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            fs::create_dir(f.local.path().join("nested")).unwrap();
+            commit(&f.local, "nested/work", "source-only directory\n");
+            f.local
+                .success(&["push", "personal", &format!("HEAD:{REF}")]);
+            let upstream = Repository::new(root);
+            upstream.success(&["fetch", f.fork.path().to_str().unwrap(), REF]);
+            upstream.success(&["reset", "--hard", "FETCH_HEAD"]);
+            upstream.success(&["rm", "nested/work"]);
+            upstream.success(&["commit", "-m", "remove incorporated directory"]);
+            upstream.success(&[
+                "push",
+                f.project.path().to_str().unwrap(),
+                "HEAD:refs/heads/main",
+            ]);
+            let output = integration_status(
+                completion_run(
+                    exe,
+                    &f.local.path().join("nested"),
+                    "f",
+                    &["--cleanup", "local"],
+                ),
+                0,
+            );
+            contains(
+                &output,
+                &["Integrated", "Final checkout:", "main", "local deleted"],
+            );
+            assert!(!f.local.path().join("nested").exists());
+            assert_eq!(oid(&f.local, REF), None);
+            assert_eq!(oid(&f.local, "HEAD"), remote_oid(f.project.path(), "main"));
+            integration_status(integration_run(exe, &f, &[]), 0);
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn integration_editor_respects_git_message_cleanup_and_comment_preferences() {
+    cases(
+        "integration_editor_respects_git_message_cleanup_and_comment_preferences",
+        true,
+        |root, exe| {
+            for policy in ["whitespace", "verbatim", "scissors", "comment-aliases"] {
+                let f = integration_fixture(root, false);
+                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                fs::write(
+                    &private,
+                    fs::read_to_string(&private)
+                        .unwrap()
+                        .replace("finish-message='auto'", "finish-message='ask'"),
+                )
+                .unwrap();
+                let (body, expected) = match policy {
+                    "whitespace" => (
+                        "printf 'Subject  \\n\\n# retained comment\\n' > \"$1\"",
+                        "Subject\n\n# retained comment\n\n",
+                    ),
+                    "verbatim" => (
+                        "printf 'Subject  \\n\\n# retained comment\\n\\n' > \"$1\"",
+                        "Subject  \n\n# retained comment\n\n\n",
+                    ),
+                    "scissors" => (
+                        "printf 'Subject\\n\\n; ------------------------ >8 ------------------------\\nDiscarded tail\\n' > \"$1\"",
+                        "Subject\n\n",
+                    ),
+                    "comment-aliases" => (
+                        "printf 'Subject\\n; removed comment\\n// retained alias comment\\n' > \"$1\"",
+                        "Subject\n// retained alias comment\n\n",
+                    ),
+                    _ => unreachable!(),
+                };
+                if policy == "comment-aliases" {
+                    f.local.success(&["config", "core.commentString", "//"]);
+                    f.local.success(&["config", "core.commentChar", ";"]);
+                } else {
+                    f.local.success(&["config", "commit.cleanup", policy]);
+                    if policy == "scissors" {
+                        f.local.success(&["config", "core.commentChar", ";"]);
+                    }
+                }
+                let editor = editor_script(root, body);
+                f.local.success(&[
+                    "config",
+                    "core.editor",
+                    &shell_quote(editor.to_str().unwrap()),
+                ]);
+                let mut term = terminal::Terminal::start(
+                    exe,
+                    f.local.path(),
+                    &["finish", "--integration", "squash", "--cleanup", "keep"],
+                );
+                assert!(term.finish().success(), "{}", term.output);
+                assert_eq!(
+                    f.local.success(&["log", "-1", "--format=%B"]).stdout,
+                    expected.as_bytes(),
+                    "policy={policy}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn integration_interrupted_before_result_retention_recovers_without_reintegration() {
+    cases(
+        "integration_interrupted_before_result_retention_recovers_without_reintegration",
+        true,
+        |root, exe| {
+            for externally_delivered in [false, true] {
+                let f = integration_fixture(root, false);
+                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let mut config = fs::read_to_string(&private).unwrap();
+                config.push_str("[[finish-checks]]\nname='Recovered candidate'\ncommand=['sh','-c','echo checked >> .git/recovered-checks']\n");
+                fs::write(private, config).unwrap();
+                integration_hook(
+                    &f.local,
+                    "post-merge",
+                    "oneflow_cli_pid=$(ps -o ppid= -p \"$PPID\")\nkill -KILL \"$oneflow_cli_pid\"",
+                );
+                let base = remote_oid(f.project.path(), "main");
+                let interrupted = integration_run(
+                    exe,
+                    &f,
+                    &[
+                        "--integration",
+                        "merge",
+                        "--cleanup",
+                        "local",
+                        "-m",
+                        "Retain interrupted message",
+                    ],
+                );
+                assert_eq!(interrupted.status.code(), None, "{interrupted:?}");
+                let candidate = oid(&f.local, "main");
+                assert_ne!(candidate, base);
+                assert_eq!(remote_oid(f.project.path(), "main"), base);
+                assert!(
+                    !String::from_utf8(
+                        f.local
+                            .success(&[
+                                "for-each-ref",
+                                "--format=%(refname)",
+                                "refs/oneflow/integration/"
+                            ])
+                            .stdout
+                    )
+                    .unwrap()
+                    .contains("/result")
+                );
+                f.local.success(&["merge", "--quit"]);
+                if externally_delivered {
+                    f.local
+                        .success(&["push", "project", "main:refs/heads/main"]);
+                    bare_hook(
+                        f.project.path(),
+                        "pre-receive",
+                        "echo duplicate-delivery >&2; exit 1",
+                    );
+                }
+                // The hook remains installed: a duplicate merge would kill this invocation too.
+                integration_status(integration_run(exe, &f, &[]), 0);
+                assert_eq!(oid(&f.local, "HEAD"), candidate);
+                assert_eq!(remote_oid(f.project.path(), "main"), candidate);
+                assert_eq!(oid(&f.local, REF), None);
+                assert_eq!(
+                    f.local.path().join(".git/recovered-checks").exists(),
+                    !externally_delivered
+                );
+                assert_eq!(
+                    f.local.success(&["log", "-1", "--format=%s"]).stdout,
+                    b"Retain interrupted message\n"
+                );
             }
         },
     );

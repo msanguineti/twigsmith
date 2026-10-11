@@ -1,7 +1,7 @@
 # User manual
 
 Git OneFlow helps you create or resume a working branch, preserve progress, and
-prepare finished work for review. Use your normal Git commands to edit history,
+deliver finished work for review or direct integration. Use your normal Git commands to edit history,
 stage changes, resolve conflicts, and submit the published branch to your hosting
 service. Branch prefixes such as `feature/`, `release/`, and `hotfix/` are naming
 conventions; they do not select different operations.
@@ -47,16 +47,16 @@ submit it manually for review. The branch remains checked out and available.
 | --- | --- |
 | `start`, `s` | Switch to existing local work, resume published work, or create new work from the fresh remote base |
 | `save`, `v` | Preserve the selected local work and publish existing or resulting branch commits |
-| `finish`, `f` | Prepare a clean working branch and publish it for manual review |
+| `finish`, `f` | Prepare and check work, then publish for review or integrate into the project base |
 | `status` | Read local repository state |
 | `config show` | Read effective settings and their sources |
 | `config` | Create a shared settings file after guided review |
 | `config --yes` | Create shared built-in defaults without prompts |
 
-Review delivery is the available finish operation. Direct integration into the
-base, tagging, branch cleanup, pull request creation, and provider submission are
-outside the current CLI's operations. Selecting `integrate` stops before fetches,
-checks, workflow mutations, or publication.
+Finish supports manual review delivery and direct integration into the project base.
+Direct integration can retain or delete the work branch after verified delivery.
+Pull request creation, provider submission, tagging, and release operations remain
+outside the CLI’s operations.
 
 ## Command reference
 
@@ -167,7 +167,7 @@ Conflicts, active Git operations, detached HEAD, and dirty submodule contents
 block save. Preserve dirty submodule work within its own repository. Clean
 submodule commit-pointer changes can be saved in the parent repository.
 
-### Prepare and publish finished work
+### Finish work
 
 ```text
 gof finish [OPTIONS]
@@ -181,7 +181,7 @@ submission. It keeps the working branch checked out.
 
 | Option | Effect |
 | --- | --- |
-| `--mode <review\|integrate>` | Override `finish-mode`; `integrate` stops before workflow effects |
+| `--mode <review\|integrate>` | Publish work for review or integrate it into the project base |
 | `--update <rebase\|merge\|none>` | Override preparation against the observed remote base |
 | `--allow-rewrite` | Permit eligible replacement of published branch history |
 | `--no-rewrite` | Deny replacement; mutually exclusive with `--allow-rewrite` |
@@ -216,8 +216,8 @@ prepares against the project base even when a fork base is stale or divergent.
 A branch already including the base needs no update choice. Unrelated base history
 requires `none` or Git history repair; uncertain or unavailable history stops finish.
 
-Selecting rebase resolves only the update choice. If published history may need
-replacement, `finish-rewrite = ask` requests separate authorization.
+In review mode, selecting rebase resolves only the update choice. If published
+history may need replacement, `finish-rewrite = ask` requests separate authorization.
 `--allow-rewrite` or configured `allow` supplies permission; configured `allow`
 is standing authorization for eligible replacement. Denial stops required
 replacement. Permission alone cannot overwrite remote work missing from the local
@@ -232,28 +232,67 @@ Git hooks, revalidation, and publication safeguards remain active. See
 [finish checks](#finish-checks) for configuring commands and handling failures.
 
 Resolved flags or settings require no additional confirmation. Only relevant
-unresolved choices prompt. All required choices resolve before branch changes.
-Cancellation or unresolved input leaves branch history, the index, and working-tree
-content unchanged by finish; completed remote observations and fetches remain and
+unresolved choices prompt. Review’s required choices resolve before branch changes.
+Review cancellation or unresolved input leaves branch history, the index, and
+working-tree content unchanged by finish; completed remote observations and fetches remain and
 are reported. Changed local or remote context stops execution.
 
-#### Recognized direct-integration options
+#### Integrate into the project base
 
-The CLI recognizes these options and settings, but direct integration execution
-is unavailable. They have no checkout, integration, or cleanup effects today:
+Integrate mode delivers the finished result to the base branch on `base-remote`,
+then completes the selected checkout and work-branch cleanup. It runs candidate
+checks before pending delivery and leaves the result available after failure.
 
-| Option | Recognized policy |
+```sh
+gof finish --mode integrate --integration ff-only --cleanup keep
+gof f --mode integrate --update merge --integration merge --message "Integrate parser fix" --cleanup local
+gof finish --mode integrate --integration squash --message "Fix parser" --cleanup both
+```
+
+| Option | Effect |
 | --- | --- |
-| `--integration <ff-only\|merge\|squash>` | Final integration method; `merge` selects a merge commit |
-| `-m`, `--message <text>` | Literal nonblank final integration commit message |
-| `--checkout <target\|work>` | Checkout after confirmed target publication |
-| `--cleanup <keep\|local\|both>` | Retain work branches, delete local work, or delete local and published work |
+| `--integration <ff-only\|merge\|squash>` | Fast-forward only, create a merge commit, or create a squash commit |
+| `-m`, `--message <text>` | Supply literal nonblank final integration message text, including multiline text |
+| `--checkout <target\|work>` | Select the final checkout; default is target |
+| `--cleanup <keep\|local\|both>` | Retain work, delete local work, or delete local and published work |
 
-These options require integrate mode and do not imply a mode choice. In review
-mode they are syntax errors. Valid configured integration policies remain inactive
-in review mode; all supplied settings are still validated. Work-branch update
-selection is separate from final integration selection. `finish --message` does
-not amend work commits or supply a review description.
+These options require integrate mode and do not imply a mode choice. Review mode
+rejects them as syntax errors. Valid integration settings remain inactive in review;
+all supplied settings are validated.
+
+Work preparation and target integration are independent. `--update merge`
+incorporates the observed target into work; `--integration merge` creates the final
+merge commit on the target. Fast-forward-only requires target ancestry and stops
+when a fast-forward is impossible. Work already containing the target needs no
+update choice; work already contained in the target needs no integration method
+or message. Unrelated or unverifiable history blocks direct integration.
+
+`finish-message = auto` uses `Integrate <source> into <target>`. The default ask
+policy offers an editable suggestion through your Git editor when a new merge or
+squash commit needs a message. Supply `-m` to avoid editing. Fast-forward,
+already-integrated work, and reuse of a retained result need no editor. Editor
+failure, cancellation, invalid output, or a blank message stops the pending stage.
+Message text remains literal and Git hooks, cleanup, and signing apply. A message
+may first become necessary after preparation; stopping then retains prepared work.
+
+Checkout and deletion follow verified delivery to every target destination.
+`--checkout work` requires `--cleanup keep`. Local cleanup deletes the verified
+local work branch; both also deletes its exact observed published version at every
+`publish-remote` push destination. The published version must be contained in the
+verified source. New work, another worktree’s checkout, or changed destinations
+blocks deletion. Target delivery and published-work cleanup use their independent
+remote roles.
+
+Integration never publishes rewritten work, changes its tracking, or creates tags.
+Working-history replacement permission supplies no target-publication or cleanup
+authority. A successful local integration is only a candidate: checks, target
+publication, final checkout, and selected cleanup must all complete for success.
+A command error remains a failure even when Git completed its effect.
+
+Only relevant unresolved choices prompt. Settings and explicit flags need no
+additional confirmation. Prompts and editing bind the reviewed context; changed
+refs, settings, endpoints, or recovery evidence stop the affected operation.
+See [integration recovery](#recover-direct-integration) for retained-result retries.
 
 ### Inspect state
 
@@ -531,16 +570,18 @@ stops publication and later checks. Ctrl-C stops the running check and its ordin
 child processes. Check commands run as project code with your permissions.
 
 Preparation and check effects stay in place. Fix the problem, commit or preserve
-any generated changes, and rerun finish; all checks run again. Checks that change
+any generated changes, and rerun finish. Review reruns all checks; integration reruns them while target
+delivery remains pending and skips them after every target confirms delivery. Checks that change
 the branch, committed work, index, working tree, effective settings, or routing
 stop the attempt before another check or publication. Ignored build outputs are
 permitted. Remote movement during checks can still stop publication.
 
 ### Credential display
 
-Finish redacts credentials in HTTP(S) URLs by default across prompts, completion,
-failures, displayed Git diagnostics, and check output. This is URL credential
-redaction, not general secret filtering.
+Finish redacts credentials in HTTP(S) URLs by default across its prompts, completion,
+failures, displayed Git diagnostics, and check output. Your message editor receives
+the terminal directly and controls its own display. Redaction filters URL credentials
+in finish-rendered output; it does not filter arbitrary secrets.
 
 Set `redact-credentials = false` in the private common-directory file or use
 `gof finish --show-credentials` for one invocation. The flag takes precedence.
@@ -557,7 +598,8 @@ other Git processes, editors, hooks, or helpers.
 
 Publication pins the intended commit and exact branch. Save uses ordinary
 non-forced publication; finish also guards each destination with an exact lease
-and requires verified incorporation evidence plus permission for replacements.
+and requires verified incorporation evidence plus permission for review replacements.
+Direct integration only advances the target through verified ancestry.
 Gof does not publish unrelated branches, tags, or submodule branches. Normal Git
 hooks, signing, credential helpers, and transport settings remain active.
 
@@ -590,13 +632,15 @@ gof save --staged --message "selected changes"
 gof save --wip
 gof finish --mode review --update rebase --allow-rewrite
 gof finish --mode review --update merge --no-rewrite
+gof finish --mode integrate --integration squash --message "Fix parser" --cleanup local
 gof config --yes --format json
 ```
 
 Prompting requires terminal stdin and stderr and a complete submitted line.
 Piped responses cannot supply interactive approval. Unresolved save input stops
-before local effects. Unresolved finish preparation input stops before branch
-changes but can follow reported remote observations and fetches. Guided configuration
+before local effects. Unresolved update input stops before branch changes but can follow reported remote
+observations and fetches. Integration method/message input can first become necessary
+after work preparation; cancellation retains that prepared work. Guided configuration
 requires a terminal; `--yes` authorizes prompt-free default generation.
 
 For save and finish, enter a displayed choice or `cancel`; invalid choices and
@@ -614,7 +658,8 @@ queries.
 | `1` | Operational failure, unresolved input, save/finish cancellation, or incomplete execution |
 | `2` | Invalid command syntax |
 
-Save and finish success includes valid upstream tracking after confirmed publication.
+Save and review finish success includes valid upstream tracking after confirmed publication.
+Integration success includes verified delivery and selected checkout/cleanup.
 A remote update can be confirmed even when a later tracking error makes the command
 fail. Status successfully reports dirty, conflicted, detached, unborn, and bare
 states. Operating-system interruption is unsuccessful and may prevent a final report.
@@ -645,8 +690,7 @@ git remote -v
 | Configuration creation blocked | Inspect/edit the existing shared file; check destination directory access |
 | Scope or context changed | Inspect branch, index, files, tracking, and settings; rerun against actual state |
 | Remote or base unavailable | Check effective roles, named Git remotes, base existence, and destination access |
-| Direct integration selected | Use `--mode review` for supported delivery |
-| Required input unavailable | Select explicit action/mode/update/rewrite flags or corresponding settings; supply a staged message when required |
+| Required input unavailable | Resolve relevant action/mode/update/integration/cleanup choices with flags or settings; supply a message when required |
 
 To inspect endpoints using your actual remote and branch names:
 
@@ -707,7 +751,7 @@ git stash apply --index <reported-id>
 Resolve any conflicts reported by Git. Successful application retains the stash
 entry; remove it separately with Git when you no longer need it.
 
-### Recover finish preparation or checks
+### Recover review preparation or checks
 
 For rebase or merge conflicts, resolve files, stage resolutions, and complete the
 active Git operation:
@@ -725,10 +769,11 @@ abort command.
 
 For failed or interrupted checks, prepared history and check effects stay local.
 Fix the reported check or executable problem, commit or preserve changed files,
-and rerun finish. Every configured check runs again. `--skip-checks` is an explicit
+and rerun finish. Review reruns every configured check; integration reruns checks
+when delivery remains pending. `--skip-checks` is an explicit
 per-invocation bypass when you choose it.
 
-### Retry finish publication
+### Retry review publication
 
 The prepared branch stays local and confirmed destination updates remain. Repair
 access or the reported problem and rerun finish. Fresh observations identify
@@ -741,6 +786,36 @@ roles and destinations; changing them can require incorporating the new destinat
 history with Git before retrying. Retain the repository's Git metadata and reflogs
 while recovering a finish rebase. Do not bypass a failed verification by treating
 `--allow-rewrite` as unconditional force permission.
+
+### Recover direct integration
+
+Rerun `gof finish --mode integrate` in the same worktree after repairing the
+reported problem. The associated verified attempt supplies omitted choices and
+an accepted message, including when settings specify ask. Explicit conflicting
+choices or changed settings, Git configuration, endpoints, history, or association
+block recovery. Preserve private Git metadata, retained refs, and reflogs.
+
+A failed check or publication retains the candidate for reuse. Pending target
+delivery reruns configured checks. When all target destinations freshly confirm
+delivery, retry completes only remaining checkout/cleanup. It does not integrate,
+run candidate checks, or publish the target again. A fully completed attempt
+succeeds without duplicate effects. Recovery can continue from target checkout
+after the local source branch has been deleted. Recreated or changed work cannot
+inherit the old attempt’s deletion authority.
+
+Resolve merge/rebase conflicts with ordinary Git continuation or abort. A verified
+merge commit with stale merge machinery can require `git merge --quit`; follow
+the report to retain that commit. Squash has no `MERGE_HEAD`: use the exact
+`GIT_REFLOG_ACTION` reported by finish when manually committing the resolved
+squash. An unmarked manual commit cannot establish the retained result. To abandon
+an incomplete squash, follow the report’s tracked-tree restoration and
+`SQUASH_MSG` cleanup instructions. Finish has no dedicated continue/abort command.
+
+Reports separate local preparation, checks, target delivery, checkout, and cleanup.
+Partial or uncertain delivery retains per-destination outcomes. Inspect those
+exact destinations, fix access or the reported problem, then retry. A publication
+command error stops completion even if the update was confirmed; a later invocation
+can verify delivery and finish remaining work. Completed effects remain in place.
 
 ### Unusual branch names
 

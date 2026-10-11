@@ -88,6 +88,20 @@ pub struct Record {
     pub(super) cleanup_source_log: Option<Vec<u8>>,
 }
 impl Record {
+    pub(super) fn request(&self, request: &Request) -> Request {
+        Request {
+            update: request.update.or(Some(self.update())),
+            integration: request.integration.or(Some(self.method)),
+            message: request.message.clone().or_else(|| self.message.clone()),
+            checkout: request.checkout.or(Some(self.checkout)),
+            cleanup: request.cleanup.or(Some(self.cleanup)),
+        }
+    }
+    fn update(&self) -> FinishUpdate {
+        self.preparation
+            .as_ref()
+            .map_or(FinishUpdate::None, |p| p.method)
+    }
     /// Build evidence in memory. Execution persists it before effects.
     pub fn for_plan(plan: &Plan, token: &str) -> Result<Self, FinishError> {
         if !plan.is_ready()
@@ -440,21 +454,25 @@ pub(super) fn assess(
     plan: &mut Plan,
     record: &Record,
 ) -> Result<(), FinishError> {
+    // Preparation can reveal which integration method/message is needed. These
+    // unresolved choices may be bound only while no target effect has happened.
+    let preparing = record.preparation.is_some()
+        && record.result.is_none()
+        && plan.local_target == record.local_before
+        && record.target_version == LogVersion::of(plan.snapshot.target_log.as_deref());
     if record.git_dir != plan.repository.git_dir
         || record.common_dir != plan.repository.common_dir
         || Some(&record.root) != plan.repository.working_tree_root.as_ref()
         || record.settings != plan.settings
         || record.git_config != plan.snapshot.config
         || record.target != plan.target
-        || record.method != plan.method
-        || record.requested_update != plan.request.update
+        || (record.method != plan.method && !(record.method == FinishIntegration::Ask && preparing))
+        || plan.request.update.is_some_and(|choice| {
+            choice != record.update() && Some(choice) != record.requested_update
+        })
         || record.checkout != plan.checkout
         || record.cleanup != plan.cleanup
-        || (record.message != plan.request.message
-            && !(record.message.is_none()
-                && record.preparation.is_some()
-                && plan.local_target == record.local_before
-                && record.target_version == LogVersion::of(plan.snapshot.target_log.as_deref())))
+        || (record.message != plan.request.message && !(record.message.is_none() && preparing))
         || !valid_oid(&record.source, record.target_before.len())
         || !valid_oid(&record.target_before, record.source.len())
         || !matches!(record.source.len(), 40 | 64)
@@ -902,8 +920,30 @@ impl Record {
             .as_ref()
             .map_or(&self.source, |p| &p.original)
     }
-    pub(super) fn bind_message(&mut self, message: Option<String>) {
-        self.message = message;
+    pub(super) fn bind_choices(&mut self, plan: &Plan) {
+        self.method = plan.method;
+        self.message = plan.request.message.clone();
+    }
+    pub(super) fn retain_choices(&mut self, plan: &Plan) -> Result<(), FinishError> {
+        if self.preparation.is_none()
+            || self.result.is_some()
+            || plan.state != State::Fresh
+            || plan.integration == Integration::AfterPreparation
+            || plan.local_target != self.local_before
+            || self.target_version != LogVersion::of(plan.snapshot.target_log.as_deref())
+            || !plan.blockers.is_empty()
+            || plan
+                .required_input
+                .iter()
+                .any(|input| *input != RequiredInput::Message)
+            || plan.method == FinishIntegration::Ask
+        {
+            return Err(FinishError::InvalidEvidence(
+                "retaining choices requires unresolved target effects after verified preparation",
+            ));
+        }
+        self.bind_choices(plan);
+        Ok(())
     }
 }
 
