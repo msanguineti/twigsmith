@@ -21,6 +21,9 @@ impl UpstreamSettings {
         self.absent()
             || self.matches(&settings.publish_remote, branch)
             || self.matches(&settings.base_remote, settings.base.as_bytes())
+            || settings.workstream.as_ref().is_some_and(|policy| {
+                self.matches(&settings.base_remote, policy.preparation_source.as_bytes())
+            })
     }
     fn matches(&self, remote: &str, branch: &[u8]) -> bool {
         self.remotes == [remote.as_bytes()]
@@ -33,6 +36,7 @@ pub(crate) struct Snapshot {
     pub upstream: UpstreamSettings,
     pub push_remote: Vec<Vec<u8>>,
     pub push_default: Vec<Vec<u8>>,
+    pub policy_association: Vec<Vec<u8>>,
 }
 impl Snapshot {
     pub(crate) fn validate(&self, settings: &Settings, branch: &[u8]) -> Result<(), Error> {
@@ -108,5 +112,6 @@ pub(crate) fn snapshot(directory: &Path, branch: &[u8]) -> Result<Snapshot, Insp
         upstream: upstream(directory, branch)?,
         push_remote: config(directory, &key(branch, b".pushRemote"))?,
         push_default: config(directory, b"remote.pushDefault")?,
+        policy_association: config(directory, &key(branch, b".oneflow-policy"))?,
     })
 }

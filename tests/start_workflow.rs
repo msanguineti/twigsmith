@@ -979,3 +979,251 @@ fn nested_directory_removed_by_switch_still_reports_the_remaining_state() {
         },
     );
 }
+
+#[test]
+fn established_absent_workstream_policy_stops_start_before_recreation() {
+    use git_oneflow::settings::{self, WorkstreamKind};
+    isolated(
+        "established_absent_workstream_policy_stops_start_before_recreation",
+        true,
+        |root| {
+            let (_remote, local) = pair(root);
+            let mut settings = settings::Settings::default();
+            settings::oneflow_bundle(&mut settings, None);
+            fs::write(
+                local.path().join(".git/git-oneflow.config.toml"),
+                git_oneflow::config::render(git_oneflow::config::Format::Toml, &settings),
+            )
+            .unwrap();
+            let options = start::Options {
+                policy: Some(WorkstreamKind::Release),
+                from: Some(oid(&local, "main")),
+                ..Default::default()
+            };
+            let request =
+                start::prepare_with_options(local.path(), "release/train", &options).unwrap();
+            start::execute(local.path(), &request).unwrap();
+            local.success(&["switch", "main"]);
+            local.success(&["update-ref", "-d", "refs/heads/release/train"]);
+            let before = snapshot(root);
+            for options in [&options, &start::Options::default()] {
+                let error = start::prepare_with_options(local.path(), "release/train", options)
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("established work branch is absent")
+                );
+                assert_eq!(snapshot(root), before);
+            }
+        },
+    );
+}
+
+#[test]
+fn configured_hotfix_exact_version_tag_is_explicit_creation_input() {
+    use git_oneflow::settings::{self, WorkstreamKind};
+    isolated(
+        "configured_hotfix_exact_version_tag_is_explicit_creation_input",
+        true,
+        |root| {
+            let (_remote, local) = pair(root);
+            let version = oid(&local, "main");
+            for annotated in [false, true] {
+                let tag = if annotated {
+                    "Train-annotated"
+                } else {
+                    "Train-lightweight"
+                };
+                if annotated {
+                    local.success(&["tag", "-a", "-m", "version", tag, &version]);
+                } else {
+                    local.success(&["tag", tag, &version]);
+                }
+                let mut settings = settings::Settings::default();
+                settings::oneflow_bundle(&mut settings, None);
+                settings
+                    .workstreams
+                    .get_mut(&WorkstreamKind::Hotfix)
+                    .unwrap()
+                    .creation_source = Some(format!("refs/tags/{tag}"));
+                fs::write(
+                    local.path().join(".git/git-oneflow.config.toml"),
+                    git_oneflow::config::render(git_oneflow::config::Format::Toml, &settings),
+                )
+                .unwrap();
+                let branch = format!("hotfix/{tag}");
+                let options = start::Options {
+                    policy: Some(WorkstreamKind::Hotfix),
+                    ..Default::default()
+                };
+                let request = start::prepare_with_options(local.path(), &branch, &options).unwrap();
+                assert_eq!(request.source_commit.as_deref(), Some(version.as_bytes()));
+                start::execute(local.path(), &request).unwrap();
+                assert_eq!(oid(&local, "HEAD"), version);
+                local.success(&["switch", "main"]);
+            }
+        },
+    );
+}
+
+#[test]
+fn established_hotfix_route_change_and_raw_save_association_change_are_guarded() {
+    use git_oneflow::{
+        save,
+        settings::{self, WorkstreamKind},
+    };
+    isolated(
+        "established_hotfix_route_change_and_raw_save_association_change_are_guarded",
+        true,
+        |root| {
+            let (_remote, local) = pair(root);
+            let mut proposed = settings::Settings::default();
+            settings::oneflow_bundle(&mut proposed, None);
+            local.success(&["tag", "Train-version"]);
+            let path = local.path().join(".git/git-oneflow.config.toml");
+            let original =
+                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed);
+            fs::write(&path, &original).unwrap();
+            let options = start::Options {
+                policy: Some(WorkstreamKind::Hotfix),
+                from_tag: Some("Train-version".into()),
+                ..Default::default()
+            };
+            let request =
+                start::prepare_with_options(local.path(), "hotfix/train", &options).unwrap();
+            start::execute(local.path(), &request).unwrap();
+            proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Hotfix)
+                .unwrap()
+                .active_release = Some("release/train".into());
+            fs::write(
+                &path,
+                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+            )
+            .unwrap();
+            let before = snapshot(root);
+            assert!(
+                start::prepare(local.path(), "hotfix/train")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("established workstream routes changed")
+            );
+            assert_eq!(snapshot(root), before);
+            fs::write(path, original).unwrap();
+            let plan = save::assess(local.path(), &save::Request::default()).unwrap();
+            let key = "branch.hotfix/train.oneflow-policy";
+            let raw = local.success(&["config", "--get", key]).stdout;
+            let mut record: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            record["creation_input"] =
+                serde_json::Value::String("refs/tags/another-same-commit-name".into());
+            local.success(&[
+                "config",
+                "--local",
+                "--replace-all",
+                key,
+                &serde_json::to_string(&record).unwrap(),
+            ]);
+            let before = snapshot(root);
+            assert!(
+                save::execution::execute(local.path(), &plan)
+                    .error
+                    .unwrap()
+                    .to_string()
+                    .contains("changed")
+            );
+            assert_eq!(snapshot(root), before);
+        },
+    );
+}
+
+#[test]
+fn advanced_published_hotfix_resume_selects_policy_without_new_creation_input() {
+    use git_oneflow::settings::{self, WorkstreamKind};
+    isolated(
+        "advanced_published_hotfix_resume_selects_policy_without_new_creation_input",
+        true,
+        |root| {
+            for configured in [
+                None,
+                Some("refs/tags/Train-base"),
+                Some("refs/tags/locally-missing-version"),
+            ] {
+                let (remote, local) = pair(root);
+                let base = oid(&local, "main");
+                local.success(&["tag", "Train-base", &base]);
+                remote.success(&["switch", "-c", "hotfix/train"]);
+                let published = commit(&remote, "hotfix", "published advanced fix\n");
+                let mut proposed = settings::Settings::default();
+                settings::oneflow_bundle(&mut proposed, None);
+                proposed
+                    .workstreams
+                    .get_mut(&WorkstreamKind::Hotfix)
+                    .unwrap()
+                    .creation_source = configured.map(str::to_owned);
+                fs::write(
+                    local.path().join(".git/git-oneflow.config.toml"),
+                    git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+                )
+                .unwrap();
+                let options = start::Options {
+                    policy: Some(WorkstreamKind::Hotfix),
+                    ..Default::default()
+                };
+                let request =
+                    start::prepare_with_options(local.path(), "hotfix/train", &options).unwrap();
+                let result = start::execute(local.path(), &request).unwrap();
+                assert_eq!(result.action, Action::ResumeRemote);
+                assert_eq!(oid(&local, "HEAD"), published);
+                assert_eq!(oid(&local, "main"), base);
+                let raw = local
+                    .success(&["config", "--get", "branch.hotfix/train.oneflow-policy"])
+                    .stdout;
+                let record: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                assert_eq!(record["policy"]["kind"], "hotfix");
+                assert_eq!(record["creation_commit"], published);
+                assert_eq!(record["creation_input"], serde_json::Value::Null);
+                let before = snapshot(root);
+                let resumed =
+                    start::prepare_with_options(local.path(), "hotfix/train", &options).unwrap();
+                assert_eq!(
+                    start::execute(local.path(), &resumed).unwrap().action,
+                    Action::AlreadyCurrent
+                );
+                assert_eq!(snapshot(root), before);
+            }
+        },
+    );
+}
+
+#[test]
+fn fresh_hotfix_without_explicit_version_stops_before_fetch_or_branch_creation() {
+    use git_oneflow::settings::{self, WorkstreamKind};
+    isolated(
+        "fresh_hotfix_without_explicit_version_stops_before_fetch_or_branch_creation",
+        true,
+        |root| {
+            let (_remote, local) = pair(root);
+            let mut proposed = settings::Settings::default();
+            settings::oneflow_bundle(&mut proposed, None);
+            fs::write(
+                local.path().join(".git/git-oneflow.config.toml"),
+                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+            )
+            .unwrap();
+            let options = start::Options {
+                policy: Some(WorkstreamKind::Hotfix),
+                ..Default::default()
+            };
+            let before = snapshot(root);
+            let request =
+                start::prepare_with_options(local.path(), "hotfix/new", &options).unwrap();
+            assert_eq!(snapshot(root), before);
+            let failure = start::execute(local.path(), &request).unwrap_err();
+            assert!(failure.error.to_string().contains("--from-tag"));
+            assert!(failure.effects.is_empty());
+            assert_eq!(snapshot(root), before);
+        },
+    );
+}

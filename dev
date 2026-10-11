@@ -82,7 +82,7 @@ test_group() {
             ;;
         lifecycle)
             group_description='CLI smoke and end-to-end project/fork lifecycles'
-            group_targets='cli_smoke cli_lifecycle'
+            group_targets='cli_smoke cli_lifecycle cli_oneflow'
             ;;
         *)
             echo "error: unknown test group '$1'; use ./dev test-groups to list groups" >&2

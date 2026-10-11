@@ -14,7 +14,8 @@ Read the architecture and Git boundary first, then follow the relevant workflow:
   [save](#save-preserve-selected-work-then-publish)
 - [Finish for review](#finish-for-review-prepare-check-and-deliver)
 - [Publication reports and failure diagnosis](#publication-reports-and-failure-diagnosis)
-- [Direct integration](#direct-integration)
+- [Direct integration](#direct-integration) and
+  [tagged release delivery](#tagged-release-delivery)
 
 ## Architecture and execution model
 
@@ -62,8 +63,9 @@ Start creates or resumes an exact work branch. Save preserves selected local
 progress and publishes the current branch. CLI finish prepares and checks work,
 then publishes it for manual review or delivers its integrated result to the
 project base. Review mode leaves submission to the developer and identifies the
-publication branch and project base in its handoff. Finish creates no pull
-request, tag, or release and invokes no provider submission tool.
+publication branch and project base in its handoff. Explicit release and hotfix policy additionally binds a released source commit,
+version tag, and optional release marker to direct delivery. Finish creates no
+pull request and invokes no provider submission or deployment tool.
 
 Direct integration uses its own workflow library in
 [`finish::integration`](../src/finish/integration.rs). It provides read-only
@@ -196,6 +198,31 @@ or probing checks. The local-only `redact-credentials` preference controls finis
 presentation and is excluded from shared settings. Redaction changes displayed
 HTTP(S) userinfo, including streamed check output, without changing executed
 arguments. [`finish_cli.rs`](../src/finish_cli.rs) owns that presentation policy.
+
+### Explicit workstream policy
+
+Settings include sparse `workstreams.ordinary`, `workstreams.release`, and
+`workstreams.hotfix` templates. Creation source, preparation source, integration
+target, work publication, version tagging, active-release context, marker, and
+finish choices are independent data. The explicit `config --oneflow` bundle
+serializes editable templates using the same schema as custom settings; there
+is no strategy dispatch during lifecycle execution. Built-in ordinary settings
+remain the default when the bundle is not selected.
+
+Start resolves explicit policy and retains its association with the exact work
+branch in private Git configuration. The association binds resolved routes,
+creation commit/input, and branch-instance evidence. Resume preserves this
+policy; changed templates, incompatible explicit input, ambiguous associations,
+or a recreated branch cannot inherit its effects. Branch prefixes establish no
+authority. Work publication uses the policy's publication remote, independently
+of the project remote. Ordinary contributions can select a release or hotfix
+branch as preparation/integration target without adopting its release policy.
+
+Shared/private policy keys retain sparse layering, validation, and provenance.
+Configuration inspection displays effective routes. Integration recovery selects
+the original source association after temporary target checkout and after source
+cleanup; the target's own policy cannot replace the contribution's policy.
+Private branch association supplies no delivery or deletion proof by itself.
 
 ### Tracking is a relationship, not destination authority
 
@@ -777,7 +804,10 @@ state. The [snapshot limits](#snapshot-limits) and trusted-hook limits still app
 [`integration::execution::prepare`](../src/finish/integration/execution.rs)
 revalidates the approved plan and rereads the exact target at its fetch/push
 endpoints before history changes. The caller supplies objects and initial evidence
-from explicit refresh; local execution performs no fetch or remote write. It
+from explicit refresh. Ordinary local execution performs no fetch or remote write.
+Tagged execution also observes version refs, acquires any required marker objects,
+and checks the exact source before creating its tag; publication remains a separate
+stage. It
 records intent and retains the original source at `refs/oneflow/integration/<token>/original` before
 changing history.
 
@@ -855,6 +885,78 @@ commit cannot borrow ancestry as proof. The [integration fixtures](../tests/fini
 cover method-specific parentage, worktree association, conflicts, retention,
 candidate checks, exact object acquisition, target leases, partial delivery, and
 interrupted acknowledgements with cross-process retries.
+
+## Tagged release delivery
+
+[`integration/release.rs`](../src/finish/integration/release.rs) adds version
+identity and release-marker delivery to the existing direct integration stages.
+It shares the integration attempt's repository/worktree identity, exact source,
+target/endpoints, settings/provenance, Git configuration, retained commits,
+reflog anchors, choices, and cleanup proof. An optional release record extends
+that evidence; ordinary integration retains its independent behavior.
+
+The released source and the integration result have different responsibilities.
+Release/hotfix policy requires update `none` and a history-preserving integration
+method. Source preparation cannot import newer development into the version;
+squash cannot preserve the released history. Checks validate the exact source
+tree before tagging and the exact integration candidate before pending target
+delivery. A candidate equal to an already checked source needs no duplicate check.
+Retained successful receipts are usable only with their corroborated unchanged
+commit and complete policy/configuration binding. Failed or state-changing checks
+stop delivery and retain the attempt. Receipts distinguish successful checks from
+explicit bypass; a later unbypassed pending delivery validates bypassed trees.
+A source-deleted retry can only verify existing delivery and finish cleanup.
+Explicit check bypass remains reportable.
+
+Tag input is explicit and independent of the integration message. Git creates
+lightweight or requested annotated/signed tags at the retained source commit,
+with normal Git signing preferences and no unsigned fallback after failure.
+Tagged completion rejects replacement refs in Git's effective replacement
+namespace. Git can present a replacement tree as clean at the original commit
+ID; that cleanliness cannot establish validation of the original released tree.
+This restriction is supported by a real-Git regression and
+[Git replacement semantics](https://git-scm.com/docs/git-replace).
+The tag's exact object identity and attempt-marked creation reflog corroborate
+creation even when the final acknowledgement was interrupted. An annotated tag's
+peeled commit alone cannot establish identity. Existing local/remote tags outside
+that corroborated attempt are collisions; no replacement is authorized.
+
+Hotfix routing uses explicit active-release data: the exact named release branch
+or declared absence. No branch scan or tag ordering supplies this context. An
+active release receives the fix and carries it into development when that release
+is later completed. The original OneFlow article documents earlier-commit release
+creation, source tagging before merge-back, this hotfix route, and an optional
+marker at the released commit. These are documented model capabilities, not
+claims about universal project practice. The application's explicit context,
+exact selected-tag publication, and guarded recovery are chosen product policy.
+See [OneFlow's description](https://www.endoflineblog.com/oneflow-a-git-branching-model-and-workflow),
+[Git tag](https://git-scm.com/docs/git-tag), and
+[Git push](https://git-scm.com/docs/git-push).
+
+An enabled marker is distinct from source and integration target. Planning binds
+its initial local and per-endpoint versions, acquires exact missing objects, and
+proves that each existing marker can fast-forward to the released source.
+Delivery initializes or conditionally advances the marker at that commit, never
+the newer integration result. Disabled markers have no effect. Divergence,
+changed context, symbolic refs, and occupied worktrees block marker effects.
+
+Target integration, selected version-tag delivery, and marker delivery are
+nontransactional effects. Each required endpoint is observed independently. Pending target delivery
+first verifies retained tag and marker expectations; a conflicting version cannot
+borrow the earlier target authority. A push exit or acknowledgement alone cannot establish completion. Final checkout
+and every work-cleanup effect reobserve all required delivery. Tag, development,
+active-release target, marker, and unrelated refs stay outside work cleanup.
+Rewrite permission cannot replace a tag or broaden target, marker, or deletion
+scope. Partial effects survive failure and fresh-process retry completes pending
+effects, including after local source deletion. Conflicting input, changed refs,
+settings, endpoints, or associations block reuse. Native merge continuation or
+abandonment retains the original released version identity.
+
+The default checkout is the integration target. CLI reports distinguish released
+version/source, integration result/destination, marker, cleanup, and pending work.
+Hosted release/hotfix review completion, provider submission, and deployment are
+outside this delivery path. The [CLI OneFlow fixtures](../tests/cli_oneflow.rs)
+exercise these lifecycles with real Git and both executables/aliases.
 
 ## Evidence and maintenance limits
 

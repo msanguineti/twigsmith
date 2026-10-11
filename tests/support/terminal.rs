@@ -83,7 +83,10 @@ impl Terminal {
         kill_process(Pid::from_raw(self.child.id() as i32).unwrap(), Signal::INT).unwrap();
     }
     pub fn finish(&mut self) -> ExitStatus {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        self.finish_with_timeout(Duration::from_secs(10))
+    }
+    pub fn finish_with_timeout(&mut self, timeout: Duration) -> ExitStatus {
+        let deadline = Instant::now() + timeout;
         loop {
             self.read();
             if let Some(status) = self.child.try_wait().unwrap() {

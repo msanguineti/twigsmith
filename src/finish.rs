@@ -389,8 +389,13 @@ pub fn assess(
         .ok_or(FinishError::InvalidEvidence("invalid base fetch endpoint"))?
         .to_vec();
     let publication = local.publication.clone().expect("publish-only plan");
-    let base_ref = format!("refs/heads/{}", settings.base).into_bytes();
-    let tracking_base = format!("refs/remotes/{}/{}", settings.base_remote, settings.base);
+    let preparation_source = settings
+        .workstream
+        .as_ref()
+        .map(|policy| policy.preparation_source.as_str())
+        .unwrap_or(&settings.base);
+    let base_ref = format!("refs/heads/{preparation_source}").into_bytes();
+    let tracking_base = format!("refs/remotes/{}/{preparation_source}", settings.base_remote);
     let tracking_branch = [
         b"refs/remotes/".as_slice(),
         settings.publish_remote.as_bytes(),

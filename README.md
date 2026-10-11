@@ -1,7 +1,7 @@
 # git-oneflow
 
-A Git workflow CLI for starting workstreams, saving progress, preparing finished work,
-and inspecting repository state. Invoke it as `git-oneflow` or `gof`.
+A Git workflow CLI for starting workstreams, saving progress, and delivering
+finished work, releases, and hotfixes. Invoke it as `git-oneflow` or `gof`.
 
 The native Rust version is under development. It currently provides `start`,
 `save`, `finish`, `status`, and `config`. Build it from this repository using the [development guide](docs/DEVELOPMENT.md).
@@ -21,7 +21,8 @@ gof status
 `start` creates or resumes a branch. `save` publishes progress and offers
 checkpoint choices for uncommitted work. `finish` prepares, runs configured checks,
 and publishes a clean branch for manual submission in review mode or delivers its
-integrated result to the project base in integrate mode. Completion mode
+integrated result to the configured target in integrate mode. Explicit release and
+hotfix policy adds version tagging and optional release-marker delivery. Completion mode
 comes from configuration or `--mode`; an unresolved mode asks at a terminal.
 `status` summarizes the current checkout.
 
@@ -37,6 +38,12 @@ Run `gof config` to choose a publication remote and a base source for a single
 repository or a fork. Use `gof config show` to inspect effective roles and sources.
 See the [user guide](docs/USAGE.md#remote-roles-and-fork-workflows) for both
 workflows and tracking styles.
+
+Use `gof config --oneflow` to select an editable direct OneFlow setup bundle,
+then start with explicit ordinary, release, or hotfix policy. Branch prefixes alone select no policy.
+The [release guide](docs/USAGE.md#direct-releases-and-hotfixes) covers source
+selection, version tags, active-release routing, marker branches, and recovery.
+Hosted release merge-back and deployment are outside these operations.
 
 Use `gof --help` or `gof <command> --help` for a quick reference.
 

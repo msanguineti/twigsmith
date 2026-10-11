@@ -19,6 +19,7 @@ pub mod completion;
 pub mod execution;
 pub mod publication;
 pub mod recovery;
+pub mod release;
 pub mod remote;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -28,6 +29,7 @@ pub struct Request {
     pub message: Option<String>,
     pub checkout: Option<FinishCheckout>,
     pub cleanup: Option<FinishCleanup>,
+    pub release: release::Request,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,9 +44,15 @@ pub struct Target {
 /// Fresh observations of the exact target at its fetch and push endpoints.
 /// Work observations are required only for published-work cleanup.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparationEvidence {
+    pub reference: Vec<u8>,
+    pub branch: RefObservation,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteEvidence {
     pub target: Target,
     pub fetched: RefObservation,
+    pub preparation: Option<PreparationEvidence>,
     pub targets: Vec<DestinationEvidence>,
     pub work_remote: String,
     pub work_ref: Vec<u8>,
@@ -57,6 +65,7 @@ pub enum RequiredInput {
     Integration,
     Message,
     Cleanup,
+    TagName,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Blocker {
@@ -77,6 +86,7 @@ pub enum Blocker {
     TargetChanged(Vec<u8>),
     WorkBranchChanged(Vec<u8>),
     Recovery(recovery::Problem),
+    Release(String),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -218,7 +228,10 @@ impl Plan {
             }
             _ => None,
         };
-        self.state == State::PendingPublication
+        (self.state == State::PendingPublication
+            || (release::enabled(self)
+                && !release::candidate_checked(self, false)
+                && self.source != RefObservation::Absent))
             && self.result.is_some()
             && self.result.as_ref() != head
     }
@@ -237,6 +250,7 @@ struct Snapshot {
     records: Vec<Option<Vec<u8>>>,
     committed_settings: Vec<u8>,
     pins: Vec<(RefObservation, Option<Vec<u8>>)>,
+    release: Option<release::Snapshot>,
 }
 fn branch_ref(branch: &[u8]) -> Vec<u8> {
     [b"refs/heads/", branch].concat()
@@ -300,7 +314,7 @@ pub fn assess(
     if repository.kind == repository::RepositoryKind::Bare {
         return Err(SaveError::BareRepository.into());
     }
-    let settings = settings::load(directory, &repository).map_err(SaveError::from)?;
+    let mut settings = settings::load(directory, &repository).map_err(SaveError::from)?;
     if request
         .message
         .as_ref()
@@ -313,13 +327,24 @@ pub fn assess(
     else {
         return Err(SaveError::OutsideRepository.into());
     };
-    let target = Target {
+    let mut target = Target {
         remote: settings.base_remote.clone(),
         reference: branch_ref(settings.base.as_bytes()),
         fetch_destination: urls(directory, &settings.base_remote, false)?.remove(0),
         push_destinations: urls(directory, &settings.base_remote, true)?,
     };
     let selection = recovery::select(directory, &repository, &state, &target.reference)?;
+    if let Some(source) = &selection.source_ref {
+        let branch = source.strip_prefix(b"refs/heads/").unwrap_or(source);
+        settings =
+            settings::load_for_branch(directory, &repository, branch).map_err(SaveError::from)?;
+        target = Target {
+            remote: settings.base_remote.clone(),
+            reference: branch_ref(settings.base.as_bytes()),
+            fetch_destination: urls(directory, &settings.base_remote, false)?.remove(0),
+            push_destinations: urls(directory, &settings.base_remote, true)?,
+        };
+    }
     // Stored intent supplies omitted input, never proof. Recovery below must
     // corroborate its bindings and Git transitions before permitting any effect.
     let request = selection
@@ -373,6 +398,7 @@ pub fn assess(
         } else {
             vec![]
         },
+        release: release::snapshot(directory, &request.release, selection.record.as_ref())?,
         records: selection.bytes,
         committed_settings: read(directory, &config_args)?,
     };
@@ -437,6 +463,7 @@ pub fn assess(
     {
         assess_fresh(directory, &mut plan)?;
     }
+    release::assess(directory, &mut plan)?;
     Ok(plan)
 }
 
@@ -457,12 +484,23 @@ fn in_another_worktree(plan: &Plan, reference: &[u8]) -> bool {
         .split(|v| v.is_empty())
         .any(|entry| entry.contains(&branch.as_slice()) && !entry.contains(&worktree.as_slice()))
 }
+fn preparation_ref(plan: &Plan) -> Option<Vec<u8>> {
+    if plan.request.update.unwrap_or(plan.settings.finish_update) == FinishUpdate::None {
+        return None;
+    }
+    plan.settings
+        .workstream
+        .as_ref()
+        .map(|p| branch_ref(p.preparation_source.as_bytes()))
+        .filter(|r| r != &plan.target.reference)
+}
 fn validate_evidence(plan: &mut Plan) -> bool {
     let Some(e) = &plan.evidence else {
         plan.blockers.push(Blocker::FreshRemoteEvidenceRequired);
         return false;
     };
-    if e.target != plan.target
+    if e.preparation.as_ref().map(|p| p.reference.clone()) != preparation_ref(plan)
+        || e.target != plan.target
         || e.work_remote != plan.settings.publish_remote
         || e.work_ref != plan.source_ref
         || e.targets.len() != plan.target.push_destinations.len()
@@ -564,36 +602,44 @@ fn assess_fresh(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
             ) => {}
         _ => plan.blockers.push(Blocker::LocalTargetWork),
     }
+    let preparation_base = e.preparation.as_ref().map_or(&e.fetched, |p| &p.branch);
+    let prep_relation = relationship(directory, &source, preparation_base, shallow)?;
+    if matches!(prep_relation, Relationship::Equal | Relationship::Ahead)
+        || (e.preparation.is_none() && relation == Relationship::Behind)
+    {
+        plan.update = FinishUpdate::None;
+    } else if plan.update != FinishUpdate::None {
+        if !matches!(prep_relation, Relationship::Behind | Relationship::Diverged) {
+            plan.blockers.push(Blocker::HistoryUnavailable);
+            return Ok(());
+        }
+        if plan.update == FinishUpdate::Ask {
+            plan.required_input.push(RequiredInput::Update);
+        }
+        if matches!(plan.update, FinishUpdate::Merge | FinishUpdate::Rebase) {
+            let prep = commit(preparation_base)
+                .ok_or(FinishError::InvalidEvidence("preparation source missing"))?
+                .to_vec();
+            plan.integration = Integration::AfterPreparation;
+            completion_choices(plan);
+            if in_another_worktree(plan, &plan.source_ref) {
+                plan.blockers.push(Blocker::SourceInAnotherWorktree);
+            }
+            plan.effects.push(Effect::UpdateWork {
+                reference: plan.source_ref.clone(),
+                expected: source,
+                base: prep,
+                method: plan.update,
+            });
+            return Ok(());
+        }
+    }
     match relation {
         Relationship::Equal | Relationship::Behind => {
-            plan.update = FinishUpdate::None;
             plan.integration = Integration::AlreadyIntegrated;
             plan.result = Some(base.clone());
-            // No integration choice or message is needed for already delivered work.
         }
         Relationship::Ahead | Relationship::Diverged => {
-            if relation == Relationship::Ahead {
-                plan.update = FinishUpdate::None;
-            }
-            if plan.update == FinishUpdate::Ask {
-                plan.required_input.push(RequiredInput::Update);
-            }
-            if matches!(plan.update, FinishUpdate::Merge | FinishUpdate::Rebase) {
-                plan.integration = Integration::AfterPreparation;
-                completion_choices(plan);
-                if in_another_worktree(plan, &plan.source_ref) {
-                    plan.blockers.push(Blocker::SourceInAnotherWorktree);
-                }
-                plan.effects.push(Effect::UpdateWork {
-                    reference: plan.source_ref.clone(),
-                    expected: source.clone(),
-                    base: base.clone(),
-                    method: plan.update,
-                });
-                // Prepared work requires its own assessment; no target/publication
-                // authority is attached to a predicted update result.
-                return Ok(());
-            }
             if plan.method == FinishIntegration::Ask {
                 plan.required_input.push(RequiredInput::Integration);
             }

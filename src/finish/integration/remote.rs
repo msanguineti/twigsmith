@@ -252,11 +252,23 @@ pub fn refresh(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         let mut evidence = RemoteEvidence {
             target: plan.target.clone(),
             fetched,
+            preparation: None,
             targets: vec![],
             work_remote: plan.settings.publish_remote.clone(),
             work_ref: plan.source_ref.clone(),
             work: vec![],
         };
+        if let Some(reference) = preparation_ref(plan) {
+            let branch = acquire(
+                root,
+                plan,
+                &plan.target.remote,
+                &plan.target.fetch_destination,
+                &reference,
+                &mut report,
+            )?;
+            evidence.preparation = Some(PreparationEvidence { reference, branch });
+        }
         for destination in &plan.target.push_destinations {
             let branch = acquire(
                 root,

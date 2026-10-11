@@ -8,13 +8,13 @@ use std::{
     process::Output,
 };
 
-use super::{PreparedRequest, ResolveError, TrackingError, prepare};
+use super::{PreparedRequest, ResolveError, TrackingError, prepare_with_options};
 use crate::{
     git,
     repository::{
         self, Head, InspectionError, Observation, Operations, RepositoryKind, RepositoryState,
     },
-    tracking,
+    settings, tracking,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +34,8 @@ pub enum Effect {
     UpstreamRemoteSet { remote: String },
     UpstreamMergeSet { reference: String },
     Switched { target: String },
+    PolicyEstablished { policy: String },
+    PreviousSelectionCleared,
 }
 
 #[derive(Debug)]
@@ -209,6 +211,7 @@ struct Workflow<'a> {
     fetched: Option<String>,
     routing: tracking::Snapshot,
     destinations: Vec<(String, Vec<u8>)>,
+    association: Option<settings::BranchPolicy>,
 }
 
 /// Execute a prepared workstream request. Revalidate its names, settings,
@@ -229,6 +232,7 @@ pub fn execute(
         fetched: None,
         routing: request.routing.clone(),
         destinations: vec![],
+        association: request.association.clone(),
     };
     match workflow.execute() {
         Ok(state) => Ok(Outcome {
@@ -274,9 +278,18 @@ impl Workflow<'_> {
         if context.kind == RepositoryKind::Bare {
             return Err(StartError::Bare);
         }
-        let fresh = prepare(self.directory, &self.request.target)?;
+        let fresh =
+            prepare_with_options(self.directory, &self.request.target, &self.request.options)?;
         let mut expected = self.request.clone();
         expected.routing = self.routing.clone();
+        expected.association = self.association.clone();
+        if self.request.options.from.is_none()
+            && self.request.options.from_tag.is_none()
+            && (self.association.is_some() || fresh.source_commit.is_none())
+        {
+            expected.source_commit = fresh.source_commit.clone();
+            expected.creation_error = fresh.creation_error.clone();
+        }
         if fresh != expected {
             return Err(StartError::Changed);
         }
@@ -435,13 +448,94 @@ impl Workflow<'_> {
         }
     }
 
+    fn clear_previous_selection(&mut self) -> Result<(), StartError> {
+        if self.request.options.policy.is_some()
+            && crate::finish::integration::recovery::clear_other_selection(
+                &self.request.repository,
+                self.request.target.as_bytes(),
+            )
+            .map_err(|error| {
+                StartError::Resolve(ResolveError::Input(format!(
+                    "cannot clear previous integration association: {error}"
+                )))
+            })?
+        {
+            self.effects.push(Effect::PreviousSelectionCleared);
+        }
+        Ok(())
+    }
+
+    fn establish_policy(&mut self) -> Result<(), StartError> {
+        if self.association.is_some() {
+            return Ok(());
+        }
+        let Some(policy) = self.request.settings.workstream.clone() else {
+            return Ok(());
+        };
+        let commit = self
+            .reference(&format!("refs/heads/{}", self.request.target))?
+            .ok_or(StartError::Changed)?;
+        let anchor = settings::branch_anchor(self.directory, self.request.target.as_bytes())
+            .map_err(ResolveError::from)?
+            .ok_or_else(|| {
+                StartError::Resolve(ResolveError::Input(
+                    "explicit policy requires an existing branch-creation reflog anchor".into(),
+                ))
+            })?;
+        let record = settings::BranchPolicy {
+            policy,
+            target_override: self.request.options.target.clone(),
+            creation_commit: String::from_utf8(
+                if self.request.options.from.is_some()
+                    || self.request.options.from_tag.is_some()
+                    || self.action == Some(Action::Create)
+                {
+                    self.request.source_commit.clone().unwrap_or(commit)
+                } else {
+                    commit
+                },
+            )
+            .unwrap(),
+            creation_input: self.request.options.from.clone().or_else(|| {
+                self.request
+                    .options
+                    .from_tag
+                    .as_ref()
+                    .map(|tag| format!("refs/tags/{tag}"))
+            }),
+            anchor,
+        };
+        if settings::branch_policy(self.directory, self.request.target.as_bytes())
+            .map_err(ResolveError::from)?
+            .is_some()
+        {
+            return Err(StartError::Changed);
+        }
+        let json = serde_json::to_string(&record).expect("branch policy serialization");
+        self.mutate(&[
+            "config",
+            "--local",
+            "--add",
+            &format!("branch.{}.oneflow-policy", self.request.target),
+            &json,
+        ])?;
+        self.routing.policy_association = vec![json.into_bytes()];
+        self.effects.push(Effect::PolicyEstablished {
+            policy: record.policy.kind.as_str().into(),
+        });
+        self.association = Some(record);
+        Ok(())
+    }
+
     fn execute(&mut self) -> Result<RepositoryState, StartError> {
         let initial = self.validated()?;
         if self.is_current(&initial) {
             self.routing
                 .validate(&self.request.settings, self.request.target.as_bytes())
                 .map_err(StartError::Tracking)?;
+            self.establish_policy()?;
             self.action = Some(Action::AlreadyCurrent);
+            self.clear_previous_selection()?;
             return self.observed_state();
         }
         self.clean(&initial)?;
@@ -487,12 +581,28 @@ impl Workflow<'_> {
                 self.remote_heads(publish_remote, &[&target_ref])?
             };
             let target_found = heads[0];
+            if !target_found {
+                if let Some(error) = &self.request.creation_error {
+                    return Err(StartError::Resolve(ResolveError::Input(error.clone())));
+                }
+                if self
+                    .request
+                    .settings
+                    .workstream
+                    .as_ref()
+                    .is_some_and(|policy| policy.kind == settings::WorkstreamKind::Hotfix)
+                    && self.request.source_commit.is_none()
+                {
+                    return Err(StartError::Resolve(ResolveError::Input("select the hotfix version explicitly with --from-tag TAG or creation-source = refs/tags/TAG".into())));
+                }
+            }
+
             let remote = if target_found {
                 publish_remote
             } else {
                 base_remote
             };
-            if !target_found {
+            if !target_found && self.request.source_commit.is_none() {
                 self.recheck(&initial, None)?;
                 self.destination(base_remote)?;
                 let base_found = if same_remote {
@@ -514,44 +624,61 @@ impl Workflow<'_> {
             });
             self.recheck(&initial, None)?;
             let source = if target_found { target_ref } else { base_ref };
-            let branch = if target_found {
-                &self.request.target
+            let commit = if !target_found && self.request.source_commit.is_some() {
+                self.request.source_commit.clone().unwrap()
             } else {
-                &self.request.settings.base
-            };
-            let destination = format!("refs/remotes/{remote}/{branch}");
-            let arguments = ["symbolic-ref", "--quiet", destination.as_str()];
-            let probe = git::inspect(self.directory, arguments).map_err(StartError::Io)?;
-            if probe.status.success() {
-                return Err(StartError::SymbolicTrackingRef(destination));
-            }
-            if probe.status.code() != Some(1) {
-                return Err(StartError::Git {
-                    arguments: arguments.iter().map(OsString::from).collect(),
-                    output: probe,
+                let branch = if target_found {
+                    &self.request.target
+                } else {
+                    &self.request.settings.base
+                };
+                let destination = format!("refs/remotes/{remote}/{branch}");
+                let arguments = ["symbolic-ref", "--quiet", destination.as_str()];
+                let probe = git::inspect(self.directory, arguments).map_err(StartError::Io)?;
+                if probe.status.success() {
+                    return Err(StartError::SymbolicTrackingRef(destination));
+                }
+                if probe.status.code() != Some(1) {
+                    return Err(StartError::Git {
+                        arguments: arguments.iter().map(OsString::from).collect(),
+                        output: probe,
+                    });
+                }
+                self.fetched = Some(destination.clone());
+                let refspec = format!("+{source}:{destination}");
+                self.mutate(&[
+                    "fetch",
+                    "--no-tags",
+                    "--no-prune",
+                    "--no-prune-tags",
+                    "--no-recurse-submodules",
+                    "--no-write-fetch-head",
+                    "--no-auto-maintenance",
+                    "--no-write-commit-graph",
+                    "--refmap=",
+                    "--",
+                    remote,
+                    &refspec,
+                ])?;
+                self.effects.push(Effect::Fetched {
+                    source: source.clone(),
+                    destination: destination.clone(),
                 });
-            }
-            self.fetched = Some(destination.clone());
-            let refspec = format!("+{source}:{destination}");
-            self.mutate(&[
-                "fetch",
-                "--no-tags",
-                "--no-prune",
-                "--no-prune-tags",
-                "--no-recurse-submodules",
-                "--no-write-fetch-head",
-                "--no-auto-maintenance",
-                "--no-write-commit-graph",
-                "--refmap=",
-                "--",
-                remote,
-                &refspec,
-            ])?;
-            self.effects.push(Effect::Fetched {
-                source: source.clone(),
-                destination: destination.clone(),
-            });
-            let commit = self.reference(&destination)?.ok_or(StartError::Changed)?;
+                let commit = self.reference(&destination)?.ok_or(StartError::Changed)?;
+                if target_found
+                    && (self.request.options.from.is_some()
+                        || self.request.options.from_tag.is_some())
+                    && self.association.is_none()
+                    && self
+                        .request
+                        .source_commit
+                        .as_ref()
+                        .is_some_and(|source| source != &commit)
+                {
+                    return Err(StartError::Resolve(ResolveError::Input("remote resume cannot verify the requested creation source; explicitly select policy without creation input to preserve remote history".into())));
+                }
+                commit
+            };
 
             self.recheck(&initial, None)?;
             if self.target_upstream()? != initial_upstream {
@@ -560,12 +687,30 @@ impl Workflow<'_> {
             expected_commit = commit.clone();
             // Explicit --no-track defeats autoSetupMerge/autoSetupRebase. Use a
             // verified commit ID, not ambiguous names, tags, or revision input.
-            self.mutate(&[
-                "branch",
-                "--no-track",
-                &self.request.target,
-                std::str::from_utf8(&commit).unwrap(),
-            ])?;
+            if self.request.settings.workstream.is_some() {
+                let token = tempfile::Builder::new()
+                    .prefix("oneflow-start-")
+                    .tempfile()
+                    .map_err(StartError::Io)?;
+                let message = token.path().file_name().unwrap().to_string_lossy();
+                let zero = "0".repeat(commit.len());
+                self.mutate(&[
+                    "update-ref",
+                    "--create-reflog",
+                    "-m",
+                    &message,
+                    &format!("refs/heads/{}", self.request.target),
+                    std::str::from_utf8(&commit).unwrap(),
+                    &zero,
+                ])?;
+            } else {
+                self.mutate(&[
+                    "branch",
+                    "--no-track",
+                    &self.request.target,
+                    std::str::from_utf8(&commit).unwrap(),
+                ])?;
+            }
             self.effects.push(Effect::BranchCreated {
                 target: self.request.target.clone(),
                 commit: commit.clone(),
@@ -598,6 +743,7 @@ impl Workflow<'_> {
             }
             self.recheck(&initial, Some(&commit))?;
         }
+        self.establish_policy()?;
         // No force, DWIM creation, ignored-file overwrite, or recursive submodule
         // checkout. Git still checks the index, files and other worktrees itself.
         self.mutate(&[
@@ -626,6 +772,7 @@ impl Workflow<'_> {
         {
             return Err(StartError::Changed);
         }
+        self.clear_previous_selection()?;
         self.observed_state()
     }
 }

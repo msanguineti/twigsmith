@@ -1323,3 +1323,120 @@ fn completion_settings_and_sources_revalidate_workflows_and_guided_review() {
         },
     );
 }
+
+#[test]
+fn workstream_bundle_round_trips_and_sparse_private_routes_preserve_provenance() {
+    use git_oneflow::{config::Format, settings::WorkstreamKind};
+    isolated(
+        "workstream_bundle_round_trips_and_sparse_private_routes_preserve_provenance",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let mut proposed = Settings::default();
+            settings::oneflow_bundle(&mut proposed, Some("released".into()));
+            for (format, filename) in [
+                (Format::Toml, CONFIG_FILES[0]),
+                (Format::Yaml, CONFIG_FILES[1]),
+                (Format::Json, CONFIG_FILES[3]),
+            ] {
+                let shared = repo.path().join(filename);
+                fs::write(&shared, git_oneflow::config::render(format, &proposed)).unwrap();
+                let private = repo.path().join(".git/git-oneflow.config.json");
+                fs::write(&private, r#"{"workstreams":{"release":{"publish-remote":"project"},"hotfix":{"active-release":"release/train"}}}"#).unwrap();
+                let loaded = load(repo.path()).unwrap();
+                let mut release = loaded.clone();
+                settings::resolve_workstream(&mut release, WorkstreamKind::Release, None).unwrap();
+                assert_eq!(release.publish_remote, "project");
+                assert_eq!(release.base_remote, "origin");
+                assert_eq!(release.base, "main");
+                assert_eq!(release.finish_update, FinishUpdate::None);
+                let policy = release.workstream.unwrap();
+                assert!(policy.version_tagging);
+                assert_eq!(policy.release_marker.as_deref(), Some("released"));
+                assert_eq!(
+                    release.sources.publish_remote,
+                    SettingSource::Local(private.clone())
+                );
+                assert_eq!(
+                    loaded.sources.workstreams["release.integration-target"],
+                    SettingSource::Shared(shared.clone())
+                );
+                let mut hotfix = loaded.clone();
+                settings::resolve_workstream(&mut hotfix, WorkstreamKind::Hotfix, None).unwrap();
+                assert_eq!(hotfix.base, "release/train");
+                assert_eq!(
+                    hotfix.workstream.unwrap().active_release.as_deref(),
+                    Some("release/train")
+                );
+                let mut ordinary = loaded;
+                settings::resolve_workstream(
+                    &mut ordinary,
+                    WorkstreamKind::Ordinary,
+                    Some("release/train"),
+                )
+                .unwrap();
+                let policy = ordinary.workstream.unwrap();
+                assert_eq!(policy.preparation_source, "release/train");
+                assert_eq!(policy.integration_target, "release/train");
+                assert!(!policy.version_tagging);
+                assert_eq!(policy.creation_source, None);
+                assert_eq!(policy.release_marker, None);
+                fs::remove_file(shared).unwrap();
+                fs::remove_file(private).unwrap();
+            }
+        },
+    );
+}
+
+#[test]
+fn workstream_configuration_rejects_typed_duplicate_and_inactive_invalid_values() {
+    isolated(
+        "workstream_configuration_rejects_typed_duplicate_and_inactive_invalid_values",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let json = repo.path().join(CONFIG_FILES[3]);
+            for content in [
+                r#"{"workstreams":null}"#,
+                r#"{"workstreams":[]}"#,
+                r#"{"workstreams":{"unknown":{}}}"#,
+                r#"{"workstreams":{"ordinary":{},"ordinary":{}}}"#,
+                r#"{"workstreams":{"ordinary":[]}}"#,
+                r#"{"workstreams":{"ordinary":{"creation-source":null}}}"#,
+                r#"{"workstreams":{"ordinary":{"creation-source":1}}}"#,
+                r#"{"workstreams":{"ordinary":{"publish-remote":"one","publish-remote":"two"}}}"#,
+                r#"{"workstreams":{"release":{"version-tagging":"required","finish-integration":"squash"}}}"#,
+                r#"{"workstreams":{"release":{"version-tagging":"required","finish-update":"merge"}}}"#,
+                r#"{"workstreams":{"release":{"integration-target":"bad..branch"}}}"#,
+                r#"{"workstreams":{"ordinary":{"preparation-source":"bad..branch"}}}"#,
+                r#"{"workstreams":{"hotfix":{}}}"#,
+                r#"{"workstreams":{"ordinary":{"version-tagging":"required"}}}"#,
+            ] {
+                fs::write(&json, content).unwrap();
+                assert!(load(repo.path()).is_err(), "accepted {content}");
+            }
+            fs::remove_file(&json).unwrap();
+            let yaml = repo.path().join(CONFIG_FILES[1]);
+            for content in [
+                "workstreams:\n  ordinary:\n    creation-source: 1\n",
+                "workstreams:\n  ordinary: {}\n  ordinary: {}\n",
+                "workstreams:\n  ordinary:\n    version-tagging: false\n",
+            ] {
+                fs::write(&yaml, content).unwrap();
+                assert!(load(repo.path()).is_err(), "accepted {content}");
+            }
+            fs::remove_file(yaml).unwrap();
+            fs::write(
+                json,
+                r#"{"workstreams":{"ordinary":{"preparation-source":"none","integration-target":"none"}}}"#,
+            )
+            .unwrap();
+            let mut resolved = load(repo.path()).unwrap();
+            settings::resolve_workstream(&mut resolved, settings::WorkstreamKind::Ordinary, None)
+                .unwrap();
+            let policy = resolved.workstream.unwrap();
+            assert_eq!(policy.preparation_source, "none");
+            assert_eq!(policy.integration_target, "none");
+        },
+    );
+}

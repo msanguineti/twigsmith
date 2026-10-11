@@ -50,7 +50,7 @@ impl LogVersion {
                     .unwrap_or_default()
     }
 }
-/// Stored separately per worktree and source branch. No success flags or reusable
+/// Stored separately per worktree and source branch. No unbound success flags or reusable
 /// rewrite permission. Remaining effects are derived from actual observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +86,8 @@ pub struct Record {
     /// evidence after Git removes the branch reflog. Never replaces a live log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) cleanup_source_log: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) release: Option<release::Record>,
 }
 impl Record {
     pub(super) fn request(&self, request: &Request) -> Request {
@@ -95,6 +97,10 @@ impl Record {
             message: request.message.clone().or_else(|| self.message.clone()),
             checkout: request.checkout.or(Some(self.checkout)),
             cleanup: request.cleanup.or(Some(self.cleanup)),
+            release: self
+                .release
+                .as_ref()
+                .map_or_else(|| request.release.clone(), |r| r.request(&request.release)),
         }
     }
     fn update(&self) -> FinishUpdate {
@@ -149,6 +155,9 @@ impl Record {
             token: token.into(),
             preparation: (plan.integration == Integration::AfterPreparation).then(|| Preparation {
                 method: plan.update,
+                base: commit(e.preparation.as_ref().map_or(&e.fetched, |p| &p.branch))
+                    .expect("ready preparation source")
+                    .to_vec(),
                 original: commit(&plan.source).expect("ready source").to_vec(),
                 source_version: LogVersion::of(plan.snapshot.source_log.as_deref()),
                 head_version: LogVersion::of(plan.snapshot.head_log.as_deref()),
@@ -156,6 +165,7 @@ impl Record {
             result: None,
             cleanup_source_log: None,
             retained: false,
+            release: release::for_plan(plan, token)?,
         })
     }
     pub fn marker(&self) -> String {
@@ -207,6 +217,32 @@ pub fn record_path(repository: &repository::RepositoryContext, source_branch: &s
 pub fn selection_path(repository: &repository::RepositoryContext) -> PathBuf {
     repository.git_dir.join("oneflow-integration/active.json")
 }
+/// Explicit policy start establishes new workstream intent on a named branch.
+/// Retain all attempt records; retire only a different source's active selector.
+pub(crate) fn clear_other_selection(
+    repository: &repository::RepositoryContext,
+    branch: &[u8],
+) -> Result<bool, FinishError> {
+    let path = selection_path(repository);
+    let read = || {
+        private_read(&repository.git_dir, &path)
+            .map_err(|_| FinishError::InvalidEvidence("unsafe integration association"))
+    };
+    let Some(bytes) = read()? else {
+        return Ok(false);
+    };
+    let selection: Selection = serde_json::from_slice(&bytes)
+        .map_err(|_| FinishError::InvalidEvidence("invalid integration association"))?;
+    if selection.source_ref == branch_ref(branch) {
+        return Ok(false);
+    }
+    if read()?.as_ref() != Some(&bytes) {
+        return Err(FinishError::ContextChanged);
+    }
+    fs::remove_file(&path)?;
+    fs::File::open(path.parent().expect("selector parent"))?.sync_all()?;
+    Ok(true)
+}
 fn private_read(root: &Path, path: &Path) -> Result<Option<Vec<u8>>, Problem> {
     let relative = path.strip_prefix(root).map_err(|_| Problem::UnsafeRecord)?;
     let mut current = root.to_owned();
@@ -254,6 +290,23 @@ pub(super) fn select(
         problem: None,
         bytes: vec![],
     };
+    // A branch-bound route can differ from the currently checked-out target's
+    // own policy. The selector may supply the target only after its record names
+    // this exact HEAD; the existing checkout/reflog proof below still applies.
+    let active_target = private_read(&repository.git_dir, &selection_path(repository))
+        .ok()
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice::<Selection>(&bytes).ok())
+        .and_then(|selection| {
+            let branch =
+                std::str::from_utf8(selection.source_ref.strip_prefix(b"refs/heads/")?).ok()?;
+            let bytes =
+                private_read(&repository.git_dir, &record_path(repository, branch)).ok()??;
+            let record: Record = serde_json::from_slice(&bytes).ok()?;
+            (current_ref(state).as_ref() == Some(&record.target.reference))
+                .then_some(record.target.reference)
+        });
+    let target = active_target.as_deref().unwrap_or(target);
     let on_source = selected.source_ref.as_deref().is_some_and(|r| r != target);
     let mut association = None;
     if !on_source {
@@ -543,6 +596,15 @@ pub(super) fn assess(
         return Ok(());
     }
     if let Some(preparation) = &record.preparation {
+        if plan
+            .evidence
+            .as_ref()
+            .and_then(|e| e.preparation.as_ref())
+            .is_some_and(|p| p.branch != RefObservation::Commit(preparation.base.clone()))
+        {
+            fail(plan, Problem::ChangedBinding);
+            return Ok(());
+        }
         let mut proof = plan.clone();
         if plan.source == RefObservation::Absent {
             proof.source = RefObservation::Commit(record.source.clone());
@@ -745,6 +807,7 @@ pub(super) fn assess(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Preparation {
+    base: Vec<u8>,
     method: FinishUpdate,
     original: Vec<u8>,
     source_version: LogVersion,
@@ -803,7 +866,7 @@ fn verify_preparation(
     if tail.len() != 1
         || tail[0].old != prep.original
         || tail[0].new != source
-        || ancestor(directory, &record.target_before, source)? != Some(true)
+        || ancestor(directory, &prep.base, source)? != Some(true)
     {
         return Ok(false);
     }
@@ -823,7 +886,7 @@ fn verify_preparation(
             b" (finish): ",
             &record.source_ref,
             b" onto ",
-            &record.target_before,
+            &prep.base,
         ]
         .concat()
     };
@@ -837,12 +900,13 @@ fn verify_preparation(
     let start = [
         record.prepare_marker().as_bytes(),
         b" (start): checkout ",
-        &record.target_before,
+        &prep.base,
     ]
     .concat();
-    let Some(begin) = interval.iter().rposition(|e| {
-        e.old == prep.original && e.new == record.target_before && e.message == start
-    }) else {
+    let Some(begin) = interval
+        .iter()
+        .rposition(|e| e.old == prep.original && e.new == prep.base && e.message == start)
+    else {
         return Ok(false);
     };
     let end_message = |action: &str| {
@@ -903,6 +967,14 @@ fn target_unintegrated(record: &Record, plan: &Plan) -> bool {
 }
 
 impl Record {
+    pub(super) fn release_action(&self) -> String {
+        format!("oneflow-release:{}", self.token)
+    }
+    pub(super) fn preparation_base(&self) -> &[u8] {
+        self.preparation
+            .as_ref()
+            .map_or(&self.target_before, |p| &p.base)
+    }
     pub(super) fn prepare_marker(&self) -> String {
         format!("oneflow-prepare-{}", self.token)
     }

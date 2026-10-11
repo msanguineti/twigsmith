@@ -86,7 +86,8 @@ pub(super) fn run(
                     .as_ref()
                     .zip(refreshed.evidence.as_ref())
                     .is_none_or(|(old, new)| {
-                        old.target != new.target
+                        old.preparation != new.preparation
+                            || old.target != new.target
                             || old.fetched != new.fetched
                             || old.targets != new.targets
                     })
@@ -101,11 +102,23 @@ pub(super) fn run(
         // An interrupted merge can leave a corroborated result before its pin
         // or record acknowledgement was written. Finish retaining that result
         // before either delivery or completion can acquire authority.
-        if !plan.needs_result_retention() && !plan.needs_candidate_checkout() {
-            if matches!(plan.state, State::Published | State::Complete) {
-                return complete(&root, &plan, presentation, history);
+        if !plan.needs_result_retention()
+            && !plan.needs_candidate_checkout()
+            && (!integration::release::enabled(&plan)
+                || integration::release::source_checked(&plan, skip_checks)
+                || plan.source == finish::RefObservation::Absent)
+        {
+            if matches!(plan.state, State::Published | State::Complete)
+                && (!integration::release::enabled(&plan)
+                    || integration::release::candidate_checked(&plan, skip_checks)
+                    || plan.source == finish::RefObservation::Absent)
+            {
+                return complete(&root, &plan, presentation, history, skip_checks);
             }
-            if plan.state == State::PendingPublication {
+            if plan.state == State::PendingPublication
+                || (integration::release::enabled(&plan)
+                    && matches!(plan.state, State::Published | State::Complete))
+            {
                 break;
             }
         }
@@ -119,7 +132,11 @@ pub(super) fn run(
             );
         }
         preparations += 1;
-        let prepared = execution::prepare(&root, &plan);
+        let mut output = CheckOutput::new(presentation);
+        let prepared = execution::prepare_with_checks(&root, &plan, skip_checks, |event| {
+            check_event(presentation, &mut output, event);
+        });
+        output.flush();
         preparation_effects(presentation, &mut history, &prepared);
         command_diagnostics(presentation, &mut history, &prepared.commands);
         let needs_input = matches!(prepared.error, Some(execution::Error::UnresolvedPlan))
@@ -198,7 +215,7 @@ pub(super) fn run(
         return failure(presentation, &history, stage, &delivered.remaining);
     }
     match delivered.plan {
-        Ok(plan) => complete(&root, &plan, presentation, history),
+        Ok(plan) => complete(&root, &plan, presentation, history, skip_checks),
         Err(error) => {
             let _ = writeln!(history, "error: {}", text(presentation, error));
             failure(
@@ -272,6 +289,7 @@ fn choose(
         }
         RequiredInput::Message => "supply -m/--message <text> or configure finish-message = auto",
         RequiredInput::Cleanup => "select --cleanup <keep|local|both> or configure finish-cleanup",
+        RequiredInput::TagName => "supply --tag <name>",
     };
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(format!(
@@ -281,6 +299,7 @@ fn choose(
                 RequiredInput::Integration => "integration",
                 RequiredInput::Message => "message",
                 RequiredInput::Cleanup => "cleanup",
+                RequiredInput::TagName => "version tag",
             }
         ));
     }
@@ -291,6 +310,14 @@ fn choose(
         text(presentation, &plan.settings.base)
     );
     let mut request = plan.request().clone();
+    if choice == RequiredInput::TagName {
+        request.release.tag = Some(read_answer_with_cancellation(
+            presentation,
+            "Version tag name (cancel to stop): ",
+            "Finish cancelled; retained work remains available.",
+        )?);
+        return Ok(request);
+    }
     if choice == RequiredInput::Message {
         request.message = Some(edit_message(root, plan, presentation)?);
         return Ok(request);
@@ -314,7 +341,7 @@ fn choose(
             );
             "Cleanup (keep/local/both/cancel): "
         }
-        RequiredInput::Message => unreachable!(),
+        RequiredInput::Message | RequiredInput::TagName => unreachable!(),
     };
     let answer = read_answer_with_cancellation(
         presentation,
@@ -347,7 +374,7 @@ fn choose(
                 _ => return Err(invalid()),
             })
         }
-        RequiredInput::Message => unreachable!(),
+        RequiredInput::Message | RequiredInput::TagName => unreachable!(),
     }
     Ok(request)
 }
@@ -535,7 +562,43 @@ fn check_event(presentation: Presentation, output: &mut CheckOutput, event: chec
     }
 }
 
-fn complete(root: &Path, plan: &Plan, presentation: Presentation, mut history: String) -> ExitCode {
+fn complete(
+    root: &Path,
+    plan: &Plan,
+    presentation: Presentation,
+    mut history: String,
+    skip_checks: bool,
+) -> ExitCode {
+    let mut commands = Vec::new();
+    let delivered = integration::release::deliver(root, plan, skip_checks, &mut commands);
+    command_diagnostics(presentation, &mut history, &commands);
+    let release_destinations = integration::release::delivery_observations(plan, &commands);
+    for destination in &release_destinations {
+        let _ = writeln!(
+            history,
+            "Release delivery at {}: tag {}; marker {}.",
+            display(presentation, &destination.destination),
+            observation(presentation, &destination.tag),
+            destination
+                .marker
+                .as_ref()
+                .map(|v| observation(presentation, v))
+                .unwrap_or_else(|| "disabled".into())
+        );
+    }
+    let plan = match delivered {
+        Ok(plan) => plan,
+        Err(error) => {
+            let _ = writeln!(history, "error: {}", text(presentation, error));
+            return failure(
+                presentation,
+                &history,
+                "version tag/marker delivery",
+                &repository::inspect(root),
+            );
+        }
+    };
+    let plan = &plan;
     let report = completion::complete(root, plan);
     for effect in &report.effects {
         match effect {
@@ -610,6 +673,37 @@ fn complete(root: &Path, plan: &Plan, presentation: Presentation, mut history: S
             &report.remaining,
         );
     }
+    if let Some((tag, source)) = integration::release::identity(plan) {
+        println!(
+            "Released {} at {}.",
+            text(presentation, tag),
+            display(presentation, source)
+        );
+        for destination in &release_destinations {
+            println!(
+                "  {}: tag {}{}.",
+                display(presentation, &destination.destination),
+                observation(presentation, &destination.tag),
+                destination
+                    .marker
+                    .as_ref()
+                    .map(|v| format!("; marker {}", observation(presentation, v)))
+                    .unwrap_or_default()
+            );
+        }
+        if let Some(marker) = plan
+            .settings
+            .workstream
+            .as_ref()
+            .and_then(|p| p.release_marker.as_ref())
+        {
+            println!(
+                "Release marker {}: {} (delivery confirmed).",
+                text(presentation, marker),
+                display(presentation, source)
+            );
+        }
+    }
     println!(
         "Integrated {} at {} into {}/{}.",
         display(presentation, &plan.source_ref),
@@ -660,6 +754,52 @@ fn failure(
     observed: &Result<Observation, InspectionError>,
 ) -> ExitCode {
     let mut output = format!("Finish integration incomplete during {stage}.\n{history}");
+    if let Ok(Observation::Repository(state)) = observed
+        && let Some(tree) = &state.working_tree
+        && let Ok(plan) = integration::assess(&tree.root, &integration::Request::default(), None)
+    {
+        match integration::release::status(&tree.root, &plan) {
+            Ok(Some(release)) => {
+                let _ = writeln!(
+                    output,
+                    "Released version: {} at {}; local tag object: {}.",
+                    text(presentation, release.tag.as_deref().unwrap_or("unresolved")),
+                    display(presentation, &release.source),
+                    observation(presentation, &release.tag_object)
+                );
+                let _ = writeln!(
+                    output,
+                    "Integration destination: {}/{}; result: {}.",
+                    text(presentation, &plan.target.remote),
+                    display(presentation, &plan.target.reference),
+                    plan.result
+                        .as_deref()
+                        .map(|v| display(presentation, v))
+                        .unwrap_or_else(|| "not yet verified".into())
+                );
+                if let Some((name, value)) = release.marker {
+                    let _ = writeln!(
+                        output,
+                        "Release marker {}: {} locally; required endpoint delivery remains subject to verification.",
+                        text(presentation, name),
+                        observation(presentation, &value)
+                    );
+                }
+                if release.source_checks_bypassed || release.candidate_checks_bypassed {
+                    output.push_str("Retained check evidence includes an explicit --skip-checks bypass; pending delivery without that flag requires the applicable checks.\n");
+                }
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    output,
+                    "Release observation unavailable: {}.",
+                    text(presentation, error)
+                );
+            }
+            Ok(None) => {}
+        }
+    }
+
     remaining_state(presentation, &mut output, observed, false);
     output.push_str("Resolve the reported problem, then rerun finish --mode integrate. Completed effects and retained work remain available; verified retries reuse the attempt's choices and result.\n");
     eprint!("{output}");
@@ -762,6 +902,7 @@ fn blocker_message(presentation: Presentation, output: &mut String, blocker: &Bl
         Blocker::CheckoutCleanupConflict => "checkout work is incompatible with cleanup local or both; select --checkout target or --cleanup keep".into(),
         Blocker::TargetChanged(destination) => format!("target destinations disagree or changed at {}; inspect the target before retrying", display(presentation, destination)),
         Blocker::WorkBranchChanged(destination) => format!("published work changed or is not incorporated at {}; retain it and inspect the work branch", display(presentation, destination)),
+        Blocker::Release(problem) => problem.clone(),
         Blocker::Recovery(problem) => format!("retained integration recovery cannot be verified ({problem:?}); inspect branch history, settings, endpoints, and retained evidence before retrying"),
     };
     let _ = writeln!(output, "error: {message}.");

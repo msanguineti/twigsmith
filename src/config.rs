@@ -57,6 +57,9 @@ fn render_document(format: Format, proposed: &settings::Settings, guided: bool) 
         finish_update: &'a str,
         finish_rewrite: &'a str,
         finish_checks: &'a [settings::FinishCheck],
+        #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        workstreams:
+            &'a std::collections::BTreeMap<settings::WorkstreamKind, settings::WorkstreamConfig>,
     }
     let document = Document {
         publish_remote: &proposed.publish_remote,
@@ -79,6 +82,7 @@ fn render_document(format: Format, proposed: &settings::Settings, guided: bool) 
         finish_update: proposed.finish_update.as_str(),
         finish_rewrite: proposed.finish_rewrite.as_str(),
         finish_checks: &proposed.finish_checks,
+        workstreams: &proposed.workstreams,
     };
     match format {
         Format::Toml => toml::to_string_pretty(&document).expect("settings serialization"),
@@ -149,7 +153,8 @@ pub struct Inspection {
 }
 pub fn inspect(directory: &Path) -> Result<Inspection, ConfigError> {
     let repository = discover(directory)?;
-    let loaded = settings::load_with_files(directory, &repository)?;
+    let mut loaded = settings::load_with_files(directory, &repository)?;
+    loaded.settings = settings::load(directory, &repository)?;
     Ok(Inspection { repository, loaded })
 }
 
@@ -287,6 +292,13 @@ fn validate(directory: &Path, proposed: &settings::Settings) -> Result<(), Confi
             "invalid proposed publish-remote, base-remote, or base name".into(),
         )
         .into());
+    }
+    for (kind, value) in &proposed.workstreams {
+        value.validate_for(directory, *kind)?;
+    }
+    for kind in proposed.workstreams.keys() {
+        let mut effective = proposed.clone();
+        settings::resolve_workstream(&mut effective, *kind, None)?;
     }
     settings::validate_finish_checks(&proposed.finish_checks)
         .map_err(SettingsError::InvalidSettings)?;

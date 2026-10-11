@@ -68,8 +68,8 @@ The groups are `start`, `save`, `finish`, `config`, `status`, `shared`, and
 `lifecycle`. Command groups include backend and CLI coverage. `shared` covers
 the development launcher, Git boundary, repository observation, settings,
 tracking, remote roles, finish-check configuration, and exact save/finish
-publication. `lifecycle`
-includes CLI smoke checks and end-to-end project/fork workflows. Every group
+publication. `lifecycle` includes CLI smoke checks, end-to-end project/fork
+workflows, and direct release/hotfix delivery and recovery. Every group
 also runs library and binary unit tests (`--lib --bins`). Targets overlap where
 they exercise shared behaviour.
 

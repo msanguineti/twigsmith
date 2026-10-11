@@ -870,3 +870,56 @@ fn inspection_disables_helpers_and_lazy_fetch() {
         assert!(!repo.path().join("helper-ran").exists());
     });
 }
+
+#[test]
+fn review_preparation_route_is_independent_of_submission_target() {
+    isolated(
+        "review_preparation_route_is_independent_of_submission_target",
+        true,
+        |root| {
+            let (repo, base) = fixture(root);
+            repo.success(&["switch", "-c", "preparation", "main"]);
+            let preparation = commit(&repo, "preparation advance");
+            repo.success(&["switch", "Feature/Exact_Name"]);
+            fs::write(repo.path().join(".git/git-oneflow.config.toml"), "[workstreams.ordinary]\npreparation-source='preparation'\nintegration-target='main'\nfinish-mode='review'\nfinish-update='merge'\n").unwrap();
+            let options = git_oneflow::start::Options {
+                policy: Some(git_oneflow::settings::WorkstreamKind::Ordinary),
+                ..Default::default()
+            };
+            let prepared = git_oneflow::start::prepare_with_options(
+                repo.path(),
+                "Feature/Exact_Name",
+                &options,
+            )
+            .unwrap();
+            git_oneflow::start::execute(repo.path(), &prepared).unwrap();
+            let mut remote = evidence(preparation, RefObservation::Absent);
+            remote.base_ref = b"refs/heads/preparation".to_vec();
+            let plan = assess(
+                root,
+                &repo,
+                &request(FinishUpdate::Merge, FinishRewrite::Deny),
+                Some(&remote),
+            )
+            .unwrap();
+            assert_eq!(plan.settings.base, "main");
+            assert_eq!(
+                plan.settings
+                    .workstream
+                    .as_ref()
+                    .unwrap()
+                    .preparation_source,
+                "preparation"
+            );
+            assert_eq!(plan.base_relationship, Some(Relationship::Behind));
+            assert!(plan.is_ready());
+            revalidate(root, &repo, &plan, Some(&remote)).unwrap();
+            remote.base_ref = b"refs/heads/main".to_vec();
+            remote.base = RefObservation::Commit(base);
+            assert!(matches!(
+                assess(root, &repo, &Request::default(), Some(&remote)),
+                Err(FinishError::InvalidEvidence(_))
+            ));
+        },
+    );
+}

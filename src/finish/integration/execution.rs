@@ -195,6 +195,30 @@ fn observe(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
         }
         guard(root, plan)?;
     }
+    if let Some(prep) = &e.preparation {
+        guard(root, plan)?;
+        let (prefix, name) = remote::endpoint(
+            root,
+            plan,
+            &plan.target.remote,
+            &plan.target.fetch_destination,
+            &mut report.commands,
+        )
+        .map_err(|_| Error::RemoteChanged)?;
+        let value = remote::observe(
+            root,
+            &prefix,
+            &name,
+            &prep.reference,
+            commit(&plan.source).ok_or(Error::UnresolvedPlan)?.len(),
+            &mut report.commands,
+        )
+        .map_err(|_| Error::RemoteChanged)?;
+        if value != prep.branch {
+            return Err(Error::RemoteChanged);
+        }
+        guard(root, plan)?;
+    }
     Ok(())
 }
 fn retain(root: &Path, reference: &str, oid: &[u8], report: &mut Report) -> Result<(), Error> {
@@ -227,7 +251,13 @@ fn retain(root: &Path, reference: &str, oid: &[u8], report: &mut Report) -> Resu
     outcome?;
     Ok(())
 }
-fn execute(root: &Path, approved: &Plan, report: &mut Report) -> Result<(), Error> {
+fn execute(
+    root: &Path,
+    approved: &Plan,
+    report: &mut Report,
+    skip: bool,
+    event: &mut impl FnMut(checks::Event<'_>),
+) -> Result<(), Error> {
     guard(root, approved)?;
     observe(root, approved, report)?;
     let mut plan = approved.clone();
@@ -267,6 +297,8 @@ fn execute(root: &Path, approved: &Plan, report: &mut Report) -> Result<(), Erro
         )?;
         plan = fresh(root, &plan)?;
     }
+    plan = release::prepare(root, &plan, skip, event, &mut report.commands)?;
+    record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
     if plan.result.is_some() && plan.state != State::Fresh {
         return finish_result(root, plan, report);
     }
@@ -311,7 +343,7 @@ fn execute(root: &Path, approved: &Plan, report: &mut Report) -> Result<(), Erro
             ],
             _ => return Err(Error::UnresolvedPlan),
         }));
-        a.push(repository::os(&record.target_before)?);
+        a.push(repository::os(record.preparation_base())?);
         command(root, a, Some(&record.prepare_marker()), report)?;
         plan = fresh(root, &plan)?;
         report.plan = Some(plan.clone());
@@ -463,7 +495,8 @@ fn finish_result(root: &Path, mut plan: Plan, report: &mut Report) -> Result<(),
         plan = fresh(root, &plan)?;
     }
     guard(root, &plan)?;
-    if !matches!(plan.state, State::Published | State::Complete)
+    if (!matches!(plan.state, State::Published | State::Complete)
+        || (release::enabled(&plan) && !release::candidate_checked(&plan, false)))
         && current_ref(&plan.snapshot.state).as_ref() != Some(&plan.target.reference)
     {
         let selection = recovery::Selection::observe(
@@ -497,9 +530,18 @@ fn finish_result(root: &Path, mut plan: Plan, report: &mut Report) -> Result<(),
     report.plan = Some(plan);
     Ok(())
 }
-/// Prepare or resume only verified unfinished local work. Checks are a separate
-/// per-attempt observation; this API never publishes or completes the workflow.
+/// Prepare or resume verified local work. Tagged work first checks and tags its
+/// exact source; candidate checks follow integration. No publication or cleanup.
 pub fn prepare(directory: impl AsRef<Path>, plan: &Plan) -> Report {
+    prepare_with_checks(directory, plan, false, |_| {})
+}
+
+pub fn prepare_with_checks(
+    directory: impl AsRef<Path>,
+    plan: &Plan,
+    skip: bool,
+    mut event: impl FnMut(checks::Event<'_>),
+) -> Report {
     let directory = directory.as_ref();
     let root = plan
         .repository
@@ -517,7 +559,7 @@ pub fn prepare(directory: impl AsRef<Path>, plan: &Plan) -> Report {
     let approved = validated.is_ok();
     report.error = validated
         .map_err(Error::from)
-        .and_then(|()| execute(root, plan, &mut report))
+        .and_then(|()| execute(root, plan, &mut report, skip, &mut event))
         .err();
     report.remaining = repository::inspect(root);
     // Ref observations remain reportable even if a hook invalidates settings
@@ -593,7 +635,8 @@ pub struct CheckReport {
     pub plan: Result<Plan, FinishError>,
 }
 /// Inspect the actual checked-out candidate, with the shared process lifecycle
-/// and presentation events. Success is never reusable publication authority.
+/// and presentation events. Tagged work retains exact-commit check receipts;
+/// each use still requires complete context and immutable-result corroboration.
 pub fn check(
     directory: impl AsRef<Path>,
     plan: &Plan,
@@ -606,7 +649,12 @@ pub fn check(
         .working_tree_root
         .as_deref()
         .unwrap_or(directory);
-    let checks = checks::run_guarded(root, &plan.settings.finish_checks, skip, event, || {
+    let effective_checks = if release::candidate_checked(plan, skip) {
+        &[][..]
+    } else {
+        &plan.settings.finish_checks[..]
+    };
+    let mut checks = checks::run_guarded(root, effective_checks, skip, event, || {
         revalidate(directory, plan, plan.evidence.as_ref())?;
         revalidate(root, plan, plan.evidence.as_ref())?;
         let head = match &plan.snapshot.state.head {
@@ -624,9 +672,17 @@ pub fn check(
         }
         Ok(())
     });
+    let next = if checks.error.is_none() && release::enabled(plan) {
+        release::record_candidate(root, plan, skip)
+    } else {
+        assess(root, &plan.request, plan.evidence.as_ref())
+    };
+    if next.is_err() && checks.error.is_none() {
+        checks.error = Some(checks::Error::Context(FinishError::ContextChanged));
+    }
     CheckReport {
         checks,
         remaining: repository::inspect(root),
-        plan: assess(root, &plan.request, plan.evidence.as_ref()),
+        plan: next,
     }
 }

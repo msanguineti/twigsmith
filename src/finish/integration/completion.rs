@@ -193,6 +193,7 @@ fn delivery(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> 
             return Err(Error::TargetDeliveryIncomplete);
         }
     }
+    release::verify_delivery(root, plan, &mut report.commands)?;
     if report.targets.is_empty() {
         return Err(Error::UnverifiedAttempt);
     }

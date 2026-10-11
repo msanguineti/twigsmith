@@ -19,23 +19,34 @@ fn text(value: impl std::fmt::Display) -> String {
 }
 enum Command {
     Help,
-    Guided(Format),
+    Guided(Format, bool, Option<String>),
     Show,
-    Generate(Format),
+    Generate(Format, bool, Option<String>),
 }
 fn parse(args: &[OsString]) -> Option<Command> {
     match args {
-        [] => return Some(Command::Guided(Format::Toml)),
+        [] => return Some(Command::Guided(Format::Toml, false, None)),
         [arg] if arg == "--help" || arg == "-h" => return Some(Command::Help),
         [arg] if arg == "show" => return Some(Command::Show),
         _ => {}
     }
     let mut yes = false;
+    let mut oneflow = false;
+    let mut marker = None;
     let mut format = None;
     let mut rest = args;
     while let [arg, tail @ ..] = rest {
         if (arg == "--yes" || arg == "-y") && !yes {
             yes = true;
+            rest = tail;
+        } else if arg == "--oneflow" && !oneflow {
+            oneflow = true;
+            rest = tail;
+        } else if arg == "--marker" && marker.is_none() {
+            let [value, tail @ ..] = tail else {
+                return None;
+            };
+            marker = Some(value.to_str()?.to_owned());
             rest = tail;
         } else if arg == "--format" && format.is_none() {
             let [value, tail @ ..] = tail else {
@@ -52,11 +63,14 @@ fn parse(args: &[OsString]) -> Option<Command> {
             return None;
         }
     }
+    if marker.is_some() && !oneflow {
+        return None;
+    }
     let format = format.unwrap_or(Format::Toml);
     Some(if yes {
-        Command::Generate(format)
+        Command::Generate(format, oneflow, marker)
     } else {
-        Command::Guided(format)
+        Command::Guided(format, oneflow, marker)
     })
 }
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -71,7 +85,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             help();
             return ExitCode::SUCCESS;
         }
-        Command::Guided(_) if !io::stdin().is_terminal() || !io::stderr().is_terminal() => {
+        Command::Guided(..) if !io::stdin().is_terminal() || !io::stderr().is_terminal() => {
             eprintln!(
                 "error: guided setup requires terminal input and stderr; use gof config --yes [--format <toml|yaml|json>] for unattended defaults"
             );
@@ -88,15 +102,18 @@ pub fn run(args: &[OsString]) -> ExitCode {
     };
     let result = match command {
         Command::Show => config::inspect(&directory).map(|inspection| show(&inspection)),
-        Command::Generate(format) => config::prepare(&directory, format)
-            .and_then(|plan| config::generate(&directory, &plan))
+        Command::Generate(format, oneflow, marker) => config::prepare(&directory, format)
+            .and_then(|mut plan| {
+                if oneflow { settings::oneflow_bundle(&mut plan.proposed, marker); }
+                config::generate(&directory, &plan)
+            })
             .map(|generated| {
                 println!("Created shared configuration: {}", text(generated.path.display()));
                 for path in generated.local_files {
                     println!("Local overrides in {} take precedence over generated values; use gof config show to inspect effective settings.", text(path.display()));
                 }
             }),
-        Command::Guided(format) => guided(&directory, format),
+        Command::Guided(format, oneflow, marker) => guided(&directory, format, oneflow, marker),
         Command::Help => unreachable!(),
     };
     match result {
@@ -164,7 +181,12 @@ fn policy<T>(
         }
     }
 }
-fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
+fn guided(
+    directory: &Path,
+    format: Format,
+    oneflow: bool,
+    marker: Option<String>,
+) -> Result<(), ConfigError> {
     let mut plan = config::prepare_guided(directory, format)?;
     let defaults = settings::Settings::default();
     eprintln!(
@@ -427,6 +449,38 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
             break;
         }
     }
+    if oneflow {
+        settings::oneflow_bundle(&mut plan.proposed, marker);
+        eprintln!(
+            "Direct OneFlow routes are editable as JSON objects; Enter keeps each proposed policy."
+        );
+        for kind in [
+            settings::WorkstreamKind::Ordinary,
+            settings::WorkstreamKind::Release,
+            settings::WorkstreamKind::Hotfix,
+        ] {
+            loop {
+                let proposed = &plan.proposed.workstreams[&kind];
+                let json = serde_json::to_string(proposed).expect("policy serialization");
+                let Some(answer) = input(&format!("{} policy [{}]: ", kind.as_str(), json))? else {
+                    return cancelled();
+                };
+                if answer.is_empty() {
+                    break;
+                }
+                match serde_json::from_str::<settings::WorkstreamConfig>(&answer) {
+                    Ok(value) => match value.validate_for(directory, kind) {
+                        Ok(()) => {
+                            plan.proposed.workstreams.insert(kind, value);
+                            break;
+                        }
+                        Err(error) => eprintln!("{error}"),
+                    },
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
+        }
+    }
     config::revalidate_review(directory, &plan)?;
     eprintln!(
         "Destination: {}\nExact proposed shared configuration:\n{}",
@@ -517,6 +571,74 @@ fn guided(directory: &Path, format: Format) -> Result<(), ConfigError> {
             "Effective finish checks (shared)",
             &plan.proposed.finish_checks,
         );
+    }
+    if !plan.proposed.workstreams.is_empty() {
+        let mut effective = reviewed_completion(&plan);
+        let roles = reviewed_roles(&plan);
+        effective.publish_remote = roles.publish_remote;
+        effective.base_remote = roles.base_remote;
+        effective.sources.publish_remote = roles.sources.publish_remote;
+        effective.sources.base_remote = roles.sources.base_remote;
+        let shared = SettingSource::Shared(plan.destination());
+        for (kind, config) in &effective.workstreams {
+            for key in serde_json::to_value(config)
+                .expect("policy serialization")
+                .as_object()
+                .unwrap()
+                .keys()
+            {
+                effective
+                    .sources
+                    .workstreams
+                    .insert(format!("{}.{}", kind.as_str(), key), shared.clone());
+            }
+        }
+        for (kind, config) in &review.overrides.workstreams {
+            let mut values = serde_json::to_value(config).expect("policy serialization");
+            values.as_object_mut().unwrap().retain(|key, _| {
+                matches!(
+                    review
+                        .overrides
+                        .sources
+                        .workstreams
+                        .get(&format!("{}.{}", kind.as_str(), key)),
+                    Some(SettingSource::Local(_))
+                )
+            });
+            for key in values.as_object().unwrap().keys() {
+                let name = format!("{}.{}", kind.as_str(), key);
+                effective.sources.workstreams.insert(
+                    name.clone(),
+                    review.overrides.sources.workstreams[&name].clone(),
+                );
+            }
+            effective
+                .workstreams
+                .entry(*kind)
+                .or_default()
+                .overlay(serde_json::from_value(values).expect("validated private policy"));
+        }
+        for kind in effective.workstreams.keys() {
+            let mut resolved = effective.clone();
+            settings::resolve_workstream(&mut resolved, *kind, None)?;
+            let policy = resolved.workstream.as_ref().unwrap();
+            eprintln!(
+                "Effective {} policy: publication {} ({}); preparation {}/{}; integration {}/{}; tagging {}; marker {}.",
+                kind.as_str(),
+                text(&resolved.publish_remote),
+                source(&resolved.sources.publish_remote),
+                text(&resolved.base_remote),
+                text(&policy.preparation_source),
+                text(&resolved.base_remote),
+                text(&policy.integration_target),
+                if policy.version_tagging {
+                    "required"
+                } else {
+                    "disabled"
+                },
+                text(policy.release_marker.as_deref().unwrap_or("none"))
+            );
+        }
     }
     loop {
         let Some(answer) = input("Create this file? [yes/no]: ")? else {
@@ -742,6 +864,86 @@ fn show(inspection: &config::Inspection) {
         checks(&settings.finish_checks),
         source(&settings.sources.finish_checks)
     );
+    if let Some(policy) = &settings.workstream {
+        println!("  workstream-policy: {}", policy.kind.as_str());
+        println!(
+            "  creation-source: {}",
+            policy
+                .creation_source
+                .as_deref()
+                .unwrap_or("explicit input or fresh base")
+        );
+        let directory = inspection
+            .repository
+            .working_tree_root
+            .as_deref()
+            .unwrap_or(&inspection.repository.common_dir);
+        let association =
+            crate::git::inspect(directory, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .map_err(crate::repository::InspectionError::Io)
+                .map_err(SettingsError::from)
+                .and_then(|output| {
+                    let branch = output.stdout.strip_suffix(b"\n").ok_or_else(|| {
+                        SettingsError::InvalidSettings(
+                            "creation association changed during inspection".into(),
+                        )
+                    })?;
+                    settings::branch_policy(directory, branch)
+                });
+        match association {
+            Ok(Some(record)) => {
+                println!(
+                    "  creation-commit: {} (established branch association)",
+                    text(record.creation_commit)
+                );
+                println!(
+                    "  creation-input: {}",
+                    text(
+                        record
+                            .creation_input
+                            .as_deref()
+                            .unwrap_or("configured creation source or resumed branch tip")
+                    )
+                );
+            }
+            Ok(None) => println!("  creation-association: unavailable (changed during inspection)"),
+            Err(error) => println!("  creation-association: unavailable ({})", text(error)),
+        }
+        println!("  preparation-source: {}", text(&policy.preparation_source));
+        println!("  integration-target: {}", text(&policy.integration_target));
+        println!(
+            "  version-tagging: {}",
+            if policy.version_tagging {
+                "required"
+            } else {
+                "disabled"
+            }
+        );
+        println!(
+            "  active-release: {}",
+            policy.active_release.as_deref().unwrap_or("none")
+        );
+        println!(
+            "  release-marker: {}",
+            policy.release_marker.as_deref().unwrap_or("none")
+        );
+    }
+    for (kind, config) in &settings.workstreams {
+        let values = serde_json::to_value(config).expect("policy serialization");
+        for (key, value) in values.as_object().expect("policy object") {
+            let name = format!("{}.{}", kind.as_str(), key);
+            println!(
+                "  workstreams.{name}: {} ({})",
+                text(value.as_str().unwrap()),
+                settings
+                    .sources
+                    .workstreams
+                    .get(&name)
+                    .map(source)
+                    .unwrap_or_else(|| "built-in".into())
+            );
+        }
+    }
     layer(
         "Shared file",
         loaded.shared.as_deref(),
@@ -761,13 +963,15 @@ fn help() {
         "Inspect configuration or set up shared start/save/finish settings.
 
 Usage: git-oneflow config show
-       git-oneflow config --yes [--format <toml|yaml|json>]
-       git-oneflow config [--format <toml|yaml|json>]
+       git-oneflow config --yes [--format <toml|yaml|json>] [--oneflow [--marker <branch>]]
+       git-oneflow config [--format <toml|yaml|json>] [--oneflow [--marker <branch>]]
 
 Arguments:
   show             Display effective settings and their sources
 
 Options:
+  --oneflow        Create an editable direct OneFlow policy bundle
+  --marker <branch>  Enable release/hotfix marker (requires --oneflow)
   -y, --yes        Create shared defaults without interactive input
   --format <toml|yaml|json>
                    Generated format (default: toml)
@@ -779,6 +983,7 @@ Examples:
   gof config -y
   gof config --yes --format yaml
   git-oneflow config --yes --format json
+  gof config --oneflow --yes --marker stable
 
 Details:
   Inspection reports effective values, file locations, and validation errors.
@@ -799,6 +1004,12 @@ Details:
   Guided review delivery omits integration settings and questions.
   Other modes ask integration policies; ff-only omits the message policy.
   --yes retains unresolved ask policies and the target checkout default.
+  --oneflow explicitly selects editable ordinary/release/hotfix policies.
+  Ordinary direct integration imports its target by merge; release/hotfix import no newer target work.
+  Release/hotfix require version tags, history-preserving merge integration, and full work cleanup.
+  Hotfix active-release is explicitly none until edited to an active release branch.
+  Markers are disabled unless --marker supplies an exact branch.
+  Shared/private workstreams fields merge independently; ordinary defaults apply without this bundle.
   finish-checks is an ordered list of objects with a name string and command list.
   command is a nonempty executable-and-argument list; shell syntax requires an explicit shell.
   Defaults contain no checks. A local list replaces the shared list; [] disables inherited checks.

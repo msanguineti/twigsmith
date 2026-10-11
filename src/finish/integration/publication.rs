@@ -143,6 +143,7 @@ fn observe(
     Ok((prefix, name))
 }
 fn push(root: &Path, plan: &Plan, outcome: &mut DestinationOutcome) -> Result<(), Error> {
+    release::pending_routes(root, plan, &mut outcome.commands)?;
     let (mut args, name) = observe(root, plan, outcome)?;
     if outcome.state.is_published() {
         return Ok(());
@@ -219,7 +220,8 @@ fn state(destinations: &[DestinationOutcome]) -> PublicationState {
 }
 /// Publish only the retained result of the selected verified attempt. Fresh
 /// equality confirms delivery without checks or a duplicate push. Every attempt
-/// that can push reruns the effective guarded candidate checks.
+/// that can push runs guarded candidate checks; tagged attempts may reuse their
+/// corroborated receipt for the same immutable result and configuration.
 pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
     publish_with_checks(directory, plan, false, |_| {})
 }
@@ -235,6 +237,8 @@ pub fn publish_with_checks(
         .working_tree_root
         .as_deref()
         .unwrap_or(directory);
+    let mut working = plan.clone();
+    let plan = &mut working;
     let mut report = Report {
         checks: checks::Report::default(),
         remote: plan.target.remote.clone(),
@@ -270,18 +274,27 @@ pub fn publish_with_checks(
         if report.destinations.is_empty() {
             return Err(Error::UnverifiedResult);
         }
+        release::pending_routes(root, plan, &mut report.destinations[0].commands)?;
         // Observe first: a retry delivered elsewhere needs no candidate execution.
         for d in &mut report.destinations {
             guard(root, plan)?;
             d.error = observe(root, plan, d).err();
         }
         guard(root, plan)?;
-        if report
-            .destinations
-            .iter()
-            .any(|d| d.state == DestinationState::NotAttempted && d.error.is_none())
+        if (release::enabled(plan) && !release::candidate_checked(plan, skip))
+            || report
+                .destinations
+                .iter()
+                .any(|d| d.state == DestinationState::NotAttempted && d.error.is_none())
         {
-            report.checks = execution::check(root, plan, skip, event).checks;
+            if release::enabled(plan) && !release::source_checked(plan, skip) {
+                return Err(Error::UnverifiedResult);
+            }
+            let checked = execution::check(root, plan, skip, event);
+            report.checks = checked.checks;
+            if report.checks.error.is_none() {
+                *plan = checked.plan.map_err(Error::from)?;
+            }
             if report.checks.error.is_some() {
                 return Err(Error::ChecksFailed);
             }

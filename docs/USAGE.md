@@ -55,8 +55,9 @@ submit it manually for review. The branch remains checked out and available.
 
 Finish supports manual review delivery and direct integration into the project base.
 Direct integration can retain or delete the work branch after verified delivery.
-Pull request creation, provider submission, tagging, and release operations remain
-outside the CLI’s operations.
+Explicit release and hotfix policy also delivers a version tag and an optional
+release-marker branch. Pull request creation, hosted release merge-back, provider
+submission, and build/deployment packaging remain outside these operations.
 
 ## Command reference
 
@@ -81,11 +82,12 @@ inspection also support bare repositories.
 ### Start or resume work
 
 ```text
-gof start <branch-name-or-phrase>
-gof s <branch-name-or-phrase>
+gof start <branch-name-or-phrase> [OPTIONS]
+gof s <branch-name-or-phrase> [OPTIONS]
 ```
 
-Supply one branch name or quoted phrase. Literal Git names retain their exact
+Supply one branch name or quoted phrase. Ordinary start without options uses the
+existing defaults; explicit workstream options select policy and source: Literal Git names retain their exact
 spelling, case, prefixes, and Unicode form. An ordinary ASCII space selects phrase
 conversion: Unicode words are normalized, lowercased, and joined with hyphens.
 The input determines only the branch name; no prefix or numbered suffix is added.
@@ -96,9 +98,21 @@ gof s Fix/DeploymentBug            # exact literal name
 gof start fix/parser_v2
 ```
 
+| Option | Effect |
+| --- | --- |
+| `--policy <ordinary\|release\|hotfix>` | Establish explicit workstream policy |
+| `--from <reference>` | Select an exact creation commit |
+| `--from-tag <tag>` | Select an exact version tag for hotfix creation |
+| `--target <branch>` | Select preparation and integration target for ordinary contributions |
+
+See [direct releases and hotfixes](#direct-releases-and-hotfixes) for policy,
+source selection, publication, and completion.
+
 Names must be valid for Git, begin with a character other than `-`, and differ
 from `HEAD` and the configured base branch. Revision expressions such as
 `main~1` and `@{-1}` are not branch selectors.
+
+With the ordinary default source, start chooses these actions:
 
 | Target | Action |
 | --- | --- |
@@ -283,7 +297,8 @@ verified source. New work, another worktree’s checkout, or changed destination
 blocks deletion. Target delivery and published-work cleanup use their independent
 remote roles.
 
-Integration never publishes rewritten work, changes its tracking, or creates tags.
+Ordinary integration publishes the target result and preserves work tracking.
+Release and hotfix completion additionally deliver their explicitly named version tag.
 Working-history replacement permission supplies no target-publication or cleanup
 authority. A successful local integration is only a candidate: checks, target
 publication, final checkout, and selected cleanup must all complete for success.
@@ -293,6 +308,127 @@ Only relevant unresolved choices prompt. Settings and explicit flags need no
 additional confirmation. Prompts and editing bind the reviewed context; changed
 refs, settings, endpoints, or recovery evidence stop the affected operation.
 See [integration recovery](#recover-direct-integration) for retained-result retries.
+
+### Direct releases and hotfixes
+
+A workstream has an explicit policy: `ordinary`, `release`, or `hotfix`. Its name
+is independent of that policy. A branch named `release/spring` can carry ordinary
+contribution policy; a branch named `stabilize` can carry release policy.
+Creation, preparation, integration, work publication, version tagging, and release
+marker delivery have separate roles. Inspect the effective routes with
+`gof config show` before delivery.
+
+Select an editable direct OneFlow configuration with setup:
+
+```sh
+gof config --oneflow --yes
+```
+
+The bundle writes ordinary, release, and hotfix settings into the shared file.
+Edit those values for your project. Equivalent custom settings use the same
+workstream mapping; execution does not depend on a strategy name. Selecting this
+bundle is explicit; ordinary built-in defaults remain unchanged.
+
+Start a release at the development commit you intend to ship, including an
+older commit. Start a hotfix at an explicitly selected version tag:
+
+```sh
+gof start release/spring --policy release --from <development-commit>
+# Stabilize and commit the release.
+gof save
+gof finish --tag spring --tag-message "Spring release"
+
+gof start hotfix/spring-fix --policy hotfix --from-tag spring
+# Fix and commit the released version.
+gof save
+gof finish --tag spring-fix
+```
+
+Version names are literal Git tag names and need not follow Semantic Versioning.
+`--from-tag` accepts an exact lightweight or annotated tag pointing to a commit;
+new hotfix creation never selects a latest tag or substitutes development history. A configured
+hotfix `creation-source` must be an explicit full `refs/tags/<name>` reference;
+`--from-tag` overrides that selection. Explicit
+creation sources resolve to exact locally available commits. Full commit IDs,
+Git commit expressions, and full refs can select a commit; ambiguous short names
+and noncommit objects fail. Local branches and tracking refs reflect local
+knowledge, so fetch the intended source with Git before selecting it when remote
+freshness matters. The ordinary default creation path fetches the configured
+remote base. Selecting an explicit source still requires publication-remote
+discovery to distinguish new creation from published resume. Creation does not
+publish work.
+Local and published work resume without resetting history. A new checkout can
+resume published hotfix work with explicit policy and no creation source; a tag
+selection is required when creating new hotfix work. An explicit source
+incompatible with the recorded creation request stops resume.
+
+Ordinary contributions can target a release or hotfix branch:
+
+```sh
+gof start fix-release-test --policy ordinary --target release/spring
+gof save
+gof finish --mode integrate --integration merge --message "Fix release test" --cleanup both
+```
+
+New contribution work starts at the freshly fetched target unless `--from`
+selects a locally available creation commit. It prepares against and integrates
+into the selected target.
+It creates no version tag and advances no release marker. A release can publish
+its work to the project while an ordinary contribution publishes to a fork.
+
+| Finish option | Effect |
+| --- | --- |
+| `--tag <name>` | Name the version tag for release/hotfix completion |
+| `--tag-message <text>` | Create an annotated tag with literal message text |
+| `--sign-tag` | Request signing; signing failure stops completion |
+
+Tag and integration messages have separate meanings. Git signing preferences
+apply to tag creation. A pre-existing local or remote tag is a collision unless
+it is corroborated as the exact tag from this retained attempt. For annotated
+tags this includes the tag object, not just the peeled commit. Finish never
+replaces a version tag.
+
+Release completion checks and tags the approved source commit, then integrates
+its history into the target without importing newer development work into the
+released source. Squash and source rewriting are incompatible with this delivery.
+The tag remains at the released commit through merge conflicts and retries.
+Tagged completion requires original Git objects and stops while replacement
+refs are present; restore the original source tree before validation.
+Checks also validate the integration candidate before its pending delivery.
+A check failure or a check changing guarded state stops remaining delivery;
+`--skip-checks` explicitly bypasses configured checks for that invocation.
+
+Hotfix routing requires declared active-release context: a specific release
+branch or explicit `none`. The developer supplies and maintains that declaration.
+Finish does not infer an active release from prefixes, branch enumeration, tag
+dates, or version ordering. With an active release, the hotfix integrates there;
+otherwise it integrates into development. Completing the release later carries
+the fix into development. Invalid or changed declared context stops routing.
+
+An enabled release marker is a distinct branch pointing at the released tag's
+commit, even when the integration result includes newer development. Finish
+initializes an absent marker and advances an existing marker only by
+fast-forward. Divergence and aliases with work or integration target block it.
+A disabled marker has no effect. The default final checkout is the integration
+target.
+
+Tag, target, and enabled marker must all be verified at their required publication
+destinations before checkout or cleanup. Only the selected tag and branch refs
+are delivered. Partial effects remain available after failure; retry confirms
+completed destinations and completes pending effects. A failing Git command
+still returns failure when its effect occurred.
+
+Resolve merge conflicts with native Git commands, then rerun the same finish
+request. Finish retains the released source, exact tag identity, integration
+result, routes, and resolved choices across fresh processes, including after
+local source deletion. A removed established local work branch is reserved for
+its retained completion; start stops before recreating it with an old association.
+Use a distinct branch for new work or resolve the old association explicitly.
+Conflicting retry input or changed refs, settings,
+endpoints, or associations stop reuse. Inspect the reported completed effects,
+remaining work, and next action; do not delete retention evidence during recovery.
+Hosted release/hotfix merge-back and post-review cleanup remain outside direct
+completion.
 
 ### Inspect state
 
@@ -315,6 +451,7 @@ observation. Its text is intended for people.
 gof config show
 gof config [--format <toml|yaml|json>]
 gof config --yes [--format <toml|yaml|json>]
+gof config --oneflow [--yes] [--marker <branch>] [--format <toml|yaml|json>]
 ```
 
 `config show` displays effective settings and each value's shared file, local
@@ -393,7 +530,7 @@ same common-directory private overrides. Bare inspection uses local settings and
 defaults.
 
 Values resolve through **explicit command flags > local overrides > shared
-settings > defaults**. Start has no setting override flags. Omitted keys inherit;
+settings > defaults**. Explicit start policy and source choices apply to the selected workstream. Omitted keys inherit;
 an empty TOML document or empty YAML/JSON mapping (`{}`) inherits all keys.
 `config show` identifies the effective values and their provenance.
 
@@ -449,6 +586,69 @@ or overridden values. Quote YAML values that could be interpreted as another typ
 such as `"true"` or `"123"`. YAML merge keys and unsupported tags are rejected.
 Validation reads configuration as data; the workflow checks remote availability
 when needed.
+
+### Workstream policy and routes
+
+The optional `workstreams` mapping contains `ordinary`, `release`, and `hotfix`
+policy templates. Each template is sparse; private values overlay shared values
+per key. All supplied values are validated even when inactive or overridden.
+Policy is selected explicitly with start; a template name is data, not code.
+
+| Template setting | Role |
+| --- | --- |
+| `creation-source` | Reference used to create new work |
+| `preparation-source` | Branch supplying work preparation |
+| `integration-target` | Branch receiving direct integration |
+| `publish-remote` | Work-branch publication and remote-resume destination |
+| `base-remote` | Project source and direct-delivery remote |
+| `version-tagging` | `required` or `disabled` |
+| `release-marker` | Marker branch name, or `none` |
+| `active-release` | Explicit active release branch, or `none`, for hotfix routing |
+| `finish-mode`, `finish-update`, `finish-integration`, `finish-message`, `finish-rewrite`, `finish-checkout`, `finish-cleanup` | Policy-specific finish choices, using the values above |
+
+`gof config --oneflow --yes` writes a direct OneFlow bundle. Add
+`--marker stable` to enable a marker. Guided `gof config --oneflow` reviews the
+proposed bundle. It writes editable ordinary/release/hotfix templates rather
+than a strategy selector. The top-level base remains the development branch.
+Ordinary work can publish to a fork while releases and hotfixes use the project
+remote. For example, these custom values select the same direct release behavior
+without choosing a bundle:
+
+```toml
+publish-remote = "personal"
+base-remote = "project"
+base = "main"
+
+[workstreams.release]
+creation-source = "main"
+preparation-source = "main"
+integration-target = "main"
+publish-remote = "project"
+base-remote = "project"
+version-tagging = "required"
+release-marker = "stable"
+finish-mode = "integrate"
+finish-update = "none"
+finish-integration = "merge"
+finish-message = "auto"
+finish-rewrite = "deny"
+finish-checkout = "target"
+finish-cleanup = "both"
+```
+
+The corresponding YAML/JSON structures are nested mappings. A private template
+can override only `workstreams.hotfix.active-release`, for example; it need not
+repeat other settings. To route a hotfix through an active release, set that value
+to the exact branch name before start. Keep the declaration current; a changed
+route during retained completion cannot inherit the earlier authority.
+
+Start retains the established policy for a branch. Resume uses that association
+and rejects incompatible explicit policy, source, or target input. Changed policy
+settings and recreated branches require resolution before dependent effects.
+`config show` displays effective routes and their sources, plus the established
+creation commit and input. The configured creation route is the default source;
+the retained creation commit identifies where this work actually began. Policy storage remains
+local; a new checkout must supply explicit policy for remote work.
 
 ### Remote roles and fork workflows
 

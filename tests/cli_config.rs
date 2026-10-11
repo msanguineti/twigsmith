@@ -1728,3 +1728,189 @@ fn guided_completion_questions_generation_and_effective_private_review() {
         },
     );
 }
+
+#[test]
+fn unattended_oneflow_bundle_generation_round_trips_every_format() {
+    use settings::{FinishMode, WorkstreamKind};
+    cases(
+        "unattended_oneflow_bundle_generation_round_trips_every_format",
+        true,
+        |root, exe| {
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                let repo = Repository::new(root);
+                let before_git = snapshot(&repo.path().join(".git"));
+                check(
+                    run(
+                        exe,
+                        repo.path(),
+                        &[
+                            "config",
+                            "--yes",
+                            "--oneflow",
+                            "--marker",
+                            "released",
+                            "--format",
+                            format,
+                        ],
+                    ),
+                    0,
+                    &["Created shared configuration"],
+                );
+                let configured = load(repo.path());
+                assert_eq!(configured.workstreams.len(), 3);
+                for kind in [
+                    WorkstreamKind::Ordinary,
+                    WorkstreamKind::Release,
+                    WorkstreamKind::Hotfix,
+                ] {
+                    let mut effective = configured.clone();
+                    settings::resolve_workstream(&mut effective, kind, None).unwrap();
+                    assert_eq!(effective.finish_mode, FinishMode::Integrate);
+                    let policy = effective.workstream.unwrap();
+                    assert_eq!(policy.version_tagging, kind != WorkstreamKind::Ordinary);
+                    assert_eq!(
+                        policy.release_marker.as_deref(),
+                        (kind != WorkstreamKind::Ordinary).then_some("released")
+                    );
+                }
+                assert!(repo.path().join(filename).exists());
+                assert_eq!(snapshot(&repo.path().join(".git")), before_git);
+                check(
+                    run(exe, repo.path(), &["config", "show"]),
+                    0,
+                    &[
+                        "workstreams.release.version-tagging: required",
+                        "workstreams.hotfix.active-release: none",
+                        "workstreams.ordinary.finish-mode: integrate",
+                    ],
+                );
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_oneflow_templates_are_editable_and_cancel_preserves_repository() {
+    use settings::WorkstreamKind;
+    cases(
+        "guided_oneflow_templates_are_editable_and_cancel_preserves_repository",
+        true,
+        |root, exe| {
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                for cancel in [false, true] {
+                    let repo = Repository::new(root);
+                    let before_git = snapshot(&repo.path().join(".git"));
+                    let mut term = terminal::Terminal::start(
+                        exe,
+                        repo.path(),
+                        &["config", "--oneflow", "--format", format],
+                    );
+                    term.until("Publication remote");
+                    term.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
+                    term.until("ordinary policy [");
+                    assert!(!repo.path().join(filename).exists());
+                    if cancel {
+                        term.send(b"cancel\n");
+                        assert_eq!(term.finish().code(), Some(0), "{}", term.output);
+                        assert!(term.output.contains("Setup cancelled"));
+                        assert!(!repo.path().join(filename).exists());
+                    } else {
+                        let mut proposed = Settings::default();
+                        settings::oneflow_bundle(&mut proposed, None);
+                        let ordinary = proposed
+                            .workstreams
+                            .get_mut(&WorkstreamKind::Ordinary)
+                            .unwrap();
+                        ordinary.preparation_source = Some("release/preview".into());
+                        let json = serde_json::to_string(ordinary).unwrap();
+                        term.send(format!("{json}\n\n\n").as_bytes());
+                        term.until("Create this file?");
+                        assert!(term.output.contains("release/preview"));
+                        assert!(!repo.path().join(filename).exists());
+                        term.send(b"yes\n");
+                        assert_eq!(term.finish().code(), Some(0), "{}", term.output);
+                        assert_eq!(
+                            load(repo.path()).workstreams[&WorkstreamKind::Ordinary]
+                                .preparation_source
+                                .as_deref(),
+                            Some("release/preview")
+                        );
+                    }
+                    assert_eq!(snapshot(&repo.path().join(".git")), before_git);
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn inspection_reports_established_explicit_creation_commit_separately_from_default_route() {
+    cases(
+        "inspection_reports_established_explicit_creation_commit_separately_from_default_route",
+        true,
+        |root, exe| {
+            let remote = Repository::new(root);
+            commit(&remote);
+            let repo = Repository::new(root);
+            repo.success(&[
+                "remote".as_ref(),
+                "add".as_ref(),
+                "origin".as_ref(),
+                remote.path().as_os_str(),
+            ]);
+            repo.success(&["fetch", "origin"]);
+            repo.success(&["reset", "--hard", "refs/remotes/origin/main"]);
+            let earlier = String::from_utf8(repo.success(&["rev-parse", "HEAD"]).stdout)
+                .unwrap()
+                .trim()
+                .to_owned();
+            fs::write(repo.path().join("newer"), "development\n").unwrap();
+            repo.success(&["add", "newer"]);
+            repo.success(&["commit", "-m", "newer development"]);
+            let mut proposed = Settings::default();
+            settings::oneflow_bundle(&mut proposed, None);
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.toml"),
+                config::render(Format::Toml, &proposed),
+            )
+            .unwrap();
+            check(
+                run(
+                    exe,
+                    repo.path(),
+                    &[
+                        "start",
+                        "release/train",
+                        "--policy",
+                        "release",
+                        "--from",
+                        &earlier,
+                    ],
+                ),
+                0,
+                &["Created"],
+            );
+            let before = snapshot(root);
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[
+                    "workstream-policy: release",
+                    "creation-source: main",
+                    &format!("creation-commit: {earlier}"),
+                    &format!("creation-input: {earlier}"),
+                ],
+            );
+            assert_eq!(snapshot(root), before);
+        },
+    );
+}

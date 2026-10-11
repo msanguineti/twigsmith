@@ -666,3 +666,78 @@ fn cli_start_bare_repository_is_a_preserved_failure() {
         },
     );
 }
+
+#[test]
+fn explicit_hotfix_policy_resumes_published_history_without_creation_tag() {
+    use git_oneflow::settings::{self, WorkstreamKind};
+    cli_cases(
+        "explicit_hotfix_policy_resumes_published_history_without_creation_tag",
+        true,
+        |root, invocation| {
+            let (remote, local) = pair(root);
+            let base = oid(&local, "main");
+            local.success(&["tag", "Train-base", &base]);
+            remote.success(&["switch", "-c", "hotfix/train"]);
+            let published = commit(&remote, "published fix\n");
+            let mut proposed = settings::Settings::default();
+            settings::oneflow_bundle(&mut proposed, None);
+            // A configured creation default neither resets remote work nor turns
+            // omission of CLI creation input into an incompatible resume request.
+            proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Hotfix)
+                .unwrap()
+                .creation_source = Some("refs/tags/Train-base".into());
+            let path = local.path().join(".git/git-oneflow.config.toml");
+            fs::write(
+                &path,
+                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+            )
+            .unwrap();
+            check(
+                invocation.run(
+                    local.path(),
+                    &["start", "hotfix/train", "--policy", "hotfix"],
+                ),
+                0,
+                &["Resumed remote"],
+            );
+            assert_eq!(oid(&local, "HEAD"), published);
+            let before = snapshot(root);
+            check(
+                invocation.run(
+                    local.path(),
+                    &[
+                        "start",
+                        "hotfix/train",
+                        "--policy",
+                        "hotfix",
+                        "--from-tag",
+                        "Train-base",
+                    ],
+                ),
+                1,
+                &["explicit creation source differs"],
+            );
+            assert_eq!(snapshot(root), before);
+            local.success(&["switch", "main"]);
+            proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Hotfix)
+                .unwrap()
+                .creation_source = None;
+            fs::write(
+                path,
+                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+            )
+            .unwrap();
+            let before = snapshot(root);
+            check(
+                invocation.run(local.path(), &["start", "hotfix/new", "--policy", "hotfix"]),
+                1,
+                &["--from-tag"],
+            );
+            assert_eq!(snapshot(root), before);
+        },
+    );
+}

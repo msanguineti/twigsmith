@@ -95,6 +95,7 @@ struct Completion {
     message: Option<String>,
     checkout: Option<FinishCheckout>,
     cleanup: Option<FinishCleanup>,
+    release: integration::release::Request,
 }
 impl Completion {
     fn validate(&self, mode: FinishMode) -> Result<(), &'static str> {
@@ -102,10 +103,11 @@ impl Completion {
             && (self.integration.is_some()
                 || self.message.is_some()
                 || self.checkout.is_some()
-                || self.cleanup.is_some())
+                || self.cleanup.is_some()
+                || !self.release.is_empty())
         {
             return Err(
-                "--integration, --message, --checkout, and --cleanup require integrate mode",
+                "--integration, --message, --checkout, --cleanup, and tag options require integrate mode",
             );
         }
         if self.checkout == Some(FinishCheckout::Work)
@@ -188,6 +190,36 @@ fn parse(args: &[OsString]) -> Result<(Request, Completion, bool, bool), &'stati
                 };
                 completion.message = Some(message.into());
             }
+            Some("--tag") => {
+                if completion.release.tag.is_some() {
+                    return Err("duplicate --tag");
+                }
+                completion.release.tag = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .filter(|v| !v.is_empty())
+                        .ok_or("--tag requires an explicit version tag name")?
+                        .into(),
+                );
+            }
+            Some("--tag-message") => {
+                if completion.release.message.is_some() {
+                    return Err("duplicate --tag-message");
+                }
+                completion.release.message = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .filter(|v| !v.trim().is_empty() && !v.contains('\0'))
+                        .ok_or("--tag-message requires nonblank text")?
+                        .into(),
+                );
+            }
+            Some("--sign-tag") => {
+                if completion.release.sign {
+                    return Err("duplicate --sign-tag");
+                }
+                completion.release.sign = true;
+            }
             Some("--update") => {
                 if request.update.is_some() {
                     return Err("duplicate --update");
@@ -260,7 +292,21 @@ pub fn run(args: &[OsString]) -> ExitCode {
         message: completion.message.clone(),
         checkout: completion.checkout,
         cleanup: completion.cleanup,
+        release: completion.release.clone(),
     };
+    // Branch policy is resolved from the associated source, including retained
+    // attempts already checked out on their integration target.
+    if let Ok(bound) = integration::assess(&directory, &integration_request, None) {
+        if completion.mode.is_none() {
+            mode = bound.settings.finish_mode;
+        }
+        if integration::release::enabled(&bound) && mode == FinishMode::Review {
+            eprintln!(
+                "error: tagged workstream completion requires integrate mode; hosted release completion is unavailable."
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     // Snapshot each selectable workflow before asking. The selected workflow's
     // full guard prevents mode input from adopting concurrent unrelated changes.
     // Assessment failure in an unselected workflow does not affect the choice.
@@ -349,7 +395,9 @@ pub fn run(args: &[OsString]) -> ExitCode {
             }
         };
         if initial.repository != configured.repository
-            || initial.settings != configured.loaded.settings
+            || crate::config::inspect(&directory).map_or(true, |now| {
+                now.loaded.settings != configured.loaded.settings
+            })
         {
             eprintln!(
                 "error: repository or settings changed while resolving completion mode; rerun finish."
@@ -423,7 +471,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
             display(presentation, &plan.commit),
             text(presentation, &plan.settings.publish_remote),
             text(presentation, &plan.settings.base_remote),
-            text(presentation, &plan.settings.base)
+            text(
+                presentation,
+                plan.settings
+                    .workstream
+                    .as_ref()
+                    .map_or(&plan.settings.base, |p| &p.preparation_source)
+            )
         );
         let answer = match prompt(presentation, &plan, choice) {
             Ok(answer) => answer,
@@ -1084,6 +1138,7 @@ fn help() {
         "Complete the current working branch. Alias: f.
 
 Usage: git-oneflow finish [--mode <review|integrate>] [--integration <ff-only|merge|squash>]
+                          [--tag <name>] [--tag-message <text>] [--sign-tag]
                           [-m|--message <text>] [--checkout <target|work>] [--cleanup <keep|local|both>]
                           [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
 
@@ -1097,6 +1152,9 @@ Options:
   --update <rebase|merge|none>  Override finish-update
   --allow-rewrite             Authorize eligible published-history replacement
   --no-rewrite                Deny published-history replacement
+  --tag <name>                Select the explicit version tag for tagged work
+  --tag-message <text>        Annotate the version tag (separate from -m)
+  --sign-tag                  Sign the version tag using Git configuration
   --skip-checks               Bypass configured checks for this attempt
   --show-credentials          Show HTTP(S) URL credentials in finish output
   -h, --help                  Show help
@@ -1109,11 +1167,18 @@ Examples:
   gof finish --skip-checks
   gof f --mode integrate --integration ff-only --cleanup local
   gof finish --mode integrate --integration squash -m \"Complete feature\" --cleanup keep
+  gof finish --tag winter-2026 --tag-message \"Winter release\" -m \"Merge release\"
 
 Details:
   Completion mode resolves before remote refresh. ask needs terminal input and stderr.
   review prepares and publishes the work branch for manual review, keeping it checked out.
   integrate delivers the verified result to base-remote, then applies checkout and cleanup.
+  Tagged workstreams require --tag, update none, and merge or ff-only integration.
+  The tag identifies the checked source; merge-back checks inspect the resulting target.
+  Tagged completion requires original Git objects; replacement refs must be removed.
+  Git tag signing preferences apply; --tag-message supplies annotation separately from -m.
+  Enabled release markers point to the tagged source and advance only by fast-forward.
+  Tag, target, and marker delivery at every project endpoint precede source cleanup.
   Integration retries reuse the verified attempt's choices and accepted message.
   Delivered retries complete remaining checkout/cleanup without repeating checks or publication.
   Integration options require integrate mode; valid inactive settings remain validated.
@@ -1143,7 +1208,10 @@ Details:
   Rebase selection and replacement authorization are separate choices.
   Choices resolve before their dependent effects; preparation can reveal method/message input.
   Changed context while answering or editing stops execution.
-  Cancellation retains preparation and check effects. Pending delivery reruns checks.
+  Cancellation retains preparation and check effects.
+  Review and ordinary integration rerun checks before pending delivery.
+  Tagged retries reuse confirmed checks for unchanged commits and configuration.
+  A previous bypass requires --skip-checks again while delivery remains pending.
   Scripts must resolve relevant choices with flags or settings.
   Publication uses incorporation proof and exact destination leases for replacement.
   Review success reports branch, destination, commit, and a manual submission next step.

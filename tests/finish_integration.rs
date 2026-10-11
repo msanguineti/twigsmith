@@ -93,6 +93,7 @@ fn observed(path: &Path, reference: &[u8]) -> RefObservation {
 fn evidence(f: &Fixture, req: &Request) -> RemoteEvidence {
     let plan = integration::assess(f.repo.path(), req, None).unwrap();
     RemoteEvidence {
+        preparation: None,
         target: plan.target.clone(),
         fetched: observed(f.project.path(), &plan.target.reference),
         targets: plan
@@ -1703,6 +1704,7 @@ fn candidate_checks_inspect_the_result_and_retain_it_on_failure() {
 fn evidence_at(path: &Path, req: &Request) -> RemoteEvidence {
     let plan = integration::assess(path, req, None).unwrap();
     RemoteEvidence {
+        preparation: None,
         fetched: observed(
             Path::new(text(&plan.target.fetch_destination)),
             &plan.target.reference,
@@ -3764,6 +3766,224 @@ fn completion_target_checkout_stops_cleanup_on_hook_failure_or_changed_binding()
                     );
                 }
             }
+        },
+    );
+}
+
+#[test]
+fn tagged_library_completion_requires_tag_and_marker_at_every_endpoint() {
+    isolated(
+        "tagged_library_completion_requires_tag_and_marker_at_every_endpoint",
+        true,
+        |root| {
+            let f = fixture(root);
+            let path = f.repo.path().join(".git/git-oneflow.config.toml");
+            let mut config = fs::read_to_string(&path).unwrap();
+            config.push_str("\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-target='main'\nversion-tagging='required'\nrelease-marker='stable'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='both'\nfinish-message='auto'\n");
+            fs::write(&path, config).unwrap();
+            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+                .current_dir(f.repo.path())
+                .args(["start", "A", "--policy", "release"])
+                .output()
+                .unwrap();
+            assert!(started.status.success(), "{started:?}");
+            let source = oid(&f.repo, "HEAD");
+            let req = Request {
+                cleanup: Some(FinishCleanup::Both),
+                release: integration::release::Request {
+                    tag: Some("version-library".into()),
+                    message: Some("Exact source version".into()),
+                    sign: false,
+                },
+                ..request(FinishIntegration::Merge)
+            };
+            let initial = integration::assess(f.repo.path(), &req, None).unwrap();
+            let refreshed = integration::remote::refresh(f.repo.path(), &initial);
+            assert!(refreshed.error.is_none(), "{refreshed:?}");
+            let prepared = integration::execution::prepare(f.repo.path(), &refreshed.plan.unwrap());
+            assert!(prepared.error.is_none(), "{prepared:?}");
+            let prepared = prepared.plan.unwrap();
+            assert_eq!(oid(&f.repo, "version-library^{commit}"), source);
+            assert_ne!(prepared.result.as_ref(), Some(&source));
+            let delivered = integration::publication::publish(f.repo.path(), &prepared);
+            assert!(delivered.is_complete(), "{delivered:?}");
+            let delivered = delivered.plan.unwrap();
+            let record_path = delivered.recovery_path.as_ref().unwrap();
+            let original_record = fs::read(record_path).unwrap();
+            let mut corrupt: serde_json::Value = serde_json::from_slice(&original_record).unwrap();
+            corrupt["release"]["marker"] = serde_json::Value::Null;
+            fs::write(record_path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
+            let invalid =
+                integration::assess(f.repo.path(), &req, delivered.evidence.as_ref()).unwrap();
+            assert!(
+                invalid
+                    .blockers
+                    .iter()
+                    .any(|b| matches!(b, Blocker::Release(_)))
+            );
+            assert!(!integration::completion::complete(f.repo.path(), &invalid).is_complete());
+            fs::write(record_path, &original_record).unwrap();
+            let premature = integration::completion::complete(f.repo.path(), &delivered);
+            assert!(!premature.is_complete(), "{premature:?}");
+            assert_eq!(
+                observed(f.repo.path(), b"refs/heads/A"),
+                RefObservation::Commit(source.clone())
+            );
+            assert_eq!(
+                observed(f.project.path(), b"refs/tags/version-library"),
+                RefObservation::Absent
+            );
+            let mut commands = vec![];
+            let all =
+                integration::release::deliver(f.repo.path(), &delivered, false, &mut commands)
+                    .unwrap();
+            assert_eq!(
+                observed(f.project.path(), b"refs/heads/stable"),
+                RefObservation::Commit(source.clone())
+            );
+            assert_eq!(
+                observed(f.project.path(), b"refs/tags/version-library"),
+                observed(f.repo.path(), b"refs/tags/version-library")
+            );
+            let completed = integration::completion::complete(f.repo.path(), &all);
+            assert!(completed.is_complete(), "{completed:?}");
+            assert_eq!(
+                observed(f.repo.path(), b"refs/heads/A"),
+                RefObservation::Absent
+            );
+            let initial = integration::assess(f.repo.path(), &Request::default(), None).unwrap();
+            let refreshed = integration::remote::refresh(f.repo.path(), &initial);
+            assert!(refreshed.error.is_none(), "{refreshed:?}");
+            let retry = integration::completion::complete(f.repo.path(), &refreshed.plan.unwrap());
+            assert!(retry.is_complete(), "{retry:?}");
+            assert!(retry.effects.is_empty());
+        },
+    );
+}
+
+#[test]
+fn tagged_source_rejects_replacement_tree_even_with_clean_matching_head() {
+    isolated(
+        "tagged_source_rejects_replacement_tree_even_with_clean_matching_head",
+        true,
+        |root| {
+            let f = fixture(root);
+            let path = f.repo.path().join(".git/git-oneflow.config.toml");
+            let mut config = fs::read_to_string(&path).unwrap();
+            config.push_str("\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-target='main'\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='both'\nfinish-message='auto'\n");
+            fs::write(&path, config).unwrap();
+            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+                .current_dir(f.repo.path())
+                .args(["start", "A", "--policy", "release"])
+                .output()
+                .unwrap();
+            assert!(started.status.success(), "{started:?}");
+            let source = oid(&f.repo, "HEAD");
+            f.repo.success(&["switch", "-c", "replacement"]);
+            let replacement = commit(&f.repo, "work", "substituted tree");
+            f.repo.success(&["switch", "main"]);
+            f.repo
+                .success(&["replace", text(&source), text(&replacement)]);
+            f.repo.success(&["switch", "A"]);
+            assert_eq!(oid(&f.repo, "HEAD"), source);
+            assert!(f.repo.success(&["status", "--porcelain"]).stdout.is_empty());
+            assert!(
+                !f.repo
+                    .success(&["--no-replace-objects", "diff", "--name-only", text(&source)])
+                    .stdout
+                    .is_empty()
+            );
+            let req = Request {
+                release: integration::release::Request {
+                    tag: Some("replacement-version".into()),
+                    ..Default::default()
+                },
+                ..request(FinishIntegration::Merge)
+            };
+            let plan = integration::assess(f.repo.path(), &req, None).unwrap();
+            assert!(
+                plan.blockers.iter().any(
+                    |b| matches!(b, Blocker::Release(message) if message.contains("replacement"))
+                ),
+                "{plan:#?}"
+            );
+            let result = integration::execution::prepare(f.repo.path(), &plan);
+            assert!(result.error.is_some(), "{result:?}");
+            assert!(result.commands.is_empty());
+            assert_eq!(
+                observed(f.repo.path(), b"refs/tags/replacement-version"),
+                RefObservation::Absent
+            );
+            assert_eq!(
+                observed(f.repo.path(), b"refs/heads/A"),
+                RefObservation::Commit(source)
+            );
+        },
+    );
+}
+
+#[test]
+fn tagged_creation_rejects_same_source_tag_on_separate_fetch_endpoint() {
+    isolated(
+        "tagged_creation_rejects_same_source_tag_on_separate_fetch_endpoint",
+        true,
+        |root| {
+            let f = fixture(root);
+            f.repo
+                .success(&["push", "project", "HEAD:refs/tags/fetch-collision"]);
+            f.repo.success(&[
+                "remote",
+                "set-url",
+                "--add",
+                "--push",
+                "project",
+                f.fork.path().to_str().unwrap(),
+            ]);
+            let path = f.repo.path().join(".git/git-oneflow.config.toml");
+            let mut config = fs::read_to_string(&path).unwrap();
+            config.push_str("\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-target='main'\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='both'\nfinish-message='auto'\n");
+            fs::write(&path, config).unwrap();
+            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+                .current_dir(f.repo.path())
+                .args(["start", "A", "--policy", "release"])
+                .output()
+                .unwrap();
+            assert!(started.status.success(), "{started:?}");
+            let target_before = oid(&f.repo, "main");
+            let req = Request {
+                release: integration::release::Request {
+                    tag: Some("fetch-collision".into()),
+                    ..Default::default()
+                },
+                ..request(FinishIntegration::Merge)
+            };
+            let initial = integration::assess(f.repo.path(), &req, None).unwrap();
+            let refreshed = integration::remote::refresh(f.repo.path(), &initial);
+            assert!(refreshed.error.is_none(), "{refreshed:?}");
+            let result = integration::execution::prepare(f.repo.path(), &refreshed.plan.unwrap());
+            assert!(
+                result
+                    .error
+                    .as_ref()
+                    .is_some_and(|e| e.to_string().contains("collision")),
+                "{result:?}"
+            );
+            assert_eq!(
+                observed(f.repo.path(), b"refs/tags/fetch-collision"),
+                RefObservation::Absent
+            );
+            assert_eq!(
+                observed(f.repo.path(), b"refs/heads/main"),
+                RefObservation::Commit(target_before.clone())
+            );
+            assert_eq!(
+                observed(f.fork.path(), b"refs/heads/main"),
+                RefObservation::Commit(target_before)
+            );
+            assert_eq!(
+                observed(f.fork.path(), b"refs/tags/fetch-collision"),
+                RefObservation::Absent
+            );
         },
     );
 }

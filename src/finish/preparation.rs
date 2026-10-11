@@ -212,7 +212,13 @@ fn refresh_inner(
         .as_deref()
         .expect("working plan");
     guard(root, plan)?;
-    let base_ref = format!("refs/heads/{}", plan.settings.base).into_bytes();
+    let preparation_source = plan
+        .settings
+        .workstream
+        .as_ref()
+        .map(|policy| policy.preparation_source.as_str())
+        .unwrap_or(&plan.settings.base);
+    let base_ref = format!("refs/heads/{preparation_source}").into_bytes();
     let destinations =
         save::publication::preflight(root, &plan.local).map_err(FinishError::Publication)?;
     let base = observe(

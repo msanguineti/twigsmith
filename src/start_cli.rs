@@ -20,13 +20,46 @@ pub fn run(args: &[OsString]) -> ExitCode {
         }
         _ => {}
     }
-    let [input] = args else {
-        return syntax_error();
-    };
-    let Some(input) = input
-        .to_str()
-        .filter(|s| !s.starts_with('-') || s.contains(' '))
-    else {
+    let mut input = None;
+    let mut options = start::Options::default();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--policy") if options.policy.is_none() => {
+                let Some(value) = args
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(|v| crate::settings::WorkstreamKind::parse(v).ok())
+                else {
+                    return syntax_error();
+                };
+                options.policy = Some(value);
+            }
+            Some("--from") if options.from.is_none() => {
+                let Some(value) = args.next().and_then(|v| v.to_str()) else {
+                    return syntax_error();
+                };
+                options.from = Some(value.into());
+            }
+            Some("--from-tag") if options.from_tag.is_none() => {
+                let Some(value) = args.next().and_then(|v| v.to_str()) else {
+                    return syntax_error();
+                };
+                options.from_tag = Some(value.into());
+            }
+            Some("--target") if options.target.is_none() => {
+                let Some(value) = args.next().and_then(|v| v.to_str()) else {
+                    return syntax_error();
+                };
+                options.target = Some(value.into());
+            }
+            Some(value) if input.is_none() && (!value.starts_with('-') || value.contains(' ')) => {
+                input = Some(value)
+            }
+            _ => return syntax_error(),
+        }
+    }
+    let Some(input) = input else {
         return syntax_error();
     };
     let directory = match env::current_dir() {
@@ -36,7 +69,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let request = match start::prepare(&directory, input) {
+    let request = match start::prepare_with_options(&directory, input, &options) {
         Ok(request) => request,
         Err(error) => {
             resolve_error(&error);
@@ -52,6 +85,11 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 Action::AlreadyCurrent => "Already current:",
             };
             match outcome.action {
+                Action::Create if request.source_commit.is_some() => println!(
+                    "{action} branch {} from commit {}",
+                    text(&request.target),
+                    display(request.source_commit.as_ref().unwrap())
+                ),
                 Action::Create => println!(
                     "{action} branch {} from {}/{}",
                     text(&request.target),
@@ -86,23 +124,39 @@ fn help_start() {
     println!(
         "Create or resume a workstream. Alias: s.
 
-Usage: git-oneflow start <branch-name-or-phrase>
+Usage: git-oneflow start <branch-name-or-phrase> [--policy <ordinary|release|hotfix>]
+                         [--from <commit-ref> | --from-tag <tag>] [--target <branch>]
 
 Arguments:
   <branch-name-or-phrase>  Exact branch name or quoted phrase
 
 Options:
+  --policy <ordinary|release|hotfix>  Select and persist explicit work policy
+  --from <commit-ref>   Create from an exact locally available commit reference
+  --from-tag <tag>      Select a hotfix version by exact lightweight/annotated tag
+  --target <branch>     Ordinary contribution creation/preparation/integration target
   -h, --help       Show help
 
 Examples:
   gof start \"add user avatars\"
   gof s fix/parser_v2
   git-oneflow start Fix/DeploymentBug
+  gof start release/winter-2026 --policy release --from main~1
+  gof start hotfix/winter-fix --policy hotfix --from-tag winter-2026
+  gof start contribution --policy ordinary --target release/winter-2026
 
 Details:
   Literal Git names keep their spelling, case, prefixes, and Unicode form.
   Ordinary spaces select phrase conversion: normalized lowercase words
   joined with hyphens. Existing exact names mean resume.
+  Explicit sources resolve local Git commit references/expressions once; no fetch is performed for them.
+  Ambiguous names and noncommit references fail. --from-tag requires an exact existing local tag.
+  Hotfix creation-source may explicitly select refs/tags/TAG in configuration.
+  The configured creation-source also uses locally available history. Without a selected source,
+  ordinary creation fetches the exact base branch from base-remote.
+  Resume preserves history, policy, and routes; incompatible creation requests fail.
+  Explicit hotfix policy can resume existing local/published work without selecting a new tag.
+  New hotfix creation requires --from-tag or a configured exact refs/tags/TAG source.
   Local branches resume using local history, including offline.
   Otherwise resume from publish-remote or create from the fresh base-remote base.
   Tracking may be absent, the published counterpart, or the configured project base.
@@ -157,6 +211,7 @@ fn resolve_guidance(error: &ResolveError) {
                 "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory; supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite; local-only: redact-credentials"
             );
         }
+        ResolveError::Input(_) => {}
         ResolveError::UnusablePhrase
         | ResolveError::InvalidTarget(_)
         | ResolveError::ProtectedBase(_) => {
@@ -195,6 +250,12 @@ fn failure_error(failure: &Failure, target: &str) {
             }
             Effect::UpstreamMergeSet { reference } => {
                 eprintln!("  Set upstream merge {}", text(reference))
+            }
+            Effect::PreviousSelectionCleared => eprintln!(
+                "  Cleared previous integration selection; retained attempts remain available"
+            ),
+            Effect::PolicyEstablished { policy } => {
+                eprintln!("  Established {} policy", text(policy))
             }
             Effect::Switched { target } => eprintln!("  Switched to {}", text(target)),
         }
