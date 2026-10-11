@@ -114,61 +114,6 @@ fn guard(directory: &Path, plan: &Plan) -> Result<(), PublicationError> {
     Ok(())
 }
 
-// A command-scoped remote selects one explicit push URL and bypasses a second
-// pushInsteadOf expansion. Copy configured transport options (receivepack,
-// proxy, vcs, etc.), but no selection defaults or tracking mappings. No remote
-// is persisted. Verify read and push resolution before contacting the endpoint.
-fn transport(plan: &Plan, destination: &[u8]) -> Result<(Vec<OsString>, String), PublicationError> {
-    let entries: Vec<_> = plan
-        .git_config
-        .split(|b| *b == 0)
-        .filter(|e| !e.is_empty())
-        .map(|e| {
-            e.iter()
-                .position(|b| *b == b'\n')
-                .map_or((e, None), |i| (&e[..i], Some(&e[i + 1..])))
-        })
-        .collect();
-    let mut name = "oneflow-finish-publication".to_owned();
-    while entries
-        .iter()
-        .any(|(key, _)| key.starts_with(format!("remote.{name}.").as_bytes()))
-    {
-        name.push('-');
-    }
-    let prefix = format!("remote.{}.", plan.settings.publish_remote);
-    let target = format!("remote.{name}.");
-    let mut args = vec![];
-    for (key, value) in &entries {
-        if let Some(suffix) = key.strip_prefix(prefix.as_bytes()) {
-            // A dot in the remainder belongs to another remote subsection.
-            if suffix.contains(&b'.')
-                || [b"url".as_slice(), b"pushurl", b"push", b"fetch", b"mirror"].contains(&suffix)
-            {
-                continue;
-            }
-            let mut setting = [target.as_bytes(), suffix].concat();
-            if let Some(value) = value {
-                setting.extend_from_slice(b"=");
-                setting.extend_from_slice(value);
-            }
-            args.extend(["-c".into(), repository::os(&setting)?]);
-        }
-    }
-    for suffix in ["url", "pushurl"] {
-        args.extend([
-            "-c".into(),
-            repository::os(&[format!("{target}{suffix}=").as_bytes(), destination].concat())?,
-        ]);
-    }
-    args.extend([
-        "-c".into(),
-        format!("{target}mirror=false").into(),
-        "-c".into(),
-        "push.autoSetupRemote=false".into(),
-    ]);
-    Ok((args, name))
-}
 fn command(
     directory: &Path,
     args: Vec<OsString>,
@@ -197,7 +142,11 @@ fn publish_destination(
     outcome: &mut DestinationOutcome,
 ) -> Result<(), PublicationError> {
     guard(directory, plan)?;
-    let (prefix, name) = transport(plan, &outcome.destination)?;
+    let (prefix, name) = super::transport::endpoint(
+        &plan.git_config,
+        &plan.settings.publish_remote,
+        &outcome.destination,
+    )?;
     // Once transport inspection begins, failures have an uncertain destination
     // outcome, not a fabricated server rejection.
     outcome.state = DestinationState::Unconfirmed;

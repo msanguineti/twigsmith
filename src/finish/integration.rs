@@ -1,5 +1,6 @@
-//! Ordinary-work local integration. These plans cannot be passed to the
-//! review executor. Remote observations are supplied by the caller, never caches.
+//! Direct integration with read-only assessment, explicit remote refresh, local
+//! preparation, and guarded target publication. Remote evidence comes from exact
+//! endpoint observations, never tracking caches. Review uses a separate executor.
 use super::{DestinationEvidence, FinishError, RefObservation, Relationship};
 use super::{ancestor, hint, metadata, read, relationship, run, valid_oid};
 use crate::{
@@ -14,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub mod execution;
+pub mod publication;
 pub mod recovery;
+pub mod remote;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {

@@ -13,6 +13,7 @@ pub mod integration;
 pub mod preparation;
 pub mod publication;
 mod recovery;
+mod transport;
 pub use recovery::{Recovery, VerifiedRewrite};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

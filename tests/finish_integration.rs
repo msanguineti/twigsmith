@@ -1843,3 +1843,770 @@ fn local_target_alignment_updates_its_worktree_when_resuming_on_target() {
         },
     );
 }
+
+use integration::{publication as target_publication, remote as target_remote};
+fn refreshed(f: &Fixture, req: &Request) -> Plan {
+    let p = integration::assess(f.repo.path(), req, None).unwrap();
+    let r = target_remote::refresh(f.repo.path(), &p);
+    assert!(r.error.is_none(), "{r:#?}");
+    r.plan.unwrap()
+}
+fn remote_candidate(f: &Fixture, req: &Request) -> Plan {
+    let p = refreshed(f, req);
+    let r = execution::prepare(f.repo.path(), &p);
+    assert!(r.is_prepared(), "{r:#?}");
+    r.plan.unwrap()
+}
+fn pushes(r: &target_publication::Report) -> usize {
+    r.destinations
+        .iter()
+        .flat_map(|d| &d.commands)
+        .filter(|c| c.arguments.iter().any(|a| a == "push"))
+        .count()
+}
+fn second_target(root: &Path, f: &Fixture) -> TempDir {
+    let second = tempfile::tempdir_in(root).unwrap();
+    assert!(
+        git::run(
+            root,
+            [
+                "clone".as_ref(),
+                "--bare".as_ref(),
+                f.project.path().as_os_str(),
+                second.path().as_os_str()
+            ]
+        )
+        .unwrap()
+        .status
+        .success()
+    );
+    f.repo.success(&[
+        "config",
+        "--add",
+        "remote.project.pushurl",
+        f.project.path().to_str().unwrap(),
+    ]);
+    f.repo.success(&[
+        "config",
+        "--add",
+        "remote.project.pushurl",
+        second.path().to_str().unwrap(),
+    ]);
+    second
+}
+fn advance_project(root: &Path, f: &Fixture) -> Vec<u8> {
+    let other = Repository::new(root);
+    other.success(&["fetch", f.project.path().to_str().unwrap(), "main"]);
+    other.success(&["switch", "-C", "main", "FETCH_HEAD"]);
+    let tip = commit(&other, "remote-only", "new remote work");
+    other.success(&["push", f.project.path().to_str().unwrap(), "main"]);
+    tip
+}
+#[test]
+fn remote_refresh_and_publication_cover_methods_roles_and_retention() {
+    isolated(
+        "remote_refresh_and_publication_cover_methods_roles_and_retention",
+        true,
+        |root| {
+            for method in [
+                FinishIntegration::FfOnly,
+                FinishIntegration::Merge,
+                FinishIntegration::Squash,
+            ] {
+                let f = fixture(root);
+                let req = request(method);
+                configure_checks(
+                    &f,
+                    &[
+                        "test \"$(git symbolic-ref --short HEAD)\" = main; echo check >> .git/candidate-checks",
+                    ],
+                );
+                let fork = preservation::snapshot(f.fork.path());
+                let p = remote_candidate(&f, &req);
+                let result = p.result.clone().unwrap();
+                let before_refs = f.repo.success(&["show-ref"]).stdout;
+                let r = target_publication::publish(f.repo.path(), &p);
+                assert!(r.is_complete(), "{r:#?}");
+                assert_eq!(r.checks.completed, 1);
+                assert_eq!(pushes(&r), 1);
+                assert_eq!(
+                    observed(f.project.path(), b"refs/heads/main"),
+                    RefObservation::Commit(result)
+                );
+                assert_eq!(fork, preservation::snapshot(f.fork.path()));
+                assert_eq!(before_refs, f.repo.success(&["show-ref"]).stdout);
+                assert_eq!(oid(&f.repo, "A"), commit_of(&p.source));
+                assert!(matches!(
+                    r.plan.as_ref().unwrap().state,
+                    State::Published | State::Complete
+                ));
+                let retry = refreshed(&f, &req);
+                let r = target_publication::publish(f.repo.path(), &retry);
+                assert!(r.is_complete(), "{r:#?}");
+                assert_eq!(pushes(&r), 0);
+                assert_eq!(r.checks.completed, 0);
+                assert_eq!(
+                    fs::read_to_string(f.repo.path().join(".git/candidate-checks")).unwrap(),
+                    "check\n"
+                );
+            }
+        },
+    );
+}
+fn commit_of(value: &RefObservation) -> Vec<u8> {
+    if let RefObservation::Commit(oid) = value {
+        oid.clone()
+    } else {
+        panic!("missing commit")
+    }
+}
+#[test]
+fn remote_refresh_acquires_exact_objects_and_preserves_local_state() {
+    isolated(
+        "remote_refresh_acquires_exact_objects_and_preserves_local_state",
+        true,
+        |root| {
+            let f = fixture(root);
+            let remote = advance_project(root, &f);
+            assert!(
+                !git::run(f.repo.path(), ["cat-file", "-e", text(&remote)])
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            f.repo.success(&[
+                "update-ref",
+                "refs/remotes/project/main",
+                text(&oid(&f.repo, "A")),
+            ]);
+            f.repo.success(&[
+                "config",
+                "remote.project.fetch",
+                "+refs/heads/*:refs/heads/*",
+            ]);
+            f.repo.success(&["config", "remote.project.mirror", "true"]);
+            f.repo.success(&["config", "fetch.prune", "true"]);
+            f.repo
+                .success(&["config", "remote.project.tagOpt", "--tags"]);
+            let req = request(FinishIntegration::Merge);
+            let refs = f.repo.success(&["show-ref"]).stdout;
+            let index = fs::read(f.repo.path().join(".git/index")).unwrap();
+            let config = fs::read(f.repo.path().join(".git/config")).unwrap();
+            let tree = fs::read(f.repo.path().join("work")).unwrap();
+            let p = refreshed(&f, &req);
+            assert!(p.is_ready(), "{p:#?}");
+            assert_eq!(
+                p.evidence.unwrap().fetched,
+                RefObservation::Commit(remote.clone())
+            );
+            assert!(
+                git::run(f.repo.path(), ["cat-file", "-e", text(&remote)])
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            assert_eq!(refs, f.repo.success(&["show-ref"]).stdout);
+            assert_eq!(index, fs::read(f.repo.path().join(".git/index")).unwrap());
+            assert_eq!(config, fs::read(f.repo.path().join(".git/config")).unwrap());
+            assert_eq!(tree, fs::read(f.repo.path().join("work")).unwrap());
+            assert!(!f.repo.path().join(".git/FETCH_HEAD").exists());
+        },
+    );
+}
+#[test]
+fn remote_refresh_missing_and_disagreeing_targets_and_cleanup_evidence() {
+    isolated(
+        "remote_refresh_missing_and_disagreeing_targets_and_cleanup_evidence",
+        true,
+        |root| {
+            let f = fixture(root);
+            let second = second_target(root, &f);
+            advance_project(root, &f);
+            let req = request(FinishIntegration::Merge);
+            let p = refreshed(&f, &req);
+            assert!(
+                p.blockers
+                    .iter()
+                    .any(|b| matches!(b, Blocker::TargetChanged(_)))
+            );
+            assert!(p.permitted_effects().is_empty());
+            git::run(second.path(), ["update-ref", "-d", "refs/heads/main"]).unwrap();
+            let p = refreshed(&f, &req);
+            assert!(p.permitted_effects().is_empty());
+            let f = fixture(root);
+            let mut req = request(FinishIntegration::FfOnly);
+            req.cleanup = Some(FinishCleanup::Both);
+            req.checkout = Some(FinishCheckout::Target);
+            f.repo.success(&["push", "fork", "A"]);
+            let p = refreshed(&f, &req);
+            assert_eq!(p.evidence.as_ref().unwrap().work.len(), 1);
+            assert_eq!(p.evidence.as_ref().unwrap().work[0].branch, p.source);
+            assert!(p.is_ready());
+            let p = remote_candidate(&f, &req);
+            assert!(target_publication::publish(f.repo.path(), &p).is_complete());
+            assert_eq!(observed(f.fork.path(), b"refs/heads/A"), p.source);
+            assert_eq!(observed(f.repo.path(), b"refs/heads/A"), p.source);
+        },
+    );
+}
+#[test]
+fn target_publication_checks_fail_mutate_cancel_and_skip() {
+    isolated(
+        "target_publication_checks_fail_mutate_cancel_and_skip",
+        true,
+        |root| {
+            for script in [
+                "exit 9",
+                "echo dirty > work",
+                "git config oneflow.changed true",
+                "kill -TERM $PPID; sleep 10",
+            ] {
+                let f = fixture(root);
+                configure_checks(&f, &[script]);
+                let p = remote_candidate(&f, &request(FinishIntegration::FfOnly));
+                let old = observed(f.project.path(), b"refs/heads/main");
+                let r = target_publication::publish(f.repo.path(), &p);
+                assert!(
+                    matches!(r.error, Some(target_publication::Error::ChecksFailed)),
+                    "{script}: {r:#?}"
+                );
+                assert_eq!(pushes(&r), 0);
+                assert_eq!(old, observed(f.project.path(), b"refs/heads/main"));
+                assert!(p.recovery_path.unwrap().exists());
+            }
+            let f = fixture(root);
+            configure_checks(&f, &["exit 9"]);
+            let p = remote_candidate(&f, &request(FinishIntegration::FfOnly));
+            let r = target_publication::publish_with_checks(f.repo.path(), &p, true, |_| {});
+            assert!(r.is_complete(), "{r:#?}");
+        },
+    );
+}
+#[test]
+fn target_publication_partial_rejection_and_retry_do_not_repeat_results() {
+    isolated(
+        "target_publication_partial_rejection_and_retry_do_not_repeat_results",
+        true,
+        |root| {
+            let f = fixture(root);
+            let second = second_target(root, &f);
+            // A server rejection is independent of the other target endpoint.
+            use std::os::unix::fs::PermissionsExt;
+            let reject = second.path().join("hooks/pre-receive");
+            fs::write(&reject, "#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&reject, fs::Permissions::from_mode(0o700)).unwrap();
+            // Bare fixtures inherit the isolated hooksPath; set an explicit server path.
+            git::run(
+                second.path(),
+                [
+                    "config",
+                    "core.hooksPath",
+                    second.path().join("hooks").to_str().unwrap(),
+                ],
+            )
+            .unwrap();
+            let req = request(FinishIntegration::Squash);
+            let p = remote_candidate(&f, &req);
+            let result = p.result.clone();
+            let r = target_publication::publish(f.repo.path(), &p);
+            assert_eq!(
+                r.state,
+                target_publication::PublicationState::Partial,
+                "{r:#?}"
+            );
+            assert_eq!(
+                r.destinations[1].state,
+                target_publication::DestinationState::Rejected
+            );
+            fs::remove_file(reject).unwrap();
+            let p = refreshed(&f, &req);
+            assert_eq!(p.result, result);
+            let r = target_publication::publish(f.repo.path(), &p);
+            assert!(r.is_complete(), "{r:#?}");
+            assert_eq!(pushes(&r), 1);
+            assert_eq!(
+                r.destinations[0].state,
+                target_publication::DestinationState::Unchanged
+            );
+        },
+    );
+}
+#[test]
+fn target_publication_external_delivery_needs_no_checks_or_completion() {
+    isolated(
+        "target_publication_external_delivery_needs_no_checks_or_completion",
+        true,
+        |root| {
+            let f = fixture(root);
+            configure_checks(&f, &["exit 1"]);
+            let mut req = request(FinishIntegration::Merge);
+            req.checkout = Some(FinishCheckout::Work);
+            let p = remote_candidate(&f, &req);
+            f.repo.success(&["push", "project", "main"]);
+            let r = target_publication::publish(f.repo.path(), &p);
+            assert!(r.is_complete(), "{r:#?}");
+            assert_eq!(pushes(&r), 0);
+            assert_eq!(r.checks.completed, 0);
+            assert_eq!(r.plan.unwrap().state, State::Published);
+            assert_eq!(
+                f.repo.success(&["symbolic-ref", "--short", "HEAD"]).stdout,
+                b"main\n"
+            );
+        },
+    );
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+// Wrap only a child test's Git executable; concurrent tests keep their own PATH.
+fn target_child(f: &Fixture, operation: &str, command: &str, body: &str) -> std::process::Output {
+    use std::os::unix::fs::PermissionsExt;
+    let wrapper = tempfile::tempdir().unwrap();
+    let executable = wrapper.path().join("git");
+    fs::write(&executable, format!("#!/bin/sh\nfor arg do\n if [ \"$arg\" = {command} ]; then\n{body}\n fi\ndone\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"\n")).unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = std::env::var_os("PATH").unwrap();
+    let real = std::env::split_paths(&path)
+        .map(|p| p.join("git"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let paths = std::env::join_paths(
+        std::iter::once(wrapper.path().to_path_buf()).chain(std::env::split_paths(&path)),
+    )
+    .unwrap();
+    Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "target_transport_child", "--nocapture"])
+        .env("ONEFLOW_TARGET_DIR", f.repo.path())
+        .env("ONEFLOW_TARGET_OPERATION", operation)
+        .env("ONEFLOW_REAL_GIT", real)
+        .env("PATH", paths)
+        .output()
+        .unwrap()
+}
+fn target_child_result(
+    f: &Fixture,
+    operation: &str,
+    command: &str,
+    body: &str,
+) -> serde_json::Value {
+    let output = target_child(f, operation, command, body);
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&fs::read(f.repo.path().join(".git/target-result.json")).unwrap())
+        .unwrap()
+}
+#[test]
+fn target_transport_child() {
+    let Some(directory) = std::env::var_os("ONEFLOW_TARGET_DIR") else {
+        return;
+    };
+    let directory = Path::new(&directory);
+    let req = request(FinishIntegration::Squash);
+    let initial = integration::assess(directory, &req, None).unwrap();
+    let refreshed = target_remote::refresh(directory, &initial);
+    let data = if std::env::var("ONEFLOW_TARGET_OPERATION").unwrap() == "refresh" {
+        serde_json::json!({
+            "error": format!("{:?}", refreshed.error),
+            "evidence": refreshed.evidence.is_some(),
+            "ready": refreshed.plan.as_ref().is_some_and(Plan::is_ready),
+            "effects": refreshed.effects.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
+        })
+    } else {
+        assert!(refreshed.error.is_none(), "{refreshed:#?}");
+        let p = refreshed.plan.unwrap();
+        let r = target_publication::publish(directory, &p);
+        serde_json::json!({
+            "state": format!("{:?}", r.state), "complete": r.is_complete(),
+            "error": format!("{:?}", r.error), "result": r.commit.as_ref().map(|c| text(c)),
+            "checks": r.checks.completed,
+            "destinations": r.destinations.iter().map(|d| serde_json::json!({
+                "state": format!("{:?}", d.state), "detail": String::from_utf8_lossy(&d.detail),
+                "error": format!("{:?}", d.error),
+                "pushes": d.commands.iter().filter(|c| c.arguments.iter().any(|a| a == "push")).count(),
+                "arguments": d.commands.last().map(|c| c.arguments.iter().map(|a| a.to_string_lossy()).collect::<Vec<_>>()),
+            })).collect::<Vec<_>>(),
+        })
+    };
+    fs::write(
+        directory.join(".git/target-result.json"),
+        serde_json::to_vec(&data).unwrap(),
+    )
+    .unwrap();
+}
+#[test]
+fn remote_refresh_refuses_unavailable_objects_and_detects_observation_fetch_races() {
+    isolated(
+        "remote_refresh_refuses_unavailable_objects_and_detects_observation_fetch_races",
+        true,
+        |root| {
+            for body in ["exit 1", "exit 0"] {
+                let f = fixture(root);
+                advance_project(root, &f);
+                let refs = f.repo.success(&["show-ref"]).stdout;
+                let r = target_child_result(&f, "refresh", "fetch", body);
+                assert_eq!(r["evidence"], false, "{r}");
+                assert_eq!(r["ready"], false);
+                assert!(
+                    r["error"].as_str().unwrap().contains(if body == "exit 0" {
+                        "ObjectUnavailable"
+                    } else {
+                        "CommandFailed"
+                    }),
+                    "{r}"
+                );
+                assert_eq!(refs, f.repo.success(&["show-ref"]).stdout);
+            }
+            let f = fixture(root);
+            let old = oid(&f.repo, "main");
+            let moved = advance_project(root, &f);
+            assert!(
+                git::run(
+                    f.project.path(),
+                    ["update-ref", "refs/heads/main", text(&old)]
+                )
+                .unwrap()
+                .status
+                .success()
+            );
+            let body = format!(
+                "\"$ONEFLOW_REAL_GIT\" -C {} update-ref refs/heads/main {} || exit 91\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                shell_quote(f.project.path().to_str().unwrap()),
+                text(&moved)
+            );
+            let r = target_child_result(&f, "refresh", "fetch", &body);
+            assert_eq!(r["error"], "None", "{r}");
+            assert_eq!(r["evidence"], true);
+            assert_eq!(
+                r["ready"], false,
+                "fetch must not substitute the moved target"
+            );
+            assert_eq!(oid(&f.repo, "main"), old);
+        },
+    );
+}
+#[test]
+fn target_publication_lost_and_nonzero_acknowledgements_retry_in_another_process() {
+    isolated(
+        "target_publication_lost_and_nonzero_acknowledgements_retry_in_another_process",
+        true,
+        |root| {
+            for (body, delivered, acknowledged) in [
+                (
+                    "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null\nexit 0",
+                    true,
+                    false,
+                ),
+                (
+                    "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null\nexit 1",
+                    true,
+                    false,
+                ),
+                ("\"$ONEFLOW_REAL_GIT\" \"$@\"\nexit 1", true, true),
+                ("exit 1", false, false),
+            ] {
+                let f = fixture(root);
+                configure_checks(&f, &["echo check >> .git/publication-checks"]);
+                let req = request(FinishIntegration::Squash);
+                let p = remote_candidate(&f, &req);
+                let log = fs::read(f.repo.path().join(".git/logs/refs/heads/main")).unwrap();
+                let r = target_child_result(&f, "publish", "push", body);
+                assert_eq!(
+                    r["state"],
+                    if acknowledged {
+                        "Complete"
+                    } else {
+                        "Unconfirmed"
+                    },
+                    "{r}"
+                );
+                assert_eq!(r["complete"], false);
+                assert_eq!(
+                    observed(f.project.path(), b"refs/heads/main")
+                        == RefObservation::Commit(p.result.clone().unwrap()),
+                    delivered
+                );
+                let retry =
+                    target_child_result(&f, "publish", "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+                assert_eq!(retry["complete"], true, "{retry}");
+                assert_eq!(
+                    retry["destinations"][0]["pushes"],
+                    if delivered { 0 } else { 1 }
+                );
+                assert_eq!(retry["checks"], if delivered { 0 } else { 1 });
+                assert_eq!(
+                    fs::read(f.repo.path().join(".git/logs/refs/heads/main")).unwrap(),
+                    log
+                );
+                assert_eq!(retry["result"], text(p.result.as_ref().unwrap()));
+                assert!(p.recovery_path.unwrap().exists());
+            }
+        },
+    );
+}
+#[test]
+fn target_publication_killed_between_destinations_reuses_retained_result() {
+    isolated(
+        "target_publication_killed_between_destinations_reuses_retained_result",
+        true,
+        |root| {
+            let f = fixture(root);
+            let second = second_target(root, &f);
+            let p = remote_candidate(&f, &request(FinishIntegration::Squash));
+            let before = f.repo.success(&["show-ref"]).stdout;
+            let output = target_child(
+                &f,
+                "publish",
+                "push",
+                "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null\nkill -KILL \"$PPID\"\nexit 0",
+            );
+            assert!(!output.status.success());
+            assert_eq!(
+                observed(f.project.path(), b"refs/heads/main"),
+                RefObservation::Commit(p.result.clone().unwrap())
+            );
+            assert_ne!(
+                observed(second.path(), b"refs/heads/main"),
+                RefObservation::Commit(p.result.clone().unwrap())
+            );
+            let r = target_child_result(&f, "publish", "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+            assert_eq!(r["complete"], true, "{r}");
+            assert_eq!(r["destinations"][0]["pushes"], 0);
+            assert_eq!(r["destinations"][1]["pushes"], 1);
+            assert_eq!(before, f.repo.success(&["show-ref"]).stdout);
+        },
+    );
+}
+#[test]
+fn target_publication_exact_lease_rejects_remote_race_even_after_tracking_refresh() {
+    isolated(
+        "target_publication_exact_lease_rejects_remote_race_even_after_tracking_refresh",
+        true,
+        |root| {
+            let f = fixture(root);
+            let old = oid(&f.repo, "main");
+            let moved = advance_project(root, &f);
+            assert!(
+                git::run(
+                    f.project.path(),
+                    ["update-ref", "refs/heads/main", text(&old)]
+                )
+                .unwrap()
+                .status
+                .success()
+            );
+            let p = remote_candidate(&f, &request(FinishIntegration::Squash));
+            let body = format!(
+                "\"$ONEFLOW_REAL_GIT\" -C {} update-ref refs/heads/main {} || exit 91\n\"$ONEFLOW_REAL_GIT\" fetch project >&2 || exit 92\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                shell_quote(f.project.path().to_str().unwrap()),
+                text(&moved)
+            );
+            let r = target_child_result(&f, "publish", "push", &body);
+            assert_eq!(r["state"], "Rejected", "{r}");
+            assert_eq!(r["destinations"][0]["pushes"], 1);
+            assert!(
+                r["destinations"][0]["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("stale info")
+            );
+            assert!(
+                r["destinations"][0]["arguments"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|a| a == &format!("--force-with-lease=refs/heads/main:{}", text(&old)))
+            );
+            assert_eq!(
+                observed(f.project.path(), b"refs/heads/main"),
+                RefObservation::Commit(moved)
+            );
+            assert_eq!(oid(&f.repo, "main"), p.result.unwrap());
+        },
+    );
+}
+#[test]
+fn target_publication_stops_between_effects_when_hook_invalidates_context() {
+    isolated(
+        "target_publication_stops_between_effects_when_hook_invalidates_context",
+        true,
+        |root| {
+            for script in [
+                "git commit --allow-empty -m hook-change",
+                "rm .git/oneflow-integration/branches/A/attempt.json",
+            ] {
+                let f = fixture(root);
+                let second = second_target(root, &f);
+                hook(&f, "pre-push", script);
+                let p = remote_candidate(&f, &request(FinishIntegration::Squash));
+                let old = observed(second.path(), b"refs/heads/main");
+                let r = target_publication::publish(f.repo.path(), &p);
+                assert_eq!(
+                    r.state,
+                    target_publication::PublicationState::Partial,
+                    "{r:#?}"
+                );
+                assert!(r.error.is_some());
+                assert_eq!(pushes(&r), 1);
+                assert_eq!(
+                    observed(f.project.path(), b"refs/heads/main"),
+                    RefObservation::Commit(p.result.unwrap())
+                );
+                assert_eq!(observed(second.path(), b"refs/heads/main"), old);
+            }
+        },
+    );
+}
+#[test]
+fn target_publication_invalid_retention_and_independent_branch_cannot_borrow_attempt() {
+    isolated(
+        "target_publication_invalid_retention_and_independent_branch_cannot_borrow_attempt",
+        true,
+        |root| {
+            let f = fixture(root);
+            let req = request(FinishIntegration::Squash);
+            let p = remote_candidate(&f, &req);
+            let old = observed(f.project.path(), b"refs/heads/main");
+            let record = fs::read(p.recovery_path.as_ref().unwrap()).unwrap();
+            f.repo.success(&["switch", "-c", "B", "A"]);
+            commit(&f.repo, "independent", "work B");
+            let b = refreshed(&f, &req);
+            assert_eq!(b.source_ref, b"refs/heads/B");
+            assert_eq!(b.state, State::Fresh);
+            let r = target_publication::publish(f.repo.path(), &p);
+            assert!(r.error.is_some());
+            assert_eq!(pushes(&r), 0);
+            assert_eq!(fs::read(p.recovery_path.as_ref().unwrap()).unwrap(), record);
+            assert_eq!(observed(f.project.path(), b"refs/heads/main"), old);
+
+            let f = fixture(root);
+            let p = remote_candidate(&f, &req);
+            let old = observed(f.project.path(), b"refs/heads/main");
+            let record: Record =
+                serde_json::from_slice(&fs::read(p.recovery_path.as_ref().unwrap()).unwrap())
+                    .unwrap();
+            f.repo.success(&["update-ref", "-d", &record.result_ref()]);
+            let r = target_publication::publish(f.repo.path(), &p);
+            assert!(r.error.is_some());
+            assert_eq!(pushes(&r), 0);
+            assert_eq!(observed(f.project.path(), b"refs/heads/main"), old);
+        },
+    );
+}
+
+#[test]
+fn remote_refresh_rejects_ambiguous_advertisements_and_changed_endpoint_resolution() {
+    isolated(
+        "remote_refresh_rejects_ambiguous_advertisements_and_changed_endpoint_resolution",
+        true,
+        |root| {
+            let f = fixture(root);
+            let old = oid(&f.repo, "main");
+            for output in [
+                "not-an-oid\trefs/heads/main\n".to_owned(),
+                format!(
+                    "{}\trefs/heads/main\n{}\trefs/heads/main\n",
+                    text(&old),
+                    text(&old)
+                ),
+            ] {
+                let body = format!(
+                    "for option do\n [ \"$option\" != --get-url ] || exec \"$ONEFLOW_REAL_GIT\" \"$@\"\ndone\nprintf '%s' {}\nexit 0",
+                    shell_quote(&output)
+                );
+                let r = target_child_result(&f, "refresh", "ls-remote", &body);
+                assert_eq!(r["evidence"], false, "{r}");
+                assert_ne!(r["error"], "None");
+            }
+            let r = target_child_result(
+                &f,
+                "refresh",
+                "ls-remote",
+                "for option do\n if [ \"$option\" = --get-url ]; then printf '%s\\n' wrong-endpoint; exit 0; fi\ndone\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+            );
+            assert_eq!(r["evidence"], false);
+            assert_eq!(r["error"], "Some(EndpointChanged)");
+            assert_eq!(r["effects"].as_array().unwrap().len(), 0);
+        },
+    );
+}
+#[test]
+fn target_publication_contains_refspec_mirror_tags_and_tracking_configuration() {
+    isolated(
+        "target_publication_contains_refspec_mirror_tags_and_tracking_configuration",
+        true,
+        |root| {
+            let f = fixture(root);
+            f.repo
+                .success(&["tag", "-a", "candidate-tag", "-m", "candidate tag", "main"]);
+            f.repo.success(&["branch", "unrelated", "A"]);
+            f.repo.success(&["config", "remote.project.mirror", "true"]);
+            f.repo
+                .success(&["config", "remote.project.push", "refs/heads/*:refs/heads/*"]);
+            f.repo.success(&["config", "push.followTags", "true"]);
+            f.repo.success(&["config", "push.autoSetupRemote", "true"]);
+            let p = remote_candidate(&f, &request(FinishIntegration::Squash));
+            let refs = f.repo.success(&["show-ref"]).stdout;
+            let config = fs::read(f.repo.path().join(".git/config")).unwrap();
+            let r = target_publication::publish(f.repo.path(), &p);
+            assert!(r.is_complete(), "{r:#?}");
+            let remote_refs = git::run(f.project.path(), ["show-ref"]).unwrap();
+            assert!(remote_refs.status.success());
+            assert_eq!(
+                remote_refs.stdout,
+                format!("{} refs/heads/main\n", text(p.result.as_ref().unwrap())).as_bytes()
+            );
+            assert_eq!(refs, f.repo.success(&["show-ref"]).stdout);
+            assert_eq!(config, fs::read(f.repo.path().join(".git/config")).unwrap());
+        },
+    );
+}
+#[test]
+fn target_publication_rejects_forged_non_descendant_even_when_work_rewrite_is_allowed() {
+    isolated(
+        "target_publication_rejects_forged_non_descendant_even_when_work_rewrite_is_allowed",
+        true,
+        |root| {
+            let f = fixture(root);
+            use std::io::Write;
+            writeln!(
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(f.repo.path().join(".git/git-oneflow.config.toml"))
+                    .unwrap(),
+                "finish-rewrite='allow'"
+            )
+            .unwrap();
+            let mut p = remote_candidate(&f, &request(FinishIntegration::Squash));
+            let old = observed(f.project.path(), b"refs/heads/main");
+            let tree = oid(&f.repo, "HEAD^{tree}");
+            let forged = f
+                .repo
+                .success(&["commit-tree", text(&tree), "-m", "unrelated root"]);
+            let forged = forged.stdout.strip_suffix(b"\n").unwrap();
+            assert!(
+                !git::run(
+                    f.repo.path(),
+                    [
+                        "merge-base",
+                        "--is-ancestor",
+                        text(&commit_of(&old)),
+                        text(forged)
+                    ]
+                )
+                .unwrap()
+                .status
+                .success()
+            );
+            p.result = Some(forged.to_vec());
+            let r = target_publication::publish(f.repo.path(), &p);
+            assert!(r.error.is_some(), "{r:#?}");
+            assert_eq!(pushes(&r), 0);
+            assert_eq!(observed(f.project.path(), b"refs/heads/main"), old);
+        },
+    );
+}

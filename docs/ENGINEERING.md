@@ -66,9 +66,9 @@ It creates no pull request, tag, or release and invokes no provider submission t
 
 Direct integration is a separate library capability in
 [`finish::integration`](../src/finish/integration.rs). It provides read-only
-planning and recovery assessment, local work preparation and target integration,
-and validation of the resulting candidate. It has no target publication,
-completion checkout/cleanup, or remote-refresh executor. Although the CLI parses
+planning and recovery assessment, explicit remote refresh, local work preparation
+and target integration, and guarded publication of the verified candidate.
+Completion checkout and cleanup have no executor. Although the CLI parses
 integration options and configuration, selecting integrate mode stops before
 workflow effects. Review plans cannot be passed to the integration executor or
 used as target publication authority.
@@ -476,8 +476,8 @@ cross-process retry are covered in [finish preparation tests](../tests/finish_pr
 ### Checks validate the current candidate
 
 [`finish::checks`](../src/finish/checks.rs) sequences the effective ordered list
-after preparation and before destination transport. The publication API invokes
-checks on every attempt, including retries and already-published destinations.
+after preparation and before destination transport. The review publication API
+invokes checks on every attempt, including retries and already-published destinations.
 Past success is an observation, never authority to omit this attempt's checks.
 The event-aware API accepts an explicit per-call bypass; CLI `--skip-checks`
 supplies it without changing hooks, preparation, rewrite permission, or leases.
@@ -544,7 +544,8 @@ multiple endpoints, partial success, lost acknowledgements, and cross-process re
 
 ## Publication reports and failure diagnosis
 
-Save and review finish share the [exact-ref porcelain decoder](../src/publication.rs).
+Save, review finish, and direct integration share the
+[exact-ref porcelain decoder](../src/publication.rs).
 It requires the intended OID/refspec and a relevant ref response per destination
 block. Normal hook progress on stdout is retained without erasing acknowledgements.
 Display URLs remain as Git emitted them; normalized or redacted text is not guessed
@@ -614,8 +615,8 @@ deletion.
 Required input or any blocker empties `permitted_effects()`. Fresh resolved plans
 permit only preparation or local integration. A corroborated result is required
 before publication effects, and confirmed delivery at every target endpoint is
-required before completion effects. These latter effects are assessed plans;
-there is no corresponding transport or cleanup executor.
+required before completion effects. Publication has its own guarded executor.
+Completion checkout and deletion remain assessed effects without an executor.
 
 | Recovery state | Current assessment |
 | --- | --- |
@@ -636,13 +637,58 @@ old observation. New work, another worktree's occupation, uncertain publication,
 or changed destinations block destructive completion. An absent branch counts as
 completed cleanup only within verified attempt evidence.
 
+### Remote refresh and target publication
+
+[`integration::remote::refresh`](../src/finish/integration/remote.rs) explicitly
+observes the target's exact head at the configured fetch endpoint and every push
+endpoint. When cleanup requires published-work proof, it also observes the source
+head at the publication remote's push endpoints. These roles retain separate
+transport configuration. Assessment itself performs no transport.
+
+Refresh fetches each observed full OID without a destination refspec. Empty
+`--refmap=`, disabled tag/prune/submodule handling, and disabled FETCH_HEAD,
+commit-graph, and maintenance writes contain acquisition to objects. It verifies
+the observed commit is available rather than substituting a newer branch tip or
+cached history. An endpoint refusing that exact object stops refresh. These
+mapping and metadata controls follow [git-fetch](https://git-scm.com/docs/git-fetch).
+Fetch does not advance work/base branches, ordinary tracking refs, or tracking
+relationships, and does not change the index or working tree. Completed transports
+remain reported when a later endpoint or local guard fails.
+
+[`integration::publication`](../src/finish/integration/publication.rs) requires
+the same corroborated attempt and exact retained result. It independently proves
+that the original target is an ancestor of the candidate. An explicit exact-OID
+lease protects the original target at each destination; it does not prove ancestry.
+[Git's lease option](https://git-scm.com/docs/git-push) permits a non-fast-forward
+update when the expected OID matches, even with `--no-force`, so both guards are
+required. Working-branch rewrite permission supplies no target authority.
+
+Each destination is observed before its effect. Equality with the result confirms
+delivery without a push; the original target can receive the pinned candidate;
+other movement stops that destination. Before eligible pushes, publication runs
+the effective candidate checks anew through the guarded runner, unless the caller
+explicitly skips them. An observational retry with every destination already at
+the result needs no checks. Local guards remain active between effects, and leases
+are never renewed after rejection within an attempt.
+
+Command-scoped transport selects one actual endpoint and excludes ref expansion,
+mirror updates, tag following, automatic tracking, and submodule publication.
+Each outcome retains command status and exact response validation separately
+from observed destination equality. Multi-endpoint publication can be partial or
+uncertain; retry refreshes evidence and reuses the retained result, without
+preparing work or recreating an integration commit. Confirmed endpoints require no duplicate push.
+Publication retains the private record and original/result refs. Fully confirmed
+delivery exposes `Published` with remaining completion requirements, or `Complete`
+when the chosen completion is already satisfied. This executor performs no final
+checkout or branch deletion.
+
 ### Local execution and retention
 
 [`integration::execution::prepare`](../src/finish/integration/execution.rs)
 revalidates the approved plan and rereads the exact target at its fetch/push
-endpoints before history changes. The caller supplies fetched objects and initial
-evidence; execution performs no fetch or remote write. It records intent and
-retains the original source at `refs/oneflow/integration/<token>/original` before
+endpoints before history changes. The caller supplies objects and initial evidence
+from explicit refresh; local execution performs no fetch or remote write. It
+records intent and retains the original source at `refs/oneflow/integration/<token>/original` before
 changing history.
 
 Work preparation preserves merge structure and uses the same bounded rebase
@@ -715,8 +761,9 @@ by [git-merge](https://git-scm.com/docs/git-merge). Its report supplies the exac
 `GIT_REFLOG_ACTION` needed for a manual commit, or the tracked-tree restoration
 and `SQUASH_MSG` cleanup needed to abandon the attempt. An unmarked manual squash
 commit cannot borrow ancestry as proof. The [integration fixtures](../tests/finish_integration.rs)
-cover method-specific parentage, worktree association, conflicts, interrupted
-acknowledgements, retention, and candidate checks.
+cover method-specific parentage, worktree association, conflicts, retention,
+candidate checks, exact object acquisition, target leases, partial delivery, and
+interrupted acknowledgements with cross-process retries.
 
 ## Evidence and maintenance limits
 
