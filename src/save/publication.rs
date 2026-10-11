@@ -355,7 +355,9 @@ fn responses(output: &[u8], source: &[u8], target: &[u8]) -> (Vec<DestinationOut
                     Status::Unchanged => DestinationState::Unchanged,
                     Status::Rejected => DestinationState::Rejected,
                     // Save never authorizes replacement, including a surprising response.
-                    Status::Rewritten | Status::Unconfirmed => DestinationState::Unconfirmed,
+                    Status::Deleted | Status::Rewritten | Status::Unconfirmed => {
+                        DestinationState::Unconfirmed
+                    }
                 },
                 detail: r.detail,
             })

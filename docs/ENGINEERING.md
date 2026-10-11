@@ -67,8 +67,8 @@ It creates no pull request, tag, or release and invokes no provider submission t
 Direct integration is a separate library capability in
 [`finish::integration`](../src/finish/integration.rs). It provides read-only
 planning and recovery assessment, explicit remote refresh, local work preparation
-and target integration, and guarded publication of the verified candidate.
-Completion checkout and cleanup have no executor. Although the CLI parses
+and target integration, guarded publication of the verified candidate, and
+verified final checkout and work-branch cleanup. Although the CLI parses
 integration options and configuration, selecting integrate mode stops before
 workflow effects. Review plans cannot be passed to the integration executor or
 used as target publication authority.
@@ -615,8 +615,8 @@ deletion.
 Required input or any blocker empties `permitted_effects()`. Fresh resolved plans
 permit only preparation or local integration. A corroborated result is required
 before publication effects, and confirmed delivery at every target endpoint is
-required before completion effects. Publication has its own guarded executor.
-Completion checkout and deletion remain assessed effects without an executor.
+required before completion effects. Publication and completion have separate
+guarded executors; completion reobserves delivery before checkout or deletion.
 
 | Recovery state | Current assessment |
 | --- | --- |
@@ -681,6 +681,63 @@ Publication retains the private record and original/result refs. Fully confirmed
 delivery exposes `Published` with remaining completion requirements, or `Complete`
 when the chosen completion is already satisfied. This executor performs no final
 checkout or branch deletion.
+
+### Guarded checkout and work cleanup
+
+[`integration::completion`](../src/finish/integration/completion.rs) completes
+one corroborated, retained attempt from an evidence-bearing assessment. Callers
+can obtain that assessment through explicit refresh. Completion observes every
+exact target push endpoint at the completion boundary and before subsequent
+effects; all must still equal the verified result. A publication report or supplied cache cannot authorize
+checkout or deletion. Completion performs no preparation, integration, target
+push, or candidate checks. Unresolved policy or changed local binding stops it.
+
+Final checkout selects the verified target or source version. An already-current
+branch is verified without another switch. A switch requires a clean index and
+worktree, no active operation, and an available branch in this worktree; ignored
+files are protected from overwrite. Git hooks remain effective, so a failing hook
+can leave the requested branch checked out. Reports retain that observation and
+stop cleanup on failure. Execution and final observation use the verified worktree
+root, including when checkout removes the caller's nested directory.
+
+Local cleanup deletes the exact verified source after final checkout. Integration
+proof supplies its eligibility, including the method-specific squash transition;
+ordinary source ancestry in a squash result supplies no proof. The source cannot
+be current, symbolic, occupied elsewhere, or changed. A prepared ref transaction
+holds Git's source lock while the executor rechecks its type and worktree guards,
+then commits an expected-OID deletion. [Git update-ref](https://git-scm.com/docs/git-update-ref)
+provides the conditional deletion and transaction boundary. The transaction binds
+deletion to the approved version; integration proof supplies eligibility separately.
+
+Deletion removes the source ref and its reflog. Source-associated Git configuration
+is retained: completion makes no configuration edits and removes no tracking cache
+or unrelated ref. The existing private attempt retains the source evidence needed
+to corroborate preparation after reflog removal. Original/result refs and private
+recovery records remain available throughout completion and retry.
+
+Published-work cleanup uses the publication remote's endpoints independently of
+base-remote delivery. Each eligible recorded source version must be proven included
+in the integrated source. The executor observes the exact head immediately before
+deletion and uses `--force-with-lease=<full-head-ref>:<recorded-oid>` with an empty
+source refspec. [Git push](https://git-scm.com/docs/git-push) binds that deletion to
+the expected remote OID; a newer observation never renews the lease. Command-scoped
+transport excludes tag following, mirror/refspec expansion, tracking updates, and
+submodule publication. Changed work remains available and cleanup remains incomplete.
+
+Completion reports delivery, final checkout, local refs, per-endpoint cleanup,
+command diagnostics, and remaining recovery state separately. Remote destinations
+are non-atomic: confirmed deletions survive rejection or interruption at another
+endpoint. Missing heads count as completed cleanup only within this verified
+attempt's intended scope. Fresh observations recover a lost acknowledgement;
+retry skips completed checkout/deletion and executes only remaining effects.
+A recreated source, changed target or configuration, invalid private evidence,
+dirty tree, or active Git operation cannot inherit old authority. A fully completed
+attempt succeeds observationally without duplicate effects. Completion neither
+rolls back delivery nor retires its recovery evidence.
+
+The ref lock protects deletion from concurrent source-ref replacement after its
+locked check; it does not lock another worktree's checkout or all repository
+state. The [snapshot limits](#snapshot-limits) and trusted-hook limits still apply.
 
 ### Local execution and retention
 

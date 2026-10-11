@@ -75,13 +75,17 @@ pub struct Record {
     cleanup: FinishCleanup,
     message: Option<String>,
     /// Exact originally observed published source versions, for conditional deletion.
-    work: Vec<DestinationEvidence>,
+    pub(super) work: Vec<DestinationEvidence>,
     token: String,
     preparation: Option<Preparation>,
     pub(super) retained: bool,
     /// Optional acknowledgement. A lost write can be recovered from the exact
     /// operation-marked target reflog transition and the actual commit graph.
     pub result: Option<Vec<u8>>,
+    /// Source reflog captured before conditional deletion; preserves preparation
+    /// evidence after Git removes the branch reflog. Never replaces a live log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cleanup_source_log: Option<Vec<u8>>,
 }
 impl Record {
     /// Build evidence in memory. Execution persists it before effects.
@@ -136,6 +140,7 @@ impl Record {
                 head_version: LogVersion::of(plan.snapshot.head_log.as_deref()),
             }),
             result: None,
+            cleanup_source_log: None,
             retained: false,
         })
     }
@@ -511,13 +516,26 @@ pub(super) fn assess(
         }
     }
     let mut verified = record.clone();
+    if let Some(saved) = &record.cleanup_source_log
+        && (record.source_version != LogVersion::of(Some(saved))
+            || (plan.source != RefObservation::Absent
+                && plan.snapshot.source_log.as_ref() != Some(saved)))
+    {
+        fail(plan, Problem::ChangedSource);
+        return Ok(());
+    }
     if let Some(preparation) = &record.preparation {
-        if !verify_preparation(directory, plan, record, preparation)? {
+        let mut proof = plan.clone();
+        if plan.source == RefObservation::Absent {
+            proof.source = RefObservation::Commit(record.source.clone());
+            proof.snapshot.source_log = record.cleanup_source_log.clone();
+        }
+        if !verify_preparation(directory, &proof, record, preparation)? {
             fail(plan, Problem::ChangedSource);
             return Ok(());
         }
         verified.source = commit(&plan.source).unwrap_or(&record.source).to_vec();
-        verified.source_version = LogVersion::of(plan.snapshot.source_log.as_deref());
+        verified.source_version = LogVersion::of(proof.snapshot.source_log.as_deref());
     }
     let record = &verified;
     // Keep the corroborated source available to execution without requiring an

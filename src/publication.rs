@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Status {
     Created,
+    Deleted,
     Advanced,
     Unchanged,
     Rewritten,
@@ -47,6 +48,7 @@ pub(crate) fn responses(output: &[u8], source: &[u8], target: &[u8]) -> (Vec<Res
             }
             let state = match fields[0][0] {
                 b'*' => Status::Created,
+                b'-' if source.is_empty() => Status::Deleted,
                 b' ' => Status::Advanced,
                 b'=' => Status::Unchanged,
                 b'+' => Status::Rewritten,

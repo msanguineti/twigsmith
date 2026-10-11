@@ -2206,7 +2206,33 @@ fn target_transport_child() {
         return;
     };
     let directory = Path::new(&directory);
-    let req = request(FinishIntegration::Squash);
+    let operation = std::env::var("ONEFLOW_TARGET_OPERATION").unwrap();
+    let req = if operation.starts_with("complete") {
+        let mut req = completion_request(
+            FinishIntegration::Squash,
+            if operation == "complete-work" {
+                FinishCleanup::Keep
+            } else if operation.starts_with("complete-local") {
+                FinishCleanup::Local
+            } else {
+                FinishCleanup::Both
+            },
+            if operation == "complete-work" {
+                FinishCheckout::Work
+            } else {
+                FinishCheckout::Target
+            },
+        );
+        if operation.ends_with("-merge") {
+            req.update = Some(FinishUpdate::Merge);
+        }
+        if operation.ends_with("-rebase") {
+            req.update = Some(FinishUpdate::Rebase);
+        }
+        req
+    } else {
+        request(FinishIntegration::Squash)
+    };
     let initial = integration::assess(directory, &req, None).unwrap();
     let refreshed = target_remote::refresh(directory, &initial);
     let data = if std::env::var("ONEFLOW_TARGET_OPERATION").unwrap() == "refresh" {
@@ -2215,6 +2241,18 @@ fn target_transport_child() {
             "evidence": refreshed.evidence.is_some(),
             "ready": refreshed.plan.as_ref().is_some_and(Plan::is_ready),
             "effects": refreshed.effects.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
+        })
+    } else if operation.starts_with("complete") {
+        assert!(refreshed.error.is_none(), "{refreshed:#?}");
+        fs::write(directory.join(".git/completion-boundary"), "ready").unwrap();
+        let r = completion::complete(directory, &refreshed.plan.unwrap());
+        serde_json::json!({
+            "complete": r.is_complete(), "error": format!("{:?}", r.error),
+            "plan_ready": r.plan.as_ref().is_ok_and(Plan::is_ready),
+            "plan_state": r.plan.as_ref().ok().map(|p| format!("{:?}", p.state)),
+            "effects": r.effects.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
+            "pushes": completion_pushes(&r),
+            "destinations": r.destinations.iter().map(|d| serde_json::json!({ "state": format!("{:?}",d.state), "error": format!("{:?}",d.error) })).collect::<Vec<_>>()
         })
     } else {
         assert!(refreshed.error.is_none(), "{refreshed:#?}");
@@ -2607,6 +2645,848 @@ fn target_publication_rejects_forged_non_descendant_even_when_work_rewrite_is_al
             assert!(r.error.is_some(), "{r:#?}");
             assert_eq!(pushes(&r), 0);
             assert_eq!(observed(f.project.path(), b"refs/heads/main"), old);
+        },
+    );
+}
+
+use integration::completion;
+fn completion_request(
+    method: FinishIntegration,
+    cleanup: FinishCleanup,
+    checkout: FinishCheckout,
+) -> Request {
+    Request {
+        cleanup: Some(cleanup),
+        checkout: Some(checkout),
+        ..request(method)
+    }
+}
+fn delivered(f: &Fixture, req: &Request) -> Plan {
+    let p = remote_candidate(f, req);
+    let r = target_publication::publish(f.repo.path(), &p);
+    assert!(r.is_complete(), "{r:#?}");
+    r.plan.unwrap()
+}
+fn completion_pushes(r: &completion::Report) -> usize {
+    r.destinations
+        .iter()
+        .flat_map(|d| &d.commands)
+        .filter(|c| c.arguments.iter().any(|a| a == "push"))
+        .count()
+}
+#[test]
+fn completion_methods_policies_and_observational_retry() {
+    isolated(
+        "completion_methods_policies_and_observational_retry",
+        true,
+        |root| {
+            for method in [
+                FinishIntegration::FfOnly,
+                FinishIntegration::Merge,
+                FinishIntegration::Squash,
+            ] {
+                for (cleanup, checkout) in [
+                    (FinishCleanup::Keep, FinishCheckout::Target),
+                    (FinishCleanup::Keep, FinishCheckout::Work),
+                    (FinishCleanup::Local, FinishCheckout::Target),
+                    (FinishCleanup::Both, FinishCheckout::Target),
+                ] {
+                    let f = fixture(root);
+                    f.repo
+                        .success(&["config", "branch.A.description", "retained metadata"]);
+                    f.repo.success(&["push", "fork", "A"]);
+                    let req = completion_request(method, cleanup, checkout);
+                    let p = delivered(&f, &req);
+                    let pins = f.repo.success(&["for-each-ref", "refs/oneflow/"]).stdout;
+                    let result = p.result.clone().unwrap();
+                    let r = completion::complete(f.repo.path(), &p);
+                    assert!(
+                        r.is_complete(),
+                        "method={method:?} cleanup={cleanup:?} checkout={checkout:?} {r:#?}"
+                    );
+                    assert_eq!(
+                        f.repo.success(&["symbolic-ref", "--short", "HEAD"]).stdout,
+                        if checkout == FinishCheckout::Work {
+                            b"A\n".as_slice()
+                        } else {
+                            b"main\n".as_slice()
+                        }
+                        .to_vec()
+                    );
+                    assert_eq!(
+                        observed(f.repo.path(), b"refs/heads/A"),
+                        if cleanup == FinishCleanup::Keep {
+                            p.source.clone()
+                        } else {
+                            RefObservation::Absent
+                        }
+                    );
+                    assert_eq!(
+                        observed(f.fork.path(), b"refs/heads/A"),
+                        if cleanup == FinishCleanup::Both {
+                            RefObservation::Absent
+                        } else {
+                            p.source.clone()
+                        }
+                    );
+                    assert_eq!(
+                        observed(f.project.path(), b"refs/heads/main"),
+                        RefObservation::Commit(result)
+                    );
+                    assert_eq!(
+                        pins,
+                        f.repo.success(&["for-each-ref", "refs/oneflow/"]).stdout
+                    );
+                    assert_eq!(
+                        f.repo.success(&["config", "branch.A.description"]).stdout,
+                        b"retained metadata\n"
+                    );
+                    let retry = completion::complete(f.repo.path(), r.plan.as_ref().unwrap());
+                    assert!(retry.is_complete(), "{retry:#?}");
+                    assert!(retry.effects.is_empty());
+                    assert_eq!(completion_pushes(&retry), 0);
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn completion_recovers_prepared_source_after_deletion_and_rejects_recreation() {
+    isolated(
+        "completion_recovers_prepared_source_after_deletion_and_rejects_recreation",
+        true,
+        |root| {
+            for update in [FinishUpdate::Merge, FinishUpdate::Rebase] {
+                let f = fixture(root);
+                diverge(&f, false);
+                let mut req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Local,
+                    FinishCheckout::Target,
+                );
+                req.update = Some(update);
+                let p = delivered(&f, &req);
+                let source = commit_of(&p.source);
+                let r = completion::complete(f.repo.path(), &p);
+                assert!(r.is_complete(), "{update:?}: {r:#?}");
+                let operation = if update == FinishUpdate::Merge {
+                    "complete-local-merge"
+                } else {
+                    "complete-local-rebase"
+                };
+                let data =
+                    target_child_result(&f, operation, "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+                assert_eq!(data["complete"], true, "{data}");
+                assert!(data["effects"].as_array().unwrap().is_empty());
+                f.repo.success(&["branch", "A", text(&source)]);
+                let retry = refreshed(&f, &req);
+                assert!(
+                    !retry.is_ready(),
+                    "recreated source acquired cleanup authority: {retry:#?}"
+                );
+                assert!(!completion::complete(f.repo.path(), &retry).is_complete());
+                assert_eq!(oid(&f.repo, "A"), source);
+            }
+        },
+    );
+}
+#[test]
+fn completion_rejects_stale_delivery_and_context_without_effects() {
+    isolated(
+        "completion_rejects_stale_delivery_and_context_without_effects",
+        true,
+        |root| {
+            for change in [
+                "pending",
+                "partial",
+                "changed-target",
+                "dirty",
+                "operation",
+                "config",
+                "symbolic",
+                "source",
+                "occupied",
+                "record",
+                "independent",
+            ] {
+                let f = fixture(root);
+                f.repo.success(&["push", "fork", "A"]);
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Both,
+                    FinishCheckout::Target,
+                );
+                let second = if change == "partial" {
+                    Some(second_target(root, &f))
+                } else {
+                    None
+                };
+                let p = if change == "pending" {
+                    remote_candidate(&f, &req)
+                } else {
+                    delivered(&f, &req)
+                };
+                match change {
+                    "partial" => {
+                        git::run(
+                            second.as_ref().unwrap().path(),
+                            [
+                                "update-ref",
+                                "refs/heads/main",
+                                text(&oid(&f.repo, "main^")),
+                            ],
+                        )
+                        .unwrap();
+                    }
+                    "changed-target" => {
+                        advance_project(root, &f);
+                    }
+                    "dirty" => fs::write(f.repo.path().join("work"), "dirty").unwrap(),
+                    "operation" => {
+                        fs::write(f.repo.path().join(".git/MERGE_HEAD"), oid(&f.repo, "A")).unwrap()
+                    }
+                    "config" => {
+                        f.repo.success(&["config", "oneflow.unrelated", "changed"]);
+                    }
+                    "symbolic" => {
+                        f.repo
+                            .success(&["symbolic-ref", "refs/heads/A", "refs/heads/main"]);
+                    }
+                    "source" => {
+                        f.repo.success(&[
+                            "update-ref",
+                            "refs/heads/A",
+                            text(&oid(&f.repo, "main")),
+                        ]);
+                    }
+                    "occupied" => {
+                        f.repo.success(&[
+                            "worktree",
+                            "add",
+                            root.join("occupied").to_str().unwrap(),
+                            "A",
+                        ]);
+                    }
+                    "record" => fs::write(p.recovery_path.as_ref().unwrap(), "invalid").unwrap(),
+                    "independent" => {
+                        f.repo.success(&["switch", "-c", "B"]);
+                    }
+                    _ => {}
+                }
+                let before = f.repo.success(&["show-ref"]).stdout;
+                let r = completion::complete(f.repo.path(), &p);
+                assert!(!r.is_complete(), "{change}: {r:#?}");
+                if matches!(change, "partial" | "changed-target") {
+                    let remaining = r.plan.as_ref().unwrap();
+                    assert!(
+                        !remaining.is_ready()
+                            || !matches!(remaining.state, State::Published | State::Complete),
+                        "{change}: stale delivery report"
+                    );
+                }
+                assert!(r.effects.is_empty(), "{change}: {:?}", r.effects);
+                assert_eq!(before, f.repo.success(&["show-ref"]).stdout, "{change}");
+                assert_eq!(completion_pushes(&r), 0);
+            }
+        },
+    );
+}
+#[test]
+fn completion_checkout_hook_failure_and_ignored_collision_preserve_work() {
+    isolated(
+        "completion_checkout_hook_failure_and_ignored_collision_preserve_work",
+        true,
+        |root| {
+            for mode in ["failure", "dirty-hook", "ignored"] {
+                let f = fixture(root);
+                // Squash and source have different trees to exercise checkout collisions.
+                let base = oid(&f.repo, "main");
+                f.repo.success(&["switch", "main"]);
+                commit(&f.repo, "target-only", "target");
+                f.repo.success(&["rm", "base"]);
+                f.repo.success(&["commit", "-m", "remove base"]);
+                publish(&f);
+                f.repo.success(&["switch", "A"]);
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Keep,
+                    FinishCheckout::Work,
+                );
+                let p = delivered(&f, &req);
+                assert_ne!(base, oid(&f.repo, "main"));
+                let h = match mode {
+                    "failure" => Some(hook(&f, "post-checkout", "exit 1")),
+                    "dirty-hook" => Some(hook(&f, "post-checkout", "echo changed >> work")),
+                    _ => {
+                        fs::create_dir_all(f.repo.path().join(".git/info")).unwrap();
+                        fs::write(f.repo.path().join(".git/info/exclude"), "base\n").unwrap();
+                        fs::write(f.repo.path().join("base"), "keep me").unwrap();
+                        None
+                    }
+                };
+                let r = completion::complete(f.repo.path(), &p);
+                if mode == "ignored" {
+                    assert!(!r.is_complete(), "{r:#?}");
+                    assert!(r.effects.is_empty());
+                    assert_eq!(
+                        fs::read_to_string(f.repo.path().join("base")).unwrap(),
+                        "keep me"
+                    );
+                    assert_eq!(
+                        f.repo.success(&["symbolic-ref", "--short", "HEAD"]).stdout,
+                        b"main\n"
+                    );
+                } else {
+                    assert!(!r.is_complete(), "{r:#?}");
+                    assert!(
+                        r.effects
+                            .iter()
+                            .any(|e| matches!(e, completion::Effect::CheckedOut { .. }))
+                    );
+                    fs::remove_file(h.unwrap()).unwrap();
+                    if mode == "dirty-hook" {
+                        f.repo.success(&["restore", "work"]);
+                    }
+                    assert!(
+                        completion::complete(f.repo.path(), &refreshed(&f, &req)).is_complete()
+                    );
+                }
+            }
+        },
+    );
+}
+
+fn second_work(root: &Path, f: &Fixture) -> TempDir {
+    let second = tempfile::tempdir_in(root).unwrap();
+    assert!(
+        git::run(
+            root,
+            [
+                "clone".as_ref(),
+                "--bare".as_ref(),
+                f.fork.path().as_os_str(),
+                second.path().as_os_str()
+            ]
+        )
+        .unwrap()
+        .status
+        .success()
+    );
+    for path in [f.fork.path(), second.path()] {
+        f.repo.success(&[
+            "config",
+            "--add",
+            "remote.fork.pushurl",
+            path.to_str().unwrap(),
+        ]);
+    }
+    second
+}
+#[test]
+fn completion_process_interruptions_and_lost_acknowledgements_resume() {
+    isolated(
+        "completion_process_interruptions_and_lost_acknowledgements_resume",
+        true,
+        |root| {
+            for point in ["checkout", "local", "remote", "lost-remote", "lost-local"] {
+                let f = fixture(root);
+                let second = second_work(root, &f);
+                f.repo.success(&["push", "fork", "A"]);
+                let checkout = point == "checkout";
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    if checkout {
+                        FinishCleanup::Keep
+                    } else {
+                        FinishCleanup::Both
+                    },
+                    if checkout {
+                        FinishCheckout::Work
+                    } else {
+                        FinishCheckout::Target
+                    },
+                );
+                delivered(&f, &req);
+                let operation = if checkout {
+                    "complete-work"
+                } else {
+                    "complete"
+                };
+                let command = if checkout {
+                    "switch"
+                } else if point.contains("local") {
+                    "update-ref"
+                } else {
+                    "push"
+                };
+                let body = if point == "lost-local" {
+                    "\"$ONEFLOW_REAL_GIT\" \"$@\" | while IFS= read -r line; do case \"$line\" in commit:*) ;; *) printf '%s\\n' \"$line\" ;; esac; done; exit 1"
+                } else if point.starts_with("lost") {
+                    "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null; exit 1"
+                } else {
+                    "\"$ONEFLOW_REAL_GIT\" \"$@\"; kill -KILL \"$PPID\"; exit 0"
+                };
+                let output = target_child(&f, operation, command, body);
+                if point.starts_with("lost") {
+                    assert!(output.status.success(), "{output:?}");
+                    let data: serde_json::Value = serde_json::from_slice(
+                        &fs::read(f.repo.path().join(".git/target-result.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(data["complete"], false);
+                } else {
+                    assert!(!output.status.success(), "{point}: {output:?}");
+                }
+                if !checkout {
+                    assert_eq!(
+                        observed(f.repo.path(), b"refs/heads/A"),
+                        RefObservation::Absent
+                    );
+                }
+                if point == "remote" || point == "lost-remote" {
+                    assert_eq!(
+                        observed(f.fork.path(), b"refs/heads/A"),
+                        RefObservation::Absent
+                    );
+                    assert!(matches!(
+                        observed(second.path(), b"refs/heads/A"),
+                        RefObservation::Commit(_)
+                    ));
+                }
+                let data =
+                    target_child_result(&f, operation, "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+                assert_eq!(data["complete"], true, "{point}: {data}");
+                assert!(
+                    !data["effects"].as_array().unwrap().iter().any(|v| v
+                        .as_str()
+                        .unwrap()
+                        .starts_with("CheckedOut")
+                        || v.as_str().unwrap().starts_with("LocalWorkDeleted")),
+                    "{point}: {data}"
+                );
+                assert_eq!(
+                    data["pushes"],
+                    if checkout {
+                        0
+                    } else if point.contains("remote") {
+                        1
+                    } else {
+                        2
+                    }
+                );
+            }
+        },
+    );
+}
+#[test]
+fn completion_conditional_local_delete_rejects_races_and_transaction_hooks() {
+    isolated(
+        "completion_conditional_local_delete_rejects_races_and_transaction_hooks",
+        true,
+        |root| {
+            for race in [
+                "advance",
+                "symbolic",
+                "prepared-change",
+                "prepared-reject",
+                "verbose",
+            ] {
+                let f = fixture(root);
+                f.repo.success(&["push", "fork", "A"]);
+                f.repo.success(&["branch", "alias", "A"]);
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Both,
+                    FinishCheckout::Target,
+                );
+                delivered(&f, &req);
+                let h = match race {
+                    "prepared-change" => Some(hook(
+                        &f,
+                        "reference-transaction",
+                        "if [ \"$1\" = prepared ]; then git config oneflow.race changed; fi",
+                    )),
+                    "prepared-reject" => Some(hook(
+                        &f,
+                        "reference-transaction",
+                        "if [ \"$1\" = prepared ]; then exit 1; fi",
+                    )),
+                    "verbose" => Some(hook(
+                        &f,
+                        "reference-transaction",
+                        "if [ \"$1\" = prepared ]; then head -c 131072 /dev/zero >&2; fi",
+                    )),
+                    _ => None,
+                };
+                let body = match race {
+                    "advance" => {
+                        "\"$ONEFLOW_REAL_GIT\" update-ref refs/heads/A refs/heads/main; exec \"$ONEFLOW_REAL_GIT\" \"$@\""
+                    }
+                    "symbolic" => {
+                        "\"$ONEFLOW_REAL_GIT\" symbolic-ref refs/heads/A refs/heads/alias; exec \"$ONEFLOW_REAL_GIT\" \"$@\""
+                    }
+                    _ => "exec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                };
+                let data = target_child_result(&f, "complete", "update-ref", body);
+                assert_eq!(data["complete"], race == "verbose", "{race}: {data}");
+                assert!(!f.repo.path().join(".git/refs/heads/A.lock").exists());
+                if race != "verbose" {
+                    assert!(matches!(
+                        observed(f.repo.path(), b"refs/heads/A"),
+                        RefObservation::Commit(_)
+                    ));
+                    assert_eq!(data["pushes"], 0);
+                }
+                if let Some(h) = h {
+                    fs::remove_file(h).unwrap();
+                }
+                if race == "prepared-reject" {
+                    assert!(
+                        completion::complete(f.repo.path(), &refreshed(&f, &req)).is_complete()
+                    );
+                }
+            }
+        },
+    );
+}
+#[test]
+fn completion_remote_lease_preserves_concurrent_work_and_partial_deletions() {
+    isolated(
+        "completion_remote_lease_preserves_concurrent_work_and_partial_deletions",
+        true,
+        |root| {
+            for mode in ["race", "reject", "already-changed", "absent"] {
+                let f = fixture(root);
+                let second = second_work(root, &f);
+                f.repo.success(&["push", "fork", "A"]);
+                f.repo.success(&["branch", "unrelated", "A"]);
+                f.repo.success(&["tag", "keep-tag"]);
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Both,
+                    FinishCheckout::Target,
+                );
+                let p = delivered(&f, &req);
+                f.repo.success(&[
+                    "push",
+                    second.path().to_str().unwrap(),
+                    "main:refs/heads/race",
+                ]);
+                let newer = oid(&f.repo, "main");
+                if mode == "already-changed" {
+                    assert!(
+                        git::run(second.path(), ["update-ref", "refs/heads/A", text(&newer)])
+                            .unwrap()
+                            .status
+                            .success()
+                    );
+                }
+                if mode == "absent" {
+                    assert!(
+                        git::run(f.fork.path(), ["update-ref", "-d", "refs/heads/A"])
+                            .unwrap()
+                            .status
+                            .success()
+                    );
+                }
+                let hook_path = second.path().join("hooks/pre-receive");
+                if mode == "reject" {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::write(&hook_path, "#!/bin/sh\nexit 1\n").unwrap();
+                    fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o700)).unwrap();
+                    assert!(
+                        git::run(
+                            second.path(),
+                            [
+                                "config",
+                                "core.hooksPath",
+                                second.path().join("hooks").to_str().unwrap()
+                            ]
+                        )
+                        .unwrap()
+                        .status
+                        .success()
+                    );
+                }
+                let prepush = if mode == "race" {
+                    Some(hook(
+                        &f,
+                        "pre-push",
+                        &format!(
+                            "if [ \"$2\" = {} ]; then git --git-dir={} update-ref refs/heads/A {}; fi",
+                            shell_quote(second.path().to_str().unwrap()),
+                            shell_quote(second.path().to_str().unwrap()),
+                            text(&newer)
+                        ),
+                    ))
+                } else {
+                    None
+                };
+                let r = completion::complete(f.repo.path(), &p);
+                assert_eq!(r.is_complete(), mode == "absent", "{mode}: {r:#?}");
+                if mode == "race" || mode == "reject" {
+                    assert_eq!(
+                        r.destinations[0].state,
+                        completion::DestinationState::Deleted
+                    );
+                    assert_eq!(
+                        r.destinations[1].state,
+                        completion::DestinationState::Rejected
+                    );
+                    assert_eq!(
+                        observed(f.fork.path(), b"refs/heads/A"),
+                        RefObservation::Absent
+                    );
+                    assert!(matches!(
+                        observed(second.path(), b"refs/heads/A"),
+                        RefObservation::Commit(_)
+                    ));
+                }
+                if mode == "already-changed" {
+                    assert!(r.effects.is_empty());
+                }
+                assert!(matches!(
+                    observed(f.repo.path(), b"refs/heads/unrelated"),
+                    RefObservation::Commit(_)
+                ));
+                assert!(matches!(
+                    observed(f.repo.path(), b"refs/tags/keep-tag"),
+                    RefObservation::Commit(_)
+                ));
+                if let Some(path) = prepush {
+                    fs::remove_file(path).unwrap();
+                }
+                if mode == "reject" {
+                    fs::remove_file(hook_path).unwrap();
+                    let retry = completion::complete(f.repo.path(), &refreshed(&f, &req));
+                    assert!(retry.is_complete(), "{retry:#?}");
+                    assert_eq!(completion_pushes(&retry), 1);
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn completion_metadata_write_failure_and_linked_worktree_evidence_are_contained() {
+    isolated(
+        "completion_metadata_write_failure_and_linked_worktree_evidence_are_contained",
+        true,
+        |root| {
+            use std::os::unix::fs::PermissionsExt;
+            let f = fixture(root);
+            f.repo.success(&["push", "fork", "A"]);
+            let req = completion_request(
+                FinishIntegration::Squash,
+                FinishCleanup::Both,
+                FinishCheckout::Target,
+            );
+            let p = delivered(&f, &req);
+            let parent = p.recovery_path.as_ref().unwrap().parent().unwrap();
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o500)).unwrap();
+            let r = completion::complete(f.repo.path(), &p);
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(!r.is_complete());
+            assert!(r.effects.is_empty());
+            assert_eq!(observed(f.repo.path(), b"refs/heads/A"), p.source);
+            assert_eq!(observed(f.fork.path(), b"refs/heads/A"), p.source);
+            let r = completion::complete(f.repo.path(), &refreshed(&f, &req));
+            assert!(r.is_complete(), "{r:#?}");
+            let linked = root.join("linked");
+            f.repo.success(&[
+                "worktree",
+                "add",
+                "-b",
+                "independent",
+                linked.to_str().unwrap(),
+            ]);
+            let retry = completion::complete(&linked, r.plan.as_ref().unwrap());
+            assert!(!retry.is_complete());
+            assert!(retry.effects.is_empty());
+            let independent = integration::assess(&linked, &req, None).unwrap();
+            assert_eq!(independent.source_ref, b"refs/heads/independent");
+            assert_ne!(independent.recovery_path, p.recovery_path);
+            f.repo.success(&["switch", "-c", "B"]);
+            let b = integration::assess(f.repo.path(), &req, None).unwrap();
+            assert_eq!(b.source_ref, b"refs/heads/B");
+            assert_ne!(b.recovery_path, p.recovery_path);
+        },
+    );
+}
+#[test]
+fn completion_final_target_collision_and_removed_caller_directory() {
+    isolated(
+        "completion_final_target_collision_and_removed_caller_directory",
+        true,
+        |root| {
+            for mode in ["collision", "nested"] {
+                let f = fixture(root);
+                f.repo.success(&["switch", "main"]);
+                fs::create_dir(f.repo.path().join("target-dir")).unwrap();
+                commit(&f.repo, "target-dir/file", "target only");
+                publish(&f);
+                f.repo.success(&["switch", "A"]);
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    if mode == "collision" {
+                        FinishCleanup::Local
+                    } else {
+                        FinishCleanup::Keep
+                    },
+                    if mode == "collision" {
+                        FinishCheckout::Target
+                    } else {
+                        FinishCheckout::Work
+                    },
+                );
+                let p = delivered(&f, &req);
+                if mode == "nested" {
+                    let nested = f.repo.path().join("target-dir");
+                    let r = completion::complete(&nested, &p);
+                    assert!(r.is_complete(), "{r:#?}");
+                    assert!(!nested.exists());
+                    assert!(r.remaining.is_ok());
+                } else {
+                    f.repo.success(&["switch", "A"]);
+                    fs::create_dir_all(f.repo.path().join(".git/info")).unwrap();
+                    fs::write(f.repo.path().join(".git/info/exclude"), "target-dir/\n").unwrap();
+                    fs::create_dir(f.repo.path().join("target-dir")).unwrap();
+                    fs::write(f.repo.path().join("target-dir/file"), "ignored work").unwrap();
+                    let p = refreshed(&f, &req);
+                    let r = completion::complete(f.repo.path(), &p);
+                    assert!(!r.is_complete(), "{r:#?}");
+                    assert!(r.effects.is_empty());
+                    assert_eq!(
+                        fs::read_to_string(f.repo.path().join("target-dir/file")).unwrap(),
+                        "ignored work"
+                    );
+                    assert_eq!(observed(f.repo.path(), b"refs/heads/A"), p.source);
+                }
+            }
+        },
+    );
+}
+#[test]
+fn completion_unresolved_choices_and_missing_incorporation_proof_do_not_authorize_effects() {
+    isolated(
+        "completion_unresolved_choices_and_missing_incorporation_proof_do_not_authorize_effects",
+        true,
+        |root| {
+            for mode in ["missing", "contradictory", "unrecorded", "rewritten"] {
+                let f = fixture(root);
+                let mut req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Both,
+                    FinishCheckout::Target,
+                );
+                f.repo.success(&["push", "fork", "A"]);
+                match mode {
+                    "missing" => req.cleanup = Some(FinishCleanup::Ask),
+                    "contradictory" => req.checkout = Some(FinishCheckout::Work),
+                    "rewritten" => {
+                        f.repo
+                            .success(&["commit", "--amend", "-m", "rewritten source"]);
+                    }
+                    _ => {}
+                }
+                let p = refreshed(&f, &req);
+                if mode != "unrecorded" {
+                    assert!(!p.is_ready(), "{mode}: {p:#?}");
+                }
+                let before = f.repo.success(&["show-ref"]).stdout;
+                let r = completion::complete(f.repo.path(), &p);
+                assert!(!r.is_complete(), "{mode}: {r:#?}");
+                assert!(r.effects.is_empty());
+                assert_eq!(completion_pushes(&r), 0);
+                assert_eq!(before, f.repo.success(&["show-ref"]).stdout);
+            }
+        },
+    );
+}
+
+#[test]
+fn completion_unavailable_target_observation_does_not_reuse_delivery_report() {
+    isolated(
+        "completion_unavailable_target_observation_does_not_reuse_delivery_report",
+        true,
+        |root| {
+            let f = fixture(root);
+            f.repo.success(&["push", "fork", "A"]);
+            let req = completion_request(
+                FinishIntegration::Squash,
+                FinishCleanup::Both,
+                FinishCheckout::Target,
+            );
+            let p = delivered(&f, &req);
+            let data = target_child_result(
+                &f,
+                "complete",
+                "ls-remote",
+                "if [ -f .git/completion-boundary ]; then exit 1; fi; exec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+            );
+            assert_eq!(data["complete"], false, "{data}");
+            assert_eq!(data["plan_ready"], false, "{data}");
+            assert_eq!(data["plan_state"], "ChangedOrUnverifiable", "{data}");
+            assert_eq!(data["pushes"], 0);
+            assert!(data["effects"].as_array().unwrap().is_empty());
+            assert_eq!(observed(f.repo.path(), b"refs/heads/A"), p.source);
+            assert_eq!(observed(f.fork.path(), b"refs/heads/A"), p.source);
+        },
+    );
+}
+
+#[test]
+fn completion_target_checkout_stops_cleanup_on_hook_failure_or_changed_binding() {
+    isolated(
+        "completion_target_checkout_stops_cleanup_on_hook_failure_or_changed_binding",
+        true,
+        |root| {
+            for mode in ["success", "failure", "config"] {
+                let f = fixture(root);
+                f.repo.success(&["push", "fork", "A"]);
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Both,
+                    FinishCheckout::Target,
+                );
+                delivered(&f, &req);
+                f.repo.success(&["switch", "A"]);
+                let p = refreshed(&f, &req);
+                let h = match mode {
+                    "failure" => Some(hook(&f, "post-checkout", "exit 1")),
+                    "config" => Some(hook(&f, "post-checkout", "git config oneflow.hook changed")),
+                    _ => None,
+                };
+                let r = completion::complete(f.repo.path(), &p);
+                assert_eq!(r.is_complete(), mode == "success", "{mode}: {r:#?}");
+                assert!(
+                    r.effects
+                        .iter()
+                        .any(|e| matches!(e, completion::Effect::CheckedOut { .. }))
+                );
+                assert_eq!(
+                    f.repo.success(&["symbolic-ref", "--short", "HEAD"]).stdout,
+                    b"main\n"
+                );
+                if mode != "success" {
+                    assert_eq!(observed(f.repo.path(), b"refs/heads/A"), p.source);
+                    assert_eq!(observed(f.fork.path(), b"refs/heads/A"), p.source);
+                    assert_eq!(completion_pushes(&r), 0);
+                    fs::remove_file(h.unwrap()).unwrap();
+                    if mode == "config" {
+                        f.repo.success(&["config", "--unset", "oneflow.hook"]);
+                    }
+                    let retry = completion::complete(f.repo.path(), &refreshed(&f, &req));
+                    assert!(retry.is_complete(), "{retry:#?}");
+                    assert!(
+                        !retry
+                            .effects
+                            .iter()
+                            .any(|e| matches!(e, completion::Effect::CheckedOut { .. }))
+                    );
+                }
+            }
         },
     );
 }

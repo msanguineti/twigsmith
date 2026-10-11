@@ -1,6 +1,7 @@
 //! Direct integration with read-only assessment, explicit remote refresh, local
-//! preparation, and guarded target publication. Remote evidence comes from exact
-//! endpoint observations, never tracking caches. Review uses a separate executor.
+//! preparation, guarded target publication, and verified checkout and cleanup.
+//! Remote evidence comes from exact endpoint observations, never tracking caches.
+//! Review uses a separate executor.
 use super::{DestinationEvidence, FinishError, RefObservation, Relationship};
 use super::{ancestor, hint, metadata, read, relationship, run, valid_oid};
 use crate::{
@@ -14,6 +15,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod completion;
 pub mod execution;
 pub mod publication;
 pub mod recovery;
