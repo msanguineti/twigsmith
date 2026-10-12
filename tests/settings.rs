@@ -1440,3 +1440,202 @@ fn workstream_configuration_rejects_typed_duplicate_and_inactive_invalid_values(
         },
     );
 }
+
+#[test]
+fn hosted_workstream_routes_round_trip_and_private_fields_layer_independently() {
+    use git_oneflow::{
+        config::Format,
+        settings::{FinishCheckout, FinishCleanup, FinishMode, WorkstreamKind},
+    };
+    isolated(
+        "hosted_workstream_routes_round_trip_and_private_fields_layer_independently",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let mut proposed = Settings {
+                publish_remote: "fork".into(),
+                base_remote: "project".into(),
+                ..Settings::default()
+            };
+            settings::oneflow_hosted_bundle(&mut proposed, Some("stable".into()));
+            for (format, filename) in [
+                (Format::Toml, CONFIG_FILES[0]),
+                (Format::Yaml, CONFIG_FILES[1]),
+                (Format::Json, CONFIG_FILES[3]),
+            ] {
+                let shared = repo.path().join(filename);
+                fs::write(&shared, git_oneflow::config::render(format, &proposed)).unwrap();
+                let private = repo.path().join(".git/git-oneflow.config.json");
+                fs::write(&private, r#"{"redact-credentials":false,"workstreams":{"release":{"review-remote":"review","merge-back-branch":"review/version"},"hotfix":{"active-release":"release/train"}}}"#).unwrap();
+                let loaded = load(repo.path()).unwrap();
+                let mut release = loaded.clone();
+                settings::resolve_workstream(&mut release, WorkstreamKind::Release, None).unwrap();
+                assert_eq!(release.finish_mode, FinishMode::Review);
+                assert_eq!(release.finish_update, FinishUpdate::Merge);
+                assert_eq!(release.finish_checkout, FinishCheckout::Work);
+                assert_eq!(release.finish_cleanup, FinishCleanup::Keep);
+                let policy = release.workstream.unwrap();
+                assert_eq!(policy.publish_remote, "project");
+                assert_eq!(policy.base_remote, "project");
+                assert_eq!(policy.review_remote, "review");
+                assert_eq!(policy.merge_back_branch.as_deref(), Some("review/version"));
+                assert_eq!(policy.release_marker.as_deref(), Some("stable"));
+                assert!(policy.version_tagging);
+                assert_eq!(
+                    release.sources.workstreams["release.review-remote"],
+                    SettingSource::Local(private.clone())
+                );
+                assert_eq!(
+                    release.sources.workstreams["release.publish-remote"],
+                    SettingSource::Shared(shared.clone())
+                );
+                let mut hotfix = loaded.clone();
+                settings::resolve_workstream(&mut hotfix, WorkstreamKind::Hotfix, None).unwrap();
+                let policy = hotfix.workstream.unwrap();
+                assert_eq!(policy.integration_target, "release/train");
+                assert_eq!(policy.review_remote, "fork");
+                let mut ordinary = loaded;
+                settings::resolve_workstream(
+                    &mut ordinary,
+                    WorkstreamKind::Ordinary,
+                    Some("release/train"),
+                )
+                .unwrap();
+                let policy = ordinary.workstream.unwrap();
+                assert_eq!(policy.publish_remote, "fork");
+                assert_eq!(policy.integration_target, "release/train");
+                assert!(!policy.version_tagging);
+                assert_eq!(policy.release_marker, None);
+                fs::remove_file(shared).unwrap();
+                fs::remove_file(private).unwrap();
+            }
+            // Custom configuration uses exactly the bundle schema; omitted review follows work publication.
+            let mut custom = proposed;
+            custom
+                .workstreams
+                .get_mut(&WorkstreamKind::Release)
+                .unwrap()
+                .review_remote = None;
+            settings::resolve_workstream(&mut custom, WorkstreamKind::Release, None).unwrap();
+            assert_eq!(custom.workstream.unwrap().review_remote, "project");
+        },
+    );
+}
+
+#[test]
+fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
+    use git_oneflow::{config::Format, settings::WorkstreamKind};
+    isolated(
+        "hosted_settings_reject_invalid_fields_and_incompatible_effective_policies",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let shared = repo.path().join(CONFIG_FILES[3]);
+            for content in [
+                r#"{"workstreams":{"release":{"review-remote":null}}}"#,
+                r#"{"workstreams":{"release":{"review-remote":1}}}"#,
+                r#"{"workstreams":{"release":{"review-remote":"one","review-remote":"two"}}}"#,
+                r#"{"workstreams":{"release":{"review-remote":"bad..remote"}}}"#,
+                r#"{"workstreams":{"release":{"merge-back-branch":null}}}"#,
+                r#"{"workstreams":{"release":{"merge-back-branch":true}}}"#,
+                r#"{"workstreams":{"release":{"merge-back-branch":"one","merge-back-branch":"two"}}}"#,
+                r#"{"workstreams":{"release":{"merge-back-branch":"bad..branch"}}}"#,
+            ] {
+                fs::write(&shared, content).unwrap();
+                assert!(load(repo.path()).is_err(), "accepted {content}");
+            }
+            fs::remove_file(&shared).unwrap();
+            for filename in [CONFIG_FILES[0], CONFIG_FILES[1], CONFIG_FILES[3]] {
+                let file = repo.path().join(filename);
+                for key in ["review-remote", "merge-back-branch"] {
+                    for (scalar, duplicate) in [("true", false), ("1", false), ("\"first\"", true)]
+                    {
+                        let content = match filename {
+                            "git-oneflow.config.toml" => format!(
+                                "[workstreams.release]\n{key}={scalar}\n{}",
+                                if duplicate {
+                                    format!("{key}='second'\n")
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            "git-oneflow.config.yaml" => format!(
+                                "workstreams:\n  release:\n    {key}: {scalar}\n{}",
+                                if duplicate {
+                                    format!("    {key}: second\n")
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            _ => format!(
+                                "{{\"workstreams\":{{\"release\":{{\"{key}\":{scalar}{}}}}}}}",
+                                if duplicate {
+                                    format!(",\"{key}\":\"second\"")
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                        };
+                        fs::write(&file, &content).unwrap();
+                        assert!(load(repo.path()).is_err(), "accepted {filename}: {content}");
+                    }
+                }
+                fs::remove_file(file).unwrap();
+            }
+            let mut proposed = Settings::default();
+            settings::oneflow_hosted_bundle(&mut proposed, Some("stable".into()));
+            for (key, value) in [
+                ("finish-update", "rebase"),
+                ("finish-integration", "squash"),
+                ("finish-integration", "ff-only"),
+                ("finish-checkout", "target"),
+                ("finish-cleanup", "both"),
+                ("finish-cleanup", "ask"),
+                ("finish-rewrite", "allow"),
+                ("merge-back-branch", "main"),
+                ("merge-back-branch", "stable"),
+            ] {
+                fs::write(
+                    &shared,
+                    git_oneflow::config::render(Format::Json, &proposed),
+                )
+                .unwrap();
+                let private = repo.path().join(".git/git-oneflow.config.json");
+                fs::write(
+                    &private,
+                    serde_json::json!({"workstreams":{"release":{key:value}}}).to_string(),
+                )
+                .unwrap();
+                assert!(load(repo.path()).is_err(), "accepted {key}={value}");
+                fs::remove_file(private).unwrap();
+            }
+            for update in ["none", "merge", "ask"] {
+                let mut allowed = proposed.clone();
+                allowed
+                    .workstreams
+                    .get_mut(&WorkstreamKind::Release)
+                    .unwrap()
+                    .finish_update = Some(update.into());
+                fs::write(&shared, git_oneflow::config::render(Format::Json, &allowed)).unwrap();
+                assert!(load(repo.path()).is_ok(), "rejected {update}");
+            }
+            // Validate supplied layers even when a private layer would repair them.
+            proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Release)
+                .unwrap()
+                .finish_cleanup = Some("both".into());
+            fs::write(
+                &shared,
+                git_oneflow::config::render(Format::Json, &proposed),
+            )
+            .unwrap();
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.json"),
+                r#"{"workstreams":{"release":{"finish-cleanup":"keep"}}}"#,
+            )
+            .unwrap();
+            assert!(load(repo.path()).is_err());
+        },
+    );
+}

@@ -1914,3 +1914,193 @@ fn inspection_reports_established_explicit_creation_commit_separately_from_defau
         },
     );
 }
+
+#[test]
+fn unattended_hosted_setup_is_editable_and_reports_effective_routes_in_every_format() {
+    use settings::{FinishMode, WorkstreamKind};
+    cases(
+        "unattended_hosted_setup_is_editable_and_reports_effective_routes_in_every_format",
+        true,
+        |root, exe| {
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                let repo = Repository::new(root);
+                let before = snapshot(&repo.path().join(".git"));
+                check(
+                    run(
+                        exe,
+                        repo.path(),
+                        &[
+                            "config",
+                            "--oneflow-hosted",
+                            "--yes",
+                            "--marker",
+                            "stable",
+                            "--format",
+                            format,
+                        ],
+                    ),
+                    0,
+                    &["Created shared configuration"],
+                );
+                assert_eq!(snapshot(&repo.path().join(".git")), before);
+                let mut effective = load(repo.path());
+                settings::resolve_workstream(&mut effective, WorkstreamKind::Release, None)
+                    .unwrap();
+                assert_eq!(effective.finish_mode, FinishMode::Review);
+                assert_eq!(effective.workstream.unwrap().review_remote, "origin");
+                let private = repo.path().join(".git/git-oneflow.config.json");
+                fs::write(&private, r#"{"workstreams":{"release":{"review-remote":"fork","merge-back-branch":"review/version"}}}"#).unwrap();
+                check(
+                    run(exe, repo.path(), &["config", "show"]),
+                    0,
+                    &[
+                        "Effective release routes: work origin/original work branch; review source review/version on fork (local:",
+                        "target origin/main",
+                        "workstreams.release.review-remote: fork (local:",
+                        "workstreams.release.merge-back-branch: review/version (local:",
+                        "workstreams.release.finish-checkout: work",
+                        "workstreams.release.finish-cleanup: keep",
+                    ],
+                );
+                assert!(repo.path().join(filename).exists());
+                let generated = fs::read_to_string(repo.path().join(filename)).unwrap();
+                assert!(!generated.contains("review/version"));
+            }
+            let repo = Repository::new(root);
+            for args in [
+                vec!["config", "--yes", "--oneflow", "--oneflow-hosted"],
+                vec!["config", "--yes", "--oneflow-hosted", "--oneflow-hosted"],
+                vec!["config", "--yes", "--marker", "stable"],
+            ] {
+                check(run(exe, repo.path(), &args), 2, &["expected config"]);
+                assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_hosted_setup_edits_routes_and_cancellation_preserves_work() {
+    use settings::WorkstreamKind;
+    cases(
+        "guided_hosted_setup_edits_routes_and_cancellation_preserves_work",
+        true,
+        |root, exe| {
+            for cancel in [false, true] {
+                let repo = Repository::new(root);
+                let before = snapshot(&repo.path().join(".git"));
+                let mut term =
+                    terminal::Terminal::start(exe, repo.path(), &["config", "--oneflow-hosted"]);
+                term.until("Publication remote");
+                term.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
+                term.until("ordinary policy [");
+                assert!(
+                    term.output
+                        .contains("Hosted tagged finish publishes the version")
+                );
+                if cancel {
+                    term.send(b"cancel\n");
+                    assert!(term.finish().success(), "{}", term.output);
+                    assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+                } else {
+                    term.send(b"\n");
+                    term.until("release policy [");
+                    let mut proposed = Settings::default();
+                    settings::oneflow_hosted_bundle(&mut proposed, None);
+                    let release = proposed
+                        .workstreams
+                        .get_mut(&WorkstreamKind::Release)
+                        .unwrap();
+                    release.review_remote = Some("fork".into());
+                    release.merge_back_branch = Some("review/version".into());
+                    term.send(
+                        format!("{}\n\n", serde_json::to_string(release).unwrap()).as_bytes(),
+                    );
+                    term.until("Create this file?");
+                    assert!(
+                        term.output.contains("review source review/version on fork"),
+                        "{}",
+                        term.output
+                    );
+                    term.send(b"yes\n");
+                    assert!(term.finish().success(), "{}", term.output);
+                    assert_eq!(
+                        load(repo.path()).workstreams[&WorkstreamKind::Release]
+                            .review_remote
+                            .as_deref(),
+                        Some("fork")
+                    );
+                }
+                assert_eq!(snapshot(&repo.path().join(".git")), before);
+            }
+        },
+    );
+}
+
+#[test]
+fn hosted_inspection_keeps_template_routes_independent_of_selected_branch_policy() {
+    cases(
+        "hosted_inspection_keeps_template_routes_independent_of_selected_branch_policy",
+        true,
+        |root, exe| {
+            let remote = Repository::new(root);
+            commit(&remote);
+            let repo = Repository::new(root);
+            for name in ["project", "fork"] {
+                repo.success(&[
+                    "remote".as_ref(),
+                    "add".as_ref(),
+                    name.as_ref(),
+                    remote.path().as_os_str(),
+                ]);
+            }
+            repo.success(&["fetch", "project"]);
+            repo.success(&["reset", "--hard", "refs/remotes/project/main"]);
+            let mut proposed = Settings {
+                publish_remote: "fork".into(),
+                base_remote: "project".into(),
+                ..Settings::default()
+            };
+            settings::oneflow_hosted_bundle(&mut proposed, None);
+            let private = repo.path().join(".git/git-oneflow.config.toml");
+            fs::write(&private, config::render(Format::Toml, &proposed)).unwrap();
+            check(
+                run(
+                    exe,
+                    repo.path(),
+                    &["start", "release/train", "--policy", "release"],
+                ),
+                0,
+                &["Created"],
+            );
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[
+                    "workstream-policy: release",
+                    "publish-remote: project (local:",
+                    "review-remote: fork",
+                    "Effective ordinary routes: work fork/work branch; review source work branch on fork",
+                    "Effective release routes: work project/original work branch; review source explicit --merge-back branch on fork (local:",
+                ],
+            );
+            // A route change cannot silently authorize publication under a branch's older association.
+            proposed
+                .workstreams
+                .get_mut(&settings::WorkstreamKind::Release)
+                .unwrap()
+                .review_remote = Some("project".into());
+            fs::write(&private, config::render(Format::Toml, &proposed)).unwrap();
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                1,
+                &["established workstream routes changed"],
+            );
+        },
+    );
+}

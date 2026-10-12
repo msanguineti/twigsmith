@@ -65,25 +65,28 @@ their exact targets with `./dev test-groups`, then select a capability:
 ./dev test-group smoke
 ./dev test-group finish-planning
 ./dev test-group oneflow
+./dev test-group hosted-oneflow
 ```
 
 The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
-`lifecycle`, `smoke`, `finish-planning`, and `oneflow`. Command groups include
+`lifecycle`, `smoke`, `finish-planning`, `oneflow`, and `hosted-oneflow`. Command groups include
 backend and CLI coverage. `smoke` pairs CLI smoke checks with development
 launcher selection. `finish-planning` selects review finish planning and
 eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles.
-`shared` covers the development launcher, Git boundary, repository observation,
+`hosted-oneflow` selects version publication, separate merge-back preparation, and
+fresh-process recovery for manual submission. `shared` covers the development launcher, Git boundary, repository observation,
 settings, tracking, remote roles, finish-check configuration, and exact save/finish
 publication. `lifecycle` includes CLI smoke checks, end-to-end project/fork
-workflows, and direct release/hotfix delivery and recovery; this broad group
+workflows, and direct and hosted release/hotfix delivery and recovery; this broad group
 includes expensive lifecycle coverage. Prefer the narrower groups during fast
 iteration, then run full validation before submitting changes. Every group also runs
 library and binary unit tests (`--lib --bins`). Targets overlap where they
 exercise shared behaviour. Overlap selects shared tests for relevant development
 work; a full run uses Cargo discovery rather than executing each group.
 
-The `finish` group does not include `cli_oneflow`. For tagged release/hotfix
-completion changes, also select `oneflow`, or select both sets of targets directly
+The `finish` group does not include `cli_oneflow`, `cli_hosted_oneflow`, or
+`cli_hosted_recovery`, or `cli_hosted_presentation`. For tagged release/hotfix
+completion changes, also select `oneflow` and `hosted-oneflow`, or select the affected targets directly
 with Cargo. Neither focused group replaces complete validation.
 
 Choose additional targets or groups when a change affects shared components,

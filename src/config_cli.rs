@@ -17,21 +17,34 @@ use crate::{
 fn text(value: impl std::fmt::Display) -> String {
     display(value.to_string().as_bytes())
 }
+#[derive(Clone, Copy)]
+enum OneflowBundle {
+    Direct,
+    Hosted,
+}
+impl OneflowBundle {
+    fn apply(self, settings: &mut settings::Settings, marker: Option<String>) {
+        match self {
+            Self::Direct => settings::oneflow_bundle(settings, marker),
+            Self::Hosted => settings::oneflow_hosted_bundle(settings, marker),
+        }
+    }
+}
 enum Command {
     Help,
-    Guided(Format, bool, Option<String>),
+    Guided(Format, Option<OneflowBundle>, Option<String>),
     Show,
-    Generate(Format, bool, Option<String>),
+    Generate(Format, Option<OneflowBundle>, Option<String>),
 }
 fn parse(args: &[OsString]) -> Option<Command> {
     match args {
-        [] => return Some(Command::Guided(Format::Toml, false, None)),
+        [] => return Some(Command::Guided(Format::Toml, None, None)),
         [arg] if arg == "--help" || arg == "-h" => return Some(Command::Help),
         [arg] if arg == "show" => return Some(Command::Show),
         _ => {}
     }
     let mut yes = false;
-    let mut oneflow = false;
+    let mut oneflow = None;
     let mut marker = None;
     let mut format = None;
     let mut rest = args;
@@ -39,8 +52,12 @@ fn parse(args: &[OsString]) -> Option<Command> {
         if (arg == "--yes" || arg == "-y") && !yes {
             yes = true;
             rest = tail;
-        } else if arg == "--oneflow" && !oneflow {
-            oneflow = true;
+        } else if (arg == "--oneflow" || arg == "--oneflow-hosted") && oneflow.is_none() {
+            oneflow = Some(if arg == "--oneflow" {
+                OneflowBundle::Direct
+            } else {
+                OneflowBundle::Hosted
+            });
             rest = tail;
         } else if arg == "--marker" && marker.is_none() {
             let [value, tail @ ..] = tail else {
@@ -63,7 +80,7 @@ fn parse(args: &[OsString]) -> Option<Command> {
             return None;
         }
     }
-    if marker.is_some() && !oneflow {
+    if marker.is_some() && oneflow.is_none() {
         return None;
     }
     let format = format.unwrap_or(Format::Toml);
@@ -104,7 +121,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         Command::Show => config::inspect(&directory).map(|inspection| show(&inspection)),
         Command::Generate(format, oneflow, marker) => config::prepare(&directory, format)
             .and_then(|mut plan| {
-                if oneflow { settings::oneflow_bundle(&mut plan.proposed, marker); }
+                if let Some(bundle) = oneflow { bundle.apply(&mut plan.proposed, marker); }
                 config::generate(&directory, &plan)
             })
             .map(|generated| {
@@ -184,7 +201,7 @@ fn policy<T>(
 fn guided(
     directory: &Path,
     format: Format,
-    oneflow: bool,
+    oneflow: Option<OneflowBundle>,
     marker: Option<String>,
 ) -> Result<(), ConfigError> {
     let mut plan = config::prepare_guided(directory, format)?;
@@ -449,11 +466,14 @@ fn guided(
             break;
         }
     }
-    if oneflow {
-        settings::oneflow_bundle(&mut plan.proposed, marker);
-        eprintln!(
-            "Direct OneFlow routes are editable as JSON objects; Enter keeps each proposed policy."
-        );
+    if let Some(bundle) = oneflow {
+        bundle.apply(&mut plan.proposed, marker);
+        eprintln!("OneFlow routes are editable as JSON objects; Enter keeps each proposed policy.");
+        if matches!(bundle, OneflowBundle::Hosted) {
+            eprintln!(
+                "Hosted tagged finish publishes the version in the project and a separate merge-back branch for manual review. It retains branches; marker advancement and later cleanup are manual."
+            );
+        }
         for kind in [
             settings::WorkstreamKind::Ordinary,
             settings::WorkstreamKind::Release,
@@ -638,6 +658,7 @@ fn guided(
                 },
                 text(policy.release_marker.as_deref().unwrap_or("none"))
             );
+            review_route(&resolved, true);
         }
     }
     loop {
@@ -813,6 +834,73 @@ fn layer(label: &str, file: Option<&Path>, root: Option<&Path>) {
         (None, None) => println!("{label}: unavailable (bare repository has no working tree)"),
     }
 }
+fn review_route(settings: &settings::Settings, guided: bool) {
+    let Some(policy) = &settings.workstream else {
+        return;
+    };
+    let origin = settings
+        .sources
+        .workstreams
+        .get(&format!("{}.review-remote", policy.kind.as_str()))
+        .unwrap_or(&settings.sources.publish_remote);
+    if settings.finish_mode == settings::FinishMode::Integrate {
+        let message = format!(
+            "Effective {} routes: work {} ({}); direct integration {}/{}.",
+            policy.kind.as_str(),
+            text(&policy.publish_remote),
+            source(&settings.sources.publish_remote),
+            text(&policy.base_remote),
+            text(&policy.integration_target),
+        );
+        if guided {
+            eprintln!("{message}");
+        } else {
+            println!("  {message}");
+        }
+        return;
+    }
+    let message = format!(
+        "Effective {} routes: work {}/{}; review source {} on {} ({}); target {}/{}.",
+        policy.kind.as_str(),
+        text(&policy.publish_remote),
+        if policy.version_tagging {
+            "original work branch"
+        } else {
+            "work branch"
+        },
+        if policy.version_tagging && settings.finish_mode == settings::FinishMode::Review {
+            text(
+                policy
+                    .merge_back_branch
+                    .as_deref()
+                    .unwrap_or("explicit --merge-back branch"),
+            )
+        } else {
+            "work branch".into()
+        },
+        text(
+            if policy.version_tagging && settings.finish_mode == settings::FinishMode::Review {
+                &policy.review_remote
+            } else {
+                &policy.publish_remote
+            }
+        ),
+        source(
+            if policy.version_tagging && settings.finish_mode == settings::FinishMode::Review {
+                origin
+            } else {
+                &settings.sources.publish_remote
+            }
+        ),
+        text(&policy.base_remote),
+        text(&policy.integration_target),
+    );
+    if guided {
+        eprintln!("{message}");
+    } else {
+        println!("  {message}");
+    }
+}
 fn show(inspection: &config::Inspection) {
     let loaded = &inspection.loaded;
     let settings = &loaded.settings;
@@ -909,6 +997,17 @@ fn show(inspection: &config::Inspection) {
             Ok(None) => println!("  creation-association: unavailable (changed during inspection)"),
             Err(error) => println!("  creation-association: unavailable ({})", text(error)),
         }
+        review_route(settings, false);
+        println!("  review-remote: {}", text(&policy.review_remote));
+        println!(
+            "  merge-back-branch: {}",
+            text(
+                policy
+                    .merge_back_branch
+                    .as_deref()
+                    .unwrap_or("explicit --merge-back input")
+            )
+        );
         println!("  preparation-source: {}", text(&policy.preparation_source));
         println!("  integration-target: {}", text(&policy.integration_target));
         println!(
@@ -929,6 +1028,10 @@ fn show(inspection: &config::Inspection) {
         );
     }
     for (kind, config) in &settings.workstreams {
+        let mut effective = inspection.templates.clone();
+        if settings::resolve_workstream(&mut effective, *kind, None).is_ok() {
+            review_route(&effective, false);
+        }
         let values = serde_json::to_value(config).expect("policy serialization");
         for (key, value) in values.as_object().expect("policy object") {
             let name = format!("{}.{}", kind.as_str(), key);
@@ -963,15 +1066,16 @@ fn help() {
         "Inspect configuration or set up shared start/save/finish settings.
 
 Usage: git-oneflow config show
-       git-oneflow config --yes [--format <toml|yaml|json>] [--oneflow [--marker <branch>]]
-       git-oneflow config [--format <toml|yaml|json>] [--oneflow [--marker <branch>]]
+       git-oneflow config --yes [--format <toml|yaml|json>] [--oneflow|--oneflow-hosted] [--marker <branch>]
+       git-oneflow config [--format <toml|yaml|json>] [--oneflow|--oneflow-hosted] [--marker <branch>]
 
 Arguments:
   show             Display effective settings and their sources
 
 Options:
   --oneflow        Create an editable direct OneFlow policy bundle
-  --marker <branch>  Enable release/hotfix marker (requires --oneflow)
+  --oneflow-hosted Create an editable hosted OneFlow review policy bundle
+  --marker <branch>  Configure release/hotfix marker (requires either bundle)
   -y, --yes        Create shared defaults without interactive input
   --format <toml|yaml|json>
                    Generated format (default: toml)
@@ -984,6 +1088,7 @@ Examples:
   gof config --yes --format yaml
   git-oneflow config --yes --format json
   gof config --oneflow --yes --marker stable
+  gof config --oneflow-hosted --yes
 
 Details:
   Inspection reports effective values, file locations, and validation errors.
@@ -1006,7 +1111,15 @@ Details:
   --yes retains unresolved ask policies and the target checkout default.
   --oneflow explicitly selects editable ordinary/release/hotfix policies.
   Ordinary direct integration imports its target by merge; release/hotfix import no newer target work.
-  Release/hotfix require version tags, history-preserving merge integration, and full work cleanup.
+  Direct release/hotfix require version tags, history-preserving merge integration, and full work cleanup.
+  --oneflow-hosted selects review delivery and retains original and merge-back branches.
+  Hosted release/hotfix publish original work to the project base-remote and merge-back to review-remote.
+  review-remote follows the policy publication remote when omitted; the hosted bundle sets it explicitly.
+  merge-back-branch is an exact optional policy branch; finish --merge-back supplies explicit input.
+  Hosted tagged review requires merge integration guidance, work checkout, keep cleanup, and no rewrite allow.
+  Hosted updates ask, merge, or none affect only merge-back; rebase cannot retain released history.
+  Submit merge-back into the target with no-ff integration using your chosen means.
+  Advance a configured marker to the released tag by fast-forward and clean branches after integration.
   Hotfix active-release is explicitly none until edited to an active release branch.
   Markers are disabled unless --marker supplies an exact branch.
   Shared/private workstreams fields merge independently; ordinary defaults apply without this bundle.

@@ -150,12 +150,19 @@ fn discover(directory: &Path) -> Result<RepositoryContext, ConfigError> {
 pub struct Inspection {
     pub repository: RepositoryContext,
     pub loaded: LoadedSettings,
+    /// Layered settings before the current branch association selects a policy.
+    pub templates: settings::Settings,
 }
 pub fn inspect(directory: &Path) -> Result<Inspection, ConfigError> {
     let repository = discover(directory)?;
     let mut loaded = settings::load_with_files(directory, &repository)?;
+    let templates = loaded.settings.clone();
     loaded.settings = settings::load(directory, &repository)?;
-    Ok(Inspection { repository, loaded })
+    Ok(Inspection {
+        repository,
+        loaded,
+        templates,
+    })
 }
 
 /// Captured repository selection, not an authorization to replace any file.

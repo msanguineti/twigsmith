@@ -20,6 +20,8 @@ use std::{
     process::ExitCode,
 };
 
+#[path = "finish_cli_hosted.rs"]
+mod hosted_cli;
 #[path = "finish_cli_integration.rs"]
 mod integration_cli;
 
@@ -96,6 +98,7 @@ struct Completion {
     checkout: Option<FinishCheckout>,
     cleanup: Option<FinishCleanup>,
     release: integration::release::Request,
+    merge_back: Option<String>,
 }
 impl Completion {
     fn validate(&self, mode: FinishMode) -> Result<(), &'static str> {
@@ -190,6 +193,18 @@ fn parse(args: &[OsString]) -> Result<(Request, Completion, bool, bool), &'stati
                 };
                 completion.message = Some(message.into());
             }
+            Some("--merge-back") => {
+                if completion.merge_back.is_some() {
+                    return Err("duplicate --merge-back");
+                }
+                completion.merge_back = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .filter(|v| !v.is_empty())
+                        .ok_or("--merge-back requires an exact branch name")?
+                        .into(),
+                );
+            }
             Some("--tag") => {
                 if completion.release.tag.is_some() {
                     return Err("duplicate --tag");
@@ -244,7 +259,25 @@ fn parse(args: &[OsString]) -> Result<(Request, Completion, bool, bool), &'stati
             _ => return Err("unknown or malformed finish argument"),
         }
     }
-    completion.validate(completion.mode.unwrap_or(FinishMode::Ask))?;
+    if completion.checkout == Some(FinishCheckout::Work)
+        && matches!(
+            completion.cleanup,
+            Some(FinishCleanup::Local | FinishCleanup::Both)
+        )
+    {
+        return Err("--checkout work is incompatible with local cleanup");
+    }
+    if completion.mode == Some(FinishMode::Review)
+        && (completion.message.is_some()
+            || completion.checkout == Some(FinishCheckout::Target)
+            || completion.cleanup.is_some_and(|v| v != FinishCleanup::Keep)
+            || completion
+                .integration
+                .is_some_and(|v| v != FinishIntegration::Merge))
+    {
+        return Err("review retains work branches and accepts no final integration message");
+    }
+    // Tagged review's tag and merge guidance options need branch-policy selection.
     Ok((request, completion, show_credentials, skip_checks))
 }
 
@@ -296,16 +329,48 @@ pub fn run(args: &[OsString]) -> ExitCode {
     };
     // Branch policy is resolved from the associated source, including retained
     // attempts already checked out on their integration target.
-    if let Ok(bound) = integration::assess(&directory, &integration_request, None) {
-        if completion.mode.is_none() {
-            mode = bound.settings.finish_mode;
-        }
-        if integration::release::enabled(&bound) && mode == FinishMode::Review {
-            eprintln!(
-                "error: tagged workstream completion requires integrate mode; hosted release completion is unavailable."
-            );
+    if let Ok(bound) = integration::assess(&directory, &integration_request, None)
+        && completion.mode.is_none()
+    {
+        mode = bound.settings.finish_mode;
+    }
+    let hosted_request = finish::hosted::Request {
+        release: completion.release.clone(),
+        merge_back: completion.merge_back.clone(),
+        update: request.update,
+    };
+    let hosted_initial = finish::hosted::assess(&directory, &hosted_request);
+    if completion.mode.is_none()
+        && let Ok(plan) = &hosted_initial
+    {
+        mode = plan.settings.finish_mode;
+    }
+    let hosted_selected = match finish::hosted::selected(&directory) {
+        Ok(selected) => selected,
+        Err(error) => {
+            eprintln!("error: {}", text(presentation, error));
             return ExitCode::FAILURE;
         }
+    };
+    if finish::hosted::associated(&directory).unwrap_or(true)
+        && let Err(error) = &hosted_initial
+    {
+        eprintln!("error: {}", text(presentation, error));
+        return ExitCode::FAILURE;
+    }
+    if hosted_initial.as_ref().is_ok_and(|p| p.is_retry()) && mode == FinishMode::Integrate {
+        eprintln!("error: a retained hosted preparation must resume in review mode");
+        return ExitCode::FAILURE;
+    }
+    if hosted_selected && mode == FinishMode::Review {
+        return hosted_cli::run(
+            &directory,
+            hosted_initial,
+            &request,
+            &completion,
+            presentation,
+            skip_checks,
+        );
     }
     // Snapshot each selectable workflow before asking. The selected workflow's
     // full guard prevents mode input from adopting concurrent unrelated changes.
@@ -344,6 +409,20 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    }
+    if hosted_selected && mode == FinishMode::Review {
+        return hosted_cli::run(
+            &directory,
+            hosted_initial,
+            &request,
+            &completion,
+            presentation,
+            skip_checks,
+        );
+    }
+    if completion.merge_back.is_some() {
+        eprintln!("error: --merge-back requires tagged review mode");
+        return ExitCode::from(2);
     }
     if let Err(error) = completion.validate(mode) {
         eprintln!("error: {error}; use finish --help (alias: f)");
@@ -1138,7 +1217,7 @@ fn help() {
         "Complete the current working branch. Alias: f.
 
 Usage: git-oneflow finish [--mode <review|integrate>] [--integration <ff-only|merge|squash>]
-                          [--tag <name>] [--tag-message <text>] [--sign-tag]
+                          [--tag <name>] [--tag-message <text>] [--sign-tag] [--merge-back <branch>]
                           [-m|--message <text>] [--checkout <target|work>] [--cleanup <keep|local|both>]
                           [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
 
@@ -1155,6 +1234,7 @@ Options:
   --tag <name>                Select the explicit version tag for tagged work
   --tag-message <text>        Annotate the version tag (separate from -m)
   --sign-tag                  Sign the version tag using Git configuration
+  --merge-back <branch>        Select the distinct tagged-review submission branch
   --skip-checks               Bypass configured checks for this attempt
   --show-credentials          Show HTTP(S) URL credentials in finish output
   -h, --help                  Show help
@@ -1166,6 +1246,7 @@ Examples:
   gof finish --update none --no-rewrite
   gof finish --skip-checks
   gof f --mode integrate --integration ff-only --cleanup local
+  gof f --mode review --tag winter-2026 --merge-back review/winter-2026
   gof finish --mode integrate --integration squash -m \"Complete feature\" --cleanup keep
   gof finish --tag winter-2026 --tag-message \"Winter release\" -m \"Merge release\"
 
@@ -1173,15 +1254,20 @@ Details:
   Completion mode resolves before remote refresh. ask needs terminal input and stderr.
   review prepares and publishes the work branch for manual review, keeping it checked out.
   integrate delivers the verified result to base-remote, then applies checkout and cleanup.
-  Tagged workstreams require --tag, update none, and merge or ff-only integration.
-  The tag identifies the checked source; merge-back checks inspect the resulting target.
+  Direct tagged work requires --tag, update none, and merge or ff-only integration.
+  Tagged review publishes source to publish-remote, the exact tag to base-remote,
+  and --merge-back to review-remote; merge/none preparation changes only merge-back.
+  Submit merge-back into the named target with no-ff integration using your chosen tools.
+  Hosted finish retains both branches and leaves marker advancement and later cleanup manual.
+  The tag identifies the checked source; candidate checks inspect prepared merge-back.
   Tagged completion requires original Git objects; replacement refs must be removed.
   Git tag signing preferences apply; --tag-message supplies annotation separately from -m.
-  Enabled release markers point to the tagged source and advance only by fast-forward.
+  Direct integration advances enabled release markers by fast-forward to the tagged source.
   Tag, target, and marker delivery at every project endpoint precede source cleanup.
   Integration retries reuse the verified attempt's choices and accepted message.
   Delivered retries complete remaining checkout/cleanup without repeating checks or publication.
-  Integration options require integrate mode; valid inactive settings remain validated.
+  Ordinary review rejects integration and tag options. Tagged review accepts tag options,
+  --integration merge, --checkout work, and --cleanup keep; it performs no integration.
   Integration merge means a merge commit; --update merge prepares the work branch.
   -m supplies a literal nonblank final integration message, retaining its whitespace.
   It never amends work commits or supplies a review description.
@@ -1398,8 +1484,9 @@ mod grammar_tests {
             }
             assert!(parsed(&["--mode", "review", flag, "message"]).is_err());
         }
+        assert!(parsed(&["--mode", "review", "--integration", "merge"]).is_ok());
         for (flag, value) in [
-            ("--integration", "merge"),
+            ("--integration", "squash"),
             ("--checkout", "target"),
             ("--cleanup", "both"),
         ] {

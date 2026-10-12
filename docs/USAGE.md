@@ -55,9 +55,10 @@ submit it manually for review. The branch remains checked out and available.
 
 Finish supports manual review delivery and direct integration into the project base.
 Direct integration can retain or delete the work branch after verified delivery.
-Explicit release and hotfix policy also delivers a version tag and an optional
-release-marker branch. Pull request creation, hosted release merge-back, provider
-submission, and build/deployment packaging remain outside these operations.
+Explicit release and hotfix policy delivers a version tag and either a hosted
+merge-back branch or direct integration with optional release-marker delivery.
+Pull request creation, provider submission, and build/deployment packaging remain
+outside these operations.
 
 ## Command reference
 
@@ -188,7 +189,7 @@ gof finish [OPTIONS]
 gof f [OPTIONS]
 ```
 
-Review mode prepares the current clean branch against `base-remote`, runs the
+For ordinary work, review mode prepares the current clean branch against `base-remote`, runs the
 configured checks, and publishes through `publish-remote`. Completion identifies
 the branch, each destination, the pinned commit, and the project base for manual
 submission. It keeps the working branch checked out.
@@ -270,9 +271,11 @@ gof finish --mode integrate --integration squash --message "Fix parser" --cleanu
 | `--checkout <target\|work>` | Select the final checkout; default is target |
 | `--cleanup <keep\|local\|both>` | Retain work, delete local work, or delete local and published work |
 
-These options require integrate mode and do not imply a mode choice. Review mode
-rejects them as syntax errors. Valid integration settings remain inactive in review;
-all supplied settings are validated.
+These options do not imply a mode choice. Ordinary review rejects integration,
+message, checkout, and cleanup options; its integration settings remain inactive.
+Tagged hosted review accepts only merge guidance, work checkout, and keep cleanup;
+final integration messages require integrate mode. All supplied settings are
+validated.
 
 Work preparation and target integration are independent. `--update merge`
 incorporates the observed target into work; `--integration merge` creates the final
@@ -436,6 +439,83 @@ remaining cleanup; it cannot publish missing release refs from an absent source.
 Hosted release/hotfix merge-back and post-review cleanup remain outside direct
 completion.
 
+### Hosted releases and hotfixes
+
+Hosted finish publishes the approved version and a distinct merge-back branch,
+then reports readiness for manual submission. It retains both branches. The
+project target and optional release marker remain for later manual integration.
+
+```sh
+gof config --oneflow-hosted --yes
+# Edit the generated project and review routes for your repository.
+gof start release/spring --policy release --from <development-commit>
+# Stabilize and commit the release.
+gof save
+gof finish --tag spring --merge-back merge-back/spring
+
+gof start hotfix/spring-fix --policy hotfix --from-tag spring
+# Fix and commit the released version.
+gof save
+gof finish --tag spring-fix --merge-back merge-back/spring-fix
+```
+
+The editable hosted bundle uses review mode for releases and hotfixes. Their
+`publish-remote` receives original work; `base-remote` receives the selected
+version tag; `review-remote` receives the merge-back branch. The bundle selects
+the project remote for original publication and the ordinary publication remote
+for review. Remotes may coincide, and their names confer no role. Equivalent
+custom templates select the same behavior with `version-tagging = "required"`
+and `finish-mode = "review"`.
+
+Supply `--merge-back <branch>` or configure `merge-back-branch` in the selected
+template. An unresolved tag, merge-back name, or relevant preparation choice asks
+at a terminal. The merge-back branch must differ from the original source,
+project target, and optional marker. Existing branches and tags are collisions
+unless private evidence corroborates them as effects of this same attempt.
+
+Hosted finish requires complete original Git history; shallow history, replacement
+refs, and grafts must be resolved before preparation. Finish checks the exact
+released source before creating and delivering its tag.
+The original published branch must match that version. The merge-back branch
+starts at the released commit. Hosted preparation uses the selected review target;
+`preparation-source` supplies ordinary work preparation. `--update merge` incorporates the pinned target
+into that separate branch; `--update none` retains the released history unchanged.
+Rebase is incompatible with preserving that history for merge-back. Checks also
+validate the prepared merge-back candidate; an identical already-checked commit
+needs no duplicate check. Annotation and signing use the tag options described
+above, without unsigned fallback. A check bypass remains explicit and a later
+unbypassed retry must validate bypassed trees before pending delivery.
+
+Hosted policy uses `finish-integration = "merge"` to express the required no-ff
+merge-back guidance, `finish-checkout = "work"`, `finish-cleanup = "keep"`, and
+`finish-rewrite = "deny"`. Direct integration and cleanup options do not perform
+later review work. Ordinary contributions can still review into a release or
+hotfix with `--policy ordinary --target <branch>`; they adopt no version-tag or
+marker effects and retain their own integration preferences.
+
+Successful output names the version tag and commit, original source, published
+merge-back source, review repository, and target. Submit that merge-back branch
+into the named project target through your chosen interface and request a
+non-fast-forward merge (`--no-ff`). Resolve later review conflicts on the
+merge-back branch, preserving the tagged version. Remove temporary branches only
+after the appropriate integration. If configured, advance the release marker
+manually by fast-forward to the released tag after integration; do not point it
+at a newer merge-back result.
+
+Hotfix review targets the explicitly declared active release when present, or
+development when `active-release = "none"`. Keep that declaration current before
+starting work. Changed or invalid context stops affected operations.
+
+The separate merge-back source and no-ff guidance follow
+[Ruka's hosted OneFlow description](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab).
+This is the selected workflow, not a claim about every project's review practice.
+Finish creates no PR, invokes no provider tool, and observes no submission status.
+Its attempt ends at verified requested publication. Submission, approval,
+integration, deployment, branch cleanup, and marker advancement are external
+follow-up; finish does not monitor or complete them. See
+[hosted preparation recovery](#recover-hosted-preparation) for interrupted work
+before readiness.
+
 ### Inspect state
 
 ```sh
@@ -458,6 +538,7 @@ gof config show
 gof config [--format <toml|yaml|json>]
 gof config --yes [--format <toml|yaml|json>]
 gof config --oneflow [--yes] [--marker <branch>] [--format <toml|yaml|json>]
+gof config --oneflow-hosted [--yes] [--marker <branch>] [--format <toml|yaml|json>]
 ```
 
 `config show` displays effective settings and each value's shared file, local
@@ -550,10 +631,10 @@ an empty TOML document or empty YAML/JSON mapping (`{}`) inherits all keys.
 | `finish-update` | `ask`, `rebase`, `merge`, `none` | `ask` |
 | `finish-rewrite` | `ask`, `allow`, `deny` | `ask` |
 | `finish-checks` | Ordered list of check objects | `[]` |
-| `finish-integration` | `ask`, `ff-only`, `merge`, `squash`; inactive in review | `ask` |
+| `finish-integration` | `ask`, `ff-only`, `merge`, `squash`; hosted tagged review requires `merge` | `ask` |
 | `finish-message` | `ask`, `auto`; inactive in review | `ask` |
-| `finish-checkout` | `target`, `work`; inactive in review | `target` |
-| `finish-cleanup` | `ask`, `keep`, `local`, `both`; inactive in review | `ask` |
+| `finish-checkout` | `target`, `work`; hosted tagged review requires `work` | `target` |
+| `finish-cleanup` | `ask`, `keep`, `local`, `both`; hosted tagged review requires `keep` | `ask` |
 | `redact-credentials` | Private local-only boolean for finish output | `true` |
 
 Use a mapping of case-sensitive keys. Remote names, branch names, and policies
@@ -604,9 +685,11 @@ Policy is selected explicitly with start; a template name is data, not code.
 | --- | --- |
 | `creation-source` | Reference used to create new work |
 | `preparation-source` | Branch supplying work preparation |
-| `integration-target` | Branch receiving direct integration |
+| `integration-target` | Branch receiving direct integration or manual merge-back review |
 | `publish-remote` | Work-branch publication and remote-resume destination |
-| `base-remote` | Project source and direct-delivery remote |
+| `base-remote` | Project source and version/direct-delivery remote |
+| `review-remote` | Hosted merge-back publication remote; defaults to the effective work publication remote |
+| `merge-back-branch` | Exact hosted merge-back branch name; finish can supply `--merge-back` |
 | `version-tagging` | `required` or `disabled` |
 | `release-marker` | Marker branch name, or `none` |
 | `active-release` | Explicit active release branch, or `none`, for hotfix routing |
@@ -998,6 +1081,32 @@ roles and destinations; changing them can require incorporating the new destinat
 history with Git before retrying. Retain the repository's Git metadata and reflogs
 while recovering a finish rebase. Do not bypass a failed verification by treating
 `--allow-rewrite` as unconditional force permission.
+
+### Recover hosted preparation
+
+After repairing the reported problem, rerun `gof finish` in the same worktree.
+Retained evidence supplies the approved tag, merge-back name, and preparation
+choice when omitted. Explicit conflicting input, changed settings/endpoints,
+recreated branches, changed tag objects, occupied worktrees, or missing evidence
+block affected effects. Keep private Git metadata and reflogs during recovery.
+
+Resolve preparation conflicts on the merge-back branch with native Git commands:
+stage the resolution and use `git merge --continue`, or use `git merge --abort`
+to abandon the pending merge. Preserve the original released branch and tag.
+Rerun finish to verify the preparation transition and complete pending checks and
+publication. A conflict-resolved candidate is merge-back work; it does not become
+the released version.
+
+Partial and uncertain source, tag, or review publication retain completed effects.
+A retry freshly verifies exact destinations, skips confirmed publication, and
+continues pending work without extra branches or retagging. Successful checks can
+be reused only for corroborated unchanged commits and context. Git command errors
+remain failures even when their effects occurred. Reports name completed work,
+pending preparation/publication, and the next action.
+
+Once readiness has been reported, continue review and integration using your own
+tools. The retained preparation record supplies no authority to reconstruct PR
+state, verify later integration, advance a marker, or remove branches.
 
 ### Recover direct integration
 

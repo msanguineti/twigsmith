@@ -15,7 +15,8 @@ Read the architecture and Git boundary first, then follow the relevant workflow:
 - [Finish for review](#finish-for-review-prepare-check-and-deliver)
 - [Publication reports and failure diagnosis](#publication-reports-and-failure-diagnosis)
 - [Direct integration](#direct-integration) and
-  [tagged release delivery](#tagged-release-delivery)
+  [tagged release delivery](#tagged-release-delivery) and
+  [hosted version preparation](#hosted-version-preparation)
 
 ## Architecture and execution model
 
@@ -64,8 +65,9 @@ progress and publishes the current branch. CLI finish prepares and checks work,
 then publishes it for manual review or delivers its integrated result to the
 project base. Review mode leaves submission to the developer and identifies the
 publication branch and project base in its output. Explicit release and hotfix
-policy additionally binds a released source commit, version tag, and optional
-release marker to direct delivery. Finish creates no
+policy additionally binds a released source commit and version tag to direct
+delivery or hosted merge-back preparation. Direct delivery can advance an optional
+release marker; hosted preparation reports its manual follow-up. Finish creates no
 pull request and invokes no provider submission or deployment tool.
 
 Direct integration uses its own workflow library in
@@ -207,7 +209,9 @@ Settings include sparse `workstreams.ordinary`, `workstreams.release`, and
 target, work publication, version tagging, active-release context, marker, and
 finish choices are independent data. The explicit `config --oneflow` bundle
 serializes editable templates using the same schema as custom settings; there
-is no strategy dispatch during lifecycle execution. Built-in ordinary settings
+is no strategy dispatch during lifecycle execution. `config --oneflow-hosted`
+serializes tagged review templates with separate work and merge-back publication
+routes through that same schema. Built-in ordinary settings
 remain the default when the bundle is not selected.
 
 Start resolves explicit policy and retains its association with the exact work
@@ -955,11 +959,85 @@ abandonment retains the original released version identity.
 
 The default checkout is the integration target. CLI reports distinguish released
 version/source, integration result/destination, marker, cleanup, and pending work.
-Hosted release/hotfix review completion, provider submission, and deployment are
-outside this delivery path. The [CLI OneFlow fixtures](../tests/cli_oneflow.rs)
+Hosted version preparation uses the separate review path described below. Provider
+submission and deployment remain external to both paths. The [CLI OneFlow fixtures](../tests/cli_oneflow.rs)
 exercise release/hotfix safety and recovery with real Git through the canonical
 command entry point. A focused ordinary lifecycle matrix verifies both executables
 and their start/save/finish aliases with actual publication and integration effects.
+
+## Hosted version preparation
+
+[`finish::hosted`](../src/finish/hosted.rs) handles tagged work with
+`finish-mode = review`; [`finish_cli_hosted.rs`](../src/finish_cli_hosted.rs)
+resolves terminal input and reports a version and separate merge-back branch
+ready for manual submission. The selected template's `publish-remote`
+receives original work, `base-remote` receives the version tag and supplies the
+project target, and `review-remote` receives merge-back work. An omitted review
+remote follows the effective work publication remote. `merge-back-branch` or
+explicit finish input names the distinct branch; no prefix infers policy or
+ownership.
+
+Hosted assessment requires complete history without replacement refs or grafts;
+missing history cannot establish this version-preparation evidence. The released
+source and merge-back candidate remain separate identities. Source
+checks validate the exact released tree before tag delivery. Tag identity includes
+the exact tag object, its released commit, and corroborated attempt creation;
+annotation/signing cannot fall back to another version. The merge-back branch
+starts at the released source. Merge preparation imports the pinned target only
+into that branch; none retains the source history. Rebase cannot preserve the
+released history for this path. Candidate checks identify the prepared commit.
+Before merge, explicit path-overlap checks protect ignored local content from
+the retained target tree. Git 2.47.3 fixtures show that merge machinery can replace
+ignored paths despite `--no-overwrite-ignore`; this application guard complements
+Git's checkout and index protections. Retained successful receipts require unchanged
+corroborated commits and bound
+context; bypass receipts cannot authorize unbypassed pending delivery.
+
+Hosted policy keeps work branches, denies history replacement, and selects
+no-ff merge-back guidance independently of ordinary contribution preferences.
+It neither integrates into the target nor advances the optional marker. The
+marker is follow-up information, not a pending executor effect. Source, tag, and
+merge-back publication select only their intended exact refs at their bound
+endpoints, and independently verified equality recovers completed delivery.
+Command errors remain reportable after effects and no rollback discards work.
+
+Recovery covers the tool's own preparation and publication across processes.
+Version-1 private records live under `<worktree-git-dir>/oneflow-hosted/`, with
+separate attempts and merge-back associations keyed by the exact source/branch
+bytes. Private attempt evidence binds repository/worktree, original association,
+settings/provenance and Git configuration, endpoints, source/tag identities,
+merge-back creation and preparation transitions, and check receipts. Private refs
+at `refs/oneflow/hosted/<token>/target` and `/prepare` retain the exact target and
+corroborate preparation start through attempt-marked creation reflogs. Missing or
+changed acknowledged retention blocks reuse. A branch at
+the same OID is insufficient proof of ownership after recreation. A conflict
+resolution must establish the recorded source/target merge transition before
+candidate publication; it cannot redefine the released version. Native Git merge
+continuation and abandonment retain the original version identity. Changed or
+missing evidence blocks affected operations rather than adopting existing work.
+
+Successful output reports verified readiness for manual submission, names the
+review source and target, and gives no-ff and manual follow-up instructions.
+Readiness ends this attempt's responsibility. Later PR activity is neither
+observed nor reconstructed from Git history. No provider API, external workflow
+tool, submission-state polling, post-review cleanup, or marker completion stage
+exists in this path. The developer resolves later review conflicts on merge-back
+work, preserves the tagged version, and removes temporary branches only after
+appropriate integration.
+
+The separate source and no-ff guidance are documented in
+[Ruka's hosted OneFlow article](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab).
+The article describes a workflow, not universal project practice. Exact selected
+tag delivery, declared active-release hotfix routing, guarded recovery, and the
+readiness boundary are this application's policy. The hosted article does not
+restate the original active-release hotfix case; explicit settings preserve that
+routing rather than inferring release context from hosted submission state.
+[Hosted lifecycle tests](../tests/cli_hosted_oneflow.rs) cover routes, immutable
+version history, native merge recovery, collision containment, and entrypoint
+wiring; [recovery tests](../tests/cli_hosted_recovery.rs) cover interrupted effects,
+partial destinations, check receipts, and changed evidence.
+[Presentation tests](../tests/cli_hosted_presentation.rs) cover terminal
+cancellation, prompt revalidation, and streamed credential protection.
 
 ## Evidence and maintenance limits
 

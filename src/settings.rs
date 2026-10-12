@@ -286,6 +286,10 @@ pub struct WorkstreamConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_remote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_back_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_tagging: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_marker: Option<String>,
@@ -322,6 +326,10 @@ impl<'de> Deserialize<'de> for WorkstreamConfig {
             #[serde(default, deserialize_with = "optional_text")]
             base_remote: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
+            review_remote: Option<String>,
+            #[serde(default, deserialize_with = "optional_text")]
+            merge_back_branch: Option<String>,
+            #[serde(default, deserialize_with = "optional_text")]
             version_tagging: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
             release_marker: Option<String>,
@@ -356,6 +364,8 @@ impl<'de> Deserialize<'de> for WorkstreamConfig {
                     integration_target: fields.integration_target,
                     publish_remote: fields.publish_remote,
                     base_remote: fields.base_remote,
+                    review_remote: fields.review_remote,
+                    merge_back_branch: fields.merge_back_branch,
                     version_tagging: fields.version_tagging,
                     release_marker: fields.release_marker,
                     active_release: fields.active_release,
@@ -412,6 +422,12 @@ impl WorkstreamConfig {
         if other.base_remote.is_some() {
             self.base_remote = other.base_remote;
         }
+        if other.review_remote.is_some() {
+            self.review_remote = other.review_remote;
+        }
+        if other.merge_back_branch.is_some() {
+            self.merge_back_branch = other.merge_back_branch;
+        }
         if other.version_tagging.is_some() {
             self.version_tagging = other.version_tagging;
         }
@@ -461,7 +477,7 @@ impl WorkstreamConfig {
         Ok(())
     }
     pub(crate) fn validate(&self, directory: &Path) -> Result<(), SettingsError> {
-        for value in [&self.publish_remote, &self.base_remote]
+        for value in [&self.publish_remote, &self.base_remote, &self.review_remote]
             .into_iter()
             .flatten()
         {
@@ -471,9 +487,13 @@ impl WorkstreamConfig {
                 )));
             }
         }
-        for value in [&self.preparation_source, &self.integration_target]
-            .into_iter()
-            .flatten()
+        for value in [
+            &self.preparation_source,
+            &self.integration_target,
+            &self.merge_back_branch,
+        ]
+        .into_iter()
+        .flatten()
         {
             if !valid_branch(directory, value)? {
                 return Err(SettingsError::InvalidSettings(format!(
@@ -500,12 +520,39 @@ impl WorkstreamConfig {
                 "invalid creation-source".into(),
             ));
         }
-        if self.version_tagging.as_deref() == Some("required")
-            && (self.finish_update.as_ref().is_some_and(|v| v != "none")
-                || self.finish_integration.as_deref() == Some("squash")
-                || self.finish_mode.as_ref().is_some_and(|v| v != "integrate"))
-        {
-            return Err(SettingsError::InvalidSettings("tagged work requires integrate mode, no source preparation, and history-preserving integration".into()));
+        if self.version_tagging.as_deref() == Some("required") {
+            match self.finish_mode.as_deref() {
+                Some("review") => {
+                    if self.finish_update.as_deref() == Some("rebase")
+                        || self
+                            .finish_integration
+                            .as_ref()
+                            .is_some_and(|v| v != "merge")
+                        || self.finish_checkout.as_ref().is_some_and(|v| v != "work")
+                        || self.finish_cleanup.as_ref().is_some_and(|v| v != "keep")
+                        || self.finish_rewrite.as_deref() == Some("allow")
+                    {
+                        return Err(SettingsError::InvalidSettings(
+                            "tagged review requires history-preserving merge-back preparation, merge integration guidance, work checkout, keep cleanup, and no rewrite authorization".into(),
+                        ));
+                    }
+                }
+                Some("integrate") => {
+                    if self.finish_update.as_ref().is_some_and(|v| v != "none")
+                        || self.finish_integration.as_deref() == Some("squash")
+                    {
+                        return Err(SettingsError::InvalidSettings(
+                            "tagged integration requires no source preparation and history-preserving integration".into(),
+                        ));
+                    }
+                }
+                Some(_) => {
+                    return Err(SettingsError::InvalidSettings(
+                        "tagged work requires explicit review or integrate mode".into(),
+                    ));
+                }
+                None => {}
+            }
         }
         if self
             .version_tagging
@@ -549,6 +596,8 @@ pub struct WorkstreamPolicy {
     pub integration_target: String,
     pub publish_remote: String,
     pub base_remote: String,
+    pub review_remote: String,
+    pub merge_back_branch: Option<String>,
     pub version_tagging: bool,
     pub release_marker: Option<String>,
     pub active_release: Option<String>,
@@ -1272,12 +1321,31 @@ pub fn resolve_workstream(
             .unwrap_or(SettingSource::BuiltIn);
     }
 
-    if version_tagging
-        && (settings.finish_mode != FinishMode::Integrate
-            || settings.finish_update != FinishUpdate::None
-            || settings.finish_integration == FinishIntegration::Squash)
-    {
-        return Err(SettingsError::InvalidSettings("version-tagging requires integrate mode, finish-update = none, and history-preserving integration".into()));
+    if version_tagging {
+        match settings.finish_mode {
+            FinishMode::Integrate => {
+                if settings.finish_update != FinishUpdate::None
+                    || settings.finish_integration == FinishIntegration::Squash
+                {
+                    return Err(SettingsError::InvalidSettings("tagged integration requires finish-update = none and history-preserving integration".into()));
+                }
+            }
+            FinishMode::Review => {
+                if settings.finish_update == FinishUpdate::Rebase
+                    || settings.finish_integration != FinishIntegration::Merge
+                    || settings.finish_checkout != FinishCheckout::Work
+                    || settings.finish_cleanup != FinishCleanup::Keep
+                    || settings.finish_rewrite == FinishRewrite::Allow
+                {
+                    return Err(SettingsError::InvalidSettings("tagged review requires history-preserving merge-back preparation, finish-integration = merge, finish-checkout = work, finish-cleanup = keep, and no rewrite authorization".into()));
+                }
+            }
+            FinishMode::Ask => {
+                return Err(SettingsError::InvalidSettings(
+                    "version-tagging requires explicit review or integrate mode".into(),
+                ));
+            }
+        }
     }
     let release_marker = config.release_marker.filter(|v| v != "none");
     if release_marker.as_deref() == Some(&integration_target) {
@@ -1288,6 +1356,13 @@ pub fn resolve_workstream(
     if kind == WorkstreamKind::Ordinary && release_marker.is_some() {
         return Err(SettingsError::InvalidSettings(
             "ordinary work cannot advance a release marker".into(),
+        ));
+    }
+    if config.merge_back_branch.as_ref().is_some_and(|branch| {
+        branch == &integration_target || release_marker.as_ref() == Some(branch)
+    }) {
+        return Err(SettingsError::InvalidSettings(
+            "merge-back branch must differ from integration target and release marker".into(),
         ));
     }
     settings.base = integration_target.clone();
@@ -1309,6 +1384,10 @@ pub fn resolve_workstream(
         integration_target,
         publish_remote: settings.publish_remote.clone(),
         base_remote: settings.base_remote.clone(),
+        review_remote: config
+            .review_remote
+            .unwrap_or_else(|| settings.publish_remote.clone()),
+        merge_back_branch: config.merge_back_branch,
         version_tagging,
         release_marker,
         active_release,
@@ -1457,7 +1536,23 @@ pub fn oneflow_bundle(settings: &mut Settings, marker: Option<String>) {
                 finish_checkout: Some("target".into()),
                 finish_rewrite: Some("deny".into()),
                 finish_message: Some("auto".into()),
+                ..WorkstreamConfig::default()
             },
         );
+    }
+}
+
+/// Editable hosted routes: publish the version in the project and merge-back for review.
+pub fn oneflow_hosted_bundle(settings: &mut Settings, marker: Option<String>) {
+    let review_remote = settings.publish_remote.clone();
+    oneflow_bundle(settings, marker);
+    for (kind, config) in &mut settings.workstreams {
+        config.finish_mode = Some("review".into());
+        config.finish_cleanup = Some("keep".into());
+        config.finish_checkout = Some("work".into());
+        if *kind != WorkstreamKind::Ordinary {
+            config.review_remote = Some(review_remote.clone());
+            config.finish_update = Some("merge".into());
+        }
     }
 }
