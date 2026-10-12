@@ -53,7 +53,7 @@ impl Report {
     pub fn guidance(&self) -> &'static str {
         if let Ok(repository::Observation::Repository(state)) = &self.remaining {
             if state.operations.rebase {
-                return "Resolve conflicts and use git rebase --continue, or use git rebase --abort; then rerun finish.";
+                return "Complete the stopped edit or resolve and stage conflicts, then use git rebase --continue, or use git rebase --abort; then rerun finish.";
             }
             if state.operations.merge {
                 return "Resolve conflicts and use git merge --continue, or use git merge --abort; then rerun finish.";
@@ -120,7 +120,11 @@ fn command(
     action: Option<&str>,
     report: &mut Report,
 ) -> Result<Vec<u8>, PreparationError> {
-    let result = git::workflow_with_reflog(directory, &args, action);
+    let result = if args.iter().any(|a| a == "--interactive") {
+        history::execute(directory, &args, action)
+    } else {
+        git::workflow_with_reflog(directory, &args, action)
+    };
     let success = result.as_ref().is_ok_and(|o| o.status.success());
     let bytes = result
         .as_ref()
@@ -235,8 +239,34 @@ fn refresh_inner(
         base_ref,
         branch_ref: plan.publication.branch_ref.clone(),
         base,
+        target: None,
         destinations: vec![],
     };
+    if plan.history_edit == HistoryEdit::Interactive {
+        let target_ref = format!(
+            "refs/heads/{}",
+            plan.settings
+                .workstream
+                .as_ref()
+                .map_or(plan.settings.base.as_str(), |p| p
+                    .integration_target
+                    .as_str())
+        )
+        .into_bytes();
+        if target_ref != evidence.base_ref {
+            let branch = observe(
+                root,
+                plan,
+                plan.settings.base_remote.as_bytes(),
+                &target_ref,
+                report,
+            )?;
+            evidence.target = Some(TargetEvidence {
+                reference: target_ref,
+                branch,
+            });
+        }
+    }
     report.evidence = Some(evidence.clone());
     for destination in destinations {
         // URLs returned by `remote get-url --push` are already rewritten. Fail
@@ -297,6 +327,7 @@ fn stable_after(before: &Plan, after: &Plan) -> bool {
         && before.grafts == after.grafts
         && before.tracking_hints == after.tracking_hints
         && before.committed_settings == after.committed_settings
+        && before.shared_history == after.shared_history
 }
 fn prepare_inner(
     directory: &Path,
@@ -326,6 +357,10 @@ fn prepare_inner(
         unreachable!("ready base")
     };
     guard(root, plan)?;
+    if plan.history_edit == HistoryEdit::Interactive {
+        history::editor_ready(root)?;
+        history::protect_ignored(root, &plan.commit, base)?;
+    }
     let action = if plan.update == FinishUpdate::Rebase {
         let (path, action) = recovery::record(root, plan)?;
         report.effects.push(Effect::RecoveryRecorded(path));
@@ -368,6 +403,9 @@ fn prepare_inner(
         _ => unreachable!("resolved update"),
     };
     let mut args: Vec<OsString> = options.iter().map(OsString::from).collect();
+    if plan.history_edit == HistoryEdit::Interactive {
+        args.push("--interactive".into());
+    }
     args.push(repository::os(base)?);
     command(root, args, action.as_deref(), report)?;
     let after = assess(root, &plan.request, plan.evidence.as_ref())?;
@@ -392,6 +430,13 @@ fn prepare_inner(
     }
     if plan.update == FinishUpdate::Rebase && !matches!(after.recovery, Recovery::Verified(_)) {
         return Err(PreparationError::RecoveryUnverified);
+    }
+    if plan.history_edit == HistoryEdit::Interactive {
+        let checked = after.clone();
+        refresh_inner(root, &checked, report)?;
+        if report.evidence != checked.evidence {
+            return Err(FinishError::ContextChanged.into());
+        }
     }
     if !after.is_ready() {
         return Err(PreparationError::UnresolvedPlan);

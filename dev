@@ -66,7 +66,7 @@ test_group() {
             ;;
         finish)
             group_description='Finish planning, preparation, publication, recovery, and command interaction'
-            group_targets='finish_integration finish_planning finish_preparation finish_publication finish_roles finish_checks cli_finish'
+            group_targets='finish_integration finish_planning finish_preparation finish_publication finish_roles finish_checks cli_finish cli_history cli_history_presentation'
             ;;
         config)
             group_description='Settings, setup, and cross-command finish-check configuration'
@@ -82,11 +82,15 @@ test_group() {
             ;;
         lifecycle)
             group_description='CLI smoke and end-to-end project/fork lifecycles'
-            group_targets='cli_smoke cli_lifecycle cli_oneflow cli_hosted_oneflow cli_hosted_recovery cli_hosted_presentation'
+            group_targets='cli_smoke cli_lifecycle cli_oneflow cli_hosted_oneflow cli_hosted_recovery cli_hosted_presentation cli_history cli_history_presentation'
             ;;
         smoke)
             group_description='CLI smoke checks and development launcher selection'
             group_targets='cli_smoke dev_selection'
+            ;;
+        history-edit)
+            group_description='Ordinary interactive history preparation and native recovery'
+            group_targets='finish_preparation cli_history cli_history_presentation'
             ;;
         finish-planning)
             group_description='Review finish planning and eligibility'
@@ -117,7 +121,7 @@ case "$command" in
             exit 2
         fi
         echo 'Every group includes --lib --bins and the following --test targets:'
-        for group in start save finish config status shared lifecycle smoke finish-planning oneflow hosted-oneflow; do
+        for group in start save finish config status shared lifecycle smoke finish-planning history-edit oneflow hosted-oneflow; do
             test_group "$group"
             printf '\n%s: %s\n  %s\n' "$group" "$group_description" "$group_targets"
         done

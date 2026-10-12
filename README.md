@@ -24,7 +24,9 @@ and publishes a clean branch for manual submission in review mode or delivers it
 integrated result to the configured target in integrate mode. Explicit release and
 hotfix policy adds version tagging, with direct delivery or hosted merge-back preparation. Completion mode
 comes from configuration or `--mode`; an unresolved mode asks at a terminal.
-`status` summarizes the current checkout.
+`status` summarizes the current checkout. Ordinary finish can explicitly prepare
+work in Git's interactive rebase editor before review or integration; see
+[history editing](docs/USAGE.md#edit-ordinary-work-history).
 
 | Command | Shorthand | Purpose |
 | --- | --- | --- |

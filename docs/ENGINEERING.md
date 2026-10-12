@@ -24,7 +24,8 @@ Both executables, `git-oneflow` and `gof`, enter the same
 [command dispatcher](../src/cli.rs). The lifecycle aliases `s`, `v`, and `f`
 use the same command implementations. CLI modules parse arguments, resolve
 interactive choices, render reports, and choose exit status. Workflow libraries
-return typed plans, effects, errors, and observations without terminal prompts.
+return typed plans, effects, errors, and observations without application prompts.
+Explicit interactive preparation delegates history editing to Git.
 Help is handled before repository discovery or configuration loading.
 
 The implementation has three main boundaries:
@@ -429,7 +430,7 @@ stay unavailable. Ancestry disables replacement objects, and legacy grafts block
 approval because they can invent parentage. These safeguards are application
 policy, with the model covered by [finish planning tests](../tests/finish_planning.rs).
 
-Fresh inclusion of the base resolves update to `none`, irrespective of preference.
+With history editing disabled, fresh inclusion of the base resolves update to `none`, irrespective of update preference.
 Otherwise the chosen update is rebase, merge, or none. Missing or uncertain
 evidence prevents history-dependent choices. Unrelated base history prevents
 rebase/merge approval; explicit none can retain it when observations are complete.
@@ -473,35 +474,94 @@ or endpoints stop later execution. Reports retain observations, fetched objects,
 private recovery writes, verified branch changes, command output, and remaining
 state. Preparation never publishes or establishes tracking.
 
+### Interactive work preparation
+
+`finish-history-edit` and the matching request field resolve independently of
+update, integration, message, rewrite, checkout, and cleanup. The built-in choice
+is `none`. `interactive` requires ordinary work and update `rebase`; it continues
+to require preparation when the work already contains the base. Tagged direct
+and hosted preparation reject that choice. Complete history, no replacement refs,
+and a unique preparation merge boundary are required before editing. A different
+integration target cannot contribute shared commits inside the editable range.
+
+[`finish/history.rs`](../src/finish/history.rs) runs Git's native interactive
+rebase with its sequence/commit editor preferences. Before starting it checks
+ignored path overlap against the boundary and every replay-range tree, including
+file/directory prefixes. This protects ignored content absent from the source's
+final tree but present at an intermediate replay. Automatic update-refs,
+autosquash, autostash, and fork-point remain disabled; merge structure is preserved.
+Native editors, hooks, and explicitly added todo commands are developer-controlled
+code. Those commands are not sandboxed; the range and incidental-effect guards
+contain the tool's selected operation, not arbitrary editor execution.
+
+Without terminal stdin and stderr, both editor roles must have explicit settings
+or environment selections. The developer selects commands suitable for unattended
+execution; arbitrary configured commands cannot be proven to terminate. Terminal
+Git/editor UI inherits its terminal streams. Captured unattended diagnostics use
+normal CLI redaction; native terminal UI, like the integration message editor,
+receives original content.
+
+Review records local preparation/target refs and raw reflogs; direct integration
+binds its separate preparation ref alongside its existing target evidence. Both
+compare pinned remote observations immediately after editing, before later effects.
+A changed observation is rejected rather than adopted as fresh authority.
+
+Preparation retains original work before rewriting, binds the attempt to its
+source and boundary, and requires a corroborated native finish transition plus
+clean attached state. Git can return success at an intentional edit stop; that
+state cannot pass checks or authorize delivery. Reorder, combine, reword,
+amend/split, and drop use native Git semantics. A complete edit may preserve
+commit IDs or remove all work. Reassessment uses the actual result; an empty
+contribution requires no integration commit or message. Checks on earlier trees
+do not validate a changed result.
+
+Fresh processes reuse verified preparation with matching context. Resets,
+recreation, lost evidence, changed settings/routes, or unfinished/aborted operations
+cannot supply the earlier edit's delivery authority. Review replacement still
+requires current rewrite permission and retained exact remote incorporation proof.
+Direct integration preserves its selected ff-only, no-ff merge, or squash method;
+source editing alone supplies no remote source publication or deletion permission.
+[Ordinary CLI editing tests](../tests/cli_history.rs) exercise native operations,
+actual resulting history, no-work integration, and cross-process retries.
+
 ### Rebase recovery proves incorporation
 
 Before a review rebase, [`finish/recovery.rs`](../src/finish/recovery.rs) writes
-an atomic version-2 record at
+an atomic version-3 record at
 `<worktree-git-dir>/oneflow-finish/branches/<branch>/rewrite.json`. Owner-only
 files/directories on Unix and symlink rejection protect its private storage.
 The record binds repository/worktree identity, refs, remote roles/endpoints,
 ordered original destination observations, original commits, fetched bases,
 selected remote/URL-rewrite configuration, and branch/HEAD reflog anchors.
+Interactive records additionally bind full settings/configuration, local shared
+refs/raw logs, exact target evidence, and an original retention ref with its
+creation reflog. Raw branch and HEAD prefixes corroborate the pre-edit anchors;
+interactive completion accepts only its verified finish, with no later source
+reset or rewrite.
 It stores operational evidence rather than reusable rewrite permission.
 Rebase starts only when both reflogs anchor the current commit.
 
 Assessment corroborates original incorporation and the anchored rebase interval:
 the unique marked start, supported successful finish, fetched-base incorporation,
-and resulting branch tip. Later commits or merges must preserve that verified
-result through positive ancestry. An abort or unstarted attempt supplies no new
-proof. Further finish rebases can extend the verified chain while publication
-is pending, including after partial publication.
+and resulting branch tip. For noninteractive preparation, later commits or merges
+must preserve that verified result through positive ancestry; further finish
+rebases can extend the verified chain while publication is pending, including
+after partial publication. Interactive preparation keeps its exact completed
+result and boundary. Invalid retained interactive evidence blocks a new edit
+until the bound context is resolved. An abort or unstarted attempt supplies no
+new proof.
 
 Git continuation can finish in another process, and verification needs no final
 journal acknowledgement after Git succeeds. A covered exact original destination
 commit can then qualify for `VerifiedRewrite`, with current allow still required.
-New remote work cannot borrow that record. Ordinary incorporated destinations
-continue to use normal ancestry even when a record is invalid.
+New remote work cannot borrow that record. With history editing disabled, ordinary
+incorporated destinations use normal ancestry even when a record is invalid.
 
 Expired reflogs, missing objects, changed identities/endpoints/configuration,
 discarded result history, unsupported versions, or malformed records stop proof
-of replacement. Records remain local, are not automatically cleaned up, and are
-neither a backup nor a branch-role database. Recovery relies on recognizable Git
+of replacement. Interactive attempts retain original work in a private Git ref; the metadata
+records themselves supply evidence rather than backups or branch roles. Records
+remain local and are not automatically cleaned up. Recovery relies on recognizable Git
 reflog conventions and cannot authenticate against a party able to forge both
 history/logs and private records. Continuation, abortion, invalid evidence, and
 cross-process retry are covered in [finish preparation tests](../tests/finish_preparation.rs).
@@ -666,8 +726,8 @@ target is resolved outside this model. The local target may be absent, equal,
 or behind by proven ancestry; unrelated local target work, symbolic refs, and
 occupation in another worktree block integration.
 
-An already-incorporated source needs no update, integration method, or message.
-A source containing the target needs no preparation. Divergence resolves the
+With history editing disabled, an already-incorporated source needs no update,
+integration method, or message. A source containing the target needs no preparation. Divergence resolves the
 independent none/merge/rebase update policy. A preparation stage permits only
 `UpdateWork`; it must reassess the actual graph before target integration.
 Fast-forward-only requires target ancestry and never falls back to another method.
@@ -819,8 +879,8 @@ changing history.
 Work preparation preserves merge structure and uses the same bounded rebase
 options as review. Preparation merges have Git-generated messages. The actual
 prepared graph is reassessed before integration; unresolved final message input
-can be returned after preparation. The backend neither prompts nor launches an
-editor.
+can be returned after preparation. The backend does not prompt. Explicit interactive preparation invokes Git's
+native editors; final integration message editing belongs to the CLI.
 
 An absent/behind local target is conditionally created/advanced to the observed
 target with a marked reflog transition and exact old-OID expectation. If resuming
@@ -1038,6 +1098,23 @@ wiring; [recovery tests](../tests/cli_hosted_recovery.rs) cover interrupted effe
 partial destinations, check receipts, and changed evidence.
 [Presentation tests](../tests/cli_hosted_presentation.rs) cover terminal
 cancellation, prompt revalidation, and streamed credential protection.
+
+## OneFlow model coverage
+
+The [2017 OneFlow model](https://www.endoflineblog.com/oneflow-a-git-branching-model-and-workflow)
+describes feature completion by interactive rebase followed by fast-forward or
+no-ff integration, no-ff integration alone, and releases/hotfixes tagged before
+merge-back, with optional release markers and declared active-release routing.
+The application composes those operations through independent explicit choices.
+The [2021 hosted adaptation](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab)
+uses provider review and separate version merge-back branches with no-ff guidance.
+Review finish prepares ordinary work for submission; tagged hosted finish prepares
+that separate merge-back branch and preserves the released version.
+
+These articles document models, not universal practice or provider compatibility.
+Submission, provider merge settings, deployment, later review conflicts, and
+post-submission cleanup remain manual/external. Hosted readiness ends at verified
+publication, so no provider API or later submission-state verification is implied.
 
 ## Evidence and maintenance limits
 

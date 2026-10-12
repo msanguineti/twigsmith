@@ -8,6 +8,7 @@ use crate::{
     repository::{self, Head, InspectionError, Observation},
     settings::{
         FinishCheckout, FinishCleanup, FinishIntegration, FinishMode, FinishRewrite, FinishUpdate,
+        HistoryEdit,
     },
     status::display as terminal_display,
 };
@@ -246,6 +247,16 @@ fn parse(args: &[OsString]) -> Result<(Request, Completion, bool, bool), &'stati
                     _ => return Err("--update requires rebase, merge, or none"),
                 });
             }
+            Some("--history-edit") => {
+                if request.history_edit.is_some() {
+                    return Err("duplicate --history-edit");
+                }
+                request.history_edit = Some(match args.next().and_then(|arg| arg.to_str()) {
+                    Some("none") => HistoryEdit::None,
+                    Some("interactive") => HistoryEdit::Interactive,
+                    _ => return Err("--history-edit requires none or interactive"),
+                });
+            }
             Some("--allow-rewrite" | "--no-rewrite") => {
                 if request.rewrite.is_some() {
                     return Err("rewrite flags must appear once and are mutually exclusive");
@@ -321,6 +332,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         .unwrap_or(configured.loaded.settings.finish_mode);
     let integration_request = integration::Request {
         update: request.update,
+        history_edit: request.history_edit,
         integration: completion.integration,
         message: completion.message.clone(),
         checkout: completion.checkout,
@@ -338,6 +350,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         release: completion.release.clone(),
         merge_back: completion.merge_back.clone(),
         update: request.update,
+        history_edit: request.history_edit,
     };
     let hosted_initial = finish::hosted::assess(&directory, &hosted_request);
     if completion.mode.is_none()
@@ -608,6 +621,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    }
+    if plan.history_edit == HistoryEdit::Interactive
+        && plan.update == FinishUpdate::Rebase
+        && let Some(finish::RefObservation::Commit(boundary)) =
+            plan.evidence.as_ref().map(|e| &e.base)
+    {
+        history_edit_notice(presentation, &plan.branch, boundary);
     }
     let mut prepared = preparation::prepare(&directory, &plan);
     if !prepared.is_prepared() {
@@ -895,6 +915,10 @@ fn constraint_message(presentation: Presentation, out: &mut String, constraint: 
             "base history is unrelated; inspect history or select --update none to preserve it"
         }
         Constraint::GraftedHistory => "resolve legacy Git grafts before finishing",
+        Constraint::HistoryEdit(problem) => {
+            let _ = writeln!(out, "error: {}.", text(presentation, problem));
+            return;
+        }
         Constraint::DestinationUnavailable(url) => {
             return destination_constraint(
                 presentation,
@@ -937,6 +961,13 @@ fn constraint_message(presentation: Presentation, out: &mut String, constraint: 
         }
     };
     let _ = writeln!(out, "error: {message}.");
+}
+fn history_edit_notice(presentation: Presentation, branch: &[u8], boundary: &[u8]) {
+    eprintln!(
+        "Edit work history on {} relative to preparation boundary {} using Git's native editors. Shared boundary history remains outside the edit range.",
+        display(presentation, branch),
+        display(presentation, boundary)
+    );
 }
 fn destination_constraint(presentation: Presentation, out: &mut String, url: &[u8], message: &str) {
     let _ = writeln!(out, "error: {}: {message}.", display(presentation, url));
@@ -1219,7 +1250,8 @@ fn help() {
 Usage: git-oneflow finish [--mode <review|integrate>] [--integration <ff-only|merge|squash>]
                           [--tag <name>] [--tag-message <text>] [--sign-tag] [--merge-back <branch>]
                           [-m|--message <text>] [--checkout <target|work>] [--cleanup <keep|local|both>]
-                          [--update <rebase|merge|none>] [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
+                          [--update <rebase|merge|none>] [--history-edit <none|interactive>]
+                          [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
 
 Options:
   --mode <review|integrate>   Override finish-mode
@@ -1229,6 +1261,8 @@ Options:
   --checkout <target|work>    Select checkout after target publication
   --cleanup <keep|local|both> Select work-branch retention after target publication
   --update <rebase|merge|none>  Override finish-update
+  --history-edit <none|interactive>
+                             Edit ordinary work history with native interactive rebase
   --allow-rewrite             Authorize eligible published-history replacement
   --no-rewrite                Deny published-history replacement
   --tag <name>                Select the explicit version tag for tagged work
@@ -1243,6 +1277,7 @@ Examples:
   gof finish
   gof f --mode review --update merge
   git-oneflow finish --mode review --update rebase --allow-rewrite
+  gof f --mode integrate --update rebase --history-edit interactive --integration ff-only
   gof finish --update none --no-rewrite
   gof finish --skip-checks
   gof f --mode integrate --integration ff-only --cleanup local
@@ -1286,7 +1321,16 @@ Details:
   Integration observes the base-remote target destinations and, for both cleanup,
   the publish-remote work destinations. It never publishes rewritten work history.
   Rebase replays commits onto the remote base; merge incorporates it; none retains history.
-  Branches already including the base need no update choice.
+  Interactive history editing requires update rebase and ordinary work.
+  It edits selected work commits relative to the preparation boundary, even when up to date.
+  Git sequence/commit editor, hooks, and signing preferences apply.
+  Reorder, combine, reword, edit, or drop commits with Git's native todo instructions.
+  History editing selects no integration method and grants no published-history replacement.
+  Tagged release/hotfix and hosted merge-back preparation require history-edit none.
+  Without terminal input/stderr, explicitly configure both sequence and commit editors.
+  Complete stopped edits/conflicts with git rebase --continue, or abandon with git rebase --abort.
+  Rerun finish to use a corroborated completed edit; failed editing cannot authorize delivery.
+  Branches already including the base need no update choice unless history editing is selected.
   Explicit flags override settings; rewrite flags are mutually exclusive.
   Prompts require terminal input and stderr. Enter a displayed choice or cancel.
   HTTP(S) URL credentials are redacted by default; redact-credentials is a private local setting.
@@ -1320,6 +1364,7 @@ Settings:
   ff-only creates no commit and needs no message.
   cleanup local deletes local work; both deletes local and published work; keep retains both.
   finish-update: ask (default), rebase, merge, none
+  finish-history-edit: none (default), interactive
   finish-rewrite: ask (default), allow, deny
   finish-checks: [] (default); ordered name/command objects in repository configuration
   allow is standing authorization for eligible replacement; remote safeguards remain.

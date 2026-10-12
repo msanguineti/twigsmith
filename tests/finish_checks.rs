@@ -448,6 +448,7 @@ fn finish_api_guards_block_new_checks_and_changed_empty_list_provenance() {
                     let request = finish::Request {
                         update: Some(FinishUpdate::Rebase),
                         rewrite: Some(FinishRewrite::Allow),
+                        ..Default::default()
                     };
                     let initial = finish::assess(repo.path(), &request, None).unwrap();
                     let fresh = preparation::refresh(repo.path(), &initial);

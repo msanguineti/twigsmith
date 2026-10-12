@@ -70,6 +70,7 @@ fn req(update: FinishUpdate, rewrite: FinishRewrite) -> Request {
     Request {
         update: Some(update),
         rewrite: Some(rewrite),
+        ..Default::default()
     }
 }
 fn fresh_at(directory: &Path, request: &Request) -> Plan {

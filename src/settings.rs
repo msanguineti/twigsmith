@@ -30,6 +30,28 @@ pub enum FinishUpdate {
     Merge,
     None,
 }
+/// Deliberate ordinary-work editing, independent of update and delivery policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HistoryEdit {
+    #[default]
+    None,
+    Interactive,
+}
+impl HistoryEdit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Interactive => "interactive",
+        }
+    }
+}
+pub(crate) fn parse_history_edit(value: &str) -> Result<HistoryEdit, String> {
+    match value {
+        "none" => Ok(HistoryEdit::None),
+        "interactive" => Ok(HistoryEdit::Interactive),
+        _ => Err("finish-history-edit must be none or interactive".into()),
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FinishRewrite {
     Ask,
@@ -300,6 +322,8 @@ pub struct WorkstreamConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_update: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_history_edit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_integration: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_cleanup: Option<String>,
@@ -340,6 +364,8 @@ impl<'de> Deserialize<'de> for WorkstreamConfig {
             #[serde(default, deserialize_with = "optional_text")]
             finish_update: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
+            finish_history_edit: Option<String>,
+            #[serde(default, deserialize_with = "optional_text")]
             finish_integration: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
             finish_cleanup: Option<String>,
@@ -371,6 +397,7 @@ impl<'de> Deserialize<'de> for WorkstreamConfig {
                     active_release: fields.active_release,
                     finish_mode: fields.finish_mode,
                     finish_update: fields.finish_update,
+                    finish_history_edit: fields.finish_history_edit,
                     finish_integration: fields.finish_integration,
                     finish_cleanup: fields.finish_cleanup,
                     finish_checkout: fields.finish_checkout,
@@ -442,6 +469,9 @@ impl WorkstreamConfig {
         }
         if other.finish_update.is_some() {
             self.finish_update = other.finish_update;
+        }
+        if other.finish_history_edit.is_some() {
+            self.finish_history_edit = other.finish_history_edit;
         }
         if other.finish_integration.is_some() {
             self.finish_integration = other.finish_integration;
@@ -521,6 +551,11 @@ impl WorkstreamConfig {
             ));
         }
         if self.version_tagging.as_deref() == Some("required") {
+            if self.finish_history_edit.as_deref() == Some("interactive") {
+                return Err(SettingsError::InvalidSettings(
+                    "tagged work requires finish-history-edit = none".into(),
+                ));
+            }
             match self.finish_mode.as_deref() {
                 Some("review") => {
                     if self.finish_update.as_deref() == Some("rebase")
@@ -562,6 +597,9 @@ impl WorkstreamConfig {
             return Err(SettingsError::InvalidSettings(
                 "version-tagging must be required or disabled".into(),
             ));
+        }
+        if let Some(v) = &self.finish_history_edit {
+            parse_history_edit(v).map_err(SettingsError::InvalidSettings)?;
         }
         if let Some(v) = &self.finish_mode {
             parse_mode(v).map_err(SettingsError::InvalidSettings)?;
@@ -673,6 +711,7 @@ pub struct SettingSources {
     pub finish_checkout: SettingSource,
     pub finish_cleanup: SettingSource,
     pub finish_update: SettingSource,
+    pub history_edit: SettingSource,
     pub finish_rewrite: SettingSource,
     pub finish_checks: SettingSource,
     #[serde(default)]
@@ -691,6 +730,7 @@ impl Default for SettingSources {
             finish_checkout: SettingSource::BuiltIn,
             finish_cleanup: SettingSource::BuiltIn,
             finish_update: SettingSource::BuiltIn,
+            history_edit: SettingSource::BuiltIn,
             finish_rewrite: SettingSource::BuiltIn,
             finish_checks: SettingSource::BuiltIn,
             workstreams: BTreeMap::new(),
@@ -710,6 +750,8 @@ pub struct Settings {
     pub finish_checkout: FinishCheckout,
     pub finish_cleanup: FinishCleanup,
     pub finish_update: FinishUpdate,
+    #[serde(default)]
+    pub history_edit: HistoryEdit,
     pub finish_rewrite: FinishRewrite,
     pub finish_checks: Vec<FinishCheck>,
     pub sources: SettingSources,
@@ -731,6 +773,7 @@ impl Default for Settings {
             finish_checkout: FinishCheckout::Target,
             finish_cleanup: FinishCleanup::Ask,
             finish_update: FinishUpdate::Ask,
+            history_edit: HistoryEdit::None,
             finish_rewrite: FinishRewrite::Ask,
             finish_checks: Vec::new(),
             sources: SettingSources::default(),
@@ -753,6 +796,7 @@ struct Layer {
     finish_checkout: Option<String>,
     finish_cleanup: Option<String>,
     finish_update: Option<String>,
+    finish_history_edit: Option<String>,
     finish_rewrite: Option<String>,
     finish_checks: Option<Vec<FinishCheck>>,
     redact_credentials: Option<bool>,
@@ -771,9 +815,10 @@ impl Layer {
             "finish-checkout" => Ok(&mut self.finish_checkout),
             "finish-cleanup" => Ok(&mut self.finish_cleanup),
             "finish-update" => Ok(&mut self.finish_update),
+            "finish-history-edit" => Ok(&mut self.finish_history_edit),
             "finish-rewrite" => Ok(&mut self.finish_rewrite),
             _ => Err(format!(
-                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-mode, finish-integration, finish-message, finish-checkout, finish-cleanup, finish-update, finish-rewrite, finish-checks; local-only: redact-credentials)"
+                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-mode, finish-integration, finish-message, finish-checkout, finish-cleanup, finish-update, finish-history-edit, finish-rewrite, finish-checks; local-only: redact-credentials)"
             )),
         }
     }
@@ -821,6 +866,9 @@ impl Layer {
         }
         if let Some(value) = &self.finish_cleanup {
             parse_cleanup(value).map_err(|e| invalid(path, e))?;
+        }
+        if let Some(value) = &self.finish_history_edit {
+            parse_history_edit(value).map_err(|e| invalid(path, e))?;
         }
         if let Some(update) = &self.finish_update {
             parse_update(update).map_err(|e| invalid(path, e))?;
@@ -895,6 +943,10 @@ impl Layer {
         if let Some(update) = self.finish_update {
             settings.finish_update = parse_update(&update).expect("validated layer");
             settings.sources.finish_update = source.clone();
+        }
+        if let Some(value) = self.finish_history_edit {
+            settings.history_edit = parse_history_edit(&value).expect("validated layer");
+            settings.sources.history_edit = source.clone();
         }
         if let Some(rewrite) = self.finish_rewrite {
             settings.finish_rewrite = parse_rewrite(&rewrite).expect("validated layer");
@@ -1274,6 +1326,15 @@ pub fn resolve_workstream(
             .cloned()
             .unwrap_or(SettingSource::BuiltIn);
     }
+    if let Some(v) = &config.finish_history_edit {
+        settings.history_edit = parse_history_edit(v).map_err(SettingsError::InvalidSettings)?;
+        settings.sources.history_edit = settings
+            .sources
+            .workstreams
+            .get(&format!("{}.finish-history-edit", kind.as_str()))
+            .cloned()
+            .unwrap_or(SettingSource::BuiltIn);
+    }
     if let Some(v) = &config.finish_integration {
         settings.finish_integration =
             parse_integration(v).map_err(SettingsError::InvalidSettings)?;
@@ -1322,6 +1383,11 @@ pub fn resolve_workstream(
     }
 
     if version_tagging {
+        if settings.history_edit != HistoryEdit::None {
+            return Err(SettingsError::InvalidSettings(
+                "tagged work requires finish-history-edit = none".into(),
+            ));
+        }
         match settings.finish_mode {
             FinishMode::Integrate => {
                 if settings.finish_update != FinishUpdate::None
@@ -1531,6 +1597,7 @@ pub fn oneflow_bundle(settings: &mut Settings, marker: Option<String>) {
                 active_release: (kind == WorkstreamKind::Hotfix).then(|| "none".into()),
                 finish_mode: Some("integrate".into()),
                 finish_update: Some("none".into()),
+                finish_history_edit: Some("none".into()),
                 finish_integration: Some("merge".into()),
                 finish_cleanup: Some("both".into()),
                 finish_checkout: Some("target".into()),

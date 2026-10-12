@@ -55,6 +55,7 @@ fn render_document(format: Format, proposed: &settings::Settings, guided: bool) 
         #[serde(skip_serializing_if = "Option::is_none")]
         finish_cleanup: Option<&'a str>,
         finish_update: &'a str,
+        finish_history_edit: &'a str,
         finish_rewrite: &'a str,
         finish_checks: &'a [settings::FinishCheck],
         #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -80,6 +81,7 @@ fn render_document(format: Format, proposed: &settings::Settings, guided: bool) 
         finish_cleanup: (!guided || proposed.finish_mode != settings::FinishMode::Review)
             .then_some(proposed.finish_cleanup.as_str()),
         finish_update: proposed.finish_update.as_str(),
+        finish_history_edit: proposed.history_edit.as_str(),
         finish_rewrite: proposed.finish_rewrite.as_str(),
         finish_checks: &proposed.finish_checks,
         workstreams: &proposed.workstreams,

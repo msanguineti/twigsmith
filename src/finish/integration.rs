@@ -9,7 +9,7 @@ use crate::{
     save::SaveError,
     settings::{
         self, FinishCheckout, FinishCleanup, FinishIntegration, FinishMessage, FinishUpdate,
-        Settings,
+        HistoryEdit, Settings,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ pub mod remote;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
     pub update: Option<FinishUpdate>,
+    pub history_edit: Option<HistoryEdit>,
     pub integration: Option<FinishIntegration>,
     pub message: Option<String>,
     pub checkout: Option<FinishCheckout>,
@@ -87,6 +88,7 @@ pub enum Blocker {
     WorkBranchChanged(Vec<u8>),
     Recovery(recovery::Problem),
     Release(String),
+    HistoryEdit(String),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -158,6 +160,7 @@ pub struct Plan {
     pub target: Target,
     pub local_target: RefObservation,
     pub update: FinishUpdate,
+    pub history_edit: HistoryEdit,
     pub method: FinishIntegration,
     pub checkout: FinishCheckout,
     pub cleanup: FinishCleanup,
@@ -251,6 +254,7 @@ struct Snapshot {
     committed_settings: Vec<u8>,
     pins: Vec<(RefObservation, Option<Vec<u8>>)>,
     release: Option<release::Snapshot>,
+    shared_preparation: super::history::SharedRefs,
 }
 fn branch_ref(branch: &[u8]) -> Vec<u8> {
     [b"refs/heads/", branch].concat()
@@ -372,6 +376,16 @@ pub fn assess(
     let mut config_args = vec!["ls-tree", "--full-tree", "-z", "HEAD", "--"];
     config_args.extend(settings::CONFIG_FILES);
     let snapshot = Snapshot {
+        shared_preparation: if request.history_edit.unwrap_or(settings.history_edit)
+            == HistoryEdit::Interactive
+        {
+            super::history::shared_refs(directory, &settings)?
+                .into_iter()
+                .filter(|(r, _, _)| r.as_bytes() != target.reference)
+                .collect()
+        } else {
+            vec![]
+        },
         state: *state,
         config: read(directory, &["config", "--null", "--list"])?,
         index: metadata(directory, "index")?,
@@ -410,6 +424,7 @@ pub fn assess(
         target,
         local_target,
         update: request.update.unwrap_or(settings.finish_update),
+        history_edit: request.history_edit.unwrap_or(settings.history_edit),
         method: request.integration.unwrap_or(settings.finish_integration),
         checkout: request.checkout.unwrap_or(settings.finish_checkout),
         cleanup: request.cleanup.unwrap_or(settings.finish_cleanup),
@@ -425,6 +440,30 @@ pub fn assess(
         snapshot,
         record: selection.record,
     };
+    if plan.history_edit == HistoryEdit::Interactive {
+        if plan
+            .snapshot
+            .shared_preparation
+            .iter()
+            .any(|(reference, _, _)| reference.as_bytes() == plan.source_ref)
+        {
+            plan.blockers.push(Blocker::HistoryEdit(
+                "the work branch must differ from its shared preparation and integration refs"
+                    .into(),
+            ));
+        }
+        if release::enabled(&plan) {
+            plan.blockers.push(Blocker::HistoryEdit("interactive history editing requires ordinary work; tagged versions retain their source history".into()));
+        }
+        if !matches!(plan.update, FinishUpdate::Rebase | FinishUpdate::Ask) {
+            plan.blockers.push(Blocker::HistoryEdit(
+                "interactive history editing requires finish-update = rebase".into(),
+            ));
+        }
+        if let Some(reason) = super::history::unavailable(directory)? {
+            plan.blockers.push(Blocker::HistoryEdit(reason));
+        }
+    }
     if let Some(problem) = selection.problem {
         plan.blockers.push(Blocker::Recovery(problem));
         plan.state = State::ChangedOrUnverifiable;
@@ -604,12 +643,35 @@ fn assess_fresh(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
     }
     let preparation_base = e.preparation.as_ref().map_or(&e.fetched, |p| &p.branch);
     let prep_relation = relationship(directory, &source, preparation_base, shallow)?;
-    if matches!(prep_relation, Relationship::Equal | Relationship::Ahead)
-        || (e.preparation.is_none() && relation == Relationship::Behind)
+    let editing = plan.history_edit == HistoryEdit::Interactive
+        && !plan
+            .record
+            .as_ref()
+            .is_some_and(|r| r.history_prepared(plan));
+    if editing
+        && let Some(boundary) = commit(preparation_base)
+        && !super::history::unique_boundary(directory, &source, boundary)?
+    {
+        plan.blockers.push(Blocker::HistoryEdit(
+            "interactive history editing requires one complete, unambiguous preparation boundary"
+                .into(),
+        ));
+    }
+    if editing
+        && let Some(boundary) = commit(preparation_base)
+        && super::history::shares_target_work(directory, &source, boundary, &base)?
+    {
+        plan.blockers.push(Blocker::HistoryEdit("the selected work range contains shared integration-target history; select a preparation boundary that includes that history".into()));
+    }
+    if !editing
+        && (matches!(prep_relation, Relationship::Equal | Relationship::Ahead)
+            || (e.preparation.is_none() && relation == Relationship::Behind))
     {
         plan.update = FinishUpdate::None;
     } else if plan.update != FinishUpdate::None {
-        if !matches!(prep_relation, Relationship::Behind | Relationship::Diverged) {
+        if !matches!(prep_relation, Relationship::Behind | Relationship::Diverged)
+            && !(editing && prep_relation.includes_remote())
+        {
             plan.blockers.push(Blocker::HistoryUnavailable);
             return Ok(());
         }

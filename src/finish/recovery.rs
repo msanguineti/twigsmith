@@ -22,6 +22,7 @@ pub struct VerifiedRewrite {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogEntry {
+    old: Vec<u8>,
     commit: Vec<u8>,
     message: Vec<u8>,
 }
@@ -52,6 +53,9 @@ struct Attempt {
     action: String,
     branch_log: Anchor,
     head_log: Anchor,
+    retained_ref: Option<String>,
+    raw_branch: Option<Vec<u8>>,
+    raw_head: Option<Vec<u8>>,
 }
 /// Original observations used to re-prove incorporation at each destination.
 #[derive(Debug, Serialize, Deserialize)]
@@ -119,6 +123,38 @@ pub(super) struct Record {
     roles: RoleBinding,
     original: Vec<u8>,
     attempts: Vec<Attempt>,
+    interactive: Option<InteractiveBinding>,
+}
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InteractiveBinding {
+    settings: Settings,
+    config: Vec<Vec<u8>>,
+    boundary: RefObservation,
+    target: Option<TargetEvidence>,
+    shared_history: history::SharedRefs,
+}
+impl InteractiveBinding {
+    fn new(plan: &Plan) -> Self {
+        let branch = String::from_utf8_lossy(&plan.branch);
+        let remote = format!("branch.{branch}.remote");
+        let merge = format!("branch.{branch}.merge");
+        Self {
+            settings: plan.settings.clone(),
+            shared_history: plan.shared_history.clone(),
+            boundary: plan.evidence.as_ref().expect("evidence").base.clone(),
+            target: plan.evidence.as_ref().expect("evidence").target.clone(),
+            config: plan
+                .git_config
+                .split(|b| *b == 0)
+                .filter(|entry| {
+                    let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
+                    key != remote.as_bytes() && key != merge.as_bytes()
+                })
+                .map(<[u8]>::to_vec)
+                .collect(),
+        }
+    }
 }
 fn identity(plan: &Plan) -> Vec<Vec<u8>> {
     [
@@ -144,40 +180,46 @@ pub(super) fn path(plan: &Plan) -> Result<PathBuf, FinishError> {
         .join(repository::os(&plan.branch)?)
         .join("rewrite.json"))
 }
-fn logs(directory: &Path, reference: &[u8]) -> Result<Vec<LogEntry>, FinishError> {
+fn raw_log(directory: &Path, reference: &[u8]) -> Result<Option<Vec<u8>>, FinishError> {
+    let name = [b"logs/", reference].concat();
     let output = run(
         directory,
         &[
-            "--no-replace-objects".into(),
-            "reflog".into(),
-            "show".into(),
-            "--no-show-signature".into(),
-            "--no-decorate".into(),
-            "--no-color".into(),
-            "--no-notes".into(),
-            "--format=%H%x00%gs".into(),
-            repository::os(reference)?,
-            "--".into(),
+            "rev-parse".into(),
+            "--path-format=absolute".into(),
+            "--git-path".into(),
+            repository::os(&name)?,
         ],
     )?;
     if !output.status.success() {
-        return Err(FinishError::InvalidEvidence("reflog unavailable"));
+        return Err(FinishError::InvalidEvidence("reflog path unavailable"));
     }
+    let path = repository::os(
+        output
+            .stdout
+            .strip_suffix(b"\n")
+            .ok_or(FinishError::InvalidEvidence("invalid reflog path"))?,
+    )?;
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+fn logs(directory: &Path, reference: &[u8]) -> Result<Vec<LogEntry>, FinishError> {
+    let bytes = raw_log(directory, reference)?.unwrap_or_default();
     let mut entries = vec![];
-    for line in output
-        .stdout
-        .split(|b| *b == b'\n')
-        .filter(|line| !line.is_empty())
-    {
-        let Some(index) = line.iter().position(|b| *b == 0) else {
-            return Err(FinishError::InvalidEvidence("invalid reflog record"));
-        };
+    for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        // Git worktree creation can write an initial reflog record without a
+        // tab/action. Its raw anchor still participates in version equality.
+        let index = line.iter().position(|b| *b == b'\t').unwrap_or(line.len());
+        let mut ids = line[..index].split(|b| *b == b' ');
         entries.push(LogEntry {
-            commit: line[..index].to_vec(),
-            message: line[index + 1..].to_vec(),
+            old: ids.next().unwrap_or_default().to_vec(),
+            commit: ids.next().unwrap_or_default().to_vec(),
+            message: line.get(index + 1..).unwrap_or_default().to_vec(),
         });
     }
-    entries.reverse();
     Ok(entries)
 }
 fn private_path(plan: &Plan) -> Result<(), FinishError> {
@@ -227,7 +269,12 @@ impl Record {
     fn verify(&self, directory: &Path, plan: &Plan) -> Result<Recovery, FinishError> {
         let invalid = || Ok(Recovery::Invalid);
         let evidence = plan.evidence.as_ref().expect("fresh evidence");
-        if self.version != 2
+        if self.version != 3
+            || (self.interactive.is_some() != (plan.history_edit == HistoryEdit::Interactive))
+            || self
+                .interactive
+                .as_ref()
+                .is_some_and(|binding| binding != &InteractiveBinding::new(plan))
             || self.roles != RoleBinding::new(plan)
             || self.repository != identity(plan)
             || self.evidence.remote != evidence.publish_remote
@@ -279,6 +326,37 @@ impl Record {
         let mut destinations = self.evidence.destinations.clone();
         let mut completed = 0;
         for (i, attempt) in self.attempts.iter().enumerate() {
+            if self.interactive.is_some()
+                && (!raw_log(directory, &evidence.branch_ref)?.is_some_and(|raw| {
+                    attempt
+                        .raw_branch
+                        .as_ref()
+                        .is_some_and(|anchor| raw.starts_with(anchor))
+                }) || !metadata(directory, "logs/HEAD")?.is_some_and(|raw| {
+                    attempt
+                        .raw_head
+                        .as_ref()
+                        .is_some_and(|anchor| raw.starts_with(anchor))
+                }))
+            {
+                return invalid();
+            }
+            if let Some(reference) = &attempt.retained_ref {
+                if hint(directory, reference.as_bytes())?
+                    != RefObservation::Commit(attempt.before.clone())
+                {
+                    return invalid();
+                }
+                let retained = logs(directory, reference.as_bytes())?;
+                if retained.len() != 1
+                    || retained[0].commit != attempt.before
+                    || retained[0].message != attempt.action.as_bytes()
+                {
+                    return invalid();
+                }
+            } else if self.interactive.is_some() {
+                return invalid();
+            }
             if attempt.before != before
                 || !valid_oid(&attempt.base, plan.commit.len())
                 || !attempt.action.starts_with("oneflow-finish-")
@@ -313,24 +391,61 @@ impl Record {
                 .attempts
                 .get(i + 1)
                 .map_or(head.len(), |a| a.head_log.count);
-            if end_branch == attempt.branch_log.count
+            let no_change = self.interactive.is_some()
+                && end_branch == attempt.branch_log.count
+                && plan.commit == before
+                && head
+                    .get(attempt.head_log.count..head_limit)
+                    .is_some_and(|interval| {
+                        interval.iter().any(|entry| {
+                            entry.commit == before
+                                && [attempt.action.as_str(), "rebase"].iter().any(|action| {
+                                    entry.message
+                                        == [
+                                            action.as_bytes(),
+                                            b" (finish): returning to ",
+                                            &evidence.branch_ref,
+                                        ]
+                                        .concat()
+                                })
+                        })
+                    });
+            if !no_change
+                && end_branch == attempt.branch_log.count
                 && i + 1 == self.attempts.len()
                 && plan.commit == before
             {
                 // An aborted/unstarted final attempt cannot supply new proof.
                 break;
             }
-            if end_branch <= attempt.branch_log.count
+            if (!no_change && end_branch <= attempt.branch_log.count)
                 || end_branch > branch.len()
                 || head_limit > head.len()
                 || head_limit < attempt.head_log.count + 2
             {
                 return invalid();
             }
-            let result = &branch[attempt.branch_log.count];
-            if result.message
-                != finish_message(&attempt.action, &evidence.branch_ref, &attempt.base)
-                && result.message != finish_message("rebase", &evidence.branch_ref, &attempt.base)
+            if self.interactive.is_some()
+                && !no_change
+                && end_branch != attempt.branch_log.count + 1
+            {
+                return invalid();
+            }
+            let unchanged = LogEntry {
+                old: before.clone(),
+                commit: before.clone(),
+                message: finish_message(&attempt.action, &evidence.branch_ref, &attempt.base),
+            };
+            let result = if no_change {
+                &unchanged
+            } else {
+                &branch[attempt.branch_log.count]
+            };
+            if result.old != before
+                || (result.message
+                    != finish_message(&attempt.action, &evidence.branch_ref, &attempt.base)
+                    && result.message
+                        != finish_message("rebase", &evidence.branch_ref, &attempt.base))
             {
                 return invalid();
             }
@@ -353,11 +468,15 @@ impl Record {
                 return invalid();
             };
             let end_head = attempt.head_log.count + finish + 1;
-            if finish == 0 {
+            if finish == 0 || (self.interactive.is_some() && end_head != head_limit) {
                 return invalid();
             }
             let interval = &head[attempt.head_log.count..end_head];
-            if interval[0].commit != attempt.base
+            if interval[0].old != before
+                || (interval[0].commit != attempt.base
+                    && !(self.interactive.is_some()
+                        && ancestor(directory, &attempt.base, &interval[0].commit)? == Some(true)
+                        && ancestor(directory, &interval[0].commit, &before)? == Some(true)))
                 || interval[0].message
                     != [
                         attempt.action.as_bytes(),
@@ -379,7 +498,7 @@ impl Record {
             // recorded branch transition must preserve that history; a reset,
             // manual rewrite, or branch recreation cannot borrow the proof.
             let mut preserved = &result.commit;
-            for entry in &branch[attempt.branch_log.count + 1..end_branch] {
+            for entry in &branch[(attempt.branch_log.count + 1).min(end_branch)..end_branch] {
                 if ancestor(directory, preserved, &entry.commit)? != Some(true) {
                     return invalid();
                 }
@@ -407,11 +526,31 @@ impl Record {
 }
 
 pub(super) fn apply(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
-    plan.recovery = match load(plan) {
+    let loaded = load(plan);
+    let interactive_record = match &loaded {
+        Ok(Some(record)) => record.interactive.is_some(),
+        Ok(None) => false,
+        Err(_) => true,
+    };
+    plan.recovery = match loaded {
         Ok(Some(record)) => record.verify(directory, plan).unwrap_or(Recovery::Invalid),
         Ok(None) => Recovery::Absent,
         Err(_) => Recovery::Invalid,
     };
+    // Changed context cannot convert a retained interactive attempt into a new
+    // invitation to rewrite. An unstarted or aborted, still-bound attempt is
+    // Unchanged and remains eligible for deliberate retry.
+    if plan.history_edit == HistoryEdit::Interactive
+        && interactive_record
+        && plan.recovery == Recovery::Invalid
+    {
+        let constraint = Constraint::HistoryEdit(
+            "retained interactive history preparation no longer matches this context; restore its bound context and recovery evidence before retrying".into(),
+        );
+        if !plan.constraints.contains(&constraint) {
+            plan.constraints.push(constraint);
+        }
+    }
     let Recovery::Verified(proof) = &plan.recovery else {
         return Ok(());
     };
@@ -473,12 +612,14 @@ pub(super) fn record(directory: &Path, plan: &Plan) -> Result<(PathBuf, String),
             record
         }
         _ => Record {
-            version: 2,
+            version: 3,
             repository: identity(plan),
             evidence: RecordedEvidence::from(&evidence),
             roles: RoleBinding::new(plan),
             original: plan.commit.clone(),
             attempts: vec![],
+            interactive: (plan.history_edit == HistoryEdit::Interactive)
+                .then(|| InteractiveBinding::new(plan)),
         },
     };
     let path = path(plan)?;
@@ -500,6 +641,30 @@ pub(super) fn record(directory: &Path, plan: &Plan) -> Result<(PathBuf, String),
     let RefObservation::Commit(base) = evidence.base else {
         unreachable!("ready base")
     };
+    let retained_ref = if plan.history_edit == HistoryEdit::Interactive {
+        let reference = format!("refs/oneflow/finish/{action}/original");
+        let output = git::workflow(
+            directory,
+            &[
+                "update-ref".into(),
+                "--no-deref".into(),
+                "--create-reflog".into(),
+                "-m".into(),
+                action.clone().into(),
+                reference.clone().into(),
+                repository::os(&plan.commit)?,
+                repository::os(&vec![b'0'; plan.commit.len()])?,
+            ],
+        )?;
+        if !output.status.success() {
+            return Err(FinishError::InvalidEvidence(
+                "could not retain original work before editing",
+            ));
+        }
+        Some(reference)
+    } else {
+        None
+    };
     record.attempts.push(Attempt {
         before: plan.commit.clone(),
         base,
@@ -507,6 +672,9 @@ pub(super) fn record(directory: &Path, plan: &Plan) -> Result<(PathBuf, String),
         action: action.clone(),
         branch_log,
         head_log,
+        retained_ref,
+        raw_branch: raw_log(directory, &plan.publication.branch_ref)?,
+        raw_head: metadata(directory, "logs/HEAD")?,
     });
     serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
     file.flush()?;

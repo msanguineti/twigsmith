@@ -10,6 +10,7 @@ pub struct Request {
     pub release: integration::release::Request,
     pub merge_back: Option<String>,
     pub update: Option<FinishUpdate>,
+    pub history_edit: Option<HistoryEdit>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -299,6 +300,11 @@ pub fn assess(root: &Path, supplied: &Request) -> Result<Plan, FinishError> {
     }
     let settings =
         settings::load_for_branch(root, &repo, &source_branch).map_err(SaveError::from)?;
+    if supplied.history_edit.unwrap_or(settings.history_edit) == HistoryEdit::Interactive {
+        return Err(invalid(
+            "interactive history editing is unavailable for tagged hosted preparation",
+        ));
+    }
     if !settings
         .workstream
         .as_ref()
@@ -328,6 +334,7 @@ pub fn assess(root: &Path, supplied: &Request) -> Result<Plan, FinishError> {
                 .clone()
                 .or_else(|| Some(r.merge_back.clone())),
             update: supplied.update.or(Some(r.update)),
+            history_edit: supplied.history_edit,
         };
         if request.release != r.release
             || request.merge_back.as_ref() != Some(&r.merge_back)

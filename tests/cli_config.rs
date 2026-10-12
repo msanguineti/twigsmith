@@ -74,6 +74,7 @@ fn assert_defaults(directory: &Path, filename: &str) {
     assert_eq!(loaded.base, defaults.base);
     assert_eq!(loaded.save_action, defaults.save_action);
     assert_eq!(loaded.finish_update, defaults.finish_update);
+    assert_eq!(loaded.history_edit, defaults.history_edit);
     assert_eq!(loaded.finish_rewrite, defaults.finish_rewrite);
     assert!(loaded.finish_checks.is_empty());
     for (value, expected, origin) in [
@@ -111,6 +112,7 @@ fn assert_defaults(directory: &Path, filename: &str) {
     assert_eq!(loaded.sources.base, source);
     assert_eq!(loaded.sources.save_action, source);
     assert_eq!(loaded.sources.finish_update, source);
+    assert_eq!(loaded.sources.history_edit, source);
     assert_eq!(loaded.sources.finish_rewrite, source);
     assert_eq!(loaded.sources.finish_checks, source);
 }
@@ -231,6 +233,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                     "base: main (built-in default)",
                     "save-action: ask (built-in default)",
                     "finish-update: ask (built-in default)",
+                    "finish-history-edit: none (built-in default)",
                     "finish-rewrite: ask (built-in default)",
                     "Shared file: none",
                     "Local file: none",
@@ -256,6 +259,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                     "base: trunk (shared:",
                     "save-action: ask (built-in default)",
                     "finish-update: ask (built-in default)",
+                    "finish-history-edit: none (built-in default)",
                     "finish-rewrite: ask (built-in default)",
                     &local.display().to_string(),
                     CONFIG_FILES[2],
@@ -1201,7 +1205,7 @@ fn config_show_reports_effective_finish_values_and_sources() {
             let repo = Repository::new(root);
             fs::write(
                 repo.path().join(CONFIG_FILES[0]),
-                "finish-update='merge'\nfinish-rewrite='deny'\n",
+                "finish-update='merge'\nfinish-history-edit='interactive'\nfinish-rewrite='deny'\n",
             )
             .unwrap();
             for filename in [CONFIG_FILES[3], "git-oneflow.config.toml"] {
@@ -1218,6 +1222,7 @@ fn config_show_reports_effective_finish_values_and_sources() {
                     0,
                     &[
                         "finish-update: merge (shared:",
+                        "finish-history-edit: interactive (shared:",
                         "finish-rewrite: allow (local:",
                         filename,
                     ],

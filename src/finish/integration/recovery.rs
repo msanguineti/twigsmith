@@ -71,6 +71,8 @@ pub struct Record {
     git_config: Vec<u8>,
     method: FinishIntegration,
     requested_update: Option<FinishUpdate>,
+    history_edit: HistoryEdit,
+    shared_preparation: super::super::history::SharedRefs,
     checkout: FinishCheckout,
     cleanup: FinishCleanup,
     message: Option<String>,
@@ -90,9 +92,30 @@ pub struct Record {
     pub(super) release: Option<release::Record>,
 }
 impl Record {
+    pub(super) fn history_prepared(&self, plan: &Plan) -> bool {
+        self.preparation.as_ref().is_some_and(|p| {
+            let head = entries(plan.snapshot.head_log.as_deref());
+            head.get(p.head_version.count..).is_some_and(|tail| {
+                tail.iter().any(|e| {
+                    ["rebase".to_owned(), self.prepare_marker()]
+                        .iter()
+                        .any(|action| {
+                            e.message
+                                == [
+                                    action.as_bytes(),
+                                    b" (finish): returning to ",
+                                    &self.source_ref,
+                                ]
+                                .concat()
+                        })
+                })
+            })
+        })
+    }
     pub(super) fn request(&self, request: &Request) -> Request {
         Request {
             update: request.update.or(Some(self.update())),
+            history_edit: request.history_edit.or(Some(self.history_edit)),
             integration: request.integration.or(Some(self.method)),
             message: request.message.clone().or_else(|| self.message.clone()),
             checkout: request.checkout.or(Some(self.checkout)),
@@ -148,6 +171,8 @@ impl Record {
             git_config: plan.snapshot.config.clone(),
             method: plan.method,
             requested_update: plan.request.update,
+            history_edit: plan.history_edit,
+            shared_preparation: plan.snapshot.shared_preparation.clone(),
             checkout: plan.checkout,
             cleanup: plan.cleanup,
             message: plan.request.message.clone(),
@@ -523,6 +548,8 @@ pub(super) fn assess(
         || plan.request.update.is_some_and(|choice| {
             choice != record.update() && Some(choice) != record.requested_update
         })
+        || record.shared_preparation != plan.snapshot.shared_preparation
+        || record.history_edit != plan.history_edit
         || record.checkout != plan.checkout
         || record.cleanup != plan.cleanup
         || (record.message != plan.request.message && !(record.message.is_none() && preparing))
@@ -630,7 +657,8 @@ pub(super) fn assess(
         fail(plan, Problem::ChangedSource);
         return Ok(());
     }
-    let no_op = plan.local_target == RefObservation::Commit(record.target_before.clone())
+    let no_op = (record.history_edit != HistoryEdit::Interactive || record.history_prepared(plan))
+        && plan.local_target == RefObservation::Commit(record.target_before.clone())
         && ancestor(directory, &record.source, &record.target_before)? == Some(true);
     let unchanged_target = target_unintegrated(record, plan);
     let result = commit(&plan.local_target).map(<[u8]>::to_vec);
@@ -823,12 +851,20 @@ fn entries(bytes: Option<&[u8]>) -> Vec<Entry<'_>> {
         .unwrap_or_default()
         .split(|b| *b == b'\n')
         .filter_map(|line| {
-            let (fields, message) = line.split_at(line.iter().position(|b| *b == b'\t')?);
+            // Native linked-worktree creation can log an entry without an
+            // action. Retain it so offsets agree with raw LogVersion counts.
+            let (fields, message) =
+                line.iter()
+                    .position(|b| *b == b'\t')
+                    .map_or((line, &b""[..]), |index| {
+                        let (fields, message) = line.split_at(index);
+                        (fields, &message[1..])
+                    });
             let mut ids = fields.split(|b| *b == b' ');
             Some(Entry {
                 old: ids.next()?,
                 new: ids.next()?,
-                message: &message[1..],
+                message,
             })
         })
         .collect()
@@ -855,18 +891,25 @@ fn verify_preparation(
     };
     let tail: Vec<_> = tail
         .iter()
-        .filter(|e| !aborted_reset(e, &prep.original))
+        .filter(|e| {
+            record.history_edit == HistoryEdit::Interactive || !aborted_reset(e, &prep.original)
+        })
         .collect();
     let Some(source) = commit(&plan.source) else {
         return Ok(false);
     };
-    if tail.is_empty() {
+    let no_change = record.history_edit == HistoryEdit::Interactive
+        && tail.is_empty()
+        && source == prep.original
+        && record.history_prepared(plan);
+    if tail.is_empty() && !no_change {
         return Ok(source == prep.original);
     }
-    if tail.len() != 1
-        || tail[0].old != prep.original
-        || tail[0].new != source
-        || ancestor(directory, &prep.base, source)? != Some(true)
+    if !no_change
+        && (tail.len() != 1
+            || tail[0].old != prep.original
+            || tail[0].new != source
+            || ancestor(directory, &prep.base, source)? != Some(true))
     {
         return Ok(false);
     }
@@ -890,7 +933,10 @@ fn verify_preparation(
         ]
         .concat()
     };
-    if tail[0].message != finish("rebase") && tail[0].message != finish(&record.prepare_marker()) {
+    if !no_change
+        && tail[0].message != finish("rebase")
+        && tail[0].message != finish(&record.prepare_marker())
+    {
         return Ok(false);
     }
     let head = entries(plan.snapshot.head_log.as_deref());
@@ -903,10 +949,19 @@ fn verify_preparation(
         &prep.base,
     ]
     .concat();
-    let Some(begin) = interval
-        .iter()
-        .rposition(|e| e.old == prep.original && e.new == prep.base && e.message == start)
-    else {
+    let mut begin = None;
+    for (index, entry) in interval.iter().enumerate() {
+        if entry.old == prep.original
+            && entry.message == start
+            && (entry.new == prep.base
+                || (record.history_edit == HistoryEdit::Interactive
+                    && ancestor(directory, &prep.base, entry.new)? == Some(true)
+                    && ancestor(directory, entry.new, &prep.original)? == Some(true)))
+        {
+            begin = Some(index);
+        }
+    }
+    let Some(begin) = begin else {
         return Ok(false);
     };
     let end_message = |action: &str| {
@@ -924,6 +979,20 @@ fn verify_preparation(
     }) else {
         return Ok(false);
     };
+    if record.history_edit == HistoryEdit::Interactive {
+        let mut on_source = true;
+        let source_name = record
+            .source_ref
+            .strip_prefix(b"refs/heads/")
+            .unwrap_or(&record.source_ref);
+        for entry in &interval[begin + 2 + end..] {
+            if entry.message.starts_with(b"checkout: moving from ") {
+                on_source = entry.message.ends_with(&[b" to ", source_name].concat());
+            } else if on_source {
+                return Ok(false);
+            }
+        }
+    }
     Ok(!interval[begin + 1..begin + 1 + end].iter().any(|e| {
         e.message
             .windows(8)

@@ -132,6 +132,18 @@ pub(super) fn run(
             );
         }
         preparations += 1;
+        if plan.history_edit == HistoryEdit::Interactive
+            && plan.integration == integration::Integration::AfterPreparation
+            && let Some(evidence) = &plan.evidence
+        {
+            let boundary = evidence
+                .preparation
+                .as_ref()
+                .map_or(&evidence.fetched, |p| &p.branch);
+            if let finish::RefObservation::Commit(boundary) = boundary {
+                history_edit_notice(presentation, &plan.source_ref, boundary);
+            }
+        }
         let mut output = CheckOutput::new(presentation);
         let prepared = execution::prepare_with_checks(&root, &plan, skip_checks, |event| {
             check_event(presentation, &mut output, event);
@@ -903,6 +915,7 @@ fn blocker_message(presentation: Presentation, output: &mut String, blocker: &Bl
         Blocker::TargetChanged(destination) => format!("target destinations disagree or changed at {}; inspect the target before retrying", display(presentation, destination)),
         Blocker::WorkBranchChanged(destination) => format!("published work changed or is not incorporated at {}; retain it and inspect the work branch", display(presentation, destination)),
         Blocker::Release(problem) => problem.clone(),
+        Blocker::HistoryEdit(problem) => problem.clone(),
         Blocker::Recovery(problem) => format!("retained integration recovery cannot be verified ({problem:?}); inspect branch history, settings, endpoints, and retained evidence before retrying"),
     };
     let _ = writeln!(output, "error: {message}.");

@@ -88,7 +88,7 @@ impl Report {
     pub fn guidance(&self) -> String {
         if let Ok(repository::Observation::Repository(state)) = &self.remaining {
             if state.operations.rebase {
-                return "Resolve and stage conflicts, then use git rebase --continue, or use git rebase --abort; reassess finish afterward.".into();
+                return "Complete the stopped edit or resolve and stage conflicts, then use git rebase --continue, or use git rebase --abort; reassess finish afterward.".into();
             }
             if state.operations.merge
                 && self
@@ -126,7 +126,11 @@ fn command(
     marker: Option<&str>,
     report: &mut Report,
 ) -> Result<Vec<u8>, Error> {
-    let result = git::workflow_with_reflog(root, &args, marker);
+    let result = if args.iter().any(|a| a == "--interactive") {
+        crate::finish::history::execute(root, &args, marker)
+    } else {
+        git::workflow_with_reflog(root, &args, marker)
+    };
     let success = result.as_ref().is_ok_and(|o| o.status.success());
     let bytes = result
         .as_ref()
@@ -317,6 +321,14 @@ fn execute(
     plan = fresh(root, &plan)?;
     if plan.integration == Integration::AfterPreparation {
         guard(root, &plan)?;
+        if plan.history_edit == HistoryEdit::Interactive {
+            crate::finish::history::editor_ready(root)?;
+            crate::finish::history::protect_ignored(
+                root,
+                record.original(),
+                record.preparation_base(),
+            )?;
+        }
         let mut a = args(&[
             "--no-replace-objects",
             "-c",
@@ -343,12 +355,18 @@ fn execute(
             ],
             _ => return Err(Error::UnresolvedPlan),
         }));
+        if plan.history_edit == HistoryEdit::Interactive {
+            a.push("--interactive".into());
+        }
         a.push(repository::os(record.preparation_base())?);
         command(root, a, Some(&record.prepare_marker()), report)?;
         plan = fresh(root, &plan)?;
         report.plan = Some(plan.clone());
         guard(root, &plan)?;
         record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
+        if plan.history_edit == HistoryEdit::Interactive {
+            observe(root, &plan, report)?;
+        }
     }
     // Persist the corroborated prepared source and resolved message before target effects.
     record.bind_choices(&plan);

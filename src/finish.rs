@@ -4,11 +4,12 @@ use crate::{
     git, repository,
     repository::InspectionError,
     save::{self, SaveError, TreeState, publication::PublishError},
-    settings::{FinishRewrite, FinishUpdate, SettingSource, Settings},
+    settings::{FinishRewrite, FinishUpdate, HistoryEdit, SettingSource, Settings},
 };
 use std::{ffi::OsString, fmt, fs, io, path::Path};
 
 pub mod checks;
+mod history;
 pub mod hosted;
 pub mod integration;
 pub mod preparation;
@@ -21,6 +22,7 @@ pub use recovery::{Recovery, VerifiedRewrite};
 pub struct Request {
     /// Explicit request choices take precedence over configuration.
     pub update: Option<FinishUpdate>,
+    pub history_edit: Option<HistoryEdit>,
     pub rewrite: Option<FinishRewrite>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +52,11 @@ pub struct DestinationEvidence {
     pub destination: Vec<u8>,
     pub branch: RefObservation,
 }
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TargetEvidence {
+    pub reference: Vec<u8>,
+    pub branch: RefObservation,
+}
 /// Operation-scoped fresh observations supplied by the execution layer.
 /// The caller must observe the exact base/branch refs at the named destinations.
 /// This module validates the binding and local history, not network freshness.
@@ -62,6 +69,8 @@ pub struct RemoteEvidence {
     pub base_ref: Vec<u8>,
     pub branch_ref: Vec<u8>,
     pub base: RefObservation,
+    /// Distinct shared integration history protected from interactive editing.
+    pub target: Option<TargetEvidence>,
     /// Exactly one observation per resolved push URL, in configuration order.
     pub destinations: Vec<DestinationEvidence>,
 }
@@ -104,6 +113,7 @@ pub enum Constraint {
     RewriteDenied(Vec<u8>),
     /// Legacy grafts can invent parentage. Resolve them before approval.
     GraftedHistory,
+    HistoryEdit(String),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublicationMode {
@@ -137,6 +147,7 @@ pub struct Plan {
     pub evidence: Option<RemoteEvidence>,
     pub base_relationship: Option<Relationship>,
     pub update: FinishUpdate,
+    pub history_edit: HistoryEdit,
     pub update_source: ChoiceSource,
     pub rewrite: FinishRewrite,
     pub rewrite_source: ChoiceSource,
@@ -151,6 +162,7 @@ pub struct Plan {
     shallow: Option<Vec<u8>>,
     grafts: Option<Vec<u8>>,
     committed_settings: Vec<u8>,
+    shared_history: history::SharedRefs,
 }
 impl Plan {
     /// Ready for preparation and subsequent publication assessment.
@@ -427,6 +439,7 @@ pub fn assess(
         evidence: evidence.cloned(),
         base_relationship: None,
         update: request.update.unwrap_or(settings.finish_update),
+        history_edit: request.history_edit.unwrap_or(settings.history_edit),
         update_source: request.update.map_or_else(
             || ChoiceSource::Setting(settings.sources.finish_update.clone()),
             |_| ChoiceSource::Request,
@@ -446,9 +459,43 @@ pub fn assess(
         shallow,
         grafts,
         committed_settings,
+        shared_history: if request.history_edit.unwrap_or(settings.history_edit)
+            == HistoryEdit::Interactive
+        {
+            history::shared_refs(directory, &settings)?
+        } else {
+            vec![]
+        },
     };
     if plan.grafts.as_ref().is_some_and(|bytes| !bytes.is_empty()) {
         plan.constraints.push(Constraint::GraftedHistory);
+    }
+    if plan.history_edit == HistoryEdit::Interactive {
+        if plan
+            .shared_history
+            .iter()
+            .any(|(reference, _, _)| reference.as_bytes() == plan.publication.branch_ref)
+        {
+            plan.constraints.push(Constraint::HistoryEdit(
+                "the work branch must differ from its shared preparation and integration refs"
+                    .into(),
+            ));
+        }
+        if settings
+            .workstream
+            .as_ref()
+            .is_some_and(|p| p.version_tagging)
+        {
+            plan.constraints.push(Constraint::HistoryEdit("interactive history editing requires ordinary work; tagged versions retain their source history".into()));
+        }
+        if !matches!(plan.update, FinishUpdate::Rebase | FinishUpdate::Ask) {
+            plan.constraints.push(Constraint::HistoryEdit(
+                "interactive history editing requires finish-update = rebase".into(),
+            ));
+        }
+        if let Some(reason) = history::unavailable(directory)? {
+            plan.constraints.push(Constraint::HistoryEdit(reason));
+        }
     }
     let Some(evidence) = evidence else {
         plan.constraints
@@ -478,7 +525,67 @@ pub fn assess(
     let shallow = plan.shallow.as_ref().is_some_and(|bytes| !bytes.is_empty());
     let base = relationship(directory, &plan.commit, &evidence.base, shallow)?;
     plan.base_relationship = Some(base);
-    if base.includes_remote() {
+    // Completed interactive preparation must be recognized before resolving
+    // update: an explicit edit applies even when the source already includes base.
+    recovery::apply(directory, &mut plan)?;
+    let editing = plan.history_edit == HistoryEdit::Interactive
+        && !matches!(plan.recovery, Recovery::Verified(_));
+    if plan.history_edit == HistoryEdit::Interactive {
+        let target_ref = format!(
+            "refs/heads/{}",
+            plan.settings
+                .workstream
+                .as_ref()
+                .map_or(plan.settings.base.as_str(), |p| p
+                    .integration_target
+                    .as_str())
+        )
+        .into_bytes();
+        if target_ref != evidence.base_ref {
+            match (&evidence.target, &evidence.base) {
+                (Some(target), RefObservation::Commit(boundary))
+                    if target.reference == target_ref =>
+                {
+                    if let RefObservation::Commit(target_oid) = &target.branch {
+                        // A completed edit is already bound to its original target.
+                        if editing
+                            && history::shares_target_work(
+                                directory,
+                                &plan.commit,
+                                boundary,
+                                target_oid,
+                            )?
+                        {
+                            plan.constraints.push(Constraint::HistoryEdit("the selected work range contains shared integration-target history; select a preparation boundary that includes that history".into()));
+                        }
+                    } else {
+                        plan.constraints.push(Constraint::HistoryEdit(
+                            "the shared integration target is unavailable".into(),
+                        ));
+                    }
+                }
+                _ => plan.constraints.push(Constraint::HistoryEdit(
+                    "fresh evidence for the distinct integration target is required before editing"
+                        .into(),
+                )),
+            }
+        } else if evidence.target.is_some() {
+            return Err(FinishError::InvalidEvidence(
+                "unexpected distinct integration target evidence",
+            ));
+        }
+    }
+    if editing {
+        if let RefObservation::Commit(boundary) = &evidence.base
+            && !history::unique_boundary(directory, &plan.commit, boundary)?
+        {
+            plan.constraints.push(Constraint::HistoryEdit("interactive history editing requires one complete, unambiguous preparation boundary".into()));
+        }
+        if plan.update == FinishUpdate::Ask {
+            plan.required_input.push(RequiredInput::Update);
+        }
+    }
+    if base.includes_remote() && !editing {
         plan.update = FinishUpdate::None;
         plan.update_source = ChoiceSource::IncludesBase;
     } else {
@@ -499,6 +606,7 @@ pub fn assess(
                 base,
                 Relationship::Behind | Relationship::Diverged | Relationship::Unrelated
             )
+            && !plan.required_input.contains(&RequiredInput::Update)
         {
             plan.required_input.push(RequiredInput::Update);
         }

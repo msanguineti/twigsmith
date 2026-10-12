@@ -553,6 +553,11 @@ fn guided(
                 &effective.sources.finish_update,
             ),
             (
+                "finish-history-edit",
+                effective.history_edit.as_str(),
+                &effective.sources.history_edit,
+            ),
+            (
                 "finish-rewrite",
                 effective.finish_rewrite.as_str(),
                 &effective.sources.finish_rewrite,
@@ -932,6 +937,11 @@ fn show(inspection: &config::Inspection) {
             &settings.sources.finish_update,
         ),
         (
+            "finish-history-edit",
+            settings.history_edit.as_str(),
+            &settings.sources.history_edit,
+        ),
+        (
             "finish-rewrite",
             settings.finish_rewrite.as_str(),
             &settings.sources.finish_rewrite,
@@ -1098,7 +1108,7 @@ Details:
   Built-in defaults: publish-remote = origin; base-remote follows publication; base = main; save-action = ask.
   Local publication settings override shared publication settings.
   Explicit base-remote resolves independently; start, save, and finish support separate roles.
-  Finish defaults: finish-mode = ask; finish-update = ask; finish-rewrite = ask.
+  Finish defaults: finish-mode = ask; finish-update = ask; finish-history-edit = none; finish-rewrite = ask.
   finish-mode: ask, review, integrate. Review prepares and publishes for manual review.
   Integrate delivers to base-remote, then completes selected checkout and work cleanup.
   finish-integration: ask (default), ff-only, merge (merge commit), squash.
@@ -1131,7 +1141,8 @@ Details:
   Start and save never execute finish checks.
   Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.
   Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.
-  finish-update: ask, rebase, merge, none; finish-rewrite: ask, allow, deny.
+  finish-update: ask, rebase, merge, none; finish-history-edit: none, interactive.
+  finish-rewrite: ask, allow, deny. Interactive editing requires rebase and ordinary work.
   Rewrite allow is standing authorization for eligible replacement; remote safeguards remain.
   Private overrides take precedence; guided review shows effective roles, checks, and their sources.
   Equal role choices omit base-remote so the base follows publication.

@@ -6,8 +6,8 @@ use git_oneflow::{
     git, repository,
     save::{self, ActionSource, Request, SaveError, execution},
     settings::{
-        self, CONFIG_FILES, FinishRewrite, FinishUpdate, SaveAction, SettingSource, Settings,
-        SettingsError,
+        self, CONFIG_FILES, FinishRewrite, FinishUpdate, HistoryEdit, SaveAction, SettingSource,
+        Settings, SettingsError,
     },
     start,
 };
@@ -1638,4 +1638,80 @@ fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
             assert!(load(repo.path()).is_err());
         },
     );
+}
+
+#[test]
+fn history_edit_settings_preserve_sparse_layers_and_validate_every_value() {
+    isolated("history_edit_settings", true, |root| {
+        let repo = Repository::new(root);
+        let common = repo.path().join(".git");
+        assert_eq!(load(repo.path()).unwrap().history_edit, HistoryEdit::None);
+        for (format, filename) in CONFIG_FILES.iter().enumerate() {
+            write(
+                repo.path(),
+                format,
+                &[("finish-history-edit", "interactive")],
+            );
+            let loaded = load(repo.path()).unwrap();
+            assert_eq!(loaded.history_edit, HistoryEdit::Interactive);
+            assert_eq!(
+                loaded.sources.history_edit,
+                SettingSource::Shared(repo.path().join(filename))
+            );
+            write(&common, format, &[("finish-history-edit", "none")]);
+            let before = snapshot(root);
+            let loaded = load(repo.path()).unwrap();
+            assert_eq!(snapshot(root), before);
+            assert_eq!(loaded.history_edit, HistoryEdit::None);
+            assert_eq!(
+                loaded.sources.history_edit,
+                SettingSource::Local(common.join(filename))
+            );
+            for invalid in ["", "ask", "INTERACTIVE", "true", "rebase"] {
+                write(repo.path(), format, &[("finish-history-edit", invalid)]);
+                let error = load(repo.path()).unwrap_err().to_string();
+                assert!(error.contains("finish-history-edit"), "{error}");
+            }
+            fs::remove_file(repo.path().join(filename)).unwrap();
+            fs::remove_file(common.join(filename)).unwrap();
+            for malformed in match format {
+                0 => vec![
+                    "finish-history-edit=false",
+                    "finish-history-edit='none'\nfinish-history-edit='none'",
+                ],
+                1 | 2 => vec![
+                    "finish-history-edit: false",
+                    "finish-history-edit: none\nfinish-history-edit: none",
+                ],
+                3 => vec![
+                    r#"{"finish-history-edit":false}"#,
+                    r#"{"finish-history-edit":"none","finish-history-edit":"none"}"#,
+                ],
+                _ => unreachable!(),
+            } {
+                fs::write(common.join(filename), malformed).unwrap();
+                assert!(load(repo.path()).is_err(), "accepted {malformed}");
+            }
+            fs::remove_file(common.join(filename)).unwrap();
+        }
+        fs::write(repo.path().join(CONFIG_FILES[3]),
+            r#"{"finish-history-edit":"none","workstreams":{"ordinary":{"finish-history-edit":"interactive"}}}"#).unwrap();
+        let mut loaded = load(repo.path()).unwrap();
+        settings::resolve_workstream(&mut loaded, settings::WorkstreamKind::Ordinary, None)
+            .unwrap();
+        assert_eq!(loaded.history_edit, HistoryEdit::Interactive);
+        assert_eq!(
+            loaded.sources.history_edit,
+            SettingSource::Shared(repo.path().join(CONFIG_FILES[3]))
+        );
+        fs::write(repo.path().join(CONFIG_FILES[3]),
+            r#"{"workstreams":{"release":{"version-tagging":"required","finish-mode":"integrate","finish-update":"none","finish-history-edit":"interactive"}}}"#).unwrap();
+        fs::write(
+            common.join(CONFIG_FILES[3]),
+            r#"{"workstreams":{"release":{"finish-history-edit":"none"}}}"#,
+        )
+        .unwrap();
+        let error = load(repo.path()).unwrap_err().to_string();
+        assert!(error.contains("finish-history-edit = none"), "{error}");
+    });
 }

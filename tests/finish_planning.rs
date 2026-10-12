@@ -35,6 +35,7 @@ fn fixture(root: &Path) -> (Repository, Vec<u8>) {
 }
 fn evidence(base: Vec<u8>, branch: RefObservation) -> RemoteEvidence {
     RemoteEvidence {
+        target: None,
         base_remote: "origin".into(),
         base_destination: b"/missing/finish-fetch".to_vec(),
         publish_remote: "origin".into(),
@@ -73,6 +74,7 @@ fn request(update: FinishUpdate, rewrite: FinishRewrite) -> Request {
     Request {
         update: Some(update),
         rewrite: Some(rewrite),
+        ..Default::default()
     }
 }
 

@@ -66,13 +66,15 @@ their exact targets with `./dev test-groups`, then select a capability:
 ./dev test-group finish-planning
 ./dev test-group oneflow
 ./dev test-group hosted-oneflow
+./dev test-group history-edit
 ```
 
 The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
-`lifecycle`, `smoke`, `finish-planning`, `oneflow`, and `hosted-oneflow`. Command groups include
+`lifecycle`, `smoke`, `finish-planning`, `history-edit`, `oneflow`, and `hosted-oneflow`. Command groups include
 backend and CLI coverage. `smoke` pairs CLI smoke checks with development
 launcher selection. `finish-planning` selects review finish planning and
 eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles.
+`history-edit` selects ordinary native history editing and fresh-process recovery.
 `hosted-oneflow` selects version publication, separate merge-back preparation, and
 fresh-process recovery for manual submission. `shared` covers the development launcher, Git boundary, repository observation,
 settings, tracking, remote roles, finish-check configuration, and exact save/finish

@@ -206,6 +206,7 @@ fn finish_grammar_and_help_without_git() {
                         "Options:",
                         "Examples:",
                         "--update",
+                        "--history-edit",
                         "--allow-rewrite",
                         "--no-rewrite",
                         "Exit status:",
@@ -222,6 +223,8 @@ fn finish_grammar_and_help_without_git() {
                 vec!["--allow-rewrite"],
                 vec!["--no-rewrite"],
                 vec!["--update", "rebase"],
+                vec!["--history-edit", "interactive"],
+                vec!["--history-edit", "none"],
                 vec!["--update", "merge", "--allow-rewrite"],
                 vec!["--no-rewrite", "--update", "none"],
             ] {
@@ -229,6 +232,10 @@ fn finish_grammar_and_help_without_git() {
             }
             for args in [
                 vec!["--update"],
+                vec!["--history-edit"],
+                vec!["--history-edit", "ask"],
+                vec!["--history-edit", "INTERACTIVE"],
+                vec!["--history-edit", "none", "--history-edit", "interactive"],
                 vec!["--update", "ask"],
                 vec!["--update", "REBASE"],
                 vec!["--update", "squash"],

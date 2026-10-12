@@ -29,6 +29,7 @@ fn request(update: FinishUpdate, rewrite: FinishRewrite) -> Request {
     Request {
         update: Some(update),
         rewrite: Some(rewrite),
+        history_edit: None,
     }
 }
 fn fixture(
@@ -954,6 +955,151 @@ fn verified_rewrite_survives_preserving_commits_and_merges() {
             let result = prepare(&local, &req);
             assert!(result.is_prepared(), "{result:#?}");
             child(&local, "retry");
+        },
+    );
+}
+
+fn interactive_request() -> Request {
+    Request {
+        update: Some(FinishUpdate::Rebase),
+        rewrite: Some(FinishRewrite::Allow),
+        history_edit: Some(git_oneflow::settings::HistoryEdit::Interactive),
+    }
+}
+fn interactive_editors(local: &Repository) {
+    fs::write(
+        local.path().join(".git/history-sequence"),
+        "sed -i 's/^pick /reword /' \"$1\"\n",
+    )
+    .unwrap();
+    fs::write(
+        local.path().join(".git/history-message"),
+        "printf 'Edited work\\n' > \"$1\"\n",
+    )
+    .unwrap();
+    local.success(&["config", "sequence.editor", "sh .git/history-sequence"]);
+    local.success(&["config", "core.editor", "sh .git/history-message"]);
+}
+#[test]
+fn interactive_recovery_rejects_reset_changed_context_and_missing_retention() {
+    isolated(
+        "interactive_recovery_rejects_reset_changed_context_and_missing_retention",
+        true,
+        |root| {
+            for mutation in ["reset", "context", "retention", "raw-anchor", "record"] {
+                let (local, remote, original, _) = fixture(root, true, false);
+                interactive_editors(&local);
+                let req = interactive_request();
+                let report = prepare(&local, &req);
+                assert!(report.is_prepared(), "{mutation}: {report:#?}");
+                let edited = oid(&local, "HEAD");
+                assert_ne!(edited, original);
+                match mutation {
+                    "reset" => {
+                        local.success(&["reset", "--hard", "HEAD"]);
+                    }
+                    "context" => {
+                        local.success(&["config", "oneflow.changed", "true"]);
+                    }
+                    "retention" => {
+                        let refs = local.success(&[
+                            "for-each-ref",
+                            "--format=%(refname)",
+                            "refs/oneflow/finish/",
+                        ]);
+                        let reference = std::str::from_utf8(&refs.stdout).unwrap().trim();
+                        local.success(&["update-ref", "-d", reference]);
+                    }
+                    "raw-anchor" => {
+                        let log = local.path().join(".git/logs/refs/heads/work");
+                        let bytes = fs::read(&log).unwrap();
+                        // Preserve OIDs/actions/counts but alter the raw author anchor.
+                        let text =
+                            String::from_utf8(bytes)
+                                .unwrap()
+                                .replacen(" <", " changed <", 1);
+                        fs::write(log, text).unwrap();
+                    }
+                    "record" => {
+                        fs::remove_file(record_path(&local)).unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                let plan = fresh(&local, &req);
+                assert!(
+                    !matches!(plan.recovery, Recovery::Verified(_)),
+                    "{mutation}: {:?}",
+                    plan.recovery
+                );
+                assert!(!plan.is_ready(), "{mutation}: {:?}", plan.constraints);
+                assert_eq!(oid(&remote, "work"), original);
+            }
+        },
+    );
+}
+#[test]
+fn interactive_edit_preserves_unincorporated_and_newly_published_work() {
+    isolated(
+        "interactive_edit_preserves_unincorporated_and_newly_published_work",
+        true,
+        |root| {
+            let (local, remote, _, _) = fixture(root, true, false);
+            interactive_editors(&local);
+            let req = interactive_request();
+            let report = prepare(&local, &req);
+            assert!(report.is_prepared(), "{report:#?}");
+            remote.success(&["switch", "work"]);
+            let changed = commit(&remote, "concurrent", "concurrent remote work\n");
+            let plan = fresh(&local, &req);
+            assert!(!plan.is_ready(), "{plan:#?}");
+            assert!(
+                plan.constraints
+                    .iter()
+                    .any(|c| matches!(c, Constraint::RemoteWorkNotIncorporated(_)))
+            );
+            assert_eq!(oid(&remote, "work"), changed);
+        },
+    );
+}
+#[test]
+fn interactive_edit_protects_ignored_paths_in_intermediate_commits() {
+    isolated(
+        "interactive_edit_protects_ignored_paths_in_intermediate_commits",
+        true,
+        |root| {
+            let (local, remote, _, _) = fixture(root, false, false);
+            interactive_editors(&local);
+            commit(&local, "private-output", "tracked temporarily\n");
+            local.success(&["rm", "private-output"]);
+            local.success(&["commit", "-m", "remove temporary path"]);
+            fs::create_dir_all(local.path().join(".git/info")).unwrap();
+            fs::write(local.path().join(".git/info/exclude"), "private-output\n").unwrap();
+            fs::write(
+                local.path().join("private-output"),
+                "precious ignored content\n",
+            )
+            .unwrap();
+            let original = oid(&local, "HEAD");
+            let report = prepare(&local, &interactive_request());
+            assert!(!report.is_prepared(), "{report:#?}");
+            assert!(
+                report
+                    .error
+                    .unwrap()
+                    .to_string()
+                    .contains("ignored local path")
+            );
+            assert_eq!(oid(&local, "HEAD"), original);
+            assert_eq!(
+                fs::read_to_string(local.path().join("private-output")).unwrap(),
+                "precious ignored content\n"
+            );
+            assert!(
+                !git::run(remote.path(), ["show-ref", "--verify", "refs/heads/work"])
+                    .unwrap()
+                    .status
+                    .success()
+            );
         },
     );
 }

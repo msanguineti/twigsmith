@@ -198,6 +198,7 @@ submission. It keeps the working branch checked out.
 | --- | --- |
 | `--mode <review\|integrate>` | Publish work for review or integrate it into the project base |
 | `--update <rebase\|merge\|none>` | Override preparation against the observed remote base |
+| `--history-edit <none\|interactive>` | Select native interactive editing of ordinary work history |
 | `--allow-rewrite` | Permit eligible replacement of published branch history |
 | `--no-rewrite` | Deny replacement; mutually exclusive with `--allow-rewrite` |
 | `--skip-checks` | Bypass configured checks for this invocation |
@@ -228,7 +229,7 @@ prepares against the project base even when a fork base is stale or divergent.
 | `merge` | Incorporate the observed base with a merge or fast-forward |
 | `none` | Publish current history without updating from the base |
 
-A branch already including the base needs no update choice. Unrelated base history
+With history editing disabled, a branch already including the base needs no update choice. Unrelated base history
 requires `none` or Git history repair; uncertain or unavailable history stops finish.
 
 In review mode, selecting rebase resolves only the update choice. If published
@@ -251,6 +252,51 @@ unresolved choices prompt. Review’s required choices resolve before branch cha
 Review cancellation or unresolved input leaves branch history, the index, and
 working-tree content unchanged by finish; completed remote observations and fetches remain and
 are reported. Changed local or remote context stops execution.
+
+#### Edit ordinary work history
+
+Select interactive preparation explicitly:
+
+```sh
+gof finish --mode review --update rebase --history-edit interactive --allow-rewrite
+gof finish --mode integrate --update rebase --history-edit interactive --integration ff-only --cleanup keep
+gof finish --mode integrate --update rebase --history-edit interactive --integration merge --message "Integrate feature" --cleanup local
+```
+
+`finish-history-edit = interactive` supplies the same preference; the default
+`none` keeps normal preparation. `--history-edit none` overrides a configured edit.
+Editing requires update `rebase`, including when work already contains the base.
+Update `ask` still requires a rebase choice; merge and none are incompatible.
+Release/hotfix versions and hosted merge-back work preserve their released history
+and reject interactive editing.
+
+Finish identifies the work branch and pinned preparation base before invoking
+Git's native sequence editor. Reorder commits, use `fixup` or `squash` to combine
+work, use `reword` for messages, use `edit` to stop and amend a commit, or use
+`drop` to remove work. Git's sequence and commit editor preferences, hooks, and
+signing settings apply. The editable range contains work relative to the resolved
+preparation boundary. Missing, shallow, ambiguous, or replacement history prevents
+editing. Shared preparation history stays outside that range; a different
+integration target must also have no shared commits in the editable range.
+Finish retains the original work before starting. Local shared refs and fresh
+remote observations are compared after editing; concurrent movement stops further
+effects instead of authorizing a different range.
+
+Editing chooses local history changes. Review replacement of published history
+still requires separate rewrite permission, proof that the original work included
+the observed remote work, and unchanged destination expectations. Direct
+integration delivers only the target result; it leaves published source history
+unchanged unless selected cleanup can safely delete its observed version.
+Integration method, final message, checks, checkout, and cleanup remain independent.
+
+A completed edit can change the final tree or retain all existing commits. Checks
+validate the actual prepared result. Dropping all work can leave nothing to
+integrate; finish reports that result and needs no new integration commit or
+message. Failed editors, invalid instructions, intentional edit stops, and conflicts
+stop delivery. Continue or abandon with native Git as described in
+[review recovery](#recover-review-preparation-or-checks) and
+[integration recovery](#recover-direct-integration). A corroborated completed edit
+is reused by a fresh finish invocation with the same choices and context.
 
 #### Integrate into the project base
 
@@ -280,7 +326,7 @@ validated.
 Work preparation and target integration are independent. `--update merge`
 incorporates the observed target into work; `--integration merge` creates the final
 merge commit on the target. Fast-forward-only requires target ancestry and stops
-when a fast-forward is impossible. Work already containing the target needs no
+when a fast-forward is impossible. With history editing disabled, work already containing the target needs no
 update choice; work already contained in the target needs no integration method
 or message. Unrelated or unverifiable history blocks direct integration.
 
@@ -629,6 +675,7 @@ an empty TOML document or empty YAML/JSON mapping (`{}`) inherits all keys.
 | `save-action` | `ask`, `publish-only`, `staged`, `wip`, `stash` | `ask` |
 | `finish-mode` | `ask`, `review`, `integrate` | `ask` |
 | `finish-update` | `ask`, `rebase`, `merge`, `none` | `ask` |
+| `finish-history-edit` | `none`, `interactive`; ordinary work only | `none` |
 | `finish-rewrite` | `ask`, `allow`, `deny` | `ask` |
 | `finish-checks` | Ordered list of check objects | `[]` |
 | `finish-integration` | `ask`, `ff-only`, `merge`, `squash`; hosted tagged review requires `merge` | `ask` |
@@ -693,7 +740,7 @@ Policy is selected explicitly with start; a template name is data, not code.
 | `version-tagging` | `required` or `disabled` |
 | `release-marker` | Marker branch name, or `none` |
 | `active-release` | Explicit active release branch, or `none`, for hotfix routing |
-| `finish-mode`, `finish-update`, `finish-integration`, `finish-message`, `finish-rewrite`, `finish-checkout`, `finish-cleanup` | Policy-specific finish choices, using the values above |
+| `finish-mode`, `finish-update`, `finish-history-edit`, `finish-integration`, `finish-message`, `finish-rewrite`, `finish-checkout`, `finish-cleanup` | Policy-specific finish choices, using the values above |
 
 `gof config --oneflow --yes` writes a direct OneFlow bundle. Add
 `--marker stable` to enable a marker. Guided `gof config --oneflow` reviews the
@@ -872,9 +919,10 @@ publication.
 ### Credential display
 
 Finish redacts credentials in HTTP(S) URLs by default across its prompts, completion,
-failures, displayed Git diagnostics, and check output. Your message editor receives
-the terminal directly and controls its own display. Redaction filters URL credentials
-in finish-rendered output; it does not filter arbitrary secrets.
+failures, displayed Git diagnostics, and check output. Native interactive Git/editor
+terminal UI and your message editor use the terminal directly and control their
+own display. Redaction filters URL credentials in finish-rendered output; it does
+not filter arbitrary secrets.
 
 Set `redact-credentials = false` in the private common-directory file or use
 `gof finish --show-credentials` for one invocation. The flag takes precedence.
@@ -935,6 +983,12 @@ before local effects. Unresolved update input stops before branch changes but ca
 observations and fetches. Integration method/message input can first become necessary
 after work preparation; cancellation retains that prepared work. Guided configuration
 requires a terminal; `--yes` authorizes prompt-free default generation.
+
+Unattended interactive preparation requires explicit sequence and commit editors,
+through `GIT_SEQUENCE_EDITOR`/`GIT_EDITOR` or Git's editor settings and environment
+preferences. Select scripts that finish without terminal input. An unavailable
+editor selection stops before rewriting; Git's implicit terminal editor is not
+used without a terminal. Explicit editor commands are developer-controlled code.
 
 For save and finish, enter a displayed choice or `cancel`; invalid choices and
 blank required messages stop with retry guidance. Resolved selections add no
@@ -1055,10 +1109,19 @@ git rebase --continue   # when a rebase is active
 # or: git merge --continue
 ```
 
+For an intentional `edit` stop, amend or split the selected commit with Git, then
+run `git rebase --continue`. Invalid todo instructions can be corrected with
+`git rebase --edit-todo` before continuing. A stopped rebase is incomplete even
+when its initial command returned successfully. Rerun finish after Git completes;
+verified interactive preparation is reused without reopening the editor.
+
 To abandon that preparation, use `git rebase --abort` or `git merge --abort` as
 appropriate. Then rerun finish. Finish verifies retained rebase evidence before
 permitting eligible publication after recovery; it has no separate continue or
-abort command.
+abort command. An aborted, reset, recreated, or uncorroborated edit cannot supply
+the old attempt's delivery authority. Changed routes, settings, or missing recovery
+evidence require resolving that context before proceeding. Finish retains effects
+and reports failures without automatic rollback.
 
 For failed or interrupted checks, prepared history and check effects stay local.
 Fix the reported check or executable problem, commit or preserve changed files,

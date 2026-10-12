@@ -49,6 +49,7 @@ fn request(update: FinishUpdate) -> Request {
     Request {
         update: Some(update),
         rewrite: Some(FinishRewrite::Allow),
+        ..Default::default()
     }
 }
 fn fresh(local: &Repository, req: &Request) -> Plan {
@@ -535,6 +536,7 @@ fn partial_publication_and_failed_push_retain_exact_proof_across_processes() {
                     &Request {
                         update: Some(FinishUpdate::None),
                         rewrite: None,
+                        ..Default::default()
                     },
                 );
                 assert!(ask.required_input.contains(&RequiredInput::Rewrite));
@@ -817,7 +819,7 @@ fn advancing_base_extends_recovery_with_equal_and_split_roles() {
                 );
                 let record: serde_json::Value =
                     serde_json::from_slice(&fs::read(f.record()).unwrap()).unwrap();
-                assert_eq!(record["version"], 2);
+                assert_eq!(record["version"], 3);
                 assert_eq!(record["attempts"].as_array().unwrap().len(), 2);
                 assert!(record.get("roles").is_some());
                 succeeds(cli(&f.local, "none"));
