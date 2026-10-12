@@ -394,9 +394,13 @@ released source. Squash and source rewriting are incompatible with this delivery
 The tag remains at the released commit through merge conflicts and retries.
 Tagged completion requires original Git objects and stops while replacement
 refs are present; restore the original source tree before validation.
-Checks also validate the integration candidate before its pending delivery.
-A check failure or a check changing guarded state stops remaining delivery;
-`--skip-checks` explicitly bypasses configured checks for that invocation.
+Checks validate the released source and the integration candidate. A candidate
+identical to the checked source needs no duplicate check. Retries can reuse
+successful checks for the exact unchanged commits while the retained settings
+and repository context remain verified. A check failure or a check changing
+guarded state stops remaining delivery. `--skip-checks` bypasses configured checks
+for that invocation; a later retry without it must validate any bypassed tree
+before completing pending delivery.
 
 Hotfix routing requires declared active-release context: a specific release
 branch or explicit `none`. The developer supplies and maintains that declaration.
@@ -427,6 +431,8 @@ Use a distinct branch for new work or resolve the old association explicitly.
 Conflicting retry input or changed refs, settings,
 endpoints, or associations stop reuse. Inspect the reported completed effects,
 remaining work, and next action; do not delete retention evidence during recovery.
+After local source deletion, recovery verifies existing delivery and completes
+remaining cleanup; it cannot publish missing release refs from an absent source.
 Hosted release/hotfix merge-back and post-review cleanup remain outside direct
 completion.
 
@@ -770,11 +776,15 @@ stops publication and later checks. Ctrl-C stops the running check and its ordin
 child processes. Check commands run as project code with your permissions.
 
 Preparation and check effects stay in place. Fix the problem, commit or preserve
-any generated changes, and rerun finish. Review reruns all checks; integration reruns them while target
-delivery remains pending and skips them after every target confirms delivery. Checks that change
-the branch, committed work, index, working tree, effective settings, or routing
-stop the attempt before another check or publication. Ignored build outputs are
-permitted. Remote movement during checks can still stop publication.
+any generated changes, and rerun finish. Review reruns all checks. Ordinary direct
+integration reruns checks while target delivery remains pending and skips them
+after every target confirms delivery. Tagged completion can reuse successful
+checks for verified unchanged source and candidate commits; a bypassed tree needs
+validation on a later retry without `--skip-checks` before pending delivery completes.
+Checks that change the branch, committed work, index, working tree, effective
+settings, or routing stop the attempt before another check or publication.
+Ignored build outputs are permitted. Remote movement during checks can still stop
+publication.
 
 ### Credential display
 
@@ -969,9 +979,11 @@ abort command.
 
 For failed or interrupted checks, prepared history and check effects stay local.
 Fix the reported check or executable problem, commit or preserve changed files,
-and rerun finish. Review reruns every configured check; integration reruns checks
-when delivery remains pending. `--skip-checks` is an explicit
-per-invocation bypass when you choose it.
+and rerun finish. Review reruns every configured check; ordinary direct integration
+reruns checks when target delivery remains pending. Tagged completion can reuse
+verified successful checks of unchanged source and candidate commits.
+`--skip-checks` is a per-invocation bypass, not successful validation for a later
+retry without that flag.
 
 ### Retry review publication
 
@@ -995,13 +1007,21 @@ an accepted message, including when settings specify ask. Explicit conflicting
 choices or changed settings, Git configuration, endpoints, history, or association
 block recovery. Preserve private Git metadata, retained refs, and reflogs.
 
-A failed check or publication retains the candidate for reuse. Pending target
-delivery reruns configured checks. When all target destinations freshly confirm
-delivery, retry completes only remaining checkout/cleanup. It does not integrate,
-run candidate checks, or publish the target again. A fully completed attempt
-succeeds without duplicate effects. Recovery can continue from target checkout
-after the local source branch has been deleted. Recreated or changed work cannot
-inherit the old attempt’s deletion authority.
+A failed check or publication retains the candidate for reuse. Ordinary direct
+integration reruns configured checks for pending target delivery. After every
+target destination freshly confirms delivery, its retry completes remaining
+checkout/cleanup without integrating, checking, or publishing the target again.
+
+Tagged completion can reuse successful source and candidate checks for the exact
+unchanged commits and verified retained context. A retry without `--skip-checks`
+validates bypassed trees before completing pending delivery. Target delivery can
+leave tag or marker delivery outstanding; those refs must also be verified before
+final checkout and cleanup. Confirmed delivery is not repeated.
+
+A fully completed attempt succeeds without duplicate effects. Recovery can continue
+from target checkout after local source deletion; tagged recovery then verifies
+existing delivery and completes remaining cleanup. Recreated or changed work
+cannot inherit the old attempt's deletion authority.
 
 Resolve merge/rebase conflicts with ordinary Git continuation or abort. A verified
 merge commit with stale merge machinery can require `git merge --quit`; follow
