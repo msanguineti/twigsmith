@@ -62,16 +62,29 @@ their exact targets with `./dev test-groups`, then select a capability:
 ./dev test-group start
 ./dev test-group config
 ./dev test-group shared
+./dev test-group smoke
+./dev test-group finish-planning
+./dev test-group oneflow
 ```
 
-The groups are `start`, `save`, `finish`, `config`, `status`, `shared`, and
-`lifecycle`. Command groups include backend and CLI coverage. `shared` covers
-the development launcher, Git boundary, repository observation, settings,
-tracking, remote roles, finish-check configuration, and exact save/finish
+The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
+`lifecycle`, `smoke`, `finish-planning`, and `oneflow`. Command groups include
+backend and CLI coverage. `smoke` pairs CLI smoke checks with development
+launcher selection. `finish-planning` selects review finish planning and
+eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles.
+`shared` covers the development launcher, Git boundary, repository observation,
+settings, tracking, remote roles, finish-check configuration, and exact save/finish
 publication. `lifecycle` includes CLI smoke checks, end-to-end project/fork
-workflows, and direct release/hotfix delivery and recovery. Every group
-also runs library and binary unit tests (`--lib --bins`). Targets overlap where
-they exercise shared behaviour.
+workflows, and direct release/hotfix delivery and recovery; this broad group
+includes expensive lifecycle coverage. Prefer the narrower groups during fast
+iteration, then run full validation before submitting changes. Every group also runs
+library and binary unit tests (`--lib --bins`). Targets overlap where they
+exercise shared behaviour. Overlap selects shared tests for relevant development
+work; a full run uses Cargo discovery rather than executing each group.
+
+The `finish` group does not include `cli_oneflow`. For tagged release/hotfix
+completion changes, also select `oneflow`, or select both sets of targets directly
+with Cargo. Neither focused group replaces complete validation.
 
 Choose additional targets or groups when a change affects shared components,
 dependencies, configuration, or behaviour across commands. For example, settings
@@ -104,6 +117,33 @@ arguments and `./dev check`, run every Cargo-discovered test target, including
 CLI smoke and end-to-end tests. New tests participate in full runs regardless
 of group membership; update the group
 definitions in `dev` when a target is useful for focused iteration.
+
+## Test quality
+
+Tests should detect meaningful regressions with reliable results, clear failure
+diagnostics, and reasonable execution and maintenance cost. Use these principles
+when adding or changing coverage:
+
+- Verify observable behavior, documented contracts, or explicitly justified
+  architectural invariants; each test should protect a meaningful case.
+- Keep tests deterministic and independent of order, use the simplest adequate
+  setup, and avoid coupling assertions to incidental implementation details.
+- Do not duplicate equivalent assertions without a distinct regression purpose.
+  Update tests when behavior changes. Defect fixes should include a regression
+  case that fails with the defect and passes with the fix when practical.
+- Separate expensive tests from fast iteration where practical while retaining
+  them in full validation. Correct or remove obsolete, redundant, flaky, or
+  consistently low-value tests. Keep reliable protection for important contracts
+  when replacing flaky tests.
+
+Detailed CLI finish and OneFlow safety scenarios exercise the shared canonical
+dispatcher. Focused matrices verify both native executables and lifecycle aliases
+with real effects; repeat expensive scenarios across entry points when they
+protect a distinct failure mode.
+
+Judge the suite by the important defects it catches, its reliability and
+diagnostic value, and its total cost. Test count and raw coverage percentage are
+not goals; keep full validation comprehensive and focused selections useful.
 
 ## Run a build
 

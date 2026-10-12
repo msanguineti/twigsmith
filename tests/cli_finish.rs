@@ -14,10 +14,19 @@ use support::{Repository, isolated};
 
 const BRANCH: &str = "fix/deployment-bug";
 const REF: &str = "refs/heads/fix/deployment-bug";
+// Workflow scenarios exercise the common dispatcher once. Grammar/help retains
+// explicit coverage of both executable entry points and the finish alias.
 fn cases(name: &str, available: bool, test: impl Fn(&Path, &str)) {
+    isolated(name, available, |root| {
+        let dir = tempfile::tempdir_in(root).unwrap();
+        test(dir.path(), env!("CARGO_BIN_EXE_git-oneflow"));
+    });
+}
+fn entrypoint_cases(name: &str, available: bool, test: impl Fn(&Path, &str)) {
     isolated(name, available, |root| {
         for exe in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
             let dir = tempfile::tempdir_in(root).unwrap();
+            println!("finish grammar: executable={exe}");
             test(dir.path(), exe);
         }
     });
@@ -186,7 +195,7 @@ fn work_snapshot(
 
 #[test]
 fn finish_grammar_and_help_without_git() {
-    cases("finish_grammar_and_help_without_git", false, |root, exe| {
+    entrypoint_cases("finish_grammar_and_help_without_git", false, |root, exe| {
         for command in ["finish", "f"] {
             for help in ["--help", "-h"] {
                 let output = check(

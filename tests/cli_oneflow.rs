@@ -1,4 +1,4 @@
-//! Public release/hotfix lifecycles against isolated real Git repositories.
+//! Public lifecycle wiring and release/hotfix safety against isolated real Git repositories.
 mod support;
 #[cfg(target_os = "linux")]
 #[path = "support/terminal.rs"]
@@ -13,7 +13,7 @@ use std::{
 };
 use support::{Repository, isolated};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Cli {
     executable: &'static str,
     aliases: bool,
@@ -41,15 +41,42 @@ impl Cli {
     }
 
     fn success(self, repository: &Repository, command: &str, arguments: &[&str]) -> String {
-        status(self.run(repository, command, arguments), 0)
+        let output = self.run(repository, command, arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{self:?} {command} {arguments:?} in {}: {output:?}",
+            repository.path().display()
+        );
+        format!(
+            "{}{}",
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap()
+        )
     }
 }
 
+// Safety scenarios use the shared dispatcher once; the focused lifecycle matrix
+// below verifies both binaries and the three lifecycle aliases with real effects.
 fn cases(name: &str, test: impl Fn(&Path, Cli)) {
+    isolated(name, true, |root| {
+        let directory = tempfile::tempdir_in(root).unwrap();
+        test(
+            directory.path(),
+            Cli {
+                executable: env!("CARGO_BIN_EXE_git-oneflow"),
+                aliases: false,
+            },
+        );
+    });
+}
+
+fn entrypoint_cases(name: &str, test: impl Fn(&Path, Cli)) {
     isolated(name, true, |root| {
         for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
             for aliases in [false, true] {
                 let directory = tempfile::tempdir_in(root).unwrap();
+                println!("lifecycle wiring: executable={executable}, aliases={aliases}");
                 test(
                     directory.path(),
                     Cli {
@@ -198,6 +225,123 @@ fn refs(path: &Path) -> String {
         .stdout,
     )
     .unwrap()
+}
+
+#[test]
+fn ordinary_lifecycle_executable_and_alias_wiring() {
+    entrypoint_cases(
+        "ordinary_lifecycle_executable_and_alias_wiring",
+        |root, cli| {
+            let fixture = Fixture::new(root);
+            fs::write(
+                fixture.local.path().join(".git/git-oneflow.config.toml"),
+                "publish-remote='personal'\nbase-remote='project'\nfinish-mode='review'\n\
+             finish-update='none'\nfinish-integration='ff-only'\nfinish-message='auto'\n\
+             finish-checkout='work'\nfinish-cleanup='keep'\n",
+            )
+            .unwrap();
+            // The explicit source differs from both local and published main.
+            let source = commit(&fixture.local, "source", "explicit starting point\n");
+            fixture.local.success(&["branch", "source-input"]);
+            fixture.local.success(&["reset", "--hard", &fixture.base]);
+            let branch = "work/wiring";
+            let work_ref = "refs/heads/work/wiring";
+            cli.success(
+                &fixture.local,
+                "start",
+                &[branch, "--policy", "ordinary", "--from", "source-input"],
+            );
+            assert_eq!(oid(fixture.local.path(), "HEAD"), Some(source.clone()));
+            assert_eq!(value(&fixture.local, &["branch", "--show-current"]), branch);
+            assert_eq!(oid(fixture.personal.path(), work_ref), None);
+
+            fs::write(fixture.local.path().join("work"), "saved through the CLI\n").unwrap();
+            fixture.local.success(&["add", "work"]);
+            cli.success(
+                &fixture.local,
+                "save",
+                &["--staged", "--message", "Save wiring progress"],
+            );
+            let saved = oid(fixture.local.path(), "HEAD").unwrap();
+            assert_ne!(saved, source);
+            assert_eq!(oid(fixture.local.path(), "HEAD^"), Some(source.clone()));
+            assert_eq!(
+                value(&fixture.local, &["log", "-1", "--format=%B"]),
+                "Save wiring progress"
+            );
+            assert_eq!(
+                value(&fixture.local, &["show", "HEAD:work"]),
+                "saved through the CLI"
+            );
+            assert_eq!(oid(fixture.personal.path(), work_ref), Some(saved.clone()));
+            assert_eq!(oid(fixture.project.path(), work_ref), None);
+            assert_eq!(
+                value(&fixture.local, &["config", "branch.work/wiring.remote"]),
+                "personal"
+            );
+            assert_eq!(
+                value(&fixture.local, &["config", "branch.work/wiring.merge"]),
+                work_ref
+            );
+            assert!(
+                fixture
+                    .local
+                    .success(&["status", "--porcelain"])
+                    .stdout
+                    .is_empty()
+            );
+
+            // Explicit finish options override review, ff-only, work, and keep.
+            cli.success(
+                &fixture.local,
+                "finish",
+                &[
+                    "--mode",
+                    "integrate",
+                    "--update",
+                    "none",
+                    "--integration",
+                    "merge",
+                    "-m",
+                    "Integrate wiring progress",
+                    "--checkout",
+                    "target",
+                    "--cleanup",
+                    "both",
+                ],
+            );
+            let result = oid(fixture.local.path(), "HEAD").unwrap();
+            assert_eq!(
+                oid(fixture.project.path(), "refs/heads/main"),
+                Some(result.clone())
+            );
+            assert_eq!(
+                value(&fixture.local, &["rev-list", "--parents", "-1", "HEAD"]),
+                format!("{result} {} {saved}", fixture.base)
+            );
+            assert_eq!(
+                value(&fixture.local, &["log", "-1", "--format=%B"]),
+                "Integrate wiring progress"
+            );
+            assert_eq!(value(&fixture.local, &["branch", "--show-current"]), "main");
+            assert_eq!(
+                fs::read_to_string(fixture.local.path().join("work")).unwrap(),
+                "saved through the CLI\n"
+            );
+            assert_eq!(oid(fixture.local.path(), work_ref), None);
+            assert_eq!(oid(fixture.personal.path(), work_ref), None);
+            assert_eq!(oid(fixture.project.path(), work_ref), None);
+            assert_eq!(
+                oid(fixture.personal.path(), "refs/heads/main"),
+                Some(fixture.base.clone())
+            );
+            assert_eq!(
+                oid(fixture.local.path(), "refs/heads/source-input"),
+                Some(source)
+            );
+            assert!(fixture.local.success(&["tag", "--list"]).stdout.is_empty());
+        },
+    );
 }
 
 #[test]

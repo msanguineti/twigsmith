@@ -63,8 +63,9 @@ Start creates or resumes an exact work branch. Save preserves selected local
 progress and publishes the current branch. CLI finish prepares and checks work,
 then publishes it for manual review or delivers its integrated result to the
 project base. Review mode leaves submission to the developer and identifies the
-publication branch and project base in its handoff. Explicit release and hotfix policy additionally binds a released source commit,
-version tag, and optional release marker to direct delivery. Finish creates no
+publication branch and project base in its output. Explicit release and hotfix
+policy additionally binds a released source commit, version tag, and optional
+release marker to direct delivery. Finish creates no
 pull request and invokes no provider submission or deployment tool.
 
 Direct integration uses its own workflow library in
@@ -956,7 +957,9 @@ The default checkout is the integration target. CLI reports distinguish released
 version/source, integration result/destination, marker, cleanup, and pending work.
 Hosted release/hotfix review completion, provider submission, and deployment are
 outside this delivery path. The [CLI OneFlow fixtures](../tests/cli_oneflow.rs)
-exercise these lifecycles with real Git and both executables/aliases.
+exercise release/hotfix safety and recovery with real Git through the canonical
+command entry point. A focused ordinary lifecycle matrix verifies both executables
+and their start/save/finish aliases with actual publication and integration effects.
 
 ## Evidence and maintenance limits
 
