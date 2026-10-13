@@ -305,13 +305,20 @@ pub fn assess(root: &Path, supplied: &Request) -> Result<Plan, FinishError> {
             "interactive history editing is unavailable for tagged hosted preparation",
         ));
     }
-    if !settings
-        .workstream
-        .as_ref()
-        .is_some_and(|p| p.version_tagging)
-    {
+    if !settings.workstream.as_ref().is_some_and(|p| {
+        p.version_tagging && p.version_tag_identity == settings::VersionTagIdentity::WorkSource
+    }) {
         return Err(invalid(
             "hosted finish requires explicit tagged workstream policy",
+        ));
+    }
+    if settings
+        .workstream
+        .as_ref()
+        .is_some_and(|p| p.integration_targets.len() != 1)
+    {
+        return Err(invalid(
+            "review finish supports one integration destination",
         ));
     }
     let request = if let Some(r) = &record {
@@ -1402,7 +1409,9 @@ pub fn selected(root: &Path) -> Result<bool, FinishError> {
         .map_err(SaveError::from)?
         .workstream
         .as_ref()
-        .is_some_and(|p| p.version_tagging))
+        .is_some_and(|p| {
+            p.version_tagging && p.version_tag_identity == settings::VersionTagIdentity::WorkSource
+        }))
 }
 
 fn hosted_branch(root: &Path, branch: &[u8]) -> Result<bool, FinishError> {

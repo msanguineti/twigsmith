@@ -143,6 +143,7 @@ fn observe(
     Ok((prefix, name))
 }
 fn push(root: &Path, plan: &Plan, outcome: &mut DestinationOutcome) -> Result<(), Error> {
+    sequence::verify_completed_delivery(root, plan, &mut outcome.commands)?;
     release::pending_routes(root, plan, &mut outcome.commands)?;
     let (mut args, name) = observe(root, plan, outcome)?;
     if outcome.state.is_published() {
@@ -274,6 +275,7 @@ pub fn publish_with_checks(
         if report.destinations.is_empty() {
             return Err(Error::UnverifiedResult);
         }
+        sequence::verify_completed_delivery(root, plan, &mut report.destinations[0].commands)?;
         release::pending_routes(root, plan, &mut report.destinations[0].commands)?;
         // Observe first: a retry delivered elsewhere needs no candidate execution.
         for d in &mut report.destinations {

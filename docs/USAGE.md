@@ -55,8 +55,9 @@ submit it manually for review. The branch remains checked out and available.
 
 Finish supports manual review delivery and direct integration into the project base.
 Direct integration can retain or delete the work branch after verified delivery.
-Explicit release and hotfix policy delivers a version tag and either a hosted
-merge-back branch or direct integration with optional release-marker delivery.
+Explicit release and hotfix policy selects version identity and either ordered
+direct integration or work prepared for manual review. The OneFlow bundles tag
+the completed work source; integrated-result review leaves tagging to the developer.
 Pull request creation, provider submission, and build/deployment packaging remain
 outside these operations.
 
@@ -342,7 +343,9 @@ Checkout and deletion follow verified delivery to every target destination.
 `--checkout work` requires `--cleanup keep`. Local cleanup deletes the verified
 local work branch; both also deletes its exact observed published version at every
 `publish-remote` push destination. The published version must be contained in the
-verified source. New work, another worktree’s checkout, or changed destinations
+verified source. For a verified authorized tagged rebase, incorporation in the
+retained original work establishes eligibility for that same originally observed
+version. New work, another worktree’s checkout, or changed destinations
 blocks deletion. Target delivery and published-work cleanup use their independent
 remote roles.
 
@@ -437,13 +440,47 @@ it is corroborated as the exact tag from this retained attempt. For annotated
 tags this includes the tag object, not just the peeled commit. Finish never
 replaces a version tag.
 
-Release completion checks and tags the approved source commit, then integrates
-its history into the target without importing newer development work into the
-released source. Squash and source rewriting are incompatible with this delivery.
-The tag remains at the released commit through merge conflicts and retries.
+Direct release/hotfix completion integrates the completed work commit independently
+into each configured destination, in order. Each destination can have its own
+merge result and conflict resolution. An earlier integration result never becomes
+the source for a later destination. A singleton destination is the default.
+Tagged work supports merge or ff-only integration; squash is incompatible.
+
+`version-tag-identity = "work-source"` checks and tags the completed work commit
+before integration. This is the OneFlow default and preserves a release cutoff
+when development has advanced. With `"integrated-result"`, finish integrates into
+the first destination, validates that result, and tags its exact commit. Later
+destinations still receive the fixed work source, with no additional version tags.
+A conflict resolution on the first destination therefore belongs to the version
+only with integrated-result identity. Once created, the tag retains its exact
+identity through remaining conflicts and retries; finish never substitutes a
+work-source tag for an unavailable integrated result.
+
+Direct release/hotfix preparation defaults to none. Request `--update rebase`
+explicitly to prepare once against `preparation-source` before checks, tagging,
+and any destination integration. A persistent release/hotfix rebase preference
+is incompatible; inherited ordinary update preferences do not enable it. This
+choice can import newer preparation-base work into an earlier release cutoff:
+select it when that resulting version is the one you intend to ship. The request
+selects preparation, not permission to replace published history or an existing
+version. Interactive tagged editing remains unsupported. Native Git preparation
+before finish is also valid; finish checks the actual resulting source.
+
+For a release that should include the current preparation base:
+
+```sh
+gof finish --tag spring --update rebase --allow-rewrite
+```
+
+`--allow-rewrite` authorizes eligible replacement of incorporated published work
+for this invocation; it does not authorize overwriting work missing locally.
+
+A stopped rebase blocks every later delivery. Resolve and continue with native
+Git, then rerun finish; corroborated completed preparation is reused without
+another rebase. Original work is retained for recovery.
 Tagged completion requires original Git objects and stops while replacement
 refs are present; restore the original source tree before validation.
-Checks validate the released source and the integration candidate. A candidate
+Checks validate the completed work source and every integration candidate. A candidate
 identical to the checked source needs no duplicate check. Retries can reuse
 successful checks for the exact unchanged commits while the retained settings
 and repository context remain verified. A check failure or a check changing
@@ -455,25 +492,29 @@ Hotfix routing requires declared active-release context: a specific release
 branch or explicit `none`. The developer supplies and maintains that declaration.
 Finish does not infer an active release from prefixes, branch enumeration, tag
 dates, or version ordering. With an active release, the hotfix integrates there;
-otherwise it integrates into development. Completing the release later carries
-the fix into development. Invalid or changed declared context stops routing.
+otherwise its default destination is development. An explicit destination list
+with an active release starts with that release branch. Any additional destinations
+are declared explicitly. Completing the release later carries the fix into
+development under the default single-destination route. Invalid or changed declared
+context stops routing.
 
 An enabled release marker is a distinct branch pointing at the released tag's
 commit, even when the integration result includes newer development. Finish
 initializes an absent marker and advances an existing marker only by
-fast-forward. Divergence and aliases with work or integration target block it.
-A disabled marker has no effect. The default final checkout is the integration
-target.
+fast-forward. Divergence and aliases with work or any integration destination
+block it. A disabled marker has no effect. The default final checkout is the
+first integration destination.
 
-Tag, target, and enabled marker must all be verified at their required publication
-destinations before checkout or cleanup. Only the selected tag and branch refs
+The selected tag, all target results, and enabled marker must be verified at their
+required publication destinations before checkout or cleanup. Only the selected tag and branch refs
 are delivered. Partial effects remain available after failure; retry confirms
 completed destinations and completes pending effects. A failing Git command
 still returns failure when its effect occurred.
 
 Resolve merge conflicts with native Git commands, then rerun the same finish
-request. Finish retains the released source, exact tag identity, integration
-result, routes, and resolved choices across fresh processes, including after
+request. The report names the affected destination and completed and pending
+work. Finish retains the fixed work source, exact tag identity, each integration
+result, ordered routes, and resolved choices across fresh processes, including after
 local source deletion. A removed established local work branch is reserved for
 its retained completion; start stops before recreating it with an old association.
 Use a distinct branch for new work or resolve the old association explicitly.
@@ -487,7 +528,8 @@ completion.
 
 ### Hosted releases and hotfixes
 
-Hosted finish publishes the approved version and a distinct merge-back branch,
+With work-source tag identity, hosted finish publishes the approved version and
+a distinct merge-back branch,
 then reports readiness for manual submission. It retains both branches. The
 project target and optional release marker remain for later manual integration.
 
@@ -510,8 +552,8 @@ The editable hosted bundle uses review mode for releases and hotfixes. Their
 version tag; `review-remote` receives the merge-back branch. The bundle selects
 the project remote for original publication and the ordinary publication remote
 for review. Remotes may coincide, and their names confer no role. Equivalent
-custom templates select the same behavior with `version-tagging = "required"`
-and `finish-mode = "review"`.
+custom templates select the same behavior with `version-tagging = "required"`,
+`version-tag-identity = "work-source"`, and `finish-mode = "review"`.
 
 Supply `--merge-back <branch>` or configure `merge-back-branch` in the selected
 template. An unresolved tag, merge-back name, or relevant preparation choice asks
@@ -561,6 +603,22 @@ integration, deployment, branch cleanup, and marker advancement are external
 follow-up; finish does not monitor or complete them. See
 [hosted preparation recovery](#recover-hosted-preparation) for interrupted work
 before readiness.
+
+#### Review with integrated-result version identity
+
+With `version-tag-identity = "integrated-result"` and review mode, finish prepares,
+checks, and publishes the work branch for the existing single-destination review
+path. It creates no version tag and advances no release marker. Submit the named
+source into the named target, validate the actual merged result, and tag that
+exact commit with Git. Then complete applicable branch cleanup and advance any
+configured marker to that tag's commit using a fast-forward. Review readiness is
+the end of finish's work; the developer performs those later operations.
+
+This path uses the work branch rather than creating a hosted merge-back branch.
+Tag and merge-back creation options do not apply. Multiple-destination review
+is unsupported and stops before publication. Optional source rebase for tagged
+direct completion does not enable hosted source rewriting. Finish neither submits
+nor monitors the review and does not resume automatically after external merging.
 
 ### Inspect state
 
@@ -732,12 +790,14 @@ Policy is selected explicitly with start; a template name is data, not code.
 | --- | --- |
 | `creation-source` | Reference used to create new work |
 | `preparation-source` | Branch supplying work preparation |
-| `integration-target` | Branch receiving direct integration or manual merge-back review |
+| `integration-target` | Single branch receiving direct integration or manual review |
+| `integration-targets` | Nonempty ordered list of distinct tagged direct release/hotfix destinations; requires `version-tagging = "required"`; alternative to `integration-target` |
 | `publish-remote` | Work-branch publication and remote-resume destination |
 | `base-remote` | Project source and version/direct-delivery remote |
 | `review-remote` | Hosted merge-back publication remote; defaults to the effective work publication remote |
 | `merge-back-branch` | Exact hosted merge-back branch name; finish can supply `--merge-back` |
 | `version-tagging` | `required` or `disabled` |
+| `version-tag-identity` | `work-source` (default) or `integrated-result`; integrated-result review defers tagging |
 | `release-marker` | Marker branch name, or `none` |
 | `active-release` | Explicit active release branch, or `none`, for hotfix routing |
 | `finish-mode`, `finish-update`, `finish-history-edit`, `finish-integration`, `finish-message`, `finish-rewrite`, `finish-checkout`, `finish-cleanup` | Policy-specific finish choices, using the values above |
@@ -762,6 +822,7 @@ integration-target = "main"
 publish-remote = "project"
 base-remote = "project"
 version-tagging = "required"
+version-tag-identity = "work-source"
 release-marker = "stable"
 finish-mode = "integrate"
 finish-update = "none"
@@ -771,6 +832,24 @@ finish-rewrite = "deny"
 finish-checkout = "target"
 finish-cleanup = "both"
 ```
+
+For separate released-software and development lines, replace the singular
+route in the release template with an ordered list:
+
+```toml
+integration-targets = ["production", "main"]
+version-tag-identity = "integrated-result"
+```
+
+Here the version identifies the integration result on `production`; `main`
+receives the same completed work source independently. Creation and preparation
+remain controlled by their own settings. The list replaces the single route,
+contains no duplicate names, and must not contain the work or marker branch.
+A private singular or plural route replaces the shared alternative completely;
+supplying both in one layer is ambiguous. Configure these choices before
+establishing the work branch. Changing retained
+routes during completion cannot authorize a new delivery. `config show` displays
+the effective destination order and tag identity.
 
 The corresponding YAML/JSON structures are nested mappings. A private template
 can override only `workstreams.hotfix.active-release`, for example; it need not
@@ -1178,11 +1257,24 @@ reported problem. The associated verified attempt supplies omitted choices and
 an accepted message, including when settings specify ask. Explicit conflicting
 choices or changed settings, Git configuration, endpoints, history, or association
 block recovery. Preserve private Git metadata, retained refs, and reflogs.
+Recovery requires compatible retained state. For a pending attempt from an
+incompatible pre-release build, finish with a compatible executable and preserved
+metadata, or complete the pending Git operations and deliveries manually. Clear
+an obsolete completed-work association only after no finish effects remain pending;
+the diagnostic identifies the affected local configuration key. A new association
+cannot establish proof for earlier effects.
 
 A failed check or publication retains the candidate for reuse. Ordinary direct
 integration reruns configured checks for pending target delivery. After every
 target destination freshly confirms delivery, its retry completes remaining
 checkout/cleanup without integrating, checking, or publishing the target again.
+
+Tagged completion resumes the first pending destination in its configured order.
+Verified earlier integrations and deliveries remain in place. Resolve conflicts
+on the named destination with `git merge --continue`, then rerun finish; later
+destinations still integrate the original completed source. A completed one-time
+source rebase is reused. Keep the work branch until all target, tag, and marker
+deliveries are complete.
 
 Tagged completion can reuse successful source and candidate checks for the exact
 unchanged commits and verified retained context. A retry without `--skip-checks`

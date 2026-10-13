@@ -655,7 +655,7 @@ fn guided(
                 text(&resolved.base_remote),
                 text(&policy.preparation_source),
                 text(&resolved.base_remote),
-                text(&policy.integration_target),
+                text(policy.integration_targets.join(" -> ")),
                 if policy.version_tagging {
                     "required"
                 } else {
@@ -855,7 +855,7 @@ fn review_route(settings: &settings::Settings, guided: bool) {
             text(&policy.publish_remote),
             source(&settings.sources.publish_remote),
             text(&policy.base_remote),
-            text(&policy.integration_target),
+            text(policy.integration_targets.join(" -> ")),
         );
         if guided {
             eprintln!("{message}");
@@ -873,7 +873,10 @@ fn review_route(settings: &settings::Settings, guided: bool) {
         } else {
             "work branch"
         },
-        if policy.version_tagging && settings.finish_mode == settings::FinishMode::Review {
+        if policy.version_tagging
+            && policy.version_tag_identity == settings::VersionTagIdentity::WorkSource
+            && settings.finish_mode == settings::FinishMode::Review
+        {
             text(
                 policy
                     .merge_back_branch
@@ -884,21 +887,27 @@ fn review_route(settings: &settings::Settings, guided: bool) {
             "work branch".into()
         },
         text(
-            if policy.version_tagging && settings.finish_mode == settings::FinishMode::Review {
+            if policy.version_tagging
+                && policy.version_tag_identity == settings::VersionTagIdentity::WorkSource
+                && settings.finish_mode == settings::FinishMode::Review
+            {
                 &policy.review_remote
             } else {
                 &policy.publish_remote
             }
         ),
         source(
-            if policy.version_tagging && settings.finish_mode == settings::FinishMode::Review {
+            if policy.version_tagging
+                && policy.version_tag_identity == settings::VersionTagIdentity::WorkSource
+                && settings.finish_mode == settings::FinishMode::Review
+            {
                 origin
             } else {
                 &settings.sources.publish_remote
             }
         ),
         text(&policy.base_remote),
-        text(&policy.integration_target),
+        text(policy.integration_targets.join(" -> ")),
     );
     if guided {
         eprintln!("{message}");
@@ -1019,7 +1028,14 @@ fn show(inspection: &config::Inspection) {
             )
         );
         println!("  preparation-source: {}", text(&policy.preparation_source));
-        println!("  integration-target: {}", text(&policy.integration_target));
+        println!(
+            "  integration-targets (in order): {}",
+            text(policy.integration_targets.join(" -> "))
+        );
+        println!(
+            "  version-tag-identity: {}",
+            policy.version_tag_identity.as_str()
+        );
         println!(
             "  version-tagging: {}",
             if policy.version_tagging {
@@ -1041,13 +1057,25 @@ fn show(inspection: &config::Inspection) {
         let mut effective = inspection.templates.clone();
         if settings::resolve_workstream(&mut effective, *kind, None).is_ok() {
             review_route(&effective, false);
+            let policy = effective.workstream.as_ref().expect("resolved workstream");
+            println!(
+                "  Effective {} version-tag-identity: {}; integration-targets (in order): {}.",
+                kind.as_str(),
+                policy.version_tag_identity.as_str(),
+                text(policy.integration_targets.join(" -> "))
+            );
         }
         let values = serde_json::to_value(config).expect("policy serialization");
         for (key, value) in values.as_object().expect("policy object") {
             let name = format!("{}.{}", kind.as_str(), key);
             println!(
                 "  workstreams.{name}: {} ({})",
-                text(value.as_str().unwrap()),
+                text(
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string())
+                ),
                 settings
                     .sources
                     .workstreams
@@ -1120,8 +1148,8 @@ Details:
   Other modes ask integration policies; ff-only omits the message policy.
   --yes retains unresolved ask policies and the target checkout default.
   --oneflow explicitly selects editable ordinary/release/hotfix policies.
-  Ordinary direct integration imports its target by merge; release/hotfix import no newer target work.
-  Direct release/hotfix require version tags, history-preserving merge integration, and full work cleanup.
+  The direct bundle prepares ordinary work by merge; tagged work defaults to no preparation.
+  It selects version tags, history-preserving merge integration, and full work cleanup for releases/hotfixes.
   --oneflow-hosted selects review delivery and retains original and merge-back branches.
   Hosted release/hotfix publish original work to the project base-remote and merge-back to review-remote.
   review-remote follows the policy publication remote when omitted; the hosted bundle sets it explicitly.
@@ -1132,6 +1160,13 @@ Details:
   Advance a configured marker to the released tag by fast-forward and clean branches after integration.
   Hotfix active-release is explicitly none until edited to an active release branch.
   Markers are disabled unless --marker supplies an exact branch.
+  integration-targets is a nonempty ordered list of distinct tagged release/hotfix destinations.
+  Select integration-target or integration-targets; a private choice replaces the shared alternative.
+  Hotfix lists start with the declared active-release when one is configured.
+  version-tag-identity: work-source (default), integrated-result (first destination result).
+  Tagged direct finish-update is none; --update rebase selects one-time preparation explicitly.
+  Integrated-result review publishes work, then leaves validation, tagging and marker steps manual.
+  Review supports one destination; direct integration delivers all configured destinations.
   Shared/private workstreams fields merge independently; ordinary defaults apply without this bundle.
   finish-checks is an ordered list of objects with a name string and command list.
   command is a nonempty executable-and-argument list; shell syntax requires an explicit shell.

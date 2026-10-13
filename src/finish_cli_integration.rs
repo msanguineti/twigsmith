@@ -7,20 +7,59 @@ use std::{
     process::{Command, Stdio},
 };
 
+enum Progress {
+    Finished(ExitCode),
+    Destination(Box<Plan>, String),
+}
+
 pub(super) fn run(
     directory: &Path,
     initial: Plan,
     presentation: Presentation,
     skip_checks: bool,
 ) -> ExitCode {
+    let mut history = String::new();
+    if let Some(policy) = &initial.settings.workstream
+        && policy.version_tagging
+    {
+        let _ = writeln!(
+            history,
+            "Integration destinations (in order): {}. Version tag identity: {}.",
+            text(presentation, policy.integration_targets.join(" -> ")),
+            policy.version_tag_identity.as_str()
+        );
+    }
+    let root = initial
+        .repository
+        .working_tree_root
+        .clone()
+        .unwrap_or_else(|| directory.to_path_buf());
+    let mut next = initial;
+    loop {
+        match run_retained(&root, next, presentation, skip_checks, history) {
+            Progress::Finished(code) => return code,
+            Progress::Destination(plan, retained_history) => {
+                next = *plan;
+                history = retained_history;
+            }
+        }
+    }
+}
+
+fn run_retained(
+    directory: &Path,
+    initial: Plan,
+    presentation: Presentation,
+    skip_checks: bool,
+    mut history: String,
+) -> Progress {
     let root = initial
         .repository
         .working_tree_root
         .clone()
         .expect("working repository");
-    let mut history = String::new();
     let Some(mut plan) = refresh(directory, &initial, presentation, &mut history) else {
-        return ExitCode::FAILURE;
+        return Progress::Finished(ExitCode::FAILURE);
     };
     // Preparation may expose new choices on the actual graph. It occurs at most
     // once before those choices, then once to create/retain the integration result.
@@ -39,26 +78,36 @@ pub(super) fn run(
                 error: None,
             };
             let _ = writeln!(history, "{}", text(presentation, report.guidance()));
-            return failure(
+            return Progress::Finished(failure(
                 presentation,
                 &history,
                 "preparation/integration",
                 &report.remaining,
-            );
+            ));
         }
         if let Some(choice) = plan.required_input.first().copied() {
             let request = match choose(&root, &plan, choice, presentation) {
                 Ok(request) => request,
                 Err(error) => {
                     let _ = writeln!(history, "{error}");
-                    return failure(presentation, &history, "input", &repository::inspect(&root));
+                    return Progress::Finished(failure(
+                        presentation,
+                        &history,
+                        "input",
+                        &repository::inspect(&root),
+                    ));
                 }
             };
             plan = match integration::resolve(&root, &plan, &request) {
                 Ok(plan) => plan,
                 Err(error) => {
                     let _ = writeln!(history, "error: {}", text(presentation, error));
-                    return failure(presentation, &history, "input", &repository::inspect(&root));
+                    return Progress::Finished(failure(
+                        presentation,
+                        &history,
+                        "input",
+                        &repository::inspect(&root),
+                    ));
                 }
             };
             if plan.can_retain_choices() {
@@ -66,12 +115,12 @@ pub(super) fn run(
                     Ok(plan) => plan,
                     Err(error) => {
                         let _ = writeln!(history, "error: {}", text(presentation, error));
-                        return failure(
+                        return Progress::Finished(failure(
                             presentation,
                             &history,
                             "retaining input",
                             &repository::inspect(&root),
-                        );
+                        ));
                     }
                 };
             }
@@ -80,7 +129,7 @@ pub(super) fn run(
             if choice == RequiredInput::Cleanup && plan.cleanup == FinishCleanup::Both {
                 let previous_evidence = plan.evidence.clone();
                 let Some(refreshed) = refresh(&root, &plan, presentation, &mut history) else {
-                    return ExitCode::FAILURE;
+                    return Progress::Finished(ExitCode::FAILURE);
                 };
                 if previous_evidence
                     .as_ref()
@@ -93,7 +142,12 @@ pub(super) fn run(
                     })
                 {
                     history.push_str("error: target observations changed while resolving cleanup; rerun finish.\n");
-                    return failure(presentation, &history, "input", &repository::inspect(&root));
+                    return Progress::Finished(failure(
+                        presentation,
+                        &history,
+                        "input",
+                        &repository::inspect(&root),
+                    ));
                 }
                 plan = refreshed;
             }
@@ -124,12 +178,12 @@ pub(super) fn run(
         }
         if preparations == 2 {
             history.push_str("error: local integration did not reach a deliverable result; inspect retained state before retrying.\n");
-            return failure(
+            return Progress::Finished(failure(
                 presentation,
                 &history,
                 "preparation/integration",
                 &repository::inspect(&root),
-            );
+            ));
         }
         preparations += 1;
         if plan.history_edit == HistoryEdit::Interactive
@@ -161,21 +215,21 @@ pub(super) fn run(
         {
             let _ = writeln!(history, "error: {}", text(presentation, error));
             let _ = writeln!(history, "{}", text(presentation, prepared.guidance()));
-            return failure(
+            return Progress::Finished(failure(
                 presentation,
                 &history,
                 "preparation/integration",
                 &prepared.remaining,
-            );
+            ));
         }
         let Some(next) = prepared.plan else {
             history.push_str("error: prepared state could not be assessed.\n");
-            return failure(
+            return Progress::Finished(failure(
                 presentation,
                 &history,
                 "preparation/integration",
                 &prepared.remaining,
-            );
+            ));
         };
         plan = next;
     }
@@ -224,18 +278,18 @@ pub(super) fn run(
         } else {
             "target delivery"
         };
-        return failure(presentation, &history, stage, &delivered.remaining);
+        return Progress::Finished(failure(presentation, &history, stage, &delivered.remaining));
     }
     match delivered.plan {
         Ok(plan) => complete(&root, &plan, presentation, history, skip_checks),
         Err(error) => {
             let _ = writeln!(history, "error: {}", text(presentation, error));
-            failure(
+            Progress::Finished(failure(
                 presentation,
                 &history,
                 "post-delivery assessment",
                 &delivered.remaining,
-            )
+            ))
         }
     }
 }
@@ -302,6 +356,7 @@ fn choose(
         RequiredInput::Message => "supply -m/--message <text> or configure finish-message = auto",
         RequiredInput::Cleanup => "select --cleanup <keep|local|both> or configure finish-cleanup",
         RequiredInput::TagName => "supply --tag <name>",
+        RequiredInput::Rewrite => "select --allow-rewrite or --no-rewrite",
     };
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
         return Err(format!(
@@ -312,6 +367,7 @@ fn choose(
                 RequiredInput::Message => "message",
                 RequiredInput::Cleanup => "cleanup",
                 RequiredInput::TagName => "version tag",
+                RequiredInput::Rewrite => "published-history replacement",
             }
         ));
     }
@@ -319,7 +375,13 @@ fn choose(
         "Integrate {} into {}/{}.",
         display(presentation, &plan.source_ref),
         text(presentation, &plan.target.remote),
-        text(presentation, &plan.settings.base)
+        display(
+            presentation,
+            plan.target
+                .reference
+                .strip_prefix(b"refs/heads/")
+                .unwrap_or(&plan.target.reference)
+        )
     );
     let mut request = plan.request().clone();
     if choice == RequiredInput::TagName {
@@ -335,6 +397,12 @@ fn choose(
         return Ok(request);
     }
     let prompt = match choice {
+        RequiredInput::Rewrite => {
+            eprintln!(
+                "Rebase may replace incorporated published work; all exact publication guards remain required.\n  allow   Authorize eligible replacement for this attempt.\n  deny    Retain published history.\n  cancel  Stop finish."
+            );
+            "Rewrite (allow/deny/cancel): "
+        }
         RequiredInput::Update => {
             eprintln!(
                 "  rebase  Replay work commits onto the target.\n  merge   Incorporate the target into the work branch.\n  none    Retain the current work history.\n  cancel  Stop finish."
@@ -362,6 +430,13 @@ fn choose(
     )?;
     let invalid = || format!("error: invalid choice; rerun finish and {guidance}.");
     match choice {
+        RequiredInput::Rewrite => {
+            request.rewrite = Some(match answer.as_str() {
+                "allow" => FinishRewrite::Allow,
+                "deny" => FinishRewrite::Deny,
+                _ => return Err(invalid()),
+            });
+        }
         RequiredInput::Update => {
             request.update = Some(match answer.as_str() {
                 "rebase" => FinishUpdate::Rebase,
@@ -580,7 +655,34 @@ fn complete(
     presentation: Presentation,
     mut history: String,
     skip_checks: bool,
-) -> ExitCode {
+) -> Progress {
+    if plan.has_remaining_destinations() {
+        let mut commands = Vec::new();
+        let next = integration::advance(root, plan, &mut commands);
+        command_diagnostics(presentation, &mut history, &commands);
+        return match next {
+            Ok(next) => {
+                for (reference, result) in next.completed_destinations() {
+                    let _ = writeln!(
+                        history,
+                        "Verified completed destination {} at {}.",
+                        display(presentation, reference),
+                        display(presentation, result)
+                    );
+                }
+                Progress::Destination(Box::new(next), history)
+            }
+            Err(error) => {
+                let _ = writeln!(history, "error: {}", text(presentation, error));
+                Progress::Finished(failure(
+                    presentation,
+                    &history,
+                    "next integration destination",
+                    &repository::inspect(root),
+                ))
+            }
+        };
+    }
     let mut commands = Vec::new();
     let delivered = integration::release::deliver(root, plan, skip_checks, &mut commands);
     command_diagnostics(presentation, &mut history, &commands);
@@ -602,12 +704,12 @@ fn complete(
         Ok(plan) => plan,
         Err(error) => {
             let _ = writeln!(history, "error: {}", text(presentation, error));
-            return failure(
+            return Progress::Finished(failure(
                 presentation,
                 &history,
                 "version tag/marker delivery",
                 &repository::inspect(root),
-            );
+            ));
         }
     };
     let plan = &plan;
@@ -678,11 +780,18 @@ fn complete(
             }
         }
         let _ = writeln!(history, "{}", text(presentation, report.guidance()));
-        return failure(
+        return Progress::Finished(failure(
             presentation,
             &history,
             "checkout/cleanup",
             &report.remaining,
+        ));
+    }
+    for (reference, result) in plan.completed_destinations() {
+        println!(
+            "Integrated {} at {}.",
+            display(presentation, reference),
+            display(presentation, result)
         );
     }
     if let Some((tag, source)) = integration::release::identity(plan) {
@@ -724,7 +833,13 @@ fn complete(
             plan.result.as_deref().expect("verified result")
         ),
         text(presentation, &plan.target.remote),
-        text(presentation, &plan.settings.base)
+        display(
+            presentation,
+            plan.target
+                .reference
+                .strip_prefix(b"refs/heads/")
+                .unwrap_or(&plan.target.reference)
+        )
     );
     for destination in &report.targets {
         println!(
@@ -756,7 +871,7 @@ fn complete(
             FinishCleanup::Ask => unreachable!("resolved cleanup"),
         }
     );
-    ExitCode::SUCCESS
+    Progress::Finished(ExitCode::SUCCESS)
 }
 
 fn failure(
@@ -772,11 +887,20 @@ fn failure(
     {
         match integration::release::status(&tree.root, &plan) {
             Ok(Some(release)) => {
+                let selected_commit = if release.source.is_empty()
+                    || (integration::release::integrated_identity(&plan)
+                        && plan.result.is_none()
+                        && release.tag_object == finish::RefObservation::Absent)
+                {
+                    "pending validated version result".into()
+                } else {
+                    display(presentation, &release.source)
+                };
                 let _ = writeln!(
                     output,
-                    "Released version: {} at {}; local tag object: {}.",
+                    "Version tag: {}; selected commit: {}; local tag object: {}.",
                     text(presentation, release.tag.as_deref().unwrap_or("unresolved")),
-                    display(presentation, &release.source),
+                    selected_commit,
                     observation(presentation, &release.tag_object)
                 );
                 let _ = writeln!(
@@ -789,6 +913,23 @@ fn failure(
                         .map(|v| display(presentation, v))
                         .unwrap_or_else(|| "not yet verified".into())
                 );
+                for (reference, result) in plan.completed_destinations() {
+                    let _ = writeln!(
+                        output,
+                        "Verified completed destination {} at {}.",
+                        display(presentation, reference),
+                        display(presentation, result)
+                    );
+                }
+                if let Some(policy) = &plan.settings.workstream {
+                    let _ = writeln!(
+                        output,
+                        "Required destinations (in order): {}. Current destination: {} of {}.",
+                        text(presentation, policy.integration_targets.join(" -> ")),
+                        plan.active_destination_index() + 1,
+                        policy.integration_targets.len()
+                    );
+                }
                 if let Some((name, value)) = release.marker {
                     let _ = writeln!(
                         output,

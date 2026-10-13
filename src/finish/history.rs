@@ -122,7 +122,7 @@ pub(super) fn protect_ignored(root: &Path, source: &[u8], base: &[u8]) -> Result
     )?;
     if !commits.status.success() {
         return Err(FinishError::InvalidEvidence(
-            "history editing replay trees are unavailable",
+            "history preparation trees are unavailable",
         ));
     }
     for commit in std::iter::once(base).chain(
@@ -159,7 +159,7 @@ pub(super) fn protect_ignored(root: &Path, source: &[u8], base: &[u8]) -> Result
                 })
             {
                 return Err(FinishError::InvalidEvidence(
-                    "interactive history editing would overwrite an ignored local path; preserve or move it before retrying",
+                    "history preparation would overwrite an ignored local path; preserve or move it before retrying",
                 ));
             }
         }

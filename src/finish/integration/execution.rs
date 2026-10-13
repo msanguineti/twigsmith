@@ -173,6 +173,7 @@ fn fresh(root: &Path, previous: &Plan) -> Result<Plan, Error> {
     Ok(next)
 }
 fn observe(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
+    sequence::verify_completed_delivery(root, plan, &mut report.commands)?;
     let e = plan.evidence.as_ref().ok_or(Error::UnresolvedPlan)?;
     for (url, expected) in std::iter::once((&plan.target.fetch_destination, &e.fetched))
         .chain(e.targets.iter().map(|d| (&d.destination, &d.branch)))
@@ -222,6 +223,34 @@ fn observe(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
             return Err(Error::RemoteChanged);
         }
         guard(root, plan)?;
+    }
+    if release::enabled(plan)
+        && plan.integration == Integration::AfterPreparation
+        && plan.update == FinishUpdate::Rebase
+    {
+        for work in &e.work {
+            guard(root, plan)?;
+            let (prefix, name) = remote::endpoint(
+                root,
+                plan,
+                &plan.settings.publish_remote,
+                &work.destination,
+                &mut report.commands,
+            )
+            .map_err(|_| Error::RemoteChanged)?;
+            let observed = remote::observe(
+                root,
+                &prefix,
+                &name,
+                &plan.source_ref,
+                commit(&plan.source).ok_or(Error::UnresolvedPlan)?.len(),
+                &mut report.commands,
+            )
+            .map_err(|_| Error::RemoteChanged)?;
+            if observed != work.branch {
+                return Err(Error::RemoteChanged);
+            }
+        }
     }
     Ok(())
 }
@@ -304,7 +333,7 @@ fn execute(
     plan = release::prepare(root, &plan, skip, event, &mut report.commands)?;
     record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
     if plan.result.is_some() && plan.state != State::Fresh {
-        return finish_result(root, plan, report);
+        return finish_result(root, plan, report, skip, event);
     }
     guard(root, &plan)?;
     let selection = recovery::Selection::observe(
@@ -323,6 +352,8 @@ fn execute(
         guard(root, &plan)?;
         if plan.history_edit == HistoryEdit::Interactive {
             crate::finish::history::editor_ready(root)?;
+        }
+        if plan.update == FinishUpdate::Rebase {
             crate::finish::history::protect_ignored(
                 root,
                 record.original(),
@@ -363,11 +394,12 @@ fn execute(
         plan = fresh(root, &plan)?;
         report.plan = Some(plan.clone());
         guard(root, &plan)?;
-        record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
         if plan.history_edit == HistoryEdit::Interactive {
             observe(root, &plan, report)?;
         }
     }
+    plan = release::prepare(root, &plan, skip, event, &mut report.commands)?;
+    record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
     // Persist the corroborated prepared source and resolved message before target effects.
     record.bind_choices(&plan);
     guard(root, &plan)?;
@@ -435,7 +467,7 @@ fn execute(
     }
     guard(root, &plan)?;
     if plan.result.is_some() && plan.state != State::Fresh {
-        return finish_result(root, plan, report);
+        return finish_result(root, plan, report, skip, event);
     }
     let message = plan
         .request
@@ -462,9 +494,10 @@ fn execute(
             &message,
         ])),
         Integration::SquashCommit => a.extend(args(&["--squash", "--ff"])),
-        Integration::AlreadyIntegrated => return finish_result(root, plan, report),
+        Integration::AlreadyIntegrated => return finish_result(root, plan, report, skip, event),
         _ => return Err(Error::UnresolvedPlan),
     }
+    crate::finish::history::protect_ignored(root, &record.source, &record.target_before)?;
     a.push(repository::os(&record.source)?);
     command(root, a, Some(&record.marker()), report)?;
     if plan.integration == Integration::SquashCommit {
@@ -493,9 +526,15 @@ fn execute(
         command(root, a, Some(&record.marker()), report)?;
     }
     let plan = fresh(root, &plan)?;
-    finish_result(root, plan, report)
+    finish_result(root, plan, report, skip, event)
 }
-fn finish_result(root: &Path, mut plan: Plan, report: &mut Report) -> Result<(), Error> {
+fn finish_result(
+    root: &Path,
+    mut plan: Plan,
+    report: &mut Report,
+    skip: bool,
+    event: &mut impl FnMut(checks::Event<'_>),
+) -> Result<(), Error> {
     guard(root, &plan)?;
     let result = plan.result.clone().ok_or(Error::UnverifiedResult)?;
     let mut record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
@@ -545,6 +584,7 @@ fn finish_result(root: &Path, mut plan: Plan, report: &mut Report) -> Result<(),
         plan = fresh(root, &plan)?;
     }
     guard(root, &plan)?;
+    plan = release::prepare(root, &plan, skip, event, &mut report.commands)?;
     report.plan = Some(plan);
     Ok(())
 }

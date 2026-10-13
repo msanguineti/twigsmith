@@ -162,6 +162,10 @@ fn observe(
 // every target before each effect; a cached publication report grants no authority.
 fn delivery(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
     guard(root, plan)?;
+    if plan.has_remaining_destinations() {
+        return Err(Error::TargetDeliveryIncomplete);
+    }
+    sequence::verify_completed_delivery(root, plan, &mut report.commands)?;
     // A failed or short observation round must not leave stale delivery evidence
     // in the remaining plan. Unvisited endpoints are explicitly unavailable.
     report.targets = plan
@@ -496,7 +500,7 @@ fn delete_remote(root: &Path, plan: &Plan, outcome: &mut DestinationOutcome) -> 
         return Err(Error::WorkChanged);
     }
     let record = plan.record.as_ref().ok_or(Error::UnverifiedAttempt)?;
-    if ancestor(root, expected, &record.source)? != Some(true) {
+    if !record.incorporates_published_work(root, plan, expected)? {
         return Err(Error::WorkChanged);
     }
     let (mut args, name) = remote::endpoint(

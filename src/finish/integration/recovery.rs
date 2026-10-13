@@ -24,7 +24,7 @@ pub struct LogVersion {
     last: Vec<u8>,
 }
 impl LogVersion {
-    fn of(bytes: Option<&[u8]>) -> Self {
+    pub(super) fn of(bytes: Option<&[u8]>) -> Self {
         let lines: Vec<_> = bytes
             .unwrap_or_default()
             .split(|b| *b == b'\n')
@@ -62,15 +62,17 @@ pub struct Record {
     source_ref: Vec<u8>,
     pub(super) source: Vec<u8>,
     source_version: LogVersion,
-    target: Target,
+    pub(super) target: Target,
     pub(super) target_before: Vec<u8>,
-    local_before: RefObservation,
-    target_version: LogVersion,
-    head_version: LogVersion,
+    pub(super) local_before: RefObservation,
+    pub(super) target_version: LogVersion,
+    pub(super) head_version: LogVersion,
     settings: Settings,
     git_config: Vec<u8>,
     method: FinishIntegration,
     requested_update: Option<FinishUpdate>,
+    rewrite: Option<FinishRewrite>,
+    pub(super) completed: Vec<super::sequence::Completed>,
     history_edit: HistoryEdit,
     shared_preparation: super::super::history::SharedRefs,
     checkout: FinishCheckout,
@@ -92,6 +94,33 @@ pub struct Record {
     pub(super) release: Option<release::Record>,
 }
 impl Record {
+    /// Called only with a corroborated attempt. An explicitly authorized tagged
+    /// rebase may replace published commits; their exact initial version remains
+    /// eligible for conditional cleanup through the retained original source.
+    pub(super) fn incorporates_published_work(
+        &self,
+        root: &Path,
+        plan: &Plan,
+        published: &[u8],
+    ) -> Result<bool, FinishError> {
+        if ancestor(root, published, &self.source)? == Some(true) {
+            return Ok(true);
+        }
+        Ok(release::enabled(plan)
+            && self.retained
+            && self
+                .preparation
+                .as_ref()
+                .is_some_and(|p| p.method == FinishUpdate::Rebase)
+            && self.preparation_completed(plan)
+            && self.rewrite.unwrap_or(self.settings.finish_rewrite) == FinishRewrite::Allow
+            && ancestor(root, published, self.original())? == Some(true))
+    }
+    pub(super) fn preparation_completed(&self, plan: &Plan) -> bool {
+        self.preparation
+            .as_ref()
+            .is_some_and(|p| self.source != p.original || self.history_prepared(plan))
+    }
     pub(super) fn history_prepared(&self, plan: &Plan) -> bool {
         self.preparation.as_ref().is_some_and(|p| {
             let head = entries(plan.snapshot.head_log.as_deref());
@@ -115,6 +144,7 @@ impl Record {
     pub(super) fn request(&self, request: &Request) -> Request {
         Request {
             update: request.update.or(Some(self.update())),
+            rewrite: request.rewrite.or(self.rewrite),
             history_edit: request.history_edit.or(Some(self.history_edit)),
             integration: request.integration.or(Some(self.method)),
             message: request.message.clone().or_else(|| self.message.clone()),
@@ -151,7 +181,7 @@ impl Record {
         // Capture cleanup destinations before integration; a later destination
         // or branch version can never inherit deletion authority.
         Ok(Self {
-            version: 2,
+            version: 3,
             git_dir: plan.repository.git_dir.clone(),
             common_dir: plan.repository.common_dir.clone(),
             root: plan.repository.working_tree_root.clone().expect("worktree"),
@@ -171,6 +201,8 @@ impl Record {
             git_config: plan.snapshot.config.clone(),
             method: plan.method,
             requested_update: plan.request.update,
+            rewrite: plan.request.rewrite,
+            completed: vec![],
             history_edit: plan.history_edit,
             shared_preparation: plan.snapshot.shared_preparation.clone(),
             checkout: plan.checkout,
@@ -328,8 +360,10 @@ pub(super) fn select(
             let bytes =
                 private_read(&repository.git_dir, &record_path(repository, branch)).ok()??;
             let record: Record = serde_json::from_slice(&bytes).ok()?;
-            (current_ref(state).as_ref() == Some(&record.target.reference))
-                .then_some(record.target.reference)
+            current_ref(state).filter(|r| {
+                *r == record.target.reference
+                    || record.completed.iter().any(|d| d.target.reference == *r)
+            })
         });
     let target = active_target.as_deref().unwrap_or(target);
     let on_source = selected.source_ref.as_deref().is_some_and(|r| r != target);
@@ -403,7 +437,7 @@ pub(super) fn select(
         return Ok(selected);
     };
     if !valid_ref(directory, &record.target.reference)?
-        || record.version != 2
+        || record.version != 3
         || record.source_ref != *reference
         || record.source_ref == record.target.reference
     {
@@ -412,13 +446,30 @@ pub(super) fn select(
     }
     if association.is_some() {
         let head = metadata(directory, "logs/HEAD")?.unwrap_or_default();
-        let checkout = [
-            b"checkout: moving from ",
-            branch.as_bytes(),
-            b" to ",
-            &record.target.reference[b"refs/heads/".len()..],
-        ]
-        .concat();
+        let allowed: Vec<_> = std::iter::once(record.source_ref.as_slice())
+            .chain(
+                record
+                    .completed
+                    .iter()
+                    .map(|d| d.target.reference.as_slice()),
+            )
+            .chain(std::iter::once(record.target.reference.as_slice()))
+            .collect();
+        let checkout_valid = |message: &[u8]| {
+            allowed.iter().any(|from| {
+                allowed.iter().any(|to| {
+                    message
+                        == [
+                            b"checkout: moving from ",
+                            &from[b"refs/heads/".len()..],
+                            b" to ",
+                            &to[b"refs/heads/".len()..],
+                        ]
+                        .concat()
+                        && current_ref(state).as_deref() == Some(*to)
+                })
+            })
+        };
         let last_checkout = head
             .split(|b| *b == b'\n')
             .skip(record.head_version.count)
@@ -432,9 +483,7 @@ pub(super) fn select(
             && rebase_source.as_deref()
                 == Some([record.source_ref.as_slice(), b"\n"].concat().as_slice());
         if !record.head_version.prefix(Some(&head))
-            || (!rebasing
-                && (last_checkout != Some(checkout.as_slice())
-                    || current_ref(state).as_deref() != Some(record.target.reference.as_slice())))
+            || (!rebasing && (last_checkout.is_none_or(|m| !checkout_valid(m))))
         {
             selected.problem = Some(Problem::UnassociatedHead);
             return Ok(selected);
@@ -549,6 +598,7 @@ pub(super) fn assess(
             choice != record.update() && Some(choice) != record.requested_update
         })
         || record.shared_preparation != plan.snapshot.shared_preparation
+        || record.rewrite != plan.request.rewrite
         || record.history_edit != plan.history_edit
         || record.checkout != plan.checkout
         || record.cleanup != plan.cleanup
@@ -752,6 +802,9 @@ pub(super) fn assess(
         return Ok(());
     }
     plan.state = State::Published;
+    if plan.has_remaining_destinations() {
+        return Ok(());
+    }
     completion_choices(plan);
     if (plan.checkout == FinishCheckout::Work
         || matches!(plan.cleanup, FinishCleanup::Local | FinishCleanup::Both))
@@ -761,7 +814,10 @@ pub(super) fn assess(
     }
 
     let checkout_ref = if plan.checkout == FinishCheckout::Target {
-        plan.target.reference.clone()
+        record.completed.first().map_or_else(
+            || plan.target.reference.clone(),
+            |d| d.target.reference.clone(),
+        )
     } else {
         plan.source_ref.clone()
     };
@@ -769,7 +825,10 @@ pub(super) fn assess(
         plan.effects.push(Effect::Checkout {
             reference: checkout_ref,
             expected: if plan.checkout == FinishCheckout::Target {
-                result
+                record
+                    .completed
+                    .first()
+                    .map_or(result, |d| d.result.clone())
             } else {
                 record.source.clone()
             },
@@ -812,7 +871,7 @@ pub(super) fn assess(
                 continue;
             };
             if now.branch != original.branch
-                || ancestor(directory, expected, &record.source)? != Some(true)
+                || !record.incorporates_published_work(directory, plan, expected)?
             {
                 plan.blockers
                     .push(Blocker::WorkBranchChanged(now.destination.clone()));
@@ -1054,7 +1113,15 @@ impl Record {
         format!("refs/oneflow/integration/{}/original", self.token)
     }
     pub fn result_ref(&self) -> String {
-        format!("refs/oneflow/integration/{}/result", self.token)
+        if self.completed.is_empty() {
+            format!("refs/oneflow/integration/{}/result", self.token)
+        } else {
+            format!(
+                "refs/oneflow/integration/{}/result-{}",
+                self.token,
+                self.completed.len()
+            )
+        }
     }
     pub(super) fn original(&self) -> &[u8] {
         self.preparation

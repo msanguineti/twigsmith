@@ -8,13 +8,15 @@ use crate::{
     repository,
     save::SaveError,
     settings::{
-        self, FinishCheckout, FinishCleanup, FinishIntegration, FinishMessage, FinishUpdate,
-        HistoryEdit, Settings,
+        self, FinishCheckout, FinishCleanup, FinishIntegration, FinishMessage, FinishRewrite,
+        FinishUpdate, HistoryEdit, Settings,
     },
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod sequence;
+pub use sequence::advance;
 pub mod completion;
 pub mod execution;
 pub mod publication;
@@ -25,6 +27,7 @@ pub mod remote;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
     pub update: Option<FinishUpdate>,
+    pub rewrite: Option<FinishRewrite>,
     pub history_edit: Option<HistoryEdit>,
     pub integration: Option<FinishIntegration>,
     pub message: Option<String>,
@@ -63,6 +66,7 @@ pub struct RemoteEvidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequiredInput {
     Update,
+    Rewrite,
     Integration,
     Message,
     Cleanup,
@@ -178,6 +182,21 @@ pub struct Plan {
     record: Option<recovery::Record>,
 }
 impl Plan {
+    pub fn active_destination_index(&self) -> usize {
+        self.record.as_ref().map_or(0, |r| r.completed.len())
+    }
+    pub fn has_remaining_destinations(&self) -> bool {
+        self.active_destination_index() + 1 < destination_refs(&self.settings).len()
+    }
+    pub fn completed_destinations(&self) -> Vec<(&[u8], &[u8])> {
+        self.record.as_ref().map_or_else(Vec::new, |r| {
+            r.completed
+                .iter()
+                .map(|d| (d.target.reference.as_slice(), d.result.as_slice()))
+                .collect()
+        })
+    }
+
     pub fn is_ready(&self) -> bool {
         self.blockers.is_empty() && self.required_input.is_empty()
     }
@@ -199,7 +218,12 @@ impl Plan {
                     .strip_prefix(b"refs/heads/")
                     .unwrap_or(&self.source_ref)
             ),
-            self.settings.base
+            String::from_utf8_lossy(
+                self.target
+                    .reference
+                    .strip_prefix(b"refs/heads/")
+                    .unwrap_or(&self.target.reference)
+            )
         )
     }
     /// Whether accepted input can be recorded before remaining message input.
@@ -255,6 +279,21 @@ struct Snapshot {
     pins: Vec<(RefObservation, Option<Vec<u8>>)>,
     release: Option<release::Snapshot>,
     shared_preparation: super::history::SharedRefs,
+}
+fn destination_refs(settings: &Settings) -> Vec<Vec<u8>> {
+    settings
+        .workstream
+        .as_ref()
+        .filter(|p| p.version_tagging)
+        .map_or_else(
+            || vec![branch_ref(settings.base.as_bytes())],
+            |p| {
+                p.integration_targets
+                    .iter()
+                    .map(|name| branch_ref(name.as_bytes()))
+                    .collect()
+            },
+        )
 }
 fn branch_ref(branch: &[u8]) -> Vec<u8> {
     [b"refs/heads/", branch].concat()
@@ -349,6 +388,13 @@ pub fn assess(
             push_destinations: urls(directory, &settings.base_remote, true)?,
         };
     }
+    if let Some(record) = &selection.record {
+        // Only the ordinal chooses the active configured route; record equality
+        // below still verifies its endpoint and full settings binding.
+        if let Some(reference) = destination_refs(&settings).get(record.completed.len()) {
+            target.reference = reference.clone();
+        }
+    }
     // Stored intent supplies omitted input, never proof. Recovery below must
     // corroborate its bindings and Git transitions before permitting any effect.
     let request = selection
@@ -378,10 +424,19 @@ pub fn assess(
     let snapshot = Snapshot {
         shared_preparation: if request.history_edit.unwrap_or(settings.history_edit)
             == HistoryEdit::Interactive
+            || (settings
+                .workstream
+                .as_ref()
+                .is_some_and(|p| p.version_tagging)
+                && request.update == Some(FinishUpdate::Rebase))
         {
             super::history::shared_refs(directory, &settings)?
                 .into_iter()
-                .filter(|(r, _, _)| r.as_bytes() != target.reference)
+                .filter(|(r, _, _)| {
+                    !destination_refs(&settings)
+                        .iter()
+                        .any(|d| d == r.as_bytes())
+                })
                 .collect()
         } else {
             vec![]
@@ -502,6 +557,7 @@ pub fn assess(
     {
         assess_fresh(directory, &mut plan)?;
     }
+    sequence::assess_completed(directory, &mut plan)?;
     release::assess(directory, &mut plan)?;
     Ok(plan)
 }
@@ -524,6 +580,9 @@ fn in_another_worktree(plan: &Plan, reference: &[u8]) -> bool {
         .any(|entry| entry.contains(&branch.as_slice()) && !entry.contains(&worktree.as_slice()))
 }
 fn preparation_ref(plan: &Plan) -> Option<Vec<u8>> {
+    if plan.active_destination_index() > 0 {
+        return None;
+    }
     if plan.request.update.unwrap_or(plan.settings.finish_update) == FinishUpdate::None {
         return None;
     }
@@ -585,7 +644,14 @@ fn validate_work(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
         }
         let incorporated = match (commit(&plan.source), commit(&d.branch)) {
             (Some(source), Some(remote)) if valid_oid(remote, source.len()) => {
-                ancestor(directory, remote, source)? == Some(true)
+                if ancestor(directory, remote, source)? == Some(true) {
+                    true
+                } else if let Some(record) = &plan.record {
+                    record.work.contains(d)
+                        && record.incorporates_published_work(directory, plan, remote)?
+                } else {
+                    false
+                }
             }
             _ => false,
         };
@@ -643,6 +709,14 @@ fn assess_fresh(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
     }
     let preparation_base = e.preparation.as_ref().map_or(&e.fetched, |p| &p.branch);
     let prep_relation = relationship(directory, &source, preparation_base, shallow)?;
+    if plan.active_destination_index() > 0
+        || plan
+            .record
+            .as_ref()
+            .is_some_and(|r| r.preparation_completed(plan))
+    {
+        plan.update = FinishUpdate::None;
+    }
     let editing = plan.history_edit == HistoryEdit::Interactive
         && !plan
             .record
@@ -682,6 +756,26 @@ fn assess_fresh(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
             let prep = commit(preparation_base)
                 .ok_or(FinishError::InvalidEvidence("preparation source missing"))?
                 .to_vec();
+            if release::enabled(plan) && plan.update == FinishUpdate::Rebase {
+                validate_work(directory, plan)?;
+                let evidence = plan.evidence.as_ref().expect("validated");
+                let published = evidence.work.iter().filter_map(|d| commit(&d.branch));
+                for oid in published {
+                    if ancestor(directory, oid, &prep)? != Some(true) {
+                        match plan.request.rewrite.unwrap_or(plan.settings.finish_rewrite) {
+                            FinishRewrite::Allow => (),
+                            FinishRewrite::Ask => {
+                                if !plan.required_input.contains(&RequiredInput::Rewrite) {
+                                    plan.required_input.push(RequiredInput::Rewrite);
+                                }
+                            }
+                            FinishRewrite::Deny => plan.blockers.push(Blocker::Release(
+                                "rebasing published work requires --allow-rewrite".into(),
+                            )),
+                        }
+                    }
+                }
+            }
             plan.integration = Integration::AfterPreparation;
             completion_choices(plan);
             if in_another_worktree(plan, &plan.source_ref) {

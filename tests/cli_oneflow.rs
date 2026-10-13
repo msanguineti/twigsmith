@@ -1048,52 +1048,68 @@ fn partial_multidestination_release_delivery_and_source_deleted_cleanup_resume()
 }
 
 #[test]
-fn release_merge_conflict_retry_retains_version_before_manual_resolution() {
+fn first_destination_conflict_preserves_selected_identity_through_native_resolution() {
     cases(
-        "release_merge_conflict_retry_retains_version_before_manual_resolution",
+        "first_destination_conflict_preserves_selected_identity_through_native_resolution",
         |root, cli| {
-            let fixture = Fixture::new(root);
-            configure(&fixture, "released", "none", "project");
-            let newer = fixture.advance_development(root, "base", "development edits\n");
-            start_release(cli, &fixture, "release/train");
-            let released = commit(&fixture.local, "base", "release edits\n");
-            cli.success(&fixture.local, "save", &[]);
-            let report = status(
-                cli.run(&fixture.local, "finish", &["--tag", "conflicted-version"]),
-                1,
-            );
-            assert!(report.to_lowercase().contains("conflict"), "{report}");
-            assert_eq!(
-                oid(fixture.local.path(), "conflicted-version^{}"),
-                Some(released.clone())
-            );
-            assert_eq!(oid(fixture.project.path(), "main"), Some(newer.clone()));
-            assert!(fixture.local.path().join(".git/MERGE_HEAD").exists());
-            fs::write(
-                fixture.local.path().join("base"),
-                "resolved development and release\n",
-            )
-            .unwrap();
-            fixture.local.success(&["add", "base"]);
-            fixture.local.success(&["commit", "--no-edit"]);
-            let resolved = oid(fixture.local.path(), "HEAD").unwrap();
-            assert_ne!(resolved, released);
-            cli.success(&fixture.local, "finish", &[]);
-            assert_eq!(oid(fixture.project.path(), "main"), Some(resolved.clone()));
-            assert_eq!(
-                oid(fixture.project.path(), "conflicted-version^{}"),
-                Some(released.clone())
-            );
-            assert_eq!(
-                oid(fixture.project.path(), "released"),
-                Some(released.clone())
-            );
-            fixture
-                .local
-                .success(&["merge-base", "--is-ancestor", &newer, &resolved]);
-            fixture
-                .local
-                .success(&["merge-base", "--is-ancestor", &released, &resolved]);
+            for identity in ["work-source", "integrated-result"] {
+                let fixture = Fixture::new(root);
+                configure(&fixture, "released", "none", "project");
+                let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+                fs::write(
+                    &config,
+                    fs::read_to_string(&config).unwrap().replace(
+                        "version-tagging='required'",
+                        &format!("version-tagging='required'\nversion-tag-identity='{identity}'"),
+                    ),
+                )
+                .unwrap();
+                let newer = fixture.advance_development(root, "base", "development edits\n");
+                start_release(cli, &fixture, "release/train");
+                let released = commit(&fixture.local, "base", "release edits\n");
+                cli.success(&fixture.local, "save", &[]);
+                let report = status(
+                    cli.run(&fixture.local, "finish", &["--tag", "conflicted-version"]),
+                    1,
+                );
+                assert!(report.to_lowercase().contains("conflict"), "{report}");
+                assert_eq!(
+                    oid(fixture.local.path(), "conflicted-version^{}"),
+                    (identity == "work-source").then(|| released.clone())
+                );
+                assert_eq!(oid(fixture.project.path(), "main"), Some(newer.clone()));
+                assert!(fixture.local.path().join(".git/MERGE_HEAD").exists());
+                fs::write(
+                    fixture.local.path().join("base"),
+                    "resolved development and release\n",
+                )
+                .unwrap();
+                fixture.local.success(&["add", "base"]);
+                fixture.local.success(&["commit", "--no-edit"]);
+                let resolved = oid(fixture.local.path(), "HEAD").unwrap();
+                assert_ne!(resolved, released);
+                cli.success(&fixture.local, "finish", &[]);
+                let version = if identity == "work-source" {
+                    &released
+                } else {
+                    &resolved
+                };
+                assert_eq!(oid(fixture.project.path(), "main"), Some(resolved.clone()));
+                assert_eq!(
+                    oid(fixture.project.path(), "conflicted-version^{}"),
+                    Some(version.clone())
+                );
+                assert_eq!(
+                    oid(fixture.project.path(), "released"),
+                    Some(version.clone())
+                );
+                fixture
+                    .local
+                    .success(&["merge-base", "--is-ancestor", &newer, &resolved]);
+                fixture
+                    .local
+                    .success(&["merge-base", "--is-ancestor", &released, &resolved]);
+            }
         },
     );
 }
@@ -1621,6 +1637,219 @@ fn tagged_marker_and_checkout_failures_retry_only_remaining_completion() {
                 fs::read_to_string(git_dir.join("checkout-count")).unwrap(),
                 "checkout\n"
             );
+        },
+    );
+}
+
+#[test]
+fn ordered_release_destinations_integrate_fixed_source_with_selected_tag_identity() {
+    cases(
+        "ordered_release_destinations_integrate_fixed_source_with_selected_tag_identity",
+        |root, cli| {
+            for identity in ["work-source", "integrated-result"] {
+                let fixture = Fixture::new(root);
+                fixture.local.success(&["branch", "stable"]);
+                fixture.local.success(&["push", "project", "stable"]);
+                configure(&fixture, "released", "none", "personal");
+                let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+                let check_log = root.join(format!("ordered-{identity}-checks"));
+                let checks = format!(
+                    "finish-checks=[{{name='record',command=['sh','-c','echo checked >> \"$1\"','sh',{}]}}]\n",
+                    serde_json::to_string(check_log.to_str().unwrap()).unwrap()
+                );
+                let contents = checks + &fs::read_to_string(&config).unwrap().replace(
+                "integration-target='main'",
+                &format!("integration-targets=['main','stable']\nversion-tag-identity='{identity}'"),
+            );
+                fs::write(&config, contents).unwrap();
+                start_release(cli, &fixture, "release/ordered");
+                let source = commit(&fixture.local, "release", "version\n");
+                let advanced = fixture.advance_development(root, "development", "after cutoff\n");
+                let output = cli.success(&fixture.local, "finish", &["--tag", "ordered-v1"]);
+                let first = oid(fixture.project.path(), "refs/heads/main").unwrap();
+                let later = oid(fixture.project.path(), "refs/heads/stable").unwrap();
+                assert_ne!(first, later);
+                assert_eq!(
+                    value(&fixture.local, &["rev-parse", &format!("{first}^2")]),
+                    source
+                );
+                assert_eq!(
+                    value(&fixture.local, &["rev-parse", &format!("{later}^2")]),
+                    source
+                );
+                assert_eq!(
+                    value(&fixture.local, &["rev-parse", &format!("{first}^1")]),
+                    advanced
+                );
+                assert_eq!(
+                    value(&fixture.local, &["rev-parse", &format!("{later}^1")]),
+                    fixture.base
+                );
+                let released = if identity == "work-source" {
+                    &source
+                } else {
+                    &first
+                };
+                assert_eq!(
+                    oid(fixture.project.path(), "refs/tags/ordered-v1^{}").as_ref(),
+                    Some(released)
+                );
+                assert_eq!(
+                    oid(fixture.project.path(), "refs/heads/released").as_ref(),
+                    Some(released)
+                );
+                assert_eq!(
+                    value(&fixture.local, &["symbolic-ref", "HEAD"]),
+                    "refs/heads/main"
+                );
+                assert_eq!(
+                    oid(fixture.local.path(), "refs/heads/release/ordered"),
+                    None
+                );
+                assert!(output.contains("stable"), "{output}");
+                let local_refs = refs(fixture.local.path());
+                let project_refs = refs(fixture.project.path());
+                let personal_refs = refs(fixture.personal.path());
+                let target_logs = value(
+                    &fixture.local,
+                    &["reflog", "show", "--format=%H %gs", "main", "stable"],
+                );
+                let tag_object = oid(fixture.local.path(), "refs/tags/ordered-v1").unwrap();
+                let verified_checks = fs::read(&check_log).unwrap();
+                cli.success(&fixture.local, "finish", &[]);
+                assert_eq!(refs(fixture.local.path()), local_refs);
+                assert_eq!(refs(fixture.project.path()), project_refs);
+                assert_eq!(refs(fixture.personal.path()), personal_refs);
+                assert_eq!(
+                    value(
+                        &fixture.local,
+                        &["reflog", "show", "--format=%H %gs", "main", "stable"]
+                    ),
+                    target_logs
+                );
+                assert_eq!(
+                    oid(fixture.local.path(), "refs/tags/ordered-v1"),
+                    Some(tag_object)
+                );
+                assert_eq!(fs::read(&check_log).unwrap(), verified_checks);
+            }
+        },
+    );
+}
+
+#[test]
+fn integrated_result_review_publishes_only_work_and_requires_manual_tagging() {
+    cases(
+        "integrated_result_review_publishes_only_work_and_requires_manual_tagging",
+        |root, cli| {
+            let fixture = Fixture::new(root);
+            configure(&fixture, "released", "none", "personal");
+            let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+            let content = fs::read_to_string(&config)
+                .unwrap()
+                .replace(
+                    "version-tagging='required'",
+                    "version-tagging='required'\nversion-tag-identity='integrated-result'",
+                )
+                .replace("finish-mode='integrate'", "finish-mode='review'")
+                .replace(
+                    "finish-cleanup='both'",
+                    "finish-cleanup='keep'\nfinish-checkout='work'",
+                );
+            fs::write(&config, content).unwrap();
+            start_release(cli, &fixture, "release/review-result");
+            let source = commit(&fixture.local, "release", "version\n");
+            let before_local = refs(fixture.local.path());
+            let before_project = refs(fixture.project.path());
+            let before_personal = refs(fixture.personal.path());
+            for (args, code, expected) in [
+                (vec!["--tag", "manual-version"], 2, "creates no version tag"),
+                (
+                    vec!["--merge-back", "review/manual"],
+                    2,
+                    "creates no version tag",
+                ),
+                (vec!["--update", "rebase"], 1, "applies to direct finish"),
+                (
+                    vec!["--history-edit", "interactive"],
+                    1,
+                    "finish-history-edit = none",
+                ),
+            ] {
+                let report = status(cli.run(&fixture.local, "finish", &args), code);
+                assert!(report.contains(expected), "{report}");
+                assert_eq!(refs(fixture.local.path()), before_local);
+                assert_eq!(refs(fixture.project.path()), before_project);
+                assert_eq!(refs(fixture.personal.path()), before_personal);
+            }
+            let output = cli.success(&fixture.local, "finish", &[]);
+            assert!(output.contains("Ready for manual submission"), "{output}");
+            assert!(
+                output.contains("validate and tag the actual merged result"),
+                "{output}"
+            );
+            assert!(output.contains("released"), "{output}");
+            assert_eq!(
+                oid(fixture.personal.path(), "refs/heads/release/review-result"),
+                Some(source)
+            );
+            assert_eq!(
+                oid(fixture.project.path(), "refs/heads/main"),
+                Some(fixture.base)
+            );
+            assert_eq!(oid(fixture.project.path(), "refs/heads/released"), None);
+            assert!(value(&fixture.local, &["tag", "--list"]).is_empty());
+            assert!(
+                git::run(fixture.project.path(), ["tag", "--list"])
+                    .unwrap()
+                    .stdout
+                    .is_empty()
+            );
+            assert_eq!(
+                value(&fixture.local, &["symbolic-ref", "HEAD"]),
+                "refs/heads/release/review-result"
+            );
+        },
+    );
+}
+
+#[test]
+fn ordered_review_override_fails_before_publication() {
+    cases(
+        "ordered_review_override_fails_before_publication",
+        |root, cli| {
+            let fixture = Fixture::new(root);
+            configure(&fixture, "none", "none", "personal");
+            let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+            fs::write(
+                &config,
+                fs::read_to_string(&config).unwrap().replace(
+                    "integration-target='main'",
+                    "integration-targets=['main','stable']",
+                ),
+            )
+            .unwrap();
+            start_release(cli, &fixture, "release/unsupported-review");
+            commit(&fixture.local, "release", "version\n");
+            let before = refs(fixture.project.path());
+            let output = status(
+                cli.run(
+                    &fixture.local,
+                    "finish",
+                    &["--mode", "review", "--tag", "not-created"],
+                ),
+                1,
+            );
+            assert!(output.contains("one integration destination"), "{output}");
+            assert_eq!(refs(fixture.project.path()), before);
+            assert_eq!(
+                oid(
+                    fixture.personal.path(),
+                    "refs/heads/release/unsupported-review"
+                ),
+                None
+            );
+            assert_eq!(oid(fixture.local.path(), "refs/tags/not-created"), None);
         },
     );
 }

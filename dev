@@ -82,7 +82,7 @@ test_group() {
             ;;
         lifecycle)
             group_description='CLI smoke and end-to-end project/fork lifecycles'
-            group_targets='cli_smoke cli_lifecycle cli_oneflow cli_hosted_oneflow cli_hosted_recovery cli_hosted_presentation cli_history cli_history_presentation'
+            group_targets='cli_smoke cli_lifecycle cli_oneflow cli_direct_sequence cli_hosted_oneflow cli_hosted_recovery cli_hosted_presentation cli_history cli_history_presentation'
             ;;
         smoke)
             group_description='CLI smoke checks and development launcher selection'
@@ -98,7 +98,7 @@ test_group() {
             ;;
         oneflow)
             group_description='Direct OneFlow release and hotfix command lifecycles'
-            group_targets='cli_oneflow'
+            group_targets='cli_oneflow cli_direct_sequence'
             ;;
         hosted-oneflow)
             group_description='Hosted OneFlow version and merge-back preparation and recovery'

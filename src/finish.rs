@@ -393,6 +393,26 @@ pub fn assess(
     }
     let urls = save::publication::preflight(directory, &local).map_err(FinishError::Publication)?;
     let settings = local.settings.clone();
+    if let Some(policy) = &settings.workstream
+        && policy.version_tagging
+    {
+        if request.history_edit.unwrap_or(settings.history_edit) != HistoryEdit::None {
+            return Err(FinishError::InvalidEvidence(
+                "tagged work requires finish-history-edit = none",
+            ));
+        }
+        if policy.integration_targets.len() != 1 {
+            return Err(FinishError::InvalidEvidence(
+                "review finish supports one integration destination; select direct integration for multiple destinations",
+            ));
+        }
+        if request.update.unwrap_or(settings.finish_update) == FinishUpdate::Rebase {
+            return Err(FinishError::InvalidEvidence(
+                "tagged rebase preparation applies to direct finish; review preparation supports merge or none",
+            ));
+        }
+    }
+
     // Resolve a configured name offline, never a path fallback. Git fetch uses
     // the first URL; retain the resolved endpoint separately from push URLs.
     let base_url = read(directory, &["remote", "get-url", &settings.base_remote])?;

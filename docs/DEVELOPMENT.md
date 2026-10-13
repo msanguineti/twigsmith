@@ -73,7 +73,9 @@ The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
 `lifecycle`, `smoke`, `finish-planning`, `history-edit`, `oneflow`, and `hosted-oneflow`. Command groups include
 backend and CLI coverage. `smoke` pairs CLI smoke checks with development
 launcher selection. `finish-planning` selects review finish planning and
-eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles.
+eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles,
+ordered destination delivery, selected version identity, and one-time preparation
+recovery.
 `history-edit` selects ordinary native history editing and fresh-process recovery.
 `hosted-oneflow` selects version publication, separate merge-back preparation, and
 fresh-process recovery for manual submission. `shared` covers the development launcher, Git boundary, repository observation,
@@ -86,7 +88,7 @@ library and binary unit tests (`--lib --bins`). Targets overlap where they
 exercise shared behaviour. Overlap selects shared tests for relevant development
 work; a full run uses Cargo discovery rather than executing each group.
 
-The `finish` group does not include `cli_oneflow`, `cli_hosted_oneflow`, or
+The `finish` group does not include `cli_oneflow`, `cli_direct_sequence`, `cli_hosted_oneflow`, or
 `cli_hosted_recovery`, or `cli_hosted_presentation`. For tagged release/hotfix
 completion changes, also select `oneflow` and `hosted-oneflow`, or select the affected targets directly
 with Cargo. Neither focused group replaces complete validation.

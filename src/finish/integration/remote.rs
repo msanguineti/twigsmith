@@ -146,7 +146,7 @@ pub(super) fn observe(
     )?)
 }
 
-fn acquire(
+pub(super) fn acquire(
     root: &Path,
     plan: &Plan,
     remote: &str,
@@ -283,7 +283,9 @@ pub fn refresh(directory: impl AsRef<Path>, plan: &Plan) -> Report {
                 branch,
             });
         }
-        if plan.cleanup == FinishCleanup::Both {
+        if plan.cleanup == FinishCleanup::Both
+            || (release::enabled(plan) && plan.request.update == Some(FinishUpdate::Rebase))
+        {
             for destination in urls(root, &plan.settings.publish_remote, true)? {
                 let branch = acquire(
                     root,

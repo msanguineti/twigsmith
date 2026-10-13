@@ -21,10 +21,12 @@ impl Request {
 #[serde(deny_unknown_fields)]
 pub(super) struct Record {
     request: Request,
-    source: Vec<u8>,
+    pub(super) source: Vec<u8>,
     action: String,
     tag_object: Option<Vec<u8>>,
     source_check: Option<Vec<u8>>,
+    work_check: Option<Vec<u8>>,
+    work_bypassed: bool,
     source_bypassed: bool,
     candidate_check: Option<Vec<u8>>,
     candidate_bypassed: bool,
@@ -90,6 +92,12 @@ pub fn enabled(plan: &Plan) -> bool {
         .workstream
         .as_ref()
         .is_some_and(|p| p.version_tagging)
+}
+pub fn integrated_identity(plan: &Plan) -> bool {
+    plan.settings
+        .workstream
+        .as_ref()
+        .is_some_and(|p| p.version_tag_identity == settings::VersionTagIdentity::IntegratedResult)
 }
 pub fn identity(plan: &Plan) -> Option<(&str, &[u8])> {
     let r = plan.record.as_ref()?.release.as_ref()?;
@@ -157,6 +165,11 @@ pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
         }
         return Ok(());
     }
+    if destination_refs(&plan.settings).contains(&plan.source_ref) {
+        plan.blockers.push(Blocker::Release(
+            "work source must differ from every integration destination".into(),
+        ));
+    }
     // Replacement objects can change Git's checked-out tree while HEAD still
     // displays the original OID. Tagged identity requires original objects.
     let replacements = run(
@@ -172,11 +185,14 @@ pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
     if !replacements.status.success() || !replacements.stdout.is_empty() {
         plan.blockers.push(Blocker::Release("tagged completion requires original Git objects; remove replacement refs before checking the released source".into()));
     }
-    if plan.update != FinishUpdate::None
-        || plan.request.update.is_some_and(|u| u != FinishUpdate::None)
+    if !matches!(
+        plan.request.update.unwrap_or(plan.settings.finish_update),
+        FinishUpdate::None | FinishUpdate::Rebase
+    ) || (plan.update == FinishUpdate::Rebase
+        && plan.request.update != Some(FinishUpdate::Rebase))
         || plan.method == FinishIntegration::Squash
     {
-        plan.blockers.push(Blocker::Release("tagged completion requires --update none and history-preserving integration (merge or ff-only)".into()));
+        plan.blockers.push(Blocker::Release("tagged completion permits explicit --update rebase or --update none and requires history-preserving integration (merge or ff-only)".into()));
     }
     if plan
         .request
@@ -205,7 +221,7 @@ pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
     {
         let reference = branch_ref(marker.as_bytes());
         if reference == plan.source_ref
-            || reference == plan.target.reference
+            || destination_refs(&plan.settings).contains(&reference)
             || !checked_name(root, marker, "refs/heads/")?
         {
             plan.blockers.push(Blocker::Release("release marker must be a distinct valid branch, separate from work and integration target".into()));
@@ -250,14 +266,31 @@ pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
             ));
         }
         if record.request != plan.request.release
-            || plan
-                .record
-                .as_ref()
-                .is_none_or(|r| r.source != record.source)
+            || (!record.source.is_empty()
+                && if integrated_identity(plan) {
+                    plan.record
+                        .as_ref()
+                        .and_then(|r| {
+                            r.completed
+                                .first()
+                                .map(|d| &d.result)
+                                .or(plan.result.as_ref())
+                        })
+                        .is_none_or(|oid| *oid != record.source)
+                } else {
+                    plan.record
+                        .as_ref()
+                        .is_none_or(|r| r.source != record.source)
+                })
             || record
                 .source_check
                 .as_ref()
                 .is_some_and(|v| v != &record.source)
+            || record.work_check.as_ref().is_some_and(|oid| {
+                plan.record
+                    .as_ref()
+                    .is_none_or(|attempt| oid != &attempt.source)
+            })
             || record
                 .candidate_check
                 .as_ref()
@@ -325,12 +358,18 @@ pub(super) fn for_plan(plan: &Plan, token: &str) -> Result<Option<Record>, Finis
         .expect("worktree");
     Ok(Some(Record {
         request: plan.request.release.clone(),
-        source: commit(&plan.source)
-            .ok_or(invalid("release source missing"))?
-            .to_vec(),
+        source: if integrated_identity(plan) || plan.integration == Integration::AfterPreparation {
+            vec![]
+        } else {
+            commit(&plan.source)
+                .ok_or(invalid("release source missing"))?
+                .to_vec()
+        },
         action: format!("oneflow-release:{token}"),
         tag_object: None,
         source_check: None,
+        work_check: None,
+        work_bypassed: false,
         candidate_check: None,
         source_bypassed: false,
         candidate_bypassed: false,
@@ -350,6 +389,12 @@ pub(super) fn for_plan(plan: &Plan, token: &str) -> Result<Option<Record>, Finis
             })
             .transpose()?,
     }))
+}
+pub(super) fn next_destination(record: &mut recovery::Record) {
+    if let Some(r) = &mut record.release {
+        r.candidate_check = None;
+        r.candidate_bypassed = false;
+    }
 }
 fn verify_tag(
     root: &Path,
@@ -533,6 +578,63 @@ pub(super) fn prepare(
         return Ok(plan);
     };
     guard(root, &plan)?;
+    if plan.integration == Integration::AfterPreparation {
+        return Ok(plan);
+    }
+    if integrated_identity(&plan) && plan.source != RefObservation::Absent {
+        let work = commit(&plan.source)
+            .ok_or(invalid("completed work source missing"))?
+            .to_vec();
+        if r.work_check.as_ref() != Some(&work) || (r.work_bypassed && !skip) {
+            let original_head = current_ref(&plan.snapshot.state);
+            if original_head.as_ref() != Some(&plan.source_ref) {
+                plan = checkout(root, &plan, &plan.source_ref, commands)?;
+            }
+            let checked = checks::run_guarded(
+                root,
+                &plan.settings.finish_checks,
+                skip,
+                &mut *event,
+                || {
+                    guard(root, &plan)?;
+                    if current_ref(&plan.snapshot.state).as_ref() != Some(&plan.source_ref)
+                        || commit(&plan.source) != Some(work.as_slice())
+                    {
+                        return Err(checks::Error::Unprepared);
+                    }
+                    Ok(())
+                },
+            );
+            if checked.error.is_some() {
+                return Err(invalid(
+                    "completed-work checks failed or changed context; resolve and retry",
+                ));
+            }
+            r.work_check = Some(work);
+            r.work_bypassed = skip;
+            plan = store(root, &plan, r.clone())?;
+            if let Some(reference) = original_head
+                && current_ref(&plan.snapshot.state).as_ref() != Some(&reference)
+            {
+                plan = checkout(root, &plan, &reference, commands)?;
+            }
+        }
+    }
+    if r.source.is_empty() {
+        let selected = if integrated_identity(&plan) {
+            plan.record
+                .as_ref()
+                .and_then(|r| r.completed.first().map(|d| d.result.clone()))
+                .or(plan.result.clone())
+        } else {
+            commit(&plan.source).map(<[u8]>::to_vec)
+        };
+        let Some(selected) = selected else {
+            return Ok(plan);
+        };
+        r.source = selected;
+        plan = store(root, &plan, r.clone())?;
+    }
     let known = verify_tag(root, &plan, &r, false)?;
     let mut tag_endpoints = vec![plan.target.fetch_destination.clone()];
     for endpoint in &plan.target.push_destinations {
@@ -589,29 +691,49 @@ pub(super) fn prepare(
     }
     let original_head = current_ref(&plan.snapshot.state);
     if r.source_check.as_ref() != Some(&r.source) || (r.source_bypassed && !skip) {
-        if current_ref(&plan.snapshot.state).as_ref() != Some(&plan.source_ref) {
-            plan = checkout(root, &plan, &plan.source_ref, commands)?;
-        }
-        let checks = checks::run_guarded(root, &plan.settings.finish_checks, skip, event, || {
-            guard(root, &plan)?;
-            let head = match &plan.snapshot.state.head {
-                repository::Head::Attached { commit, .. } => commit,
-                _ => return Err(checks::Error::Unprepared),
-            };
-            if head != &r.source
-                || current_ref(&plan.snapshot.state).as_ref() != Some(&plan.source_ref)
-            {
-                return Err(checks::Error::Unprepared);
+        // The guarded completed-work receipt also validates an identical first
+        // result. A bypass remains a bypass and cannot supply successful evidence.
+        let reuse_work = r.work_check.as_ref() == Some(&r.source) && !r.work_bypassed;
+        if !reuse_work {
+            let check_ref = if integrated_identity(&plan) {
+                plan.record
+                    .as_ref()
+                    .and_then(|r| r.completed.first())
+                    .map_or(&plan.target.reference, |d| &d.target.reference)
+            } else {
+                &plan.source_ref
             }
-            Ok(())
-        });
-        if checks.error.is_some() {
-            return Err(invalid(
-                "released-source checks failed or changed context; resolve the check failure and retry",
-            ));
+            .clone();
+            if current_ref(&plan.snapshot.state).as_ref() != Some(&check_ref) {
+                plan = checkout(root, &plan, &check_ref, commands)?;
+            }
+            let checks = checks::run_guarded(
+                root,
+                &plan.settings.finish_checks,
+                skip,
+                &mut *event,
+                || {
+                    guard(root, &plan)?;
+                    let head = match &plan.snapshot.state.head {
+                        repository::Head::Attached { commit, .. } => commit,
+                        _ => return Err(checks::Error::Unprepared),
+                    };
+                    if head != &r.source
+                        || current_ref(&plan.snapshot.state).as_ref() != Some(&check_ref)
+                    {
+                        return Err(checks::Error::Unprepared);
+                    }
+                    Ok(())
+                },
+            );
+            if checks.error.is_some() {
+                return Err(invalid(
+                    "released-source checks failed or changed context; resolve the check failure and retry",
+                ));
+            }
         }
         r.source_check = Some(r.source.clone());
-        r.source_bypassed = skip;
+        r.source_bypassed = !reuse_work && skip;
         plan = store(root, &plan, r.clone())?;
     }
     if known.is_none() {
@@ -680,7 +802,17 @@ pub(crate) fn source_checked(plan: &Plan, skip: bool) -> bool {
     plan.record
         .as_ref()
         .and_then(|r| r.release.as_ref())
-        .is_some_and(|r| r.source_check.as_ref() == Some(&r.source) && (!r.source_bypassed || skip))
+        .is_some_and(|r| {
+            r.tag_object.is_some()
+                && r.source_check.as_ref() == Some(&r.source)
+                && (!r.source_bypassed || skip)
+                && (!integrated_identity(plan)
+                    || (plan
+                        .record
+                        .as_ref()
+                        .is_some_and(|attempt| r.work_check.as_ref() == Some(&attempt.source))
+                        && (!r.work_bypassed || skip)))
+        })
 }
 pub(crate) fn candidate_checked(plan: &Plan, skip: bool) -> bool {
     plan.record
@@ -713,7 +845,11 @@ fn checkout(
     commands: &mut Vec<CommandReport>,
 ) -> Result<Plan, FinishError> {
     guard(root, plan)?;
-    if reference != plan.source_ref && reference != plan.target.reference {
+    if reference != plan.source_ref
+        && !destination_refs(&plan.settings)
+            .iter()
+            .any(|r| r == reference)
+    {
         return Err(invalid("invalid release check checkout"));
     }
     let args = vec![
@@ -851,6 +987,10 @@ pub fn deliver(
     commands: &mut Vec<CommandReport>,
 ) -> Result<Plan, FinishError> {
     let mut plan = initial.clone();
+    if plan.has_remaining_destinations() {
+        return Err(invalid("integration destinations remain pending"));
+    }
+    super::sequence::verify_completed_delivery(root, &plan, commands)?;
     let Some(r) = plan.record.as_ref().and_then(|r| r.release.clone()) else {
         return Ok(plan);
     };

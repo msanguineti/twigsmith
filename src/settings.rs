@@ -290,6 +290,34 @@ impl WorkstreamKind {
         }
     }
 }
+/// Commit selected by the release version tag.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum VersionTagIdentity {
+    #[default]
+    WorkSource,
+    IntegratedResult,
+}
+impl VersionTagIdentity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkSource => "work-source",
+            Self::IntegratedResult => "integrated-result",
+        }
+    }
+}
+fn parse_tag_identity(value: &str) -> Result<VersionTagIdentity, SettingsError> {
+    match value {
+        "work-source" => Ok(VersionTagIdentity::WorkSource),
+        "integrated-result" => Ok(VersionTagIdentity::IntegratedResult),
+        _ => Err(SettingsError::InvalidSettings(
+            "version-tag-identity must be work-source or integrated-result".into(),
+        )),
+    }
+}
+fn optional_branches<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
+    List::<Text>::deserialize(d).map(|values| Some(values.0.into_iter().map(|v| v.0).collect()))
+}
 fn optional_text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Text::deserialize(d).map(|v| Some(v.0))
 }
@@ -304,6 +332,8 @@ pub struct WorkstreamConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub integration_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integration_targets: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publish_remote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_remote: Option<String>,
@@ -313,6 +343,8 @@ pub struct WorkstreamConfig {
     pub merge_back_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_tagging: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_tag_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_marker: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -345,6 +377,8 @@ impl<'de> Deserialize<'de> for WorkstreamConfig {
             preparation_source: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
             integration_target: Option<String>,
+            #[serde(default, deserialize_with = "optional_branches")]
+            integration_targets: Option<Vec<String>>,
             #[serde(default, deserialize_with = "optional_text")]
             publish_remote: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
@@ -355,6 +389,8 @@ impl<'de> Deserialize<'de> for WorkstreamConfig {
             merge_back_branch: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
             version_tagging: Option<String>,
+            #[serde(default, deserialize_with = "optional_text")]
+            version_tag_identity: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
             release_marker: Option<String>,
             #[serde(default, deserialize_with = "optional_text")]
@@ -388,11 +424,13 @@ impl<'de> Deserialize<'de> for WorkstreamConfig {
                     creation_source: fields.creation_source,
                     preparation_source: fields.preparation_source,
                     integration_target: fields.integration_target,
+                    integration_targets: fields.integration_targets,
                     publish_remote: fields.publish_remote,
                     base_remote: fields.base_remote,
                     review_remote: fields.review_remote,
                     merge_back_branch: fields.merge_back_branch,
                     version_tagging: fields.version_tagging,
+                    version_tag_identity: fields.version_tag_identity,
                     release_marker: fields.release_marker,
                     active_release: fields.active_release,
                     finish_mode: fields.finish_mode,
@@ -442,6 +480,14 @@ impl WorkstreamConfig {
         }
         if other.integration_target.is_some() {
             self.integration_target = other.integration_target;
+            self.integration_targets = None;
+        }
+        if other.integration_targets.is_some() {
+            self.integration_targets = other.integration_targets;
+            self.integration_target = None;
+        }
+        if other.version_tag_identity.is_some() {
+            self.version_tag_identity = other.version_tag_identity;
         }
         if other.publish_remote.is_some() {
             self.publish_remote = other.publish_remote;
@@ -495,6 +541,11 @@ impl WorkstreamConfig {
         kind: WorkstreamKind,
     ) -> Result<(), SettingsError> {
         self.validate(directory)?;
+        if kind == WorkstreamKind::Ordinary && self.integration_targets.is_some() {
+            return Err(SettingsError::InvalidSettings(
+                "integration-targets applies to release or hotfix work".into(),
+            ));
+        }
         if kind == WorkstreamKind::Hotfix
             && let Some(source) = &self.creation_source
             && (!source.starts_with("refs/tags/") || !valid_ref(directory, source)?)
@@ -507,6 +558,29 @@ impl WorkstreamConfig {
         Ok(())
     }
     pub(crate) fn validate(&self, directory: &Path) -> Result<(), SettingsError> {
+        if self.integration_target.is_some() && self.integration_targets.is_some() {
+            return Err(SettingsError::InvalidSettings(
+                "select integration-target or integration-targets, not both".into(),
+            ));
+        }
+        if let Some(targets) = &self.integration_targets {
+            if targets.is_empty() {
+                return Err(SettingsError::InvalidSettings(
+                    "integration-targets must contain at least one branch".into(),
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for target in targets {
+                if !valid_branch(directory, target)? || !seen.insert(target) {
+                    return Err(SettingsError::InvalidSettings(
+                        "integration-targets must contain distinct valid branch names".into(),
+                    ));
+                }
+            }
+        }
+        if let Some(identity) = &self.version_tag_identity {
+            parse_tag_identity(identity)?;
+        }
         for value in [&self.publish_remote, &self.base_remote, &self.review_remote]
             .into_iter()
             .flatten()
@@ -577,7 +651,7 @@ impl WorkstreamConfig {
                         || self.finish_integration.as_deref() == Some("squash")
                     {
                         return Err(SettingsError::InvalidSettings(
-                            "tagged integration requires no source preparation and history-preserving integration".into(),
+                            "tagged integration requires finish-update = none in configuration (use --update rebase once) and history-preserving integration".into(),
                         ));
                     }
                 }
@@ -632,11 +706,13 @@ pub struct WorkstreamPolicy {
     pub creation_source: Option<String>,
     pub preparation_source: String,
     pub integration_target: String,
+    pub integration_targets: Vec<String>,
     pub publish_remote: String,
     pub base_remote: String,
     pub review_remote: String,
     pub merge_back_branch: Option<String>,
     pub version_tagging: bool,
+    pub version_tag_identity: VersionTagIdentity,
     pub release_marker: Option<String>,
     pub active_release: Option<String>,
 }
@@ -890,6 +966,17 @@ impl Layer {
     ) {
         if let Some(policies) = self.workstreams {
             for (kind, config) in policies {
+                if config.integration_target.is_some() {
+                    settings
+                        .sources
+                        .workstreams
+                        .remove(&format!("{}.integration-targets", kind.as_str()));
+                } else if config.integration_targets.is_some() {
+                    settings
+                        .sources
+                        .workstreams
+                        .remove(&format!("{}.integration-target", kind.as_str()));
+                }
                 let fields = serde_json::to_value(&config).expect("config serialization");
                 for key in fields.as_object().expect("config object").keys() {
                     settings
@@ -1257,14 +1344,37 @@ pub fn resolve_workstream(
             kind.as_str()
         )));
     }
-    let integration_target = target_override
-        .map(str::to_owned)
-        .or(config.integration_target.clone())
-        .unwrap_or_else(|| settings.base.clone());
+    if config.integration_target.is_some() && config.integration_targets.is_some() {
+        return Err(SettingsError::InvalidSettings(
+            "select integration-target or integration-targets, not both".into(),
+        ));
+    }
+    if let Some(targets) = &config.integration_targets
+        && (kind == WorkstreamKind::Ordinary
+            || targets.is_empty()
+            || targets
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != targets.len())
+    {
+        return Err(SettingsError::InvalidSettings("integration-targets requires a nonempty ordered list of distinct release/hotfix destinations".into()));
+    }
+    if target_override.is_some() && config.integration_targets.is_some() {
+        return Err(SettingsError::InvalidSettings("an explicit target override conflicts with configured integration-targets; configure the intended destinations".into()));
+    }
+    let mut integration_targets = config.integration_targets.clone().unwrap_or_else(|| {
+        vec![
+            target_override
+                .map(str::to_owned)
+                .or(config.integration_target.clone())
+                .unwrap_or_else(|| settings.base.clone()),
+        ]
+    });
     let preparation_source = target_override
         .map(str::to_owned)
         .or(config.preparation_source.clone())
-        .unwrap_or_else(|| integration_target.clone());
+        .unwrap_or_else(|| integration_targets[0].clone());
     let active_release = match config.active_release.as_deref() {
         Some("none") => None,
         Some(branch) => Some(branch.to_owned()),
@@ -1275,12 +1385,31 @@ pub fn resolve_workstream(
         }
         None => None,
     };
-    let integration_target = if kind == WorkstreamKind::Hotfix {
-        active_release.clone().unwrap_or(integration_target)
-    } else {
-        integration_target
-    };
+    if kind == WorkstreamKind::Hotfix
+        && let Some(active) = &active_release
+    {
+        if config.integration_targets.is_some() {
+            if &integration_targets[0] != active {
+                return Err(SettingsError::InvalidSettings(
+                    "hotfix integration-targets must start with the declared active-release branch"
+                        .into(),
+                ));
+            }
+        } else {
+            integration_targets[0] = active.clone();
+        }
+    }
+    let integration_target = integration_targets[0].clone();
+    let version_tag_identity = config
+        .version_tag_identity
+        .as_deref()
+        .map(parse_tag_identity)
+        .transpose()?
+        .unwrap_or_default();
     let version_tagging = config.version_tagging.as_deref() == Some("required");
+    if config.integration_targets.is_some() && !version_tagging {
+        return Err(SettingsError::InvalidSettings("integration-targets requires version-tagging = required; use integration-target for untagged work".into()));
+    }
     if kind == WorkstreamKind::Ordinary && version_tagging {
         return Err(SettingsError::InvalidSettings(
             "ordinary work cannot require version tagging".into(),
@@ -1316,6 +1445,10 @@ pub fn resolve_workstream(
             .get(&format!("{}.finish-mode", kind.as_str()))
             .cloned()
             .unwrap_or(SettingSource::BuiltIn);
+    }
+    if version_tagging && config.finish_update.is_none() {
+        settings.finish_update = FinishUpdate::None;
+        settings.sources.finish_update = SettingSource::BuiltIn;
     }
     if let Some(v) = &config.finish_update {
         settings.finish_update = parse_update(v).map_err(SettingsError::InvalidSettings)?;
@@ -1393,10 +1526,13 @@ pub fn resolve_workstream(
                 if settings.finish_update != FinishUpdate::None
                     || settings.finish_integration == FinishIntegration::Squash
                 {
-                    return Err(SettingsError::InvalidSettings("tagged integration requires finish-update = none and history-preserving integration".into()));
+                    return Err(SettingsError::InvalidSettings("tagged integration requires finish-update = none in configuration (use --update rebase once) and history-preserving integration".into()));
                 }
             }
             FinishMode::Review => {
+                if integration_targets.len() != 1 {
+                    return Err(SettingsError::InvalidSettings("review finish supports one integration destination; select integrate mode for multiple destinations".into()));
+                }
                 if settings.finish_update == FinishUpdate::Rebase
                     || settings.finish_integration != FinishIntegration::Merge
                     || settings.finish_checkout != FinishCheckout::Work
@@ -1414,9 +1550,12 @@ pub fn resolve_workstream(
         }
     }
     let release_marker = config.release_marker.filter(|v| v != "none");
-    if release_marker.as_deref() == Some(&integration_target) {
+    if release_marker
+        .as_ref()
+        .is_some_and(|marker| integration_targets.contains(marker))
+    {
         return Err(SettingsError::InvalidSettings(
-            "release marker must differ from integration target".into(),
+            "release marker must differ from every integration target".into(),
         ));
     }
     if kind == WorkstreamKind::Ordinary && release_marker.is_some() {
@@ -1425,7 +1564,7 @@ pub fn resolve_workstream(
         ));
     }
     if config.merge_back_branch.as_ref().is_some_and(|branch| {
-        branch == &integration_target || release_marker.as_ref() == Some(branch)
+        integration_targets.contains(branch) || release_marker.as_ref() == Some(branch)
     }) {
         return Err(SettingsError::InvalidSettings(
             "merge-back branch must differ from integration target and release marker".into(),
@@ -1435,7 +1574,13 @@ pub fn resolve_workstream(
     if let Some(source) = settings
         .sources
         .workstreams
-        .get(&format!("{}.integration-target", kind.as_str()))
+        .get(&format!("{}.integration-targets", kind.as_str()))
+        .or_else(|| {
+            settings
+                .sources
+                .workstreams
+                .get(&format!("{}.integration-target", kind.as_str()))
+        })
     {
         settings.sources.base = source.clone();
     }
@@ -1448,6 +1593,7 @@ pub fn resolve_workstream(
         },
         preparation_source,
         integration_target,
+        integration_targets,
         publish_remote: settings.publish_remote.clone(),
         base_remote: settings.base_remote.clone(),
         review_remote: config
@@ -1455,6 +1601,7 @@ pub fn resolve_workstream(
             .unwrap_or_else(|| settings.publish_remote.clone()),
         merge_back_branch: config.merge_back_branch,
         version_tagging,
+        version_tag_identity,
         release_marker,
         active_release,
     });
@@ -1480,7 +1627,14 @@ pub(crate) fn branch_policy(
         [] => Ok(None),
         [value] => serde_json::from_slice(value)
             .map(Some)
-            .map_err(|e| SettingsError::InvalidSettings(format!("invalid branch policy: {e}"))),
+            .map_err(|e| {
+                let key = crate::tracking::key(branch, b".oneflow-policy");
+                let correction = match std::str::from_utf8(&key) {
+                    Ok(key) => format!("git config --local --unset-all '{}'", key.replace('\'', "'\\''")),
+                    Err(_) => format!("Git's local configuration editor, removing the exact obsolete association key {}", crate::status::display(&key)),
+                };
+                SettingsError::InvalidSettings(format!("invalid branch policy: {e}; this pre-release policy cannot be reused. Preserve evidence for any unfinished finish. When no finish is pending, remove only this obsolete association with {correction} before establishing a fresh workstream"))
+            }),
         _ => Err(SettingsError::InvalidSettings(
             "ambiguous branch policy: multiple associations".into(),
         )),

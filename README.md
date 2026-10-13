@@ -22,7 +22,8 @@ gof status
 checkpoint choices for uncommitted work. `finish` prepares, runs configured checks,
 and publishes a clean branch for manual submission in review mode or delivers its
 integrated result to the configured target in integrate mode. Explicit release and
-hotfix policy adds version tagging, with direct delivery or hosted merge-back preparation. Completion mode
+hotfix policy selects version identity and ordered direct destinations, or prepares
+work for manual review. The OneFlow bundles tag the completed work source. Completion mode
 comes from configuration or `--mode`; an unresolved mode asks at a terminal.
 `status` summarizes the current checkout. Ordinary finish can explicitly prepare
 work in Git's interactive rebase editor before review or integration; see
@@ -44,7 +45,8 @@ workflows and tracking styles.
 Use `gof config --oneflow` to select an editable direct OneFlow setup bundle,
 then start with explicit ordinary, release, or hotfix policy. Branch prefixes alone select no policy.
 The [release guide](docs/USAGE.md#direct-releases-and-hotfixes) covers source
-selection, version tags, active-release routing, marker branches, and recovery.
+selection, source or integrated-result tags, ordered destinations, optional one-time
+rebase, active-release routing, marker branches, and recovery.
 Use `gof config --oneflow-hosted` for version publication and a separate merge-back
 branch ready for manual submission. The [hosted guide](docs/USAGE.md#hosted-releases-and-hotfixes)
 covers review destinations and follow-up. Finish creates no pull request and performs

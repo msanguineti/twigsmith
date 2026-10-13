@@ -66,8 +66,9 @@ progress and publishes the current branch. CLI finish prepares and checks work,
 then publishes it for manual review or delivers its integrated result to the
 project base. Review mode leaves submission to the developer and identifies the
 publication branch and project base in its output. Explicit release and hotfix
-policy additionally binds a released source commit and version tag to direct
-delivery or hosted merge-back preparation. Direct delivery can advance an optional
+policy additionally binds a fixed completed work commit and selected version
+identity to ordered direct delivery or review preparation. Direct delivery can
+advance an optional
 release marker; hosted preparation reports its manual follow-up. Finish creates no
 pull request and invokes no provider submission or deployment tool.
 
@@ -207,7 +208,8 @@ arguments. [`finish_cli.rs`](../src/finish_cli.rs) owns that presentation policy
 
 Settings include sparse `workstreams.ordinary`, `workstreams.release`, and
 `workstreams.hotfix` templates. Creation source, preparation source, integration
-target, work publication, version tagging, active-release context, marker, and
+destinations, work publication, version tagging and identity, active-release
+context, marker, and
 finish choices are independent data. The explicit `config --oneflow` bundle
 serializes editable templates using the same schema as custom settings; there
 is no strategy dispatch during lifecycle execution. `config --oneflow-hosted`
@@ -225,8 +227,17 @@ of the project remote. Ordinary contributions can select a release or hotfix
 branch as preparation/integration target without adopting its release policy.
 
 Shared/private policy keys retain sparse layering, validation, and provenance.
-Configuration inspection displays effective routes. Integration recovery selects
-the original source association after temporary target checkout and after source
+Configuration inspection displays effective ordered routes and version identity.
+A tagged direct template can select `integration-targets` instead of the singular
+`integration-target`; resolution retains the first destination as the primary
+target. The singular and plural route are alternatives: a later layer replaces
+the earlier route and its effective provenance; both in one layer are ambiguous.
+Plural routes require version tagging. A declared active release remains the first
+hotfix destination. Empty, duplicate, conflicting, and invalid routes are
+rejected, as are source/marker
+aliases. Lists do not select per-destination methods or derive routes from history.
+Integration recovery selects the original source association after temporary
+target checkout and after source
 cleanup; the target's own policy cannot replace the contribution's policy.
 Private branch association supplies no delivery or deletion proof by itself.
 
@@ -718,7 +729,8 @@ target permits binding those choices to the prepared attempt.
 [`integration::assess`](../src/finish/integration.rs) binds exact source/local
 target versions, the target fetch endpoint and ordered push endpoints, and fresh
 evidence supplied by its caller. Published-source observations are also required
-for remote cleanup planning. Assessment performs no transport or writes, and
+for remote cleanup planning and explicit tagged rebase authorization. Assessment
+performs no transport or writes, and
 remote-tracking caches supply no authority.
 
 Fresh target observations must agree at fetch and every push endpoint. A missing
@@ -766,8 +778,9 @@ completed cleanup only within verified attempt evidence.
 
 [`integration::remote::refresh`](../src/finish/integration/remote.rs) explicitly
 observes the target's exact head at the configured fetch endpoint and every push
-endpoint. When cleanup requires published-work proof, it also observes the source
-head at the publication remote's push endpoints. These roles retain separate
+endpoint. When cleanup or tagged rebase requires published-work proof, it also
+observes the source head at the publication remote's push endpoints. These roles
+retain separate
 transport configuration. Assessment itself performs no transport.
 
 Refresh fetches each observed full OID without a destination refspec. Empty
@@ -842,7 +855,12 @@ recovery records remain available throughout completion and retry.
 
 Published-work cleanup uses the publication remote's endpoints independently of
 base-remote delivery. Each eligible recorded source version must be proven included
-in the integrated source. The executor observes the exact head immediately before
+in the integrated source. Tagged one-time rebase can instead corroborate exact
+original-publication incorporation in the retained original work, verified native
+preparation, and its bound rewrite authorization. This proof covers only the
+originally observed version, with the original retention and branch evidence still
+required; newer publication cannot borrow it. The executor observes the exact head
+immediately before
 deletion and uses `--force-with-lease=<full-head-ref>:<recorded-oid>` with an empty
 source refspec. [Git push](https://git-scm.com/docs/git-push) binds that deletion to
 the expected remote OID; a newer observation never renews the lease. Command-scoped
@@ -906,7 +924,7 @@ the result and a retry runs the effective list again.
 ### Association and recovery proof
 
 [`integration/recovery.rs`](../src/finish/integration/recovery.rs) stores private
-version-2 records at
+version-3 records at
 `<worktree-git-dir>/oneflow-integration/branches/<source>/attempt.json` and an
 `active.json` selector for association after target checkout. Atomic writes sync
 files and containing directories and reject symlinks; Unix paths must be private.
@@ -914,6 +932,10 @@ Records bind identity, exact source/target refs and commits, local target expect
 endpoints, settings/provenance, Git configuration, choices, reflog anchors,
 retention refs, and cleanup-relevant published source versions. Optional result
 acknowledgements are corroborated evidence rather than stored success flags.
+The current record format is required; malformed or unsupported records block
+recovery. Branch-policy schema failures identify the local association key for
+deliberate correction after pending work is resolved. Metadata replacement alone
+cannot establish prior delivery or cleanup authority.
 Acknowledged retention requires the matching private ref and its creation reflog;
 an acknowledged result also requires the verified commit and result ref.
 
@@ -960,12 +982,36 @@ target/endpoints, settings/provenance, Git configuration, retained commits,
 reflog anchors, choices, and cleanup proof. An optional release record extends
 that evidence; ordinary integration retains its independent behavior.
 
-The released source and the integration result have different responsibilities.
-Release/hotfix policy requires update `none` and a history-preserving integration
-method. Source preparation cannot import newer development into the version;
-squash cannot preserve the released history. Checks validate the exact source
-tree before tagging and the exact integration candidate before pending target
-delivery. A candidate equal to an already checked source needs no duplicate check.
+The fixed completed work source and destination integration results have distinct
+responsibilities. Each configured destination receives that same source independently,
+in order. Its result and conflict resolution do not become the source for later
+destinations. Tagged completion uses one history-preserving integration method;
+squash is incompatible.
+
+Tag identity is `work-source` by default, including both OneFlow bundles. Source
+identity validates and tags the completed work before integration. With
+`integrated-result`, the first destination is integrated and its exact validated
+result supplies the version; later results supply no additional tags. Annotation,
+signing, collisions, retention, and publication bind the selected tag object and
+commit. Failure to establish the first result cannot authorize a substitute source
+tag. Checks validate the actual completed source and destination candidates.
+
+Tagged direct preparation defaults to none, independently of inherited ordinary
+update preferences. An explicit invocation can select rebase against the resolved
+preparation source. Persistent tagged rebase preference is rejected. Preparation
+runs before source fixation, checks, tag creation, or any target integration and
+reuses the existing guarded native rebase/retention machinery. Successful retained
+preparation is corroborated on retry rather than replayed onto successive targets.
+Preparation can move the release cutoff by importing preparation-base work; that
+is an explicit developer choice. Original-work recovery, shared-history protection,
+and published-work authorization remain separate from update selection. Native
+preparation before finish requires no redundant tool operation. Interactive tagged
+editing remains unsupported.
+
+Checks validate each exact candidate before pending target delivery. Completed
+work and the selected first result share successful validation when they are the
+same exact commit. A candidate equal to an already checked source
+needs no duplicate check.
 Retained successful receipts are usable only with their corroborated unchanged
 commit and complete policy/configuration binding. Failed or state-changing checks
 stop delivery and retain the attempt. Receipts distinguish successful checks from
@@ -973,8 +1019,19 @@ explicit bypass; a later unbypassed pending delivery validates bypassed trees.
 A source-deleted retry can only verify existing delivery and finish cleanup.
 Explicit check bypass remains reportable.
 
+The integration attempt retains the ordered destination set and completed entries
+alongside its current destination. Each completed entry binds the exact result,
+local ref and reflog, and result-retention creation evidence.
+[`integration::advance`](../src/finish/integration/sequence.rs) verifies prior
+delivery, acquires the next destination's exact history, and binds its
+independent transition through the same integration machinery. Changed completed
+refs or missing pins cannot inherit completion authority. The fixed source and
+corroborated preparation remain shared; candidate transitions remain per destination.
+Fresh-process retries reuse the active and completed evidence. Publication and
+cleanup reobserve the full required delivery set before effects.
+
 Tag input is explicit and independent of the integration message. Git creates
-lightweight or requested annotated/signed tags at the retained source commit,
+lightweight or requested annotated/signed tags at the selected released commit,
 with normal Git signing preferences and no unsigned fallback after failure.
 Tagged completion rejects replacement refs in Git's effective replacement
 namespace. Git can present a replacement tree as clean at the original commit
@@ -998,12 +1055,12 @@ See [OneFlow's description](https://www.endoflineblog.com/oneflow-a-git-branchin
 [Git tag](https://git-scm.com/docs/git-tag), and
 [Git push](https://git-scm.com/docs/git-push).
 
-An enabled marker is distinct from source and integration target. Planning binds
-its initial local and per-endpoint versions, acquires exact missing objects, and
-proves that each existing marker can fast-forward to the released source.
-Delivery initializes or conditionally advances the marker at that commit, never
-the newer integration result. Disabled markers have no effect. Divergence,
-changed context, symbolic refs, and occupied worktrees block marker effects.
+An enabled marker is distinct from source and every integration destination.
+Planning binds its initial local and per-endpoint versions, acquires exact missing objects, and
+proves that each existing marker can fast-forward to the selected released commit.
+Delivery initializes or conditionally advances the marker at that commit. Its
+identity follows the tag selection independently of later integration results.
+Disabled markers have no effect. Divergence, changed context, symbolic refs, and occupied worktrees block marker effects.
 
 Target integration, selected version-tag delivery, and marker delivery are
 nontransactional effects. Each required endpoint is observed independently. Pending target delivery
@@ -1017,10 +1074,14 @@ effects, including after local source deletion. Conflicting input, changed refs,
 settings, endpoints, or associations block reuse. Native merge continuation or
 abandonment retains the original released version identity.
 
-The default checkout is the integration target. CLI reports distinguish released
-version/source, integration result/destination, marker, cleanup, and pending work.
+The default checkout is the first integration destination. Required delivery
+includes the selected tag, every target result, and any enabled marker; no individual
+publication establishes complete finish. Work cleanup starts only after verification
+of the entire delivery set. CLI reports distinguish selected version and fixed work
+source, integration results/destinations, marker, cleanup, and pending work.
 Hosted version preparation uses the separate review path described below. Provider
 submission and deployment remain external to both paths. The [CLI OneFlow fixtures](../tests/cli_oneflow.rs)
+and [ordered delivery fixtures](../tests/cli_direct_sequence.rs)
 exercise release/hotfix safety and recovery with real Git through the canonical
 command entry point. A focused ordinary lifecycle matrix verifies both executables
 and their start/save/finish aliases with actual publication and integration effects.
@@ -1028,7 +1089,8 @@ and their start/save/finish aliases with actual publication and integration effe
 ## Hosted version preparation
 
 [`finish::hosted`](../src/finish/hosted.rs) handles tagged work with
-`finish-mode = review`; [`finish_cli_hosted.rs`](../src/finish_cli_hosted.rs)
+`finish-mode = review` and work-source tag identity;
+[`finish_cli_hosted.rs`](../src/finish_cli_hosted.rs)
 resolves terminal input and reports a version and separate merge-back branch
 ready for manual submission. The selected template's `publish-remote`
 receives original work, `base-remote` receives the version tag and supplies the
@@ -1098,6 +1160,18 @@ wiring; [recovery tests](../tests/cli_hosted_recovery.rs) cover interrupted effe
 partial destinations, check receipts, and changed evidence.
 [Presentation tests](../tests/cli_hosted_presentation.rs) cover terminal
 cancellation, prompt revalidation, and streamed credential protection.
+
+### Review with deferred version identity
+
+Integrated-result tagged review uses the existing work-review preparation/checks/
+publication pipeline for one target. The eventual merged result belongs to the
+external review operation, so this path creates no tag, merge-back branch, or
+marker update. It reports the exact published source and target with instructions
+to merge, validate and tag the actual integrated result, then perform applicable
+cleanup and marker advancement. Readiness supplies no proof of external completion
+or authority for later effects. Multiple-destination review is rejected before
+publication. The direct-only source-rebase extension does not change work-source
+hosted merge-back preparation semantics.
 
 ## OneFlow model coverage
 

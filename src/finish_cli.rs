@@ -8,7 +8,7 @@ use crate::{
     repository::{self, Head, InspectionError, Observation},
     settings::{
         FinishCheckout, FinishCleanup, FinishIntegration, FinishMode, FinishRewrite, FinishUpdate,
-        HistoryEdit,
+        HistoryEdit, VersionTagIdentity,
     },
     status::display as terminal_display,
 };
@@ -333,6 +333,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let integration_request = integration::Request {
         update: request.update,
         history_edit: request.history_edit,
+        rewrite: request.rewrite,
         integration: completion.integration,
         message: completion.message.clone(),
         checkout: completion.checkout,
@@ -346,6 +347,14 @@ pub fn run(args: &[OsString]) -> ExitCode {
     {
         mode = bound.settings.finish_mode;
     }
+    let integrated_review = configured
+        .loaded
+        .settings
+        .workstream
+        .as_ref()
+        .is_some_and(|p| {
+            p.version_tagging && p.version_tag_identity == VersionTagIdentity::IntegratedResult
+        });
     let hosted_request = finish::hosted::Request {
         release: completion.release.clone(),
         merge_back: completion.merge_back.clone(),
@@ -374,16 +383,6 @@ pub fn run(args: &[OsString]) -> ExitCode {
     if hosted_initial.as_ref().is_ok_and(|p| p.is_retry()) && mode == FinishMode::Integrate {
         eprintln!("error: a retained hosted preparation must resume in review mode");
         return ExitCode::FAILURE;
-    }
-    if hosted_selected && mode == FinishMode::Review {
-        return hosted_cli::run(
-            &directory,
-            hosted_initial,
-            &request,
-            &completion,
-            presentation,
-            skip_checks,
-        );
     }
     // Snapshot each selectable workflow before asking. The selected workflow's
     // full guard prevents mode input from adopting concurrent unrelated changes.
@@ -422,6 +421,28 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+    }
+    if mode == FinishMode::Review
+        && configured
+            .loaded
+            .settings
+            .workstream
+            .as_ref()
+            .is_some_and(|p| p.integration_targets.len() != 1)
+    {
+        eprintln!(
+            "error: review finish supports one integration destination; select integrate mode for multiple destinations"
+        );
+        return ExitCode::FAILURE;
+    }
+    if integrated_review
+        && mode == FinishMode::Review
+        && (!completion.release.is_empty() || completion.merge_back.is_some())
+    {
+        eprintln!(
+            "error: integrated-result review creates no version tag or merge-back branch; tag the validated merged result after review"
+        );
+        return ExitCode::from(2);
     }
     if hosted_selected && mode == FinishMode::Review {
         return hosted_cli::run(
@@ -688,6 +709,22 @@ pub fn run(args: &[OsString]) -> ExitCode {
             text(presentation, &plan.settings.base_remote),
             text(presentation, &plan.settings.base)
         );
+        if integrated_review {
+            println!(
+                "Ready for manual submission. After merging the named source into the target, validate and tag the actual merged result, then clean up the work branch as appropriate."
+            );
+            if let Some(marker) = plan
+                .settings
+                .workstream
+                .as_ref()
+                .and_then(|p| p.release_marker.as_ref())
+            {
+                println!(
+                    "Then manually fast-forward release marker {} to that released tag commit.",
+                    text(presentation, marker)
+                );
+            }
+        }
         ExitCode::SUCCESS
     } else {
         let mut output = String::new();
@@ -1289,19 +1326,27 @@ Details:
   Completion mode resolves before remote refresh. ask needs terminal input and stderr.
   review prepares and publishes the work branch for manual review, keeping it checked out.
   integrate delivers the verified result to base-remote, then applies checkout and cleanup.
-  Direct tagged work requires --tag, update none, and merge or ff-only integration.
-  Tagged review publishes source to publish-remote, the exact tag to base-remote,
+  Direct tagged work uses ordered integration-targets with merge or ff-only integration.
+  Configuration version-tag-identity selects work-source (default) or integrated-result.
+  --update rebase explicitly prepares tagged direct work once against preparation-source.
+  Configuration finish-update must be none for tagged direct work; ordinary preferences do not enable rebase.
+  Rebase can incorporate commits after the release cutoff; validate the prepared version.
+  Work-source tagged review publishes source to publish-remote, the exact tag to base-remote,
   and --merge-back to review-remote; merge/none preparation changes only merge-back.
   Submit merge-back into the named target with no-ff integration using your chosen tools.
   Hosted finish retains both branches and leaves marker advancement and later cleanup manual.
-  The tag identifies the checked source; candidate checks inspect prepared merge-back.
+  Work-source review tags the checked source; candidate checks inspect prepared merge-back.
+  Integrated-result review publishes work without a tag or marker; merge, validate and tag
+  the actual result manually, then perform applicable marker and cleanup steps.
+  Review supports one destination. Multiple destinations require direct integration.
   Tagged completion requires original Git objects; replacement refs must be removed.
   Git tag signing preferences apply; --tag-message supplies annotation separately from -m.
-  Direct integration advances enabled release markers by fast-forward to the tagged source.
-  Tag, target, and marker delivery at every project endpoint precede source cleanup.
+  Direct integration advances enabled release markers by fast-forward to the selected tag commit.
+  Tag, all target results, and marker delivery at every project endpoint precede source cleanup.
+  Final target checkout selects the first configured destination.
   Integration retries reuse the verified attempt's choices and accepted message.
   Delivered retries complete remaining checkout/cleanup without repeating checks or publication.
-  Ordinary review rejects integration and tag options. Tagged review accepts tag options,
+  Work-branch review rejects integration and tag options. Work-source tagged review accepts tag options,
   --integration merge, --checkout work, and --cleanup keep; it performs no integration.
   Integration merge means a merge commit; --update merge prepares the work branch.
   -m supplies a literal nonblank final integration message, retaining its whitespace.
@@ -1318,7 +1363,7 @@ Details:
   A failed, interrupted, or state-changing check stops before publication.
   --skip-checks reports the bypass; Git hooks and all other guards remain active.
   Review observes the base and each exact publish-remote push destination.
-  Integration observes the base-remote target destinations and, for both cleanup,
+  Integration observes the base-remote target destinations and, for both cleanup or tagged rebase,
   the publish-remote work destinations. It never publishes rewritten work history.
   Rebase replays commits onto the remote base; merge incorporates it; none retains history.
   Interactive history editing requires update rebase and ordinary work.

@@ -1715,3 +1715,217 @@ fn history_edit_settings_preserve_sparse_layers_and_validate_every_value() {
         assert!(error.contains("finish-history-edit = none"), "{error}");
     });
 }
+
+#[test]
+fn ordered_tagged_routes_layer_replace_and_select_identity() {
+    use settings::{VersionTagIdentity, WorkstreamKind};
+    isolated(
+        "ordered_tagged_routes_layer_replace_and_select_identity",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let mut proposed = Settings::default();
+            settings::oneflow_bundle(&mut proposed, None);
+            let shared = repo.path().join(CONFIG_FILES[3]);
+            fs::write(
+                &shared,
+                git_oneflow::config::render(git_oneflow::config::Format::Json, &proposed),
+            )
+            .unwrap();
+            let private = repo.path().join(".git/git-oneflow.config.json");
+            fs::write(&private, r#"{"workstreams":{"release":{"integration-targets":["main","stable"],"version-tag-identity":"integrated-result"},"hotfix":{"active-release":"release/train","integration-targets":["release/train","main"]}}}"#).unwrap();
+            let loaded = load(repo.path()).unwrap();
+            let mut release = loaded.clone();
+            settings::resolve_workstream(&mut release, WorkstreamKind::Release, None).unwrap();
+            assert_eq!(release.sources.base, SettingSource::Local(private.clone()));
+            assert!(
+                !release
+                    .sources
+                    .workstreams
+                    .contains_key("release.integration-target")
+            );
+            let policy = release.workstream.unwrap();
+            assert_eq!(policy.integration_targets, ["main", "stable"]);
+            assert_eq!(policy.integration_target, "main");
+            assert_eq!(
+                policy.version_tag_identity,
+                VersionTagIdentity::IntegratedResult
+            );
+            let mut hotfix = loaded;
+            settings::resolve_workstream(&mut hotfix, WorkstreamKind::Hotfix, None).unwrap();
+            assert_eq!(
+                hotfix.workstream.unwrap().integration_targets,
+                ["release/train", "main"]
+            );
+            assert!(
+                settings::resolve_workstream(
+                    &mut load(repo.path()).unwrap(),
+                    WorkstreamKind::Release,
+                    Some("other")
+                )
+                .is_err()
+            );
+            fs::remove_file(&private).unwrap();
+            proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Release)
+                .unwrap()
+                .integration_target = None;
+            proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Release)
+                .unwrap()
+                .integration_targets = Some(vec!["main".into(), "stable".into()]);
+            fs::write(
+                &shared,
+                git_oneflow::config::render(git_oneflow::config::Format::Json, &proposed),
+            )
+            .unwrap();
+            fs::write(
+                &private,
+                r#"{"workstreams":{"release":{"integration-target":"other"}}}"#,
+            )
+            .unwrap();
+            let mut release = load(repo.path()).unwrap();
+            settings::resolve_workstream(&mut release, WorkstreamKind::Release, None).unwrap();
+            assert_eq!(release.sources.base, SettingSource::Local(private.clone()));
+            assert!(
+                !release
+                    .sources
+                    .workstreams
+                    .contains_key("release.integration-targets")
+            );
+            assert_eq!(release.workstream.unwrap().integration_targets, ["other"]);
+        },
+    );
+}
+
+#[test]
+fn ordered_routes_reject_ambiguity_aliases_and_review_before_effects() {
+    isolated(
+        "ordered_routes_reject_ambiguity_aliases_and_review_before_effects",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let path = repo.path().join(CONFIG_FILES[3]);
+            for policy in [
+                r#""integration-targets":[]"#,
+                r#""integration-targets":["main","main"]"#,
+                r#""integration-targets":["main","bad..branch"]"#,
+                r#""integration-targets":null"#,
+                r#""integration-targets":[1]"#,
+                r#""integration-targets":["main"],"integration-target":"main""#,
+                r#""integration-targets":["main","stable"],"version-tagging":"required","finish-mode":"integrate","finish-update":"none","release-marker":"stable""#,
+                r#""integration-targets":["main"],"version-tagging":"disabled""#,
+                r#""version-tag-identity":"target""#,
+                r#""integration-targets":["main","stable"],"version-tagging":"required","finish-mode":"review""#,
+            ] {
+                fs::write(
+                    &path,
+                    format!("{{\"workstreams\":{{\"release\":{{{policy}}}}}}}"),
+                )
+                .unwrap();
+                let before = snapshot(root);
+                assert!(load(repo.path()).is_err(), "accepted {policy}");
+                assert_eq!(snapshot(root), before);
+            }
+            fs::write(&path, r#"{"workstreams":{"hotfix":{"active-release":"release/train","integration-targets":["main","release/train"]}}}"#).unwrap();
+            assert!(load(repo.path()).is_err());
+            fs::write(
+                &path,
+                r#"{"workstreams":{"ordinary":{"integration-targets":["main"]}}}"#,
+            )
+            .unwrap();
+            assert!(load(repo.path()).is_err());
+            fs::remove_file(&path).unwrap();
+            for filename in CONFIG_FILES {
+                let path = repo.path().join(filename);
+                let invalid_values = if filename.ends_with(".toml") {
+                    vec![
+                        "[workstreams.release]\nintegration-targets='main'",
+                        "[workstreams.release]\nintegration-targets=[1]",
+                        "[workstreams.release]\nintegration-targets=[true]",
+                    ]
+                } else if filename.ends_with(".json") {
+                    vec![
+                        r#"{"workstreams":{"release":{"integration-targets":null}}}"#,
+                        r#"{"workstreams":{"release":{"integration-targets":"main"}}}"#,
+                        r#"{"workstreams":{"release":{"integration-targets":[true]}}}"#,
+                    ]
+                } else {
+                    vec![
+                        "workstreams:\n  release:\n    integration-targets: null",
+                        "workstreams:\n  release:\n    integration-targets:",
+                        "workstreams:\n  release:\n    integration-targets: main",
+                        "workstreams:\n  release:\n    integration-targets: [1]",
+                        "workstreams:\n  release:\n    integration-targets: [true]",
+                    ]
+                };
+                for value in invalid_values {
+                    fs::write(&path, value).unwrap();
+                    let before = snapshot(root);
+                    assert!(load(repo.path()).is_err(), "accepted {filename}: {value}");
+                    assert_eq!(snapshot(root), before);
+                }
+                fs::remove_file(path).unwrap();
+            }
+        },
+    );
+}
+
+#[test]
+fn tagged_direct_defaults_ignore_ordinary_update_preferences() {
+    use settings::WorkstreamKind;
+    isolated(
+        "tagged_direct_defaults_ignore_ordinary_update_preferences",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let path = repo.path().join(CONFIG_FILES[3]);
+            fs::write(&path, r#"{"finish-update":"rebase","finish-mode":"integrate","finish-integration":"merge","workstreams":{"release":{"version-tagging":"required"}}}"#).unwrap();
+            let mut release = load(repo.path()).unwrap();
+            settings::resolve_workstream(&mut release, WorkstreamKind::Release, None).unwrap();
+            assert_eq!(release.finish_update, FinishUpdate::None);
+            assert_eq!(release.sources.finish_update, SettingSource::BuiltIn);
+            fs::write(&path, r#"{"finish-mode":"integrate","workstreams":{"release":{"version-tagging":"required","finish-update":"rebase"}}}"#).unwrap();
+            assert!(
+                load(repo.path())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("--update rebase")
+            );
+        },
+    );
+}
+
+#[test]
+fn invalid_policy_correction_quotes_literal_git_configuration_key() {
+    isolated(
+        "invalid_policy_correction_quotes_literal_git_configuration_key",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let branch = "release/quoted'$;branch";
+            let key = format!("branch.{branch}.oneflow-policy");
+            repo.success(&["config", "--local", &key, "invalid-json"]);
+            let repository = git_oneflow::repository::discover(repo.path())
+                .unwrap()
+                .unwrap();
+            let message = settings::load_for_branch(repo.path(), &repository, branch.as_bytes())
+                .unwrap_err()
+                .to_string();
+            let correction = "git config --local --unset-all 'branch.release/quoted'\\''$;branch.oneflow-policy'";
+            assert!(message.contains(correction), "{message}");
+            // The suggested command removes exactly this local key, with shell
+            // metacharacters treated as literal branch bytes.
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(correction)
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert!(settings::load_for_branch(repo.path(), &repository, branch.as_bytes()).is_ok());
+        },
+    );
+}

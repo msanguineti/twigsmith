@@ -1798,6 +1798,83 @@ fn unattended_oneflow_bundle_generation_round_trips_every_format() {
     );
 }
 
+#[test]
+fn inspection_reports_ordered_tag_identity_and_declared_active_release_read_only() {
+    use settings::WorkstreamKind;
+    isolated(
+        "inspection_reports_ordered_tag_identity_and_declared_active_release_read_only",
+        true,
+        |root| {
+            let remote = Repository::new(root);
+            commit(&remote);
+            let repo = Repository::new(root);
+            repo.success(&[
+                "remote".as_ref(),
+                "add".as_ref(),
+                "origin".as_ref(),
+                remote.path().as_os_str(),
+            ]);
+            repo.success(&["fetch", "origin"]);
+            repo.success(&["reset", "--hard", "refs/remotes/origin/main"]);
+            let mut proposed = Settings::default();
+            settings::oneflow_bundle(&mut proposed, None);
+            let release = proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Release)
+                .unwrap();
+            release.integration_target = None;
+            release.integration_targets = Some(vec!["main".into(), "stable".into()]);
+            release.version_tag_identity = Some("integrated-result".into());
+            let hotfix = proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Hotfix)
+                .unwrap();
+            hotfix.active_release = Some("release/train".into());
+            hotfix.integration_target = None;
+            hotfix.integration_targets = Some(vec!["release/train".into(), "main".into()]);
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.toml"),
+                config::render(Format::Toml, &proposed),
+            )
+            .unwrap();
+            let exe = env!("CARGO_BIN_EXE_git-oneflow");
+            let before = snapshot(root);
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[
+                    "Effective release version-tag-identity: integrated-result; integration-targets (in order): main -> stable.",
+                    "Effective hotfix version-tag-identity: work-source; integration-targets (in order): release/train -> main.",
+                    "workstreams.hotfix.active-release: release/train",
+                    "workstreams.release.integration-targets: [\"main\",\"stable\"]",
+                ],
+            );
+            assert_eq!(snapshot(root), before);
+            check(
+                run(
+                    exe,
+                    repo.path(),
+                    &["start", "release/inspection", "--policy", "release"],
+                ),
+                0,
+                &["Created"],
+            );
+            let before = snapshot(root);
+            check(
+                run(exe, repo.path(), &["config", "show"]),
+                0,
+                &[
+                    "workstream-policy: release",
+                    "integration-targets (in order): main -> stable",
+                    "version-tag-identity: integrated-result",
+                    "preparation-source: main",
+                ],
+            );
+            assert_eq!(snapshot(root), before);
+        },
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_oneflow_templates_are_editable_and_cancel_preserves_repository() {
