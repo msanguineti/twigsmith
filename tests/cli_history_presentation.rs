@@ -353,7 +353,7 @@ fn native_editor_receives_terminal_input_without_a_redundant_confirmation() {
                 root,
                 "terminal sequence",
                 &format!(
-                    "printf 'Native sequence input: ' >&2\nread choice\ntest \"$choice\" = reword\n{REWORD}"
+                    "test -t 0 && test -t 1 && test -t 2\nprintf 'Native sequence input: ' >&2\nread choice\ntest \"$choice\" = reword\n{REWORD}"
                 ),
             );
             let message = script(
@@ -363,22 +363,19 @@ fn native_editor_receives_terminal_input_without_a_redundant_confirmation() {
             );
             local.success(&["config", "sequence.editor", &sequence]);
             local.success(&["config", "core.editor", &message]);
-            let mut terminal = terminal::Terminal::start(
+            let mut terminal = terminal::Terminal::start_capable(
                 env!("CARGO_BIN_EXE_git-oneflow"),
                 local.path(),
-                &[
-                    "finish",
-                    "--mode",
-                    "review",
-                    "--update",
-                    "rebase",
-                    "--no-rewrite",
-                ],
+                &["finish", "--update", "rebase", "--no-rewrite"],
             );
+            terminal.until("Completion mode (");
+            terminal.send(b"\x1b[A\x1b[A\r");
             terminal.until("Native sequence input:");
+            terminal.assert_restored();
             assert!(terminal.output.contains(WORK), "{}", terminal.output);
             terminal.send(b"reword\n");
             assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+            terminal.assert_restored();
             assert_eq!(oid(&remote, WORK_REF), oid(&local, "HEAD"));
             assert_eq!(
                 local.success(&["log", "-1", "--format=%s"]).stdout,

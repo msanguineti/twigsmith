@@ -53,6 +53,10 @@ branch ready for manual submission. The [hosted guide](docs/USAGE.md#hosted-rele
 covers review destinations and follow-up. Finish creates no pull request and performs
 no deployment.
 
+Terminal menus support arrow keys and Enter; slow Git operations show activity.
+`NO_COLOR` disables colour, and redirected output stays plain. See the
+[user manual](docs/USAGE.md#start-or-resume-work) for command details.
+
 Use `gof --help` or `gof <command> --help` for a quick reference.
 
 ## Documentation

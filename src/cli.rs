@@ -7,6 +7,7 @@ use crate::{
 };
 
 pub fn run() -> ExitCode {
+    let _activity = crate::activity::enable();
     let args: Vec<_> = env::args_os().skip(1).collect();
 
     match args.as_slice() {
@@ -32,7 +33,9 @@ pub fn run() -> ExitCode {
             return finish_cli::run(rest);
         }
         _ => {
-            eprintln!("error: unsupported arguments; use --help for available options");
+            crate::presentation::error(
+                "error: unsupported arguments; use --help for available options",
+            );
             return ExitCode::from(2);
         }
     }
@@ -100,10 +103,10 @@ fn run_status() -> ExitCode {
     let directory = match env::current_dir() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!(
+            crate::presentation::error(format!(
                 "error: cannot determine current directory: {}",
                 status::display(error.to_string().as_bytes())
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -113,11 +116,14 @@ fn run_status() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Observation::OutsideRepository) => {
-            eprintln!("error: current directory is outside a Git repository");
+            crate::presentation::error("error: current directory is outside a Git repository");
             ExitCode::FAILURE
         }
         Err(error) => {
-            eprintln!("error: {}", status::display(error.to_string().as_bytes()));
+            crate::presentation::error(format!(
+                "error: {}",
+                status::display(error.to_string().as_bytes())
+            ));
             match &error {
                 InspectionError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     eprintln!(
@@ -152,29 +158,32 @@ pub(crate) fn menu_answer(answer: String, choices: &[&str]) -> String {
 pub(crate) fn cache_issues(
     caches: &[crate::save::publication::CacheReport],
     present: impl Fn(&[u8]) -> String,
+    stderr: bool,
 ) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     for cache in caches.iter().filter(|cache| cache.has_issue()) {
+        let mut block = String::new();
         let _ = writeln!(
-            out,
+            block,
             "\nLocal tracking cache needs attention for {} on {}.",
             present(&cache.reference),
             present(cache.remote.as_bytes())
         );
-        for issue in &cache.issues {
-            let _ = writeln!(out, "  {}", present(issue.as_bytes()));
+        for problem in &cache.issues {
+            let _ = writeln!(block, "  {}", present(problem.as_bytes()));
         }
         for reference in &cache.refs {
-            if let Some(issue) = &reference.issue {
+            if let Some(problem) = &reference.issue {
                 let _ = writeln!(
-                    out,
+                    block,
                     "  {}: {}",
                     present(&reference.reference),
-                    present(issue.as_bytes())
+                    present(problem.as_bytes())
                 );
             }
         }
+        out.push_str(&crate::presentation::warning_text(&block, stderr));
     }
     if !out.is_empty() {
         out.push_str("Confirmed remote effects are retained. Inspect the listed local refs and remote fetch mappings before relying on status or log comparisons.\n");

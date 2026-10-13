@@ -78,7 +78,7 @@ test_group() {
             ;;
         shared)
             group_description='Development launcher, Git boundary, observation, settings, tracking, roles, and exact publication'
-            group_targets='dev_selection bash_completion git_execution repository_state settings remote_roles finish_roles finish_checks save_publication finish_publication'
+            group_targets='dev_selection bash_completion git_execution cli_activity repository_state settings remote_roles finish_roles finish_checks save_publication finish_publication'
             ;;
         lifecycle)
             group_description='CLI smoke and end-to-end project/fork lifecycles'

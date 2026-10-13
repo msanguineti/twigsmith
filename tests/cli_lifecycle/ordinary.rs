@@ -597,11 +597,11 @@ fn default_config_wip_switch_resume_native_reword_and_both_cleanup() {
                     "integrate",
                 ],
             );
-            term.until("Update (rebase/merge/none/cancel):");
+            term.until("Update (rebase/merge/none/cancel)");
             term.send(b"1\n");
-            term.until("Cleanup (keep/local/both/cancel):");
+            term.until("Cleanup (keep/local/both/cancel)");
             term.send(b"3\n");
-            term.until("Integration (ff-only/merge/squash/cancel):");
+            term.until("Integration (ff-only/merge/squash/cancel)");
             term.send(b"1\n");
             assert!(term.finish().success(), "{}", term.output);
             assert_delivery_and_cleanup(&term.output);

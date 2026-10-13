@@ -248,8 +248,11 @@ fn run_retained(
             check_event(presentation, &mut output, event);
         });
     output.flush();
-    let cache_issues =
-        crate::cli::cache_issues(&delivered.caches, |bytes| display(presentation, bytes));
+    let cache_issues = crate::cli::cache_issues(
+        &delivered.caches,
+        |bytes| display(presentation, bytes),
+        true,
+    );
     eprint!("{cache_issues}");
     let _ = writeln!(history, "Target delivery: {:?}.", delivered.state);
     for destination in &delivered.destinations {
@@ -371,9 +374,11 @@ fn choose(
     );
     let mut request = plan.request().clone();
     if choice == RequiredInput::TagName {
-        request.release.tag = Some(read_answer_with_cancellation(
+        request.release.tag = Some(read_reference_name(
+            root,
             presentation,
-            "Version tag name (cancel to stop): ",
+            "Version tag name",
+            "refs/tags/",
             "Finish cancelled; retained work remains available.",
         )?);
         return Ok(request);
@@ -385,27 +390,27 @@ fn choose(
     let prompt = match choice {
         RequiredInput::Rewrite => {
             eprintln!(
-                "Rebase may replace incorporated published work; all exact publication guards remain required.\n  1) allow   Authorize eligible replacement for this attempt.\n  2) deny    Retain published history.\n  3) cancel  Stop finish."
+                "Allow authorizes eligible replacement of incorporated published work for this attempt; all exact publication guards remain required. Deny retains published history."
             );
-            "Rewrite (allow/deny/cancel): "
+            "Rewrite (allow/deny/cancel)"
         }
         RequiredInput::Update => {
             eprintln!(
-                "  1) rebase  Replay work commits onto the target.\n  2) merge   Incorporate the target into the work branch.\n  3) none    Retain the current work history.\n  4) cancel  Stop finish."
+                "Rebase replays work commits onto the target. Merge incorporates the target into work. None retains current work history."
             );
-            "Update (rebase/merge/none/cancel): "
+            "Update (rebase/merge/none/cancel)"
         }
         RequiredInput::Integration => {
             eprintln!(
-                "  1) ff-only  Advance the target only when it can fast-forward.\n  2) merge    Create an integration merge commit.\n  3) squash   Create one integration commit from the work changes.\n  4) cancel   Stop finish."
+                "Ff-only advances a target that can fast-forward. Merge creates an integration merge commit. Squash creates one integration commit from work changes."
             );
-            "Integration (ff-only/merge/squash/cancel): "
+            "Integration (ff-only/merge/squash/cancel)"
         }
         RequiredInput::Cleanup => {
             eprintln!(
-                "  1) keep    Retain local and published work branches.\n  2) local   Delete the local work branch after delivery.\n  3) both    Delete local and published work branches after delivery.\n  4) cancel  Stop finish."
+                "Keep retains local and published work branches. Local deletes the local work branch after delivery. Both deletes local and published work branches after delivery."
             );
-            "Cleanup (keep/local/both/cancel): "
+            "Cleanup (keep/local/both/cancel)"
         }
         RequiredInput::Message | RequiredInput::TagName => unreachable!(),
     };
@@ -689,7 +694,7 @@ fn complete(
     );
     eprint!(
         "{}",
-        crate::cli::cache_issues(&caches, |bytes| display(presentation, bytes))
+        crate::cli::cache_issues(&caches, |bytes| display(presentation, bytes), true)
     );
     command_diagnostics(presentation, &mut history, &commands);
     let release_destinations = integration::release::delivery_observations(plan, &commands);
@@ -722,7 +727,7 @@ fn complete(
     let report = completion::complete(root, plan);
     eprint!(
         "{}",
-        crate::cli::cache_issues(&report.caches, |bytes| display(presentation, bytes))
+        crate::cli::cache_issues(&report.caches, |bytes| display(presentation, bytes), true)
     );
     for effect in &report.effects {
         match effect {
@@ -846,21 +851,24 @@ fn complete(
     if !plan.completed_destinations().is_empty() || integration::release::identity(plan).is_some() {
         println!();
     }
-    println!(
-        "Integrated {} at {} into {}/{}.",
-        display(presentation, &plan.source_ref),
-        display(
-            presentation,
-            plan.result.as_deref().expect("verified result")
+    crate::presentation::report(
+        &format!(
+            "Integrated {} at {} into {}/{}.",
+            display(presentation, &plan.source_ref),
+            display(
+                presentation,
+                plan.result.as_deref().expect("verified result")
+            ),
+            text(presentation, &plan.target.remote),
+            display(
+                presentation,
+                plan.target
+                    .reference
+                    .strip_prefix(b"refs/heads/")
+                    .unwrap_or(&plan.target.reference)
+            )
         ),
-        text(presentation, &plan.target.remote),
-        display(
-            presentation,
-            plan.target
-                .reference
-                .strip_prefix(b"refs/heads/")
-                .unwrap_or(&plan.target.reference)
-        )
+        true,
     );
     for destination in &report.targets {
         println!(
@@ -981,7 +989,7 @@ fn failure(
 
     remaining_state(presentation, &mut output, observed, false);
     output.push_str("\nCompleted effects and retained work remain available; retries complete the pending steps.\n");
-    eprint!("{output}");
+    crate::presentation::report(&output, false);
     ExitCode::FAILURE
 }
 

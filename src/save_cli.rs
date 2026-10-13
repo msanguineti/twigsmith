@@ -3,7 +3,7 @@ use std::{
     env,
     ffi::OsString,
     fmt::Write as _,
-    io::{self, IsTerminal, Write as _},
+    io::{self, IsTerminal},
     path::Path,
     process::ExitCode,
 };
@@ -76,7 +76,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let directory = match env::current_dir() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!("error: cannot determine current directory: {}", text(error));
+            crate::presentation::error(format!(
+                "error: cannot determine current directory: {}",
+                text(error)
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -86,14 +89,14 @@ pub fn run(args: &[OsString]) -> ExitCode {
     };
     if plan.required_input != RequiredInput::None {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-            eprintln!(
+            crate::presentation::error(format!(
                 "error: save requires {}; no interactive terminal is available",
                 if plan.required_input == RequiredInput::Action {
                     "an action"
                 } else {
                     "a staged commit message"
                 }
-            );
+            ));
             eprintln!(
                 "select --publish-only, --staged --message <message>, --wip, or --stash; or configure save-action in git-oneflow.config.toml"
             );
@@ -103,30 +106,22 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let approved = plan.clone();
         let input = (|| -> Result<(), InputError> {
             if plan.required_input == RequiredInput::Action {
-                for (index, action) in plan.applicable_actions.iter().enumerate() {
-                    eprintln!("  {}) {}", index + 1, choice(*action));
+                for action in &plan.applicable_actions {
+                    eprintln!("  {}", choice(*action));
                 }
-                eprintln!(
-                    "  {}) cancel       Leave the repository unchanged",
-                    plan.applicable_actions.len() + 1
-                );
-                let actions = plan
-                    .applicable_actions
-                    .iter()
-                    .map(|action| action_name(*action))
-                    .chain(std::iter::once("cancel"))
-                    .collect::<Vec<_>>()
-                    .join("/");
                 let choices = plan
                     .applicable_actions
                     .iter()
                     .map(|action| action_name(*action))
                     .chain(std::iter::once("cancel"))
                     .collect::<Vec<_>>();
-                let action = crate::cli::menu_answer(
-                    read_input(&format!("Action ({actions}): "))?,
+                let action = crate::presentation::select(
+                    &format!("Action ({})", choices.join("/")),
                     &choices,
-                );
+                    None,
+                )
+                .map_err(InputError::Io)?
+                .ok_or(InputError::Cancelled)?;
                 if action.trim() == "cancel" {
                     return Err(InputError::Cancelled);
                 }
@@ -140,8 +135,19 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 plan = resolve(&directory, &approved, &request)?;
             }
             if plan.required_input == RequiredInput::Message {
-                request.message = Some(read_input("Staged commit message (one line): ")?);
-                plan = resolve(&directory, &approved, &request)?;
+                loop {
+                    request.message = Some(read_input("Staged commit message (one line)")?);
+                    match resolve(&directory, &approved, &request) {
+                        Ok(resolved) => {
+                            plan = resolved;
+                            break;
+                        }
+                        Err(SaveError::BlankMessage) => {
+                            eprintln!("Enter a nonblank staged commit message.");
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
             }
             Ok(())
         })();
@@ -149,24 +155,23 @@ pub fn run(args: &[OsString]) -> ExitCode {
             match error {
                 InputError::Save(error) => return assessment_error(&error),
                 InputError::Cancelled => eprintln!("Save cancelled; no repository changes made."),
-                InputError::InvalidChoice => eprintln!(
-                    "error: invalid save choice; no repository changes made; retry to choose again"
+                InputError::InvalidChoice => crate::presentation::error(
+                    "error: invalid save choice; no repository changes made; retry to choose again",
                 ),
-                InputError::Io(error) => eprintln!(
+                InputError::Io(error) => crate::presentation::error(format!(
                     "error: cannot read save input: {}; no repository changes made",
                     text(error)
-                ),
+                )),
             }
             return ExitCode::FAILURE;
         }
     }
     let report = execution::execute(&directory, &plan);
     let output = render(&plan, &report);
+    crate::presentation::report(&output, report.is_complete());
     if report.is_complete() {
-        print!("{output}");
         ExitCode::SUCCESS
     } else {
-        eprint!("{output}");
         ExitCode::FAILURE
     }
 }
@@ -184,24 +189,9 @@ impl From<SaveError> for InputError {
     }
 }
 fn read_input(prompt: &str) -> Result<String, InputError> {
-    eprint!("{prompt}");
-    io::stderr().flush().map_err(InputError::Io)?;
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).map_err(InputError::Io)? == 0 {
-        return Err(InputError::Cancelled);
-    }
-    // EOF must not approve a partial action or message that was never submitted.
-    if !line.ends_with('\n') {
-        return Err(InputError::Cancelled);
-    }
-    // Remove only the terminal line ending, retaining literal message whitespace.
-    if line.ends_with('\n') {
-        line.pop();
-        if line.ends_with('\r') {
-            line.pop();
-        }
-    }
-    Ok(line)
+    crate::presentation::input(prompt)
+        .map_err(InputError::Io)?
+        .ok_or(InputError::Cancelled)
 }
 
 fn resolve(directory: &Path, approved: &Plan, request: &Request) -> Result<Plan, SaveError> {
@@ -249,7 +239,7 @@ fn scope_summary(plan: &Plan) {
     eprintln!("Ignored files are excluded. Stash contents are never remotely published.");
 }
 fn syntax_error(error: &str) -> ExitCode {
-    eprintln!("error: {error}; use save --help (alias: v)");
+    crate::presentation::error(format!("error: {error}; use save --help (alias: v)"));
     ExitCode::from(2)
 }
 fn assessment_error(error: &SaveError) -> ExitCode {
@@ -258,7 +248,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             "--message requires the staged action; use gof save --staged --message \"Your commit message\"",
         );
     }
-    eprintln!("error: {}", text(error));
+    crate::presentation::error(format!("error: {}", text(error)));
     match error {
         SaveError::Inspection(error) | SaveError::InvalidRemote { source: error, .. } => {
             inspection_diagnostics(error);
@@ -500,7 +490,11 @@ fn render(plan: &Plan, report: &Report) -> String {
                     publication.missing_responses
                 );
             }
-            out.push_str(&crate::cli::cache_issues(&publication.caches, display));
+            out.push_str(&crate::cli::cache_issues(
+                &publication.caches,
+                display,
+                !report.is_complete(),
+            ));
             if !publication.is_complete() {
                 if let Some(error) = &publication.error {
                     let _ = writeln!(out, "error: {}", text(error));
@@ -588,8 +582,10 @@ Examples:
 
 Notes:
   Choose one action flag to override save-action. Clean trees publish directly;
-  dirty trees default to ask. Finite menus accept a displayed number or action name.
-  Prompts require terminal input and stderr; cancel or end-of-input stops save.
+  dirty trees default to ask. Use arrow keys and Enter for finite choices, or type
+  a displayed number or action name. Invalid choices and blank messages stay correctable.
+  Prompts require terminal input and stderr. Esc, Ctrl-C/Ctrl-D or end-of-input stops
+  the prompt; cancel stops action selection. A staged message can contain literal cancel.
   --message requires the staged action; it does not select that action.
   Staged work needs a nonblank message; supply one or enter it at a terminal.
   WIP keeps staged and remaining work in separate commits. Stashes remain local.

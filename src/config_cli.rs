@@ -2,7 +2,7 @@
 use std::{
     env,
     ffi::OsString,
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal},
     path::Path,
     process::ExitCode,
 };
@@ -92,8 +92,8 @@ fn parse(args: &[OsString]) -> Option<Command> {
 }
 pub fn run(args: &[OsString]) -> ExitCode {
     let Some(command) = parse(args) else {
-        eprintln!(
-            "error: expected config show or config [--yes] [--format <toml|yaml|json>]; use config --help"
+        crate::presentation::error(
+            "error: expected config show or config [--yes] [--format <toml|yaml|json>]; use config --help",
         );
         return ExitCode::from(2);
     };
@@ -103,8 +103,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Command::Guided(..) if !io::stdin().is_terminal() || !io::stderr().is_terminal() => {
-            eprintln!(
-                "error: guided setup requires terminal input and stderr; use gof config --yes [--format <toml|yaml|json>] for unattended defaults"
+            crate::presentation::error(
+                "error: guided setup requires terminal input and stderr; use gof config --yes [--format <toml|yaml|json>] for unattended defaults",
             );
             return ExitCode::FAILURE;
         }
@@ -113,7 +113,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let directory = match env::current_dir() {
         Ok(path) => path,
         Err(e) => {
-            eprintln!("error: cannot determine current directory: {}", text(e));
+            crate::presentation::error(format!(
+                "error: cannot determine current directory: {}",
+                text(e)
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -125,7 +128,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 config::generate(&directory, &plan)
             })
             .map(|generated| {
-                println!("Created shared configuration: {}", text(generated.path.display()));
+                crate::presentation::report(&format!("Created shared configuration: {}", text(generated.path.display())), true);
                 for path in generated.local_files {
                     println!("Local overrides in {} take precedence over generated values; use gof config show to inspect effective settings.", text(path.display()));
                 }
@@ -136,7 +139,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("error: {}", text(&e));
+            crate::presentation::error(format!("error: {}", text(&e)));
             let inspection = match &e {
                 ConfigError::Repository(e)
                 | ConfigError::Settings(SettingsError::Repository(e)) => Some(e),
@@ -155,41 +158,17 @@ pub fn run(args: &[OsString]) -> ExitCode {
         }
     }
 }
-// Match save's terminal convention: a complete submitted line is required;
-// EOF (including a partial line) cancels and never approves publication.
 fn input(prompt: &str) -> Result<Option<String>, ConfigError> {
-    eprint!("{prompt}");
-    io::stderr().flush().map_err(ConfigError::Input)?;
-    let mut line = String::new();
-    if io::stdin()
-        .read_line(&mut line)
-        .map_err(ConfigError::Input)?
-        == 0
-        || !line.ends_with('\n')
-    {
-        return Ok(None);
-    }
-    line.pop();
-    if line.ends_with('\r') {
-        line.pop();
-    }
-    if line == "cancel" {
-        Ok(None)
-    } else {
-        Ok(Some(line))
-    }
+    crate::presentation::input(prompt)
+        .map(|value| value.filter(|value| value != "cancel"))
+        .map_err(ConfigError::Input)
 }
-fn menu_input(prompt: &str, choices: &[&str]) -> Result<Option<String>, ConfigError> {
-    let Some(answer) = input(prompt)? else {
-        return Ok(None);
-    };
-    let answer = crate::cli::menu_answer(answer, choices);
-    Ok((answer != "cancel").then_some(answer))
-}
-fn menu(choices: &[&str]) {
-    for (index, choice) in choices.iter().enumerate() {
-        eprintln!("  {}) {choice}", index + 1);
-    }
+fn menu_input(
+    prompt: &str,
+    choices: &[&str],
+    default: Option<&str>,
+) -> Result<Option<String>, ConfigError> {
+    crate::presentation::select(prompt, choices, default).map_err(ConfigError::Input)
 }
 fn cancelled() -> Result<(), ConfigError> {
     eprintln!("Setup cancelled; no configuration created.");
@@ -202,7 +181,12 @@ fn policy<T>(
     parse: impl Fn(&str) -> Result<T, String>,
 ) -> Result<Option<T>, ConfigError> {
     loop {
-        let Some(answer) = menu_input(&format!("Default {label} [{default}]: "), choices)? else {
+        let Some(answer) = menu_input(
+            &format!("Default {label} [{default}]: "),
+            choices,
+            Some(default),
+        )?
+        else {
             return Ok(None);
         };
         match parse(if answer.is_empty() { default } else { &answer }) {
@@ -220,7 +204,7 @@ fn guided(
     let mut plan = config::prepare_guided(directory, format)?;
     let defaults = settings::Settings::default();
     eprintln!(
-        "Configure shared start/save/finish settings. Enter keeps the built-in default; enter a displayed number or name for choices, or cancel to stop."
+        "Configure shared start/save/finish settings. Enter keeps the displayed default. Navigate choices with arrow keys; plain prompts accept a number or name. Esc, Ctrl-C, Ctrl-D, or cancel stops setup."
     );
     for (label, bytes) in [
         ("Local remotes", &plan.review().remotes),
@@ -311,13 +295,14 @@ fn guided(
         );
     }
     eprintln!(
-        "Save with uncommitted changes:\n  1) ask          Choose an action each time at a terminal.\n  2) publish-only Publish existing commits; uncommitted work stays local.\n  3) staged       Commit the staged selection, then publish; requires a message.\n               Unstaged and untracked work stays local.\n  4) wip          Checkpoint staged and remaining work separately, then publish.\n               Ignored files stay local.\n  5) stash        Retain a local stash including untracked work; publish existing commits.\n  6) cancel  Stop setup.\nClean trees publish existing commits directly. Explicit save flags override this preference."
+        "Save with uncommitted changes:\n  ask          Choose an action each time at a terminal.\n  publish-only Publish existing commits; uncommitted work stays local.\n  staged       Commit the staged selection, then publish; requires a message.\n               Unstaged and untracked work stays local.\n  wip          Checkpoint staged and remaining work separately, then publish.\n               Ignored files stay local.\n  stash        Retain a local stash including untracked work; publish existing commits.\nClean trees publish existing commits directly. Explicit save flags override this preference."
     );
 
     loop {
         let Some(answer) = menu_input(
             &format!("Default save action [{}]: ", defaults.save_action.as_str()),
             &["ask", "publish-only", "staged", "wip", "stash", "cancel"],
+            Some(defaults.save_action.as_str()),
         )?
         else {
             return cancelled();
@@ -335,13 +320,14 @@ fn guided(
         }
     }
     eprintln!(
-        "Finish update when the branch needs the remote base:\n  1) ask     Choose rebase, merge, or none at a terminal.\n  2) rebase  Replay branch commits onto the observed base.\n  3) merge   Incorporate the observed base with a merge or fast-forward.\n  4) none    Publish current history without updating from the base.\n  5) cancel  Stop setup.\nExplicit finish --update overrides this preference."
+        "Finish update when the branch needs the remote base:\n  ask     Choose rebase, merge, or none at a terminal.\n  rebase  Replay branch commits onto the observed base.\n  merge   Incorporate the observed base with a merge or fast-forward.\n  none    Publish current history without updating from the base.\nExplicit finish --update overrides this preference."
     );
 
     loop {
         let Some(answer) = menu_input(
             "Default finish update [ask]: ",
             &["ask", "rebase", "merge", "none", "cancel"],
+            Some(defaults.finish_update.as_str()),
         )?
         else {
             return cancelled();
@@ -359,13 +345,14 @@ fn guided(
         }
     }
     eprintln!(
-        "Finish replacement of published history:\n  1) ask    Request separate authorization when replacement is required.\n  2) allow  Standing authorization for eligible replacement.\n            Incorporation proof and exact remote leases remain required.\n  3) deny   Deny replacement.\n  4) cancel  Stop setup.\nSelecting rebase supplies no replacement authorization. Explicit rewrite flags override this preference."
+        "Finish replacement of published history:\n  ask    Request separate authorization when replacement is required.\n  allow  Standing authorization for eligible replacement.\n            Incorporation proof and exact remote leases remain required.\n  deny   Deny replacement.\nSelecting rebase supplies no replacement authorization. Explicit rewrite flags override this preference."
     );
 
     loop {
         let Some(answer) = menu_input(
             "Default finish rewrite [ask]: ",
             &["ask", "allow", "deny", "cancel"],
+            Some(defaults.finish_rewrite.as_str()),
         )?
         else {
             return cancelled();
@@ -383,7 +370,7 @@ fn guided(
         }
     }
     eprintln!(
-        "Finish completion:\n  1) ask        Choose review or integrate at a terminal.\n  2) review     Prepare and publish the working branch for manual review.\n  3) integrate  Deliver to the project target, then complete checkout and cleanup.\n  4) cancel  Stop setup."
+        "Finish completion:\n  ask        Choose review or integrate at a terminal.\n  review     Prepare and publish the working branch for manual review.\n  integrate  Deliver to the project target, then complete checkout and cleanup."
     );
     let Some(mode) = policy(
         "finish mode",
@@ -397,7 +384,7 @@ fn guided(
     plan.proposed.finish_mode = mode;
     if mode != settings::FinishMode::Review {
         eprintln!(
-            "Final integration method (separate from finish-update):\n  1) ask      Choose at a terminal.\n  2) ff-only  Fast-forward only; creates no integration commit.\n  3) merge    Create a merge commit, including when fast-forward is possible.\n  4) squash   Create one commit containing the integrated work.\n  5) cancel  Stop setup."
+            "Final integration method (separate from finish-update):\n  ask      Choose at a terminal.\n  ff-only  Fast-forward only; creates no integration commit.\n  merge    Create a merge commit, including when fast-forward is possible.\n  squash   Create one commit containing the integrated work."
         );
         let Some(integration) = policy(
             "finish integration",
@@ -411,7 +398,7 @@ fn guided(
         plan.proposed.finish_integration = integration;
         if integration != settings::FinishIntegration::FfOnly {
             eprintln!(
-                "Final integration commit message:\n  1) ask   Offer an editable suggestion at a terminal.\n  2) auto  Use the generated message.\n  3) cancel  Stop setup.\nfinish -m/--message supplies the final integration commit message; existing work commits and review descriptions are unchanged."
+                "Final integration commit message:\n  ask   Offer an editable suggestion at a terminal.\n  auto  Use the generated message.\nfinish -m/--message supplies the final integration commit message; existing work commits and review descriptions are unchanged."
             );
             let Some(message) = policy(
                 "finish message",
@@ -425,7 +412,7 @@ fn guided(
             plan.proposed.finish_message = message;
         }
         eprintln!(
-            "After confirmed target publication:\n  1) target  Check out the local integration target.\n  2) work    Keep the work branch checked out.\n  3) cancel  Stop setup."
+            "After confirmed target publication:\n  target  Check out the local integration target.\n  work    Keep the work branch checked out."
         );
         let Some(checkout) = policy(
             "finish checkout",
@@ -438,7 +425,7 @@ fn guided(
         };
         plan.proposed.finish_checkout = checkout;
         eprintln!(
-            "Work branch cleanup after confirmed target publication:\n  1) ask     Choose cleanup at a terminal.\n  2) keep    Retain local and published work.\n  3) local   Delete local work; keep published work.\n  4) both    Delete local and published work.\n  5) cancel  Stop setup."
+            "Work branch cleanup after confirmed target publication:\n  ask     Choose cleanup at a terminal.\n  keep    Retain local and published work.\n  local   Delete local work; keep published work.\n  both    Delete local and published work."
         );
         let Some(cleanup) = policy(
             "finish cleanup",
@@ -508,28 +495,33 @@ fn guided(
             settings::WorkstreamKind::Release,
             settings::WorkstreamKind::Hotfix,
         ] {
-            loop {
-                let proposed = &plan.proposed.workstreams[&kind];
-                let json = serde_json::to_string(proposed).expect("policy serialization");
-                let Some(answer) = input(&format!("{} policy [{}]: ", kind.as_str(), json))? else {
-                    return cancelled();
-                };
-                if answer.is_empty() {
-                    break;
-                }
-                match serde_json::from_str::<settings::WorkstreamConfig>(&answer) {
-                    Ok(value) => match value.validate_for(directory, kind) {
-                        Ok(()) => {
-                            plan.proposed.workstreams.insert(kind, value);
-                            break;
-                        }
-                        Err(error) => eprintln!("{error}"),
-                    },
-                    Err(error) => eprintln!("{error}"),
-                }
+            if !edit_policy(directory, &mut plan, kind)? {
+                return cancelled();
             }
         }
     }
+    // Private-only policies can also inherit the newly selected shared defaults.
+    // Audit them before the creation decision and offer the same correction input.
+    let kinds: std::collections::BTreeSet<_> = plan
+        .proposed
+        .workstreams
+        .keys()
+        .chain(plan.review().overrides.workstreams.keys())
+        .copied()
+        .collect();
+    for kind in kinds {
+        if let Err(error) = config::audit_workstream(directory, &plan, kind) {
+            crate::presentation::error(format!(
+                "Configuration needs correction for {}: {}",
+                kind.as_str(),
+                text(error)
+            ));
+            if !edit_policy(directory, &mut plan, kind)? {
+                return cancelled();
+            }
+        }
+    }
+    let effective = config::audit(directory, &plan)?;
     config::revalidate_review(directory, &plan)?;
     eprintln!(
         "Destination: {}\nExact proposed shared configuration:\n{}",
@@ -541,7 +533,7 @@ fn guided(
         &plan.proposed.finish_checks,
     );
     let review = plan.review();
-    let roles = reviewed_roles(&plan);
+    let roles = &effective;
     eprintln!(
         "Effective publish-remote: {} ({})",
         text(&roles.publish_remote),
@@ -550,10 +542,10 @@ fn guided(
     eprintln!(
         "Effective base-remote: {} ({})",
         text(&roles.base_remote),
-        base_remote_source(&roles)
+        base_remote_source(roles)
     );
-    let effective_completion = reviewed_completion(&plan);
-    for (key, value, origin) in completion_values(&effective_completion) {
+    let effective_completion = &effective;
+    for (key, value, origin) in completion_values(effective_completion) {
         eprintln!("Effective {key}: {value} ({})", source(origin));
     }
     if effective_completion.finish_mode == settings::FinishMode::Review {
@@ -626,52 +618,7 @@ fn guided(
             &plan.proposed.finish_checks,
         );
     }
-    if !plan.proposed.workstreams.is_empty() {
-        let mut effective = reviewed_completion(&plan);
-        let roles = reviewed_roles(&plan);
-        effective.publish_remote = roles.publish_remote;
-        effective.base_remote = roles.base_remote;
-        effective.sources.publish_remote = roles.sources.publish_remote;
-        effective.sources.base_remote = roles.sources.base_remote;
-        let shared = SettingSource::Shared(plan.destination());
-        for (kind, config) in &effective.workstreams {
-            for key in serde_json::to_value(config)
-                .expect("policy serialization")
-                .as_object()
-                .unwrap()
-                .keys()
-            {
-                effective
-                    .sources
-                    .workstreams
-                    .insert(format!("{}.{}", kind.as_str(), key), shared.clone());
-            }
-        }
-        for (kind, config) in &review.overrides.workstreams {
-            let mut values = serde_json::to_value(config).expect("policy serialization");
-            values.as_object_mut().unwrap().retain(|key, _| {
-                matches!(
-                    review
-                        .overrides
-                        .sources
-                        .workstreams
-                        .get(&format!("{}.{}", kind.as_str(), key)),
-                    Some(SettingSource::Local(_))
-                )
-            });
-            for key in values.as_object().unwrap().keys() {
-                let name = format!("{}.{}", kind.as_str(), key);
-                effective.sources.workstreams.insert(
-                    name.clone(),
-                    review.overrides.sources.workstreams[&name].clone(),
-                );
-            }
-            effective
-                .workstreams
-                .entry(*kind)
-                .or_default()
-                .overlay(serde_json::from_value(values).expect("validated private policy"));
-        }
+    if !effective.workstreams.is_empty() {
         for kind in effective.workstreams.keys() {
             let mut resolved = effective.clone();
             settings::resolve_workstream(&mut resolved, *kind, None)?;
@@ -695,9 +642,12 @@ fn guided(
             review_route(&resolved, true);
         }
     }
-    menu(&["yes", "no", "cancel"]);
     loop {
-        let Some(answer) = menu_input("Create this file? [yes/no]: ", &["yes", "no", "cancel"])?
+        let Some(answer) = menu_input(
+            "Create this file? [yes/no]: ",
+            &["yes", "no", "cancel"],
+            Some("no"),
+        )?
         else {
             return cancelled();
         };
@@ -708,35 +658,14 @@ fn guided(
         }
     }
     let generated = config::generate(directory, &plan)?;
-    println!(
-        "Created shared configuration: {}",
-        text(generated.path.display())
+    crate::presentation::report(
+        &format!(
+            "Created shared configuration: {}",
+            text(generated.path.display())
+        ),
+        true,
     );
     Ok(())
-}
-
-// Preview the generated roles with the already validated private layer applied.
-// Private values are observation only and never enter the generated proposal.
-fn reviewed_roles(plan: &config::GenerationPlan) -> settings::Settings {
-    let mut roles = plan.proposed.clone();
-    let shared = SettingSource::Shared(plan.destination());
-    roles.sources.publish_remote = shared.clone();
-    if roles.sources.base_remote.is_some() || roles.base_remote != roles.publish_remote {
-        roles.sources.base_remote = Some(shared);
-    }
-    let private = &plan.review().overrides;
-    if matches!(private.sources.publish_remote, SettingSource::Local(_)) {
-        roles.publish_remote = private.publish_remote.clone();
-        roles.sources.publish_remote = private.sources.publish_remote.clone();
-    }
-    if matches!(private.sources.base_remote, Some(SettingSource::Local(_))) {
-        roles.base_remote = private.base_remote.clone();
-        roles.sources.base_remote = private.sources.base_remote.clone();
-    }
-    if roles.sources.base_remote.is_none() {
-        roles.base_remote = roles.publish_remote.clone();
-    }
-    roles
 }
 
 fn completion_values(
@@ -770,57 +699,53 @@ fn completion_values(
         ),
     ]
 }
-fn reviewed_completion(plan: &config::GenerationPlan) -> settings::Settings {
-    let mut effective = plan.proposed.clone();
-    let private = &plan.review().overrides;
-    let shared = SettingSource::Shared(plan.destination());
-    effective.sources.finish_mode = shared.clone();
-    if matches!(private.sources.finish_mode, SettingSource::Local(_)) {
-        effective.finish_mode = private.finish_mode;
-        effective.sources.finish_mode = private.sources.finish_mode.clone();
-    }
-    effective.sources.finish_integration =
-        if plan.proposed.finish_mode != settings::FinishMode::Review {
-            shared.clone()
-        } else {
-            SettingSource::BuiltIn
+fn edit_policy(
+    directory: &Path,
+    plan: &mut config::GenerationPlan,
+    kind: settings::WorkstreamKind,
+) -> Result<bool, ConfigError> {
+    loop {
+        let proposed = plan
+            .proposed
+            .workstreams
+            .get(&kind)
+            .cloned()
+            .unwrap_or_default();
+        let json = serde_json::to_string(&proposed).expect("policy serialization");
+        let Some(answer) = input(&format!("{} policy [{}]: ", kind.as_str(), json))? else {
+            return Ok(false);
         };
-    if matches!(private.sources.finish_integration, SettingSource::Local(_)) {
-        effective.finish_integration = private.finish_integration;
-        effective.sources.finish_integration = private.sources.finish_integration.clone();
+        if !answer.is_empty() {
+            match serde_json::from_str::<settings::WorkstreamConfig>(&answer) {
+                Ok(value) => {
+                    plan.proposed.workstreams.insert(kind, value);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "{}; enter a policy JSON object again, or cancel.",
+                        text(error)
+                    );
+                    continue;
+                }
+            }
+        }
+        match config::audit_workstream(directory, plan, kind) {
+            Ok(()) => return Ok(true),
+            Err(error) => {
+                eprintln!(
+                    "Configuration needs correction for {}: {}. Enter a corrected policy JSON object, or cancel.",
+                    kind.as_str(),
+                    text(error)
+                );
+                if let Some(path) = &plan.review().local {
+                    eprintln!(
+                        "Private overrides in {} take precedence; adjust complementary shared fields or cancel to edit the private file.",
+                        text(path.display())
+                    );
+                }
+            }
+        }
     }
-    effective.sources.finish_message = if plan.proposed.finish_mode != settings::FinishMode::Review
-        && plan.proposed.finish_integration != settings::FinishIntegration::FfOnly
-    {
-        shared.clone()
-    } else {
-        SettingSource::BuiltIn
-    };
-    if matches!(private.sources.finish_message, SettingSource::Local(_)) {
-        effective.finish_message = private.finish_message;
-        effective.sources.finish_message = private.sources.finish_message.clone();
-    }
-    effective.sources.finish_checkout = if plan.proposed.finish_mode != settings::FinishMode::Review
-    {
-        shared.clone()
-    } else {
-        SettingSource::BuiltIn
-    };
-    if matches!(private.sources.finish_checkout, SettingSource::Local(_)) {
-        effective.finish_checkout = private.finish_checkout;
-        effective.sources.finish_checkout = private.sources.finish_checkout.clone();
-    }
-    effective.sources.finish_cleanup = if plan.proposed.finish_mode != settings::FinishMode::Review
-    {
-        shared.clone()
-    } else {
-        SettingSource::BuiltIn
-    };
-    if matches!(private.sources.finish_cleanup, SettingSource::Local(_)) {
-        effective.finish_cleanup = private.finish_cleanup;
-        effective.sources.finish_cleanup = private.sources.finish_cleanup.clone();
-    }
-    effective
 }
 
 fn source(source: &SettingSource) -> String {
@@ -1158,7 +1083,8 @@ Notes:
   Setup creates git-oneflow.config.<format> at the working-tree root, including
   when invoked from a nested directory. An existing recognized shared file is preserved.
   Guided setup reviews exact contents and private overrides before creation.
-  Enter keeps the displayed default; finite choices accept a number or name.
+  Enter keeps the displayed default. Use arrow keys for terminal choices; plain
+  prompts accept a number or name. Esc, Ctrl-C, Ctrl-D, or cancel stops setup.
   Cancel or end-of-input creates no file. Changed review context stops creation.
   --yes needs no terminal and retains unresolved ask choices; it creates no checks.
   Setup changes no branches, contacts no remote, and runs no configured checks.

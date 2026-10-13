@@ -300,7 +300,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let (mut request, completion, show_credentials, skip_checks) = match parse(args) {
         Ok(parsed) => parsed,
         Err(error) => {
-            eprintln!("error: {error}; use finish --help (alias: f)");
+            crate::presentation::error(format!("error: {error}; use finish --help (alias: f)"));
             return ExitCode::from(2);
         }
     };
@@ -308,10 +308,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let directory = match env::current_dir() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!(
+            crate::presentation::error(format!(
                 "error: cannot determine current directory: {}",
                 text(presentation, error)
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -320,7 +320,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let configured = match crate::config::inspect(&directory) {
         Ok(configured) => configured,
         Err(error) => {
-            eprintln!("error: {}", text(presentation, &error));
+            crate::presentation::error(format!("error: {}", text(presentation, &error)));
             error_diagnostics(presentation, &error);
             return ExitCode::FAILURE;
         }
@@ -370,18 +370,20 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let hosted_selected = match finish::hosted::selected(&directory) {
         Ok(selected) => selected,
         Err(error) => {
-            eprintln!("error: {}", text(presentation, error));
+            crate::presentation::error(format!("error: {}", text(presentation, error)));
             return ExitCode::FAILURE;
         }
     };
     if finish::hosted::associated(&directory).unwrap_or(true)
         && let Err(error) = &hosted_initial
     {
-        eprintln!("error: {}", text(presentation, error));
+        crate::presentation::error(format!("error: {}", text(presentation, error)));
         return ExitCode::FAILURE;
     }
     if hosted_initial.as_ref().is_ok_and(|p| p.is_retry()) && mode == FinishMode::Integrate {
-        eprintln!("error: a retained hosted preparation must resume in review mode");
+        crate::presentation::error(
+            "error: a retained hosted preparation must resume in review mode",
+        );
         return ExitCode::FAILURE;
     }
     // Snapshot each selectable workflow before asking. The selected workflow's
@@ -395,23 +397,23 @@ pub fn run(args: &[OsString]) -> ExitCode {
     });
     if mode == FinishMode::Ask {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-            eprintln!(
-                "error: unresolved completion mode; select --mode <review|integrate> or configure finish-mode. Terminal input and stderr are required to ask."
+            crate::presentation::error(
+                "error: unresolved completion mode; select --mode <review|integrate> or configure finish-mode. Terminal input and stderr are required to ask.",
             );
             return ExitCode::FAILURE;
         }
         eprintln!(
-            "Finish completion:\n  1) review     Prepare and publish the working branch for manual review.\n  2) integrate  Deliver to the project base, then complete checkout and cleanup.\n  3) cancel     Stop finish."
+            "Review prepares and publishes work for manual review. Integrate delivers to the project base, then completes checkout and cleanup."
         );
         let answer = match read_menu_answer(
             presentation,
-            "Completion mode (review/integrate/cancel): ",
+            "Completion mode (review/integrate/cancel)",
             &["review", "integrate", "cancel"],
             "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
         ) {
             Ok(answer) => answer,
             Err(error) => {
-                eprintln!("{error}");
+                error_or_plain(&error);
                 return ExitCode::FAILURE;
             }
         };
@@ -419,8 +421,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
             "review" => FinishMode::Review,
             "integrate" => FinishMode::Integrate,
             _ => {
-                eprintln!(
-                    "error: invalid completion mode; rerun finish to choose review or integrate."
+                crate::presentation::error(
+                    "error: invalid completion mode; rerun finish to choose review or integrate.",
                 );
                 return ExitCode::FAILURE;
             }
@@ -434,8 +436,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
             .as_ref()
             .is_some_and(|p| p.integration_targets.len() != 1)
     {
-        eprintln!(
-            "error: review finish supports one integration destination; select integrate mode for multiple destinations"
+        crate::presentation::error(
+            "error: review finish supports one integration destination; select integrate mode for multiple destinations",
         );
         return ExitCode::FAILURE;
     }
@@ -443,8 +445,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
         && mode == FinishMode::Review
         && (!completion.release.is_empty() || completion.merge_back.is_some())
     {
-        eprintln!(
-            "error: integrated-result review creates no version tag or merge-back branch; tag the validated merged result after review"
+        crate::presentation::error(
+            "error: integrated-result review creates no version tag or merge-back branch; tag the validated merged result after review",
         );
         return ExitCode::from(2);
     }
@@ -459,11 +461,11 @@ pub fn run(args: &[OsString]) -> ExitCode {
         );
     }
     if completion.merge_back.is_some() {
-        eprintln!("error: --merge-back requires tagged review mode");
+        crate::presentation::error("error: --merge-back requires tagged review mode");
         return ExitCode::from(2);
     }
     if let Err(error) = completion.validate(mode) {
-        eprintln!("error: {error}; use finish --help (alias: f)");
+        crate::presentation::error(format!("error: {error}; use finish --help (alias: f)"));
         return ExitCode::from(2);
     }
     if let Some((review, integrate)) = &mode_snapshot {
@@ -487,9 +489,9 @@ pub fn run(args: &[OsString]) -> ExitCode {
             FinishMode::Ask => unreachable!("mode resolved"),
         };
         if let Err(error) = guarded {
-            eprintln!(
+            crate::presentation::error(format!(
                 "error: completion mode context could not be retained: {error}; rerun finish."
-            );
+            ));
             return ExitCode::FAILURE;
         }
     }
@@ -503,11 +505,11 @@ pub fn run(args: &[OsString]) -> ExitCode {
         {
             Ok(plan) => plan,
             Err(error) => {
-                eprintln!("error: {}", text(presentation, &error));
+                crate::presentation::error(format!("error: {}", text(presentation, &error)));
                 error_diagnostics(presentation, &error);
                 let mut output = String::new();
                 remaining(presentation, &mut output, &repository::inspect(&directory));
-                eprint!("{output}");
+                crate::presentation::report(&output, false);
                 return ExitCode::FAILURE;
             }
         };
@@ -516,8 +518,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 now.loaded.settings != configured.loaded.settings
             })
         {
-            eprintln!(
-                "error: repository or settings changed while resolving completion mode; rerun finish."
+            crate::presentation::error(
+                "error: repository or settings changed while resolving completion mode; rerun finish.",
             );
             return ExitCode::FAILURE;
         }
@@ -527,19 +529,19 @@ pub fn run(args: &[OsString]) -> ExitCode {
     {
         Ok(plan) => plan,
         Err(error) => {
-            eprintln!("error: {}", text(presentation, &error));
+            crate::presentation::error(format!("error: {}", text(presentation, &error)));
             error_diagnostics(presentation, &error);
             let mut output = String::new();
             remaining(presentation, &mut output, &repository::inspect(&directory));
             output.push_str("Branch publication not attempted.\n");
-            eprint!("{output}");
+            crate::presentation::report(&output, false);
             return ExitCode::FAILURE;
         }
     };
     if initial.repository != configured.repository || initial.settings != configured.loaded.settings
     {
-        eprintln!(
-            "error: repository or settings changed while resolving completion mode; rerun finish."
+        crate::presentation::error(
+            "error: repository or settings changed while resolving completion mode; rerun finish.",
         );
         return ExitCode::FAILURE;
     }
@@ -694,14 +696,21 @@ pub fn run(args: &[OsString]) -> ExitCode {
     check_output.flush();
     eprint!(
         "{}",
-        crate::cli::cache_issues(&published.caches, |bytes| display(presentation, bytes))
+        crate::cli::cache_issues(
+            &published.caches,
+            |bytes| display(presentation, bytes),
+            true
+        )
     );
     if published.is_complete() {
-        println!(
-            "Published {} to {} at {}.",
-            display(presentation, &plan.branch),
-            text(presentation, &published.remote),
-            display(presentation, &published.commit)
+        crate::presentation::report(
+            &format!(
+                "Published {} to {} at {}.",
+                display(presentation, &plan.branch),
+                text(presentation, &published.remote),
+                display(presentation, &published.commit)
+            ),
+            true,
         );
         for destination in &published.destinations {
             println!(
@@ -782,7 +791,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             output,
             "\nResolve the reported failure, then rerun finish. Completed effects are retained."
         );
-        eprint!("{output}");
+        crate::presentation::report(&output, false);
         ExitCode::FAILURE
     }
 }
@@ -889,9 +898,9 @@ fn prompt(
     let prompt = match choice {
         RequiredInput::Update => {
             eprintln!(
-                "  1) rebase  Replay branch commits onto the observed remote base.\n  2) merge   Incorporate the observed remote base with a merge or fast-forward.\n  3) none    Publish current history without updating from the base.\n  4) cancel  Stop before branch execution."
+                "Rebase replays branch commits onto the observed base. Merge incorporates that base. None publishes current history without updating."
             );
-            "Update (rebase/merge/none/cancel): "
+            "Update (rebase/merge/none/cancel)"
         }
         RequiredInput::Rewrite => {
             eprintln!(
@@ -912,9 +921,9 @@ fn prompt(
                 }
             }
             eprintln!(
-                "  1) allow   Authorize eligible replacement for this finish.\n             Incorporation proof and exact remote leases remain required.\n  2) deny    Stop the required replacement.\n  3) cancel  Stop before branch execution."
+                "Allow authorizes eligible replacement for this finish; incorporation proof and exact remote leases remain required. Deny stops the required replacement."
             );
-            "Replace published history (allow/deny/cancel): "
+            "Replace published history (allow/deny/cancel)"
         }
     };
     read_menu_answer(
@@ -933,43 +942,64 @@ fn read_menu_answer(
     choices: &[&str],
     cancellation: &str,
 ) -> Result<String, String> {
-    let answer = crate::cli::menu_answer(
-        read_answer_with_cancellation(presentation, prompt, cancellation)?,
-        choices,
-    );
+    let answer = crate::presentation::select(prompt, choices, None)
+        .map_err(|e| format!("error: cannot read finish input: {}", text(presentation, e)))?
+        .ok_or_else(|| cancellation.to_owned())?;
     if answer == "cancel" {
         Err(cancellation.into())
     } else {
         Ok(answer)
     }
 }
-fn read_answer(presentation: Presentation, prompt: &str) -> Result<String, String> {
-    read_answer_with_cancellation(
-        presentation,
-        prompt,
-        "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
-    )
+
+pub(super) fn error_or_plain(message: &str) {
+    if message.starts_with("error:") {
+        crate::presentation::error(message);
+    } else {
+        eprintln!("{message}");
+    }
 }
 fn read_answer_with_cancellation(
     presentation: Presentation,
     prompt: &str,
     cancellation: &str,
 ) -> Result<String, String> {
-    eprint!("{prompt}");
-    io::stderr().flush().map_err(|e| {
-        format!(
-            "error: cannot write finish prompt: {}",
-            text(presentation, e)
-        )
-    })?;
-    let mut line = String::new();
-    let count = io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| format!("error: cannot read finish input: {}", text(presentation, e)))?;
-    if count == 0 || !line.ends_with('\n') || line.trim() == "cancel" {
+    let answer = crate::presentation::input(prompt)
+        .map_err(|e| format!("error: cannot read finish input: {}", text(presentation, e)))?
+        .ok_or_else(|| cancellation.to_owned())?;
+    if answer.trim() == "cancel" {
         return Err(cancellation.into());
     }
-    Ok(line.trim().into())
+    Ok(answer.trim().into())
+}
+
+/// Validate literal names using the same Git grammar as workflow assessment.
+/// Callers revalidate their original plan after input before adopting the name.
+fn read_reference_name(
+    root: &Path,
+    presentation: Presentation,
+    prompt: &str,
+    prefix: &str,
+    cancellation: &str,
+) -> Result<String, String> {
+    loop {
+        let answer = read_answer_with_cancellation(presentation, prompt, cancellation)?;
+        if answer.is_empty() || answer.starts_with('-') || answer.contains('\0') {
+            eprintln!("Enter a valid Git reference name, or cancel.");
+            continue;
+        }
+        let reference = format!("{prefix}{answer}");
+        let result = crate::git::inspect(root, ["check-ref-format", &reference]).map_err(|e| {
+            format!(
+                "error: cannot validate reference name: {}",
+                text(presentation, e)
+            )
+        })?;
+        if result.status.success() {
+            return Ok(answer);
+        }
+        eprintln!("Enter a valid Git reference name, or cancel.");
+    }
 }
 
 fn constraint_message(presentation: Presentation, out: &mut String, constraint: &Constraint) {
@@ -1090,7 +1120,7 @@ fn preparation_failure(
         current.as_ref().unwrap_or(&report.remaining),
     );
     let _ = writeln!(output, "Branch publication not attempted.");
-    eprint!("{output}");
+    crate::presentation::report(&output, false);
     if let Some(preparation::PreparationError::Finish(error)) = &report.error {
         error_diagnostics(presentation, error);
     }
@@ -1386,7 +1416,8 @@ Settings:
   Explicit flags override local, shared and built-in settings. Defaults ask for mode,
   update, integration, message, cleanup and eligible rewrite authorization; checkout
   defaults to target, history editing to none, and checks to [].
-  Finite choices accept a displayed number or name. Cancel or end-of-input stops finish;
+  Use arrow keys and Enter for finite choices, or type a displayed number or name.
+  Invalid choices stay correctable. Esc, Ctrl-C/Ctrl-D, or cancel stops finish;
   completed preparation/check effects remain. Scripts must resolve choices with flags/settings.
   Run gof config for setup or gof config show to inspect effective settings.
 

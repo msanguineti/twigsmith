@@ -513,7 +513,7 @@ fn finish_terminal_choices_and_separate_authorization() {
                     term.until("Update (rebase/merge/none/cancel)");
                     contains(
                         &term.output,
-                        &["Replay branch", "Incorporate", "without updating"],
+                        &["replays branch", "incorporates", "without updating"],
                     );
                     let answer = if command == "f" {
                         match update {
@@ -599,6 +599,10 @@ fn finish_terminal_cancel_eof_and_invalid_input_preserve_branch_work() {
                     } else {
                         answer
                     });
+                    if [b"0\n".as_slice(), b"99\n", b"invalid\n"].contains(&answer) {
+                        term.until("Choose a listed name or number");
+                        term.send(b"cancel\n");
+                    }
                     assert_eq!(term.finish().code(), Some(1), "{}", term.output);
                     contains(
                         &term.output,
@@ -964,6 +968,10 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
                     let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
                     term.until("Completion mode (");
                     term.send(answer);
+                    if [b"0\n".as_slice(), b"99\n", b"invalid\n"].contains(&answer) {
+                        term.until("Choose a listed name or number");
+                        term.send(b"cancel\n");
+                    }
                     assert_eq!(term.finish().code(), Some(1), "{}", term.output);
                     assert!(!term.output.contains("Default finish message"));
                     assert_eq!(preservation::snapshot(root), before);
@@ -1562,6 +1570,10 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                 );
                 term.until("Integration (");
                 term.send(answer);
+                if answer == b"bogus\n" {
+                    term.until("Choose a listed name or number");
+                    term.send(b"cancel\n");
+                }
                 assert_eq!(term.finish().code(), Some(1), "{}", term.output);
                 unchanged_work(&f.local, &before);
             }
@@ -1955,6 +1967,76 @@ fn integration_interrupted_before_result_retention_recovers_without_reintegratio
                     b"Retain interrupted message\n"
                 );
             }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn finish_capable_navigation_review_and_integration_delivery_cancel_and_failure() {
+    cases(
+        "finish_capable_navigation_review_and_integration_delivery_cancel_and_failure",
+        true,
+        |root, exe| {
+            let (local, remote) = fixture(root, false, true);
+            let mut terminal = terminal::Terminal::start_capable(exe, local.path(), &["finish"]);
+            terminal.until("Completion mode (");
+            terminal.send(b"\x1b[A\x1b[A\r");
+            terminal.until("Update (");
+            terminal.send(b"\x1b[A\r");
+            assert!(terminal.finish().success(), "{}", terminal.output);
+            terminal.assert_restored();
+            published(&local, &remote);
+
+            let f = integration_fixture(root, false);
+            let original = oid(&f.local, REF);
+            let mut terminal = terminal::Terminal::start_capable(exe, f.local.path(), &["finish"]);
+            terminal.until("Integration (");
+            terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
+            terminal.until("Cleanup (");
+            terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
+            assert!(terminal.finish().success(), "{}", terminal.output);
+            terminal.assert_restored();
+            assert_eq!(remote_oid(f.project.path(), "main"), original);
+            assert_eq!(oid(&f.local, REF), original);
+            assert_eq!(remote_oid(f.fork.path(), REF), original);
+
+            let f = integration_fixture(root, false);
+            let before = work_snapshot(&f.local);
+            let target = remote_oid(f.project.path(), "main");
+            let mut terminal = terminal::Terminal::start_capable(exe, f.local.path(), &["finish"]);
+            terminal.until("Integration (");
+            terminal.send(b"\x1b");
+            assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
+            terminal.assert_restored();
+            unchanged_work(&f.local, &before);
+            assert_eq!(remote_oid(f.project.path(), "main"), target);
+
+            let f = integration_fixture(root, false);
+            let work = oid(&f.local, REF);
+            let target = remote_oid(f.project.path(), "main");
+            bare_hook(
+                f.project.path(),
+                "pre-receive",
+                "echo capable-target-rejected >&2; exit 1",
+            );
+            let mut terminal = terminal::Terminal::start_capable(
+                exe,
+                f.local.path(),
+                &["finish", "--cleanup", "keep"],
+            );
+            terminal.until("Integration (");
+            terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
+            assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
+            terminal.assert_restored();
+            contains(
+                &terminal.output,
+                &["capable-target-rejected", "Finish integration incomplete"],
+            );
+            assert_eq!(oid(&f.local, REF), work);
+            assert_eq!(remote_oid(f.fork.path(), REF), work);
+            assert_eq!(fs::read(f.local.path().join("work")).unwrap(), b"feature\n");
+            assert_eq!(remote_oid(f.project.path(), "main"), target);
         },
     );
 }

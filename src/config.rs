@@ -179,7 +179,7 @@ pub struct GenerationPlan {
 pub struct Generated {
     pub path: PathBuf,
     /// Recognized private files at publication.
-    /// Generation does not need to parse or copy private values.
+    /// Private values are audited but never copied into generated settings.
     pub local_files: Vec<PathBuf>,
 }
 fn require_absent(root: &Path) -> Result<(), ConfigError> {
@@ -292,6 +292,137 @@ pub fn revalidate_review(directory: &Path, plan: &GenerationPlan) -> Result<(), 
     }
     Ok(())
 }
+/// Resolve the proposed shared document with the observed private layer applied.
+/// This mirrors sparse layering without exporting private values into the document.
+pub(crate) fn effective_settings(
+    plan: &GenerationPlan,
+    private: &settings::Settings,
+) -> settings::Settings {
+    use settings::{FinishIntegration, FinishMode, SettingSource};
+    let mut effective = plan.proposed.clone();
+    let shared = SettingSource::Shared(plan.destination());
+    macro_rules! field {
+        ($field:ident, $included:expr) => {
+            effective.sources.$field = if $included {
+                shared.clone()
+            } else {
+                SettingSource::BuiltIn
+            };
+            if matches!(private.sources.$field, SettingSource::Local(_)) {
+                effective.$field = private.$field.to_owned();
+                effective.sources.$field = private.sources.$field.clone();
+            }
+        };
+    }
+    field!(publish_remote, true);
+    field!(base, true);
+    field!(save_action, true);
+    field!(finish_mode, true);
+    field!(finish_update, true);
+    field!(history_edit, true);
+    field!(finish_rewrite, true);
+    field!(finish_checks, true);
+    let integration = plan.review.is_none() || plan.proposed.finish_mode != FinishMode::Review;
+    field!(finish_integration, integration);
+    field!(finish_checkout, integration);
+    field!(finish_cleanup, integration);
+    field!(
+        finish_message,
+        integration
+            && (plan.review.is_none()
+                || plan.proposed.finish_integration != FinishIntegration::FfOnly)
+    );
+    if effective.sources.base_remote.is_some()
+        || effective.base_remote != plan.proposed.publish_remote
+    {
+        effective.sources.base_remote = Some(shared.clone());
+    }
+    if matches!(private.sources.base_remote, Some(SettingSource::Local(_))) {
+        effective.base_remote = private.base_remote.clone();
+        effective.sources.base_remote = private.sources.base_remote.clone();
+    }
+    if effective.sources.base_remote.is_none() {
+        effective.base_remote = effective.publish_remote.clone();
+    }
+    for (kind, config) in &effective.workstreams {
+        for key in serde_json::to_value(config)
+            .expect("policy serialization")
+            .as_object()
+            .unwrap()
+            .keys()
+        {
+            effective
+                .sources
+                .workstreams
+                .insert(format!("{}.{}", kind.as_str(), key), shared.clone());
+        }
+    }
+    for (kind, config) in &private.workstreams {
+        let mut values = serde_json::to_value(config).expect("policy serialization");
+        values.as_object_mut().unwrap().retain(|key, _| {
+            matches!(
+                private
+                    .sources
+                    .workstreams
+                    .get(&format!("{}.{}", kind.as_str(), key)),
+                Some(SettingSource::Local(_))
+            )
+        });
+        for key in values.as_object().unwrap().keys() {
+            let name = format!("{}.{}", kind.as_str(), key);
+            effective
+                .sources
+                .workstreams
+                .insert(name.clone(), private.sources.workstreams[&name].clone());
+        }
+        effective
+            .workstreams
+            .entry(*kind)
+            .or_default()
+            .overlay(serde_json::from_value(values).expect("validated private policy"));
+    }
+    effective
+}
+
+/// Audit fields and policy relationships before exposing a configuration file.
+/// Availability of configured remotes, branches, and checks is a lifecycle concern.
+pub(crate) fn audit(
+    directory: &Path,
+    plan: &GenerationPlan,
+) -> Result<settings::Settings, ConfigError> {
+    validate(directory, &plan.proposed)?;
+    let loaded;
+    let private = if let Some(review) = &plan.review {
+        &review.overrides
+    } else {
+        loaded = settings::load_with_files(directory, &plan.repository)?;
+        &loaded.settings
+    };
+    let effective = effective_settings(plan, private);
+    validate(directory, &effective)?;
+    Ok(effective)
+}
+
+/// Validate a single template in both the shared proposal and effective settings.
+/// Guided setup uses this boundary to keep invalid combinations correctable.
+pub(crate) fn audit_workstream(
+    directory: &Path,
+    plan: &GenerationPlan,
+    kind: settings::WorkstreamKind,
+) -> Result<(), SettingsError> {
+    for settings in [
+        &plan.proposed,
+        &effective_settings(plan, &plan.review().overrides),
+    ] {
+        if let Some(value) = settings.workstreams.get(&kind) {
+            value.validate_for(directory, kind)?;
+            let mut resolved = settings.clone();
+            settings::resolve_workstream(&mut resolved, kind, None)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate(directory: &Path, proposed: &settings::Settings) -> Result<(), ConfigError> {
     if !settings::valid_remote(directory, &proposed.publish_remote)?
         || !settings::valid_remote(directory, &proposed.base_remote)?
@@ -358,13 +489,14 @@ pub fn generate(directory: &Path, plan: &GenerationPlan) -> Result<Generated, Co
     }
     require_absent(root)?;
     revalidate_review(directory, plan)?;
-    validate(directory, &plan.proposed)?;
+    audit(directory, plan)?;
     let file = stage(root, &path, plan.contents().as_bytes())?;
     if discover(directory)? != plan.repository {
         return Err(ConfigError::ContextChanged);
     }
     require_absent(root)?;
     revalidate_review(directory, plan)?;
+    audit(directory, plan)?;
     let local_files = settings::recognized_paths(&plan.repository.common_dir)?;
     publish(file, &path)?;
     Ok(Generated { path, local_files })

@@ -2,6 +2,7 @@ pub mod git;
 pub mod repository;
 pub mod start;
 
+mod activity;
 pub mod cli;
 pub mod config;
 mod config_cli;
@@ -20,3 +21,5 @@ mod publication;
 mod tracking;
 
 mod check_process;
+
+mod presentation;

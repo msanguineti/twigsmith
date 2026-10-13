@@ -176,3 +176,57 @@ fn hosted_streamed_credentials_follow_private_and_flag_preferences() {
         },
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn hosted_capable_names_stay_correctable_and_navigation_delivers_version() {
+    isolated(
+        "hosted_capable_names_stay_correctable_and_navigation_delivers_version",
+        true,
+        |root| {
+            let fixture = Fixture::new(root, settings::FinishUpdate::Ask, None);
+            let source = fixture.local.success(&["rev-parse", "HEAD"]).stdout;
+            let mut terminal = terminal::Terminal::start_capable(
+                env!("CARGO_BIN_EXE_git-oneflow"),
+                fixture.local.path(),
+                &["finish"],
+            );
+            terminal.until("Version tag (or cancel)");
+            terminal.send(b"bad..tag\r");
+            terminal.until("Enter a valid Git reference name");
+            terminal.send(b"v-ui\r");
+            terminal.until("Merge-back branch (or cancel)");
+            terminal.send(b"main\r");
+            terminal.until("Choose a merge-back branch distinct");
+            terminal.send(b"review/v-ui\r");
+            terminal.until("Merge-back update (");
+            terminal.send(b"\x1b[A\r");
+            assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+            terminal.assert_restored();
+            assert!(
+                terminal.output.contains("Ready for manual submission"),
+                "{}",
+                terminal.output
+            );
+            assert_eq!(
+                fixture
+                    .local
+                    .success(&["rev-parse", "refs/heads/release/source"])
+                    .stdout,
+                source
+            );
+            for reference in [
+                "refs/tags/v-ui",
+                "refs/heads/review/v-ui",
+                "refs/heads/release/source",
+            ] {
+                assert_eq!(
+                    git_oneflow::git::run(fixture._project.path(), ["rev-parse", reference])
+                        .unwrap()
+                        .stdout,
+                    source,
+                );
+            }
+        },
+    );
+}

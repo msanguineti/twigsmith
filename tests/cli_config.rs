@@ -459,6 +459,16 @@ fn private_overrides_allow_generation_without_copying_values() {
                 let local = repo.path().join(".git").join(filename);
                 fs::write(&local, content).unwrap();
                 let before_git = snapshot(&repo.path().join(".git"));
+                if filename == CONFIG_FILES[3] {
+                    check(
+                        run(exe, repo.path(), &["config", "--yes"]),
+                        1,
+                        &["invalid settings"],
+                    );
+                    assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+                    assert_eq!(snapshot(&repo.path().join(".git")), before_git);
+                    continue;
+                }
                 check(
                     run(exe, repo.path(), &["config", "--yes"]),
                     0,
@@ -477,12 +487,6 @@ fn private_overrides_allow_generation_without_copying_values() {
                     assert_eq!(load(repo.path()).publish_remote, "private");
                     assert_eq!(load(repo.path()).save_action, SaveAction::Stash);
                     assert_eq!(load(repo.path()).base, "main");
-                } else {
-                    check(
-                        run(exe, repo.path(), &["config", "show"]),
-                        1,
-                        &["invalid settings"],
-                    );
                 }
             }
         },
@@ -973,15 +977,15 @@ fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
             terminal.send(b"\nHEAD\n");
             terminal.until("Use a valid literal Git branch");
             terminal.send(b"trunk\nunknown\n");
-            terminal.until("save-action must be");
+            terminal.until("Choose a listed name or number");
             terminal.send(b"staged\ninvalid\n");
-            terminal.until("finish-update must be");
+            terminal.until("Default finish update");
             terminal.send(b"none\ninvalid\n");
-            terminal.until("finish-rewrite must be");
+            terminal.until("Default finish rewrite");
             terminal.send(b"deny\n\n\n\n\n\n\n");
             terminal.until("Create this file?");
             terminal.send(b"y\n");
-            terminal.until("Enter yes to create");
+            terminal.until("Create this file?");
             assert!(!repo.path().join(CONFIG_FILES[0]).exists());
             terminal.send(b"yes\n");
             assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
@@ -2185,6 +2189,215 @@ fn hosted_inspection_keeps_template_routes_independent_of_selected_branch_policy
                 1,
                 &["established workstream routes changed"],
             );
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_policy_relationships_and_effective_private_overrides_are_correctable() {
+    use settings::WorkstreamKind;
+    cases(
+        "guided_policy_relationships_and_effective_private_overrides_are_correctable",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "finish-integration = 'squash'\n",
+            )
+            .unwrap();
+            let before_git = snapshot(&repo.path().join(".git"));
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config", "--oneflow"]);
+            term.until("Publication remote");
+            term.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
+            term.until("ordinary policy [");
+            term.send(b"\n");
+            term.until("release policy [");
+            let mut proposed = Settings::default();
+            settings::oneflow_bundle(&mut proposed, None);
+            let release = proposed
+                .workstreams
+                .get_mut(&WorkstreamKind::Release)
+                .unwrap();
+            release.finish_integration = None;
+            term.send(format!("{}\n", serde_json::to_string(release).unwrap()).as_bytes());
+            term.until("Configuration needs correction for release");
+            assert!(
+                term.output.contains("history-preserving integration"),
+                "{}",
+                term.output
+            );
+            assert!(term.output.contains("Private overrides"), "{}", term.output);
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            release.finish_integration = Some("merge".into());
+            release.release_marker = Some("main".into());
+            term.send(format!("{}\n", serde_json::to_string(release).unwrap()).as_bytes());
+            term.until("release marker must differ from every integration target");
+            release.release_marker = Some("stable".into());
+            term.send(format!("{}\n\n", serde_json::to_string(release).unwrap()).as_bytes());
+            term.until("Create this file?");
+            assert!(term.output.contains("marker stable"), "{}", term.output);
+            term.send(b"yes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            let mut effective = load(repo.path());
+            settings::resolve_workstream(&mut effective, WorkstreamKind::Release, None).unwrap();
+            assert_eq!(
+                effective.finish_integration,
+                settings::FinishIntegration::Merge
+            );
+            assert_eq!(
+                effective.workstream.unwrap().release_marker.as_deref(),
+                Some("stable")
+            );
+            assert_eq!(snapshot(&repo.path().join(".git")), before_git);
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_private_only_policy_is_audited_before_creation() {
+    use settings::WorkstreamKind;
+    cases(
+        "guided_private_only_policy_is_audited_before_creation",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "[workstreams.release]\nrelease-marker = 'stable'\n",
+            )
+            .unwrap();
+            let before_git = snapshot(&repo.path().join(".git"));
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Publication remote");
+            term.send(b"\n\nstable\n\n\n\n\n\n\n\n\n\n");
+            term.until("Configuration needs correction for release");
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            term.send(b"{\"integration-target\":\"future/base\"}\n");
+            term.until("Create this file?");
+            assert!(
+                term.output.contains("integration origin/future/base"),
+                "{}",
+                term.output
+            );
+            term.send(b"yes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
+            assert!(!contents.contains("release-marker"), "{contents}");
+            let mut effective = load(repo.path());
+            settings::resolve_workstream(&mut effective, WorkstreamKind::Release, None).unwrap();
+            assert_eq!(effective.base, "future/base");
+            assert_eq!(
+                effective.workstream.unwrap().release_marker.as_deref(),
+                Some("stable")
+            );
+            assert_eq!(snapshot(&repo.path().join(".git")), before_git);
+        },
+    );
+}
+
+#[test]
+fn unattended_generation_audits_combined_private_policy_without_writing_invalid_settings() {
+    cases(
+        "unattended_generation_audits_combined_private_policy_without_writing_invalid_settings",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            // A merge update is valid for the private layer's untagged defaults, but
+            // cannot combine with the generated tagged direct-integration policy.
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "[workstreams.release]\nfinish-update = 'merge'\n",
+            )
+            .unwrap();
+            let before = snapshot(repo.path());
+            check(
+                run(exe, repo.path(), &["config", "--oneflow", "--yes"]),
+                1,
+                &["tagged integration requires finish-update = none"],
+            );
+            assert_eq!(snapshot(repo.path()), before);
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_keyboard_navigation_validates_text_and_preserves_unicode_names() {
+    cases(
+        "guided_keyboard_navigation_validates_text_and_preserves_unicode_names",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let before_git = snapshot(&repo.path().join(".git"));
+            let mut term = terminal::Terminal::start_capable_narrow(exe, repo.path(), &["config"]);
+            term.until("Publication remote");
+            term.send(b"bad remote\r");
+            term.until("Use a valid named Git remote");
+            term.send("réseau\r".as_bytes());
+            term.until("Base source remote");
+            term.send(b"\r");
+            term.until("Base branch");
+            term.send("feature/β\r".as_bytes());
+            term.until("Default save action");
+            term.send(b"\x1b[B\x1b[B\x1b[B\r");
+            term.until("Default finish update");
+            term.send(b"\x1b[B\x1b[B\x1b[B\r");
+            term.until("Default finish rewrite");
+            term.send(b"\x1b[B\x1b[B\r");
+            term.until("Default finish mode");
+            term.send(b"\x1b[B\x1b[B\r");
+            term.until("Default finish integration");
+            term.send(b"\x1b[B\r");
+            term.until("Default finish checkout");
+            term.send(b"\r");
+            term.until("Default finish cleanup");
+            term.send(b"\x1b[B\r");
+            term.until("Finish check name");
+            term.send(b"\r");
+            term.until("Create this file?");
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            term.send(b"\x1b[A\r");
+            assert!(term.finish().success(), "{}", term.output);
+            term.assert_restored();
+            let effective = load(repo.path());
+            assert_eq!(effective.publish_remote, "réseau");
+            assert_eq!(effective.base_remote, "réseau");
+            assert_eq!(effective.base, "feature/β");
+            assert_eq!(effective.save_action, SaveAction::Wip);
+            assert_eq!(effective.finish_update, FinishUpdate::None);
+            assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
+            assert_eq!(effective.finish_mode, settings::FinishMode::Integrate);
+            assert_eq!(
+                effective.finish_integration,
+                settings::FinishIntegration::FfOnly
+            );
+            assert_eq!(effective.finish_cleanup, settings::FinishCleanup::Keep);
+            assert_eq!(snapshot(&repo.path().join(".git")), before_git);
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_keyboard_cancellation_creates_no_configuration() {
+    cases(
+        "guided_keyboard_cancellation_creates_no_configuration",
+        true,
+        |root, exe| {
+            for cancel in [b"\x1b".as_slice(), b"\x04", b"\x03"] {
+                let repo = Repository::new(root);
+                let before = snapshot(repo.path());
+                let mut term = terminal::Terminal::start_capable(exe, repo.path(), &["config"]);
+                term.until("Publication remote");
+                term.send(cancel);
+                assert!(term.finish().success(), "{}", term.output);
+                assert!(term.output.contains("Setup cancelled"), "{}", term.output);
+                term.assert_restored();
+                assert_eq!(snapshot(repo.path()), before);
+            }
         },
     );
 }

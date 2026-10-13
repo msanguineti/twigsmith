@@ -22,6 +22,37 @@ pub struct Terminal {
 }
 impl Terminal {
     pub fn start(executable: &str, directory: &Path, args: &[&str]) -> Self {
+        let mut command = Command::new(executable);
+        command
+            .current_dir(directory)
+            .args(args)
+            .env("TERM", "dumb");
+        Self::start_command(command)
+    }
+    #[allow(dead_code)]
+    pub fn start_capable(executable: &str, directory: &Path, args: &[&str]) -> Self {
+        let mut command = Command::new(executable);
+        command
+            .current_dir(directory)
+            .args(args)
+            .env("TERM", "xterm-256color")
+            .env_remove("NO_COLOR");
+        Self::start_command(command)
+    }
+    #[allow(dead_code)]
+    pub fn start_capable_narrow(executable: &str, directory: &Path, args: &[&str]) -> Self {
+        let mut command = Command::new(executable);
+        command
+            .current_dir(directory)
+            .args(args)
+            .env("TERM", "xterm-256color")
+            .env_remove("NO_COLOR");
+        Self::start_command_width(command, 40)
+    }
+    pub fn start_command(command: Command) -> Self {
+        Self::start_command_width(command, 80)
+    }
+    fn start_command_width(mut command: Command, columns: u16) -> Self {
         let master = openpt(OpenptFlags::RDWR | OpenptFlags::CLOEXEC).unwrap();
         grantpt(&master).unwrap();
         unlockpt(&master).unwrap();
@@ -29,9 +60,17 @@ impl Terminal {
             ioctl_tiocgptpeer(&master, OpenptFlags::RDWR | OpenptFlags::CLOEXEC).unwrap(),
         );
         fcntl_setfl(&master, fcntl_getfl(&master).unwrap() | OFlags::NONBLOCK).unwrap();
-        let child = Command::new(executable)
-            .current_dir(directory)
-            .args(args)
+        rustix::termios::tcsetwinsize(
+            &master,
+            rustix::termios::Winsize {
+                ws_row: 24,
+                ws_col: columns,
+                ws_xpixel: 0,
+                ws_ypixel: 0,
+            },
+        )
+        .unwrap();
+        let child = command
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave))
@@ -41,6 +80,26 @@ impl Terminal {
             child,
             master: File::from(master),
             output: String::new(),
+        }
+    }
+    #[allow(dead_code)]
+    pub fn assert_restored(&self) {
+        use rustix::termios::LocalModes;
+        let modes = rustix::termios::tcgetattr(&self.master)
+            .unwrap()
+            .local_modes;
+        assert!(
+            modes.contains(LocalModes::ICANON | LocalModes::ECHO),
+            "terminal left in raw mode: {modes:?}"
+        );
+        if let Some(hidden) = self.output.rfind("\x1b[?25l") {
+            assert!(
+                self.output
+                    .rfind("\x1b[?25h")
+                    .is_some_and(|shown| shown > hidden),
+                "cursor left hidden: {}",
+                self.output
+            );
         }
     }
     fn read(&mut self) {

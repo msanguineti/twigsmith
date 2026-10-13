@@ -82,9 +82,29 @@ gof config --help
 directory. Start, save, and finish require a working tree; status and configuration
 inspection also support bare repositories.
 
-Finite menus display numbered choices; enter the number or the displayed text.
-Free-form names, messages and command definitions retain their normal input.
-Resolved choices from flags or settings need no extra confirmation.
+Finite menus support arrow-key navigation and Enter selection. Type a choice name
+or its displayed number to filter the list; unmatched input remains correctable.
+Esc, Ctrl-C, Ctrl-D, or the cancellation choice stops the pending input. Menus
+highlight the configured default when one applies, otherwise cancellation when
+available. Text prompts retain literal names and messages. Resolved choices from
+flags or settings need no extra confirmation.
+
+Prompts use a simple numbered, line-oriented presentation with `TERM=dumb` or
+redirected stdout. Interactive approval still requires terminal stdin and stderr.
+Submit a complete line containing a displayed number or name; EOF, including an
+unsubmitted partial line, cancels. This mode also supports existing scripted
+terminal answers.
+
+Success headings use green, error headings use red, and nonfatal cautions such as
+tracking-cache attention use yellow when their output stream is a terminal.
+Warnings retain their normal exit status and confirmed delivery facts. `NO_COLOR`
+or `CLICOLOR=0` disables colour. Redirected reports stay
+plain and preserve useful Git diagnostics. Slow captured Git operations show their
+current activity after a short delay; fast operations add no activity output.
+Activity completion describes the Git process, while the final report establishes
+preservation, delivery, tracking and cleanup outcomes. Native editors, interactive
+Git and streamed finish checks control their own output without competing
+animation.
 
 ### Start or resume work
 
@@ -165,7 +185,9 @@ default `save-action = ask` lets you choose what to preserve.
 Choose one action flag; it overrides `save-action`. `--message` also works with
 a configured staged preference. It supplies a message without selecting an action;
 use `gof save --staged --message "Selected changes"` to select both. Quote the
-message as one argument. Save does not accept `-m`. A clean tree needs no checkpoint message.
+message as one argument. Staged message entry preserves literal text, including
+`cancel`; use Esc, Ctrl-C or Ctrl-D to cancel a keyboard text prompt. Save does not
+accept `-m`. A clean tree needs no checkpoint message.
 
 ```sh
 gof save
@@ -670,7 +692,8 @@ as argument lists without execution or executable availability checks. Inspectio
 is local, read-only, and intended for people.
 
 `config` guides you through remote roles, the base branch, save and finish
-policies, and optional finish checks. Press Enter to keep a suggested default.
+policies, and optional finish checks. Use the arrow keys to select a policy and
+press Enter. Text fields accept Enter to keep a suggested default.
 Remote names and branch references provide offline hints; they assign no roles
 and do not change the built-in defaults. Valid names can be configured before
 the remote or branch exists.
@@ -691,15 +714,18 @@ Finish check name [Enter to finish]:
 A blank name finishes the list. Setup records the literal commands without running
 them or detecting project tools. It shows the destination, proposed contents,
 ordered checks, and effective values after private overrides. Private values stay
-local. Enter `yes` to create the file. Enter `no`, leave the confirmation blank,
-type `cancel`, or end input to stop without creating it. Invalid answers can be
+local. Select `yes` to create the file. Select `no` or cancel, or end input,
+to stop without creating it. The creation menu initially selects `no`. Invalid answers can be
 corrected. Changed review context stops creation; inspect it and rerun setup.
 
 `--yes` (also `-y`) creates built-in shared defaults without prompts. It writes
 `publish-remote = origin`, omits `base-remote` to keep the derived relationship,
 retains unresolved `ask` policies, and writes an empty check list. It reports
-private file locations without parsing or copying their contents. Run
-`config show` afterward to validate private overrides and inspect effective values.
+private file locations without copying their contents. Generation validates both
+the proposed shared contents and the effective private overrides before writing.
+Invalid fields or policy relationships require correction; missing future remotes
+or branches remain valid offline settings. Use `config show` to inspect effective
+values.
 
 ```sh
 gof config --yes
@@ -1074,7 +1100,8 @@ gof finish --mode integrate --integration squash --message "Fix parser" --cleanu
 gof config --yes --format json
 ```
 
-Prompting requires terminal stdin and stderr and a complete submitted line.
+Prompting requires terminal stdin and stderr. Keyboard prompts require Enter
+selection; line-oriented prompts require a complete submitted line.
 Piped responses cannot supply interactive approval. Unresolved save input stops
 before local effects. Unresolved update input stops before branch changes but can follow reported remote
 observations and fetches. Integration method/message input can first become necessary
@@ -1087,8 +1114,8 @@ preferences. Select scripts that finish without terminal input. An unavailable
 editor selection stops before rewriting; Git's implicit terminal editor is not
 used without a terminal. Explicit editor commands are developer-controlled code.
 
-For save and finish, enter a displayed choice or `cancel`; invalid choices and
-blank required messages stop with retry guidance. Resolved selections add no
+For save and finish, select a displayed choice or cancel; invalid choices and
+blank required messages remain correctable. Resolved selections add no
 confirmation. Finish has no blanket `--yes` or dry-run option. Duplicate options,
 unsupported values, and positional finish/save arguments are syntax errors.
 

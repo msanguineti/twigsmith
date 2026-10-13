@@ -20,28 +20,28 @@ pub(super) fn run(
         || completion.cleanup.is_some_and(|v| v != FinishCleanup::Keep)
         || review.rewrite == Some(FinishRewrite::Allow)
     {
-        eprintln!(
-            "error: tagged review retains both branches; use merge preparation, --checkout work, --cleanup keep, and no rewrite. Final integration messages apply to integrate mode."
+        crate::presentation::error(
+            "error: tagged review retains both branches; use merge preparation, --checkout work, --cleanup keep, and no rewrite. Final integration messages apply to integrate mode.",
         );
         return ExitCode::from(2);
     }
     let mut plan = match initial {
         Ok(plan) => plan,
         Err(error) => {
-            eprintln!("error: {}", text(presentation, &error));
+            crate::presentation::error(format!("error: {}", text(presentation, &error)));
             error_diagnostics(presentation, &error);
             return ExitCode::FAILURE;
         }
     };
     loop {
         let missing = if plan.tag.is_none() {
-            Some(("version tag", "Version tag (or cancel): "))
+            Some(("version tag", "Version tag (or cancel)"))
         } else if plan.merge_back.is_none() {
-            Some(("merge-back branch", "Merge-back branch (or cancel): "))
+            Some(("merge-back branch", "Merge-back branch (or cancel)"))
         } else if plan.update == FinishUpdate::Ask {
             Some((
                 "preparation method",
-                "Merge-back update (merge/none/cancel): ",
+                "Merge-back update (merge/none/cancel)",
             ))
         } else {
             None
@@ -50,14 +50,14 @@ pub(super) fn run(
             break;
         };
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-            eprintln!(
-                "error: unresolved {label}; supply --tag, --merge-back, and --update merge|none as needed, or configure the corresponding settings."
+            crate::presentation::error(
+                "error: unresolved {label}; supply --tag, --merge-back, and --update merge|none as needed, or configure the corresponding settings.",
             );
             return ExitCode::FAILURE;
         }
         if label == "preparation method" {
             eprintln!(
-                "  1) merge   Incorporate the project target into merge-back.\n  2) none    Retain merge-back history.\n  3) cancel  Stop finish."
+                "Merge incorporates the project target into merge-back. None retains merge-back history."
             );
         }
         let answer = match if label == "preparation method" {
@@ -68,11 +68,21 @@ pub(super) fn run(
                 "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
             )
         } else {
-            read_answer(presentation, prompt)
+            read_reference_name(
+                directory,
+                presentation,
+                prompt,
+                if label == "version tag" {
+                    "refs/tags/"
+                } else {
+                    "refs/heads/"
+                },
+                "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
+            )
         } {
             Ok(answer) => answer,
             Err(error) => {
-                eprintln!("{error}");
+                super::error_or_plain(&error);
                 return ExitCode::FAILURE;
             }
         };
@@ -86,19 +96,32 @@ pub(super) fn run(
                 "merge" => Some(FinishUpdate::Merge),
                 "none" => Some(FinishUpdate::None),
                 _ => {
-                    eprintln!("error: choose merge or none");
+                    crate::presentation::error("error: choose merge or none");
                     return ExitCode::FAILURE;
                 }
             };
         }
         if let Err(error) = hosted::revalidate(directory, &plan) {
-            eprintln!("error: {}", text(presentation, error));
+            crate::presentation::error(format!("error: {}", text(presentation, error)));
             return ExitCode::FAILURE;
         }
-        plan = match hosted::assess(directory, &request) {
+        let resolved = hosted::assess(directory, &request);
+        if let Err(error) = hosted::revalidate(directory, &plan) {
+            crate::presentation::error(format!("error: {}", text(presentation, error)));
+            return ExitCode::FAILURE;
+        }
+        plan = match resolved {
             Ok(plan) => plan,
+            Err(FinishError::InvalidEvidence(
+                "merge-back branch must differ from source, target, and release marker",
+            )) => {
+                eprintln!(
+                    "Choose a merge-back branch distinct from the source, target, and release marker."
+                );
+                continue;
+            }
             Err(error) => {
-                eprintln!("error: {}", text(presentation, error));
+                crate::presentation::error(format!("error: {}", text(presentation, error)));
                 return ExitCode::FAILURE;
             }
         };
@@ -147,7 +170,7 @@ pub(super) fn run(
     check_output.flush();
     eprint!(
         "{}",
-        crate::cli::cache_issues(&report.caches, |bytes| display(presentation, bytes))
+        crate::cli::cache_issues(&report.caches, |bytes| display(presentation, bytes), true)
     );
     let mut diagnostics = String::new();
     command_diagnostics(presentation, &mut diagnostics, &report.commands);
@@ -194,7 +217,10 @@ pub(super) fn run(
         );
     }
     if let Some(error) = &report.error {
-        eprintln!("{diagnostics}error: {}", text(presentation, error));
+        crate::presentation::report(
+            &format!("{diagnostics}error: {}\n", text(presentation, error)),
+            false,
+        );
         eprintln!(
             "Retained source: {} at {}. Version tag: {}. Merge-back: {}.",
             display(presentation, &plan.source_branch),
@@ -218,10 +244,13 @@ pub(super) fn run(
     }
     let plan = report.plan.as_ref().unwrap_or(&plan);
     let policy = plan.settings.workstream.as_ref().expect("hosted policy");
-    println!(
-        "Ready for manual submission. Version {} identifies {}.",
-        text(presentation, plan.tag.as_deref().unwrap()),
-        display(presentation, &plan.source)
+    crate::presentation::report(
+        &format!(
+            "Ready for manual submission. Version {} identifies {}.",
+            text(presentation, plan.tag.as_deref().unwrap()),
+            display(presentation, &plan.source)
+        ),
+        true,
     );
     println!(
         "Original source {} published to {}; exact version tag published to {}.",

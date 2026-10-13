@@ -24,7 +24,8 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    Command::new("git")
+    let mut command = Command::new("git");
+    command
         .current_dir(directory)
         // Use an option rather than only an environment variable so Git versions
         // lacking the lazy-fetch safeguard fail instead of silently ignoring it.
@@ -36,8 +37,8 @@ where
         ])
         .args(arguments)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .output()
+        .env("LC_ALL", "C");
+    crate::activity::capture(&mut command)
 }
 
 /// Workflow execution keeps lazy fetching and fsmonitor disabled, but permits
@@ -70,6 +71,6 @@ where
         .args(["--no-lazy-fetch", "-c", "core.fsmonitor=false"])
         .args(arguments)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .output()
+        .env("LC_ALL", "C");
+    crate::activity::capture(&mut command)
 }

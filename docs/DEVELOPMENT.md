@@ -25,7 +25,9 @@ Use `./dev` for development commands.
 Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 `target/`. Both directories are ignored by Git.
 
-Windows and macOS build/runtime support have not been validated. Bash completion
+The Inquire/Crossterm prompt backend documents Unix and Windows terminal support,
+including ordinary Windows console use. Application Windows and macOS build/runtime
+support have not been validated. Bash completion
 is an optional script, separate from both executables; it adds no runtime dependency
 to core commands. Direct integration's message editor currently launches the
 Git-selected editor through POSIX `sh` on PATH. `-m/--message` or
@@ -90,7 +92,7 @@ recovery.
 `history-edit` selects ordinary native history editing and fresh-process recovery.
 `hosted-oneflow` selects version publication, separate merge-back preparation, and
 fresh-process recovery for manual submission. `shared` covers the development launcher, Git boundary, repository observation,
-settings, tracking, remote roles, finish-check configuration, and exact save/finish
+settings, tracking, remote roles, CLI activity, finish-check configuration, and exact save/finish
 publication. `lifecycle` includes CLI smoke checks, end-to-end project/fork
 workflows, and direct and hosted release/hotfix delivery and recovery; this broad group
 includes expensive lifecycle coverage. Prefer the narrower groups during fast

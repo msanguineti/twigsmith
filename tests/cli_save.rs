@@ -477,7 +477,7 @@ fn save_terminal_choices_and_message_entry_use_the_same_backend() {
                     &terminal.output,
                     &[
                         "1 staged, 1 unstaged tracked, 1 untracked",
-                        "2) staged       Commit/publish exactly the index",
+                        "staged       Commit/publish exactly the index",
                         "publish-only Publish existing commits",
                         "stash        Retain a local stash",
                         "cancel",
@@ -502,9 +502,18 @@ fn save_terminal_choices_and_message_entry_use_the_same_backend() {
                 let mut terminal = cli.terminal(repo.path(), &args);
                 terminal.until("Staged commit message");
                 assert!(!terminal.output.contains("Action ("));
-                terminal.send(b"configured or explicit message\n");
+                let message = if args.is_empty() {
+                    "configured or explicit message"
+                } else {
+                    "cancel"
+                };
+                terminal.send(format!("{message}\n").as_bytes());
                 assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
                 published(&repo, &remote);
+                assert_eq!(
+                    repo.success(&["log", "-1", "--format=%s"]).stdout,
+                    format!("{message}\n").as_bytes()
+                );
             }
         },
     );
@@ -522,8 +531,9 @@ fn save_terminal_omits_inapplicable_actions_and_does_not_prompt_resolved_actions
             terminal.until("Action (");
             assert!(!terminal.output.contains("staged       Commit/publish"));
             terminal.send(b"staged\n");
+            terminal.until("Choose a listed name or number");
+            terminal.send(b"cancel\n");
             assert_eq!(terminal.finish().code(), Some(1));
-            contains(&terminal.output, &["invalid save choice"]);
             for preference in ["ask", "wip", "stash", "staged"] {
                 let (repo, remote) = fixture(root);
                 settings(&repo, preference);
@@ -577,6 +587,10 @@ fn save_terminal_cancel_eof_blank_invalid_and_interrupt_leave_no_effects() {
                     terminal.interrupt();
                 } else {
                     terminal.send(input);
+                    if [b"0\n".as_slice(), b"99\n", b"invalid\n", b"\n"].contains(&input) {
+                        terminal.until("Choose a listed name or number");
+                        terminal.send(b"cancel\n");
+                    }
                 }
                 assert!(!terminal.finish().success(), "{}", terminal.output);
                 assert!(!terminal.output.contains("Save complete"));
@@ -592,6 +606,10 @@ fn save_terminal_cancel_eof_blank_invalid_and_interrupt_leave_no_effects() {
                 terminal.send(b"staged\n");
                 terminal.until("Staged commit message");
                 terminal.send(input);
+                if input == b" \t\n" {
+                    terminal.until("Enter a nonblank staged commit message");
+                    terminal.send(b"\x04");
+                }
                 assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
                 assert!(!terminal.output.contains("Save complete"));
                 assert_eq!(snapshot(repo.path()), before);
@@ -918,6 +936,167 @@ fn save_lost_acknowledgement_and_interrupted_git_steps_never_report_success() {
             assert_ne!(oid(repo.path(), "HEAD"), head);
             contains(&output, &[&oid(repo.path(), "HEAD").unwrap()]);
             assert!(oid(&remote, "refs/heads/work").is_none());
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn save_capable_navigation_corrects_message_and_reports_delivery_failure_and_cancel() {
+    isolated(
+        "save_capable_navigation_corrects_message_and_reports_delivery_failure_and_cancel",
+        true,
+        |root| {
+            let exe = env!("CARGO_BIN_EXE_git-oneflow");
+            let (repo, remote) = fixture(root);
+            dirty(&repo, true, true);
+            let mut terminal = terminal::Terminal::start_capable(exe, repo.path(), &["save"]);
+            terminal.until("Action (");
+            // The initial cursor is cancel. Move to staged using real navigation.
+            terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
+            terminal.until("Staged commit message");
+            terminal.send(b"\r");
+            terminal.until("Enter a nonblank staged commit message");
+            terminal.send("修正 café λ\r".as_bytes());
+            assert!(terminal.finish().success(), "{}", terminal.output);
+            terminal.assert_restored();
+            published(&repo, &remote);
+            assert_eq!(
+                repo.success(&["log", "-1", "--format=%s"]).stdout,
+                "修正 café λ\n".as_bytes()
+            );
+            assert_eq!(
+                fs::read(repo.path().join("tracked")).unwrap(),
+                b"remaining\n"
+            );
+            assert!(repo.path().join("untracked").exists());
+
+            let (repo, remote) = fixture(root);
+            dirty(&repo, true, true);
+            let before = snapshot(repo.path());
+            let remote_before = snapshot(&remote);
+            let mut terminal = terminal::Terminal::start_capable(exe, repo.path(), &["save"]);
+            terminal.until("Action (");
+            terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
+            terminal.until("Staged commit message");
+            terminal.send(b"partial message\x04");
+            assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
+            terminal.assert_restored();
+            assert_eq!(snapshot(repo.path()), before);
+            assert_eq!(snapshot(&remote), remote_before);
+
+            let (repo, remote) = fixture(root);
+            dirty(&repo, true, true);
+            let old_head = oid(repo.path(), "HEAD");
+            hook(
+                &remote.join("hooks"),
+                "pre-receive",
+                "echo capable-push-rejected >&2\nexit 1",
+            );
+            let mut terminal = terminal::Terminal::start_capable(exe, repo.path(), &["save"]);
+            terminal.until("Action (");
+            terminal.send(b"\x1b[A\x1b[A\r");
+            assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
+            terminal.assert_restored();
+            contains(
+                &terminal.output,
+                &["capable-push-rejected", "Save incomplete"],
+            );
+            assert_ne!(oid(repo.path(), "HEAD"), old_head);
+            assert!(oid(&remote, "refs/heads/work").is_none());
+            assert_eq!(
+                fs::read(repo.path().join("tracked")).unwrap(),
+                b"remaining\n"
+            );
+            assert_eq!(fs::read(repo.path().join("untracked")).unwrap(), b"new\n");
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn confirmed_save_uses_success_and_warning_colours_without_turning_cache_caution_into_failure() {
+    isolated(
+        "confirmed_save_uses_success_and_warning_colours_without_turning_cache_caution_into_failure",
+        true,
+        |root| {
+            let executable = env!("CARGO_BIN_EXE_git-oneflow");
+            for preference in [
+                None,
+                Some(("NO_COLOR", "1")),
+                Some(("CLICOLOR", "0")),
+                Some(("TERM", "dumb")),
+            ] {
+                let (repo, remote) = fixture(root);
+                let base = oid(repo.path(), "main").unwrap();
+                local_hook(
+                    &repo,
+                    "pre-push",
+                    "git update-ref refs/remotes/origin/work main",
+                );
+                let mut command = Command::new(executable);
+                command
+                    .current_dir(repo.path())
+                    .args(["save", "--publish-only"])
+                    .env("TERM", "xterm-256color");
+                if let Some((name, value)) = preference {
+                    command.env(name, value);
+                }
+                let mut tty = terminal::Terminal::start_command(command);
+                assert_eq!(tty.finish().code(), Some(0), "{}", tty.output);
+                tty.assert_restored();
+                let warning = "Local tracking cache needs attention";
+                if preference.is_none() {
+                    assert!(
+                        tty.output.contains("\x1b[32mSave complete"),
+                        "success is not green: {}",
+                        tty.output
+                    );
+                    assert!(
+                        tty.output.contains(&format!("\x1b[33m{warning}")),
+                        "warning is not yellow: {}",
+                        tty.output
+                    );
+                } else {
+                    assert!(!tty.output.contains('\x1b'), "{}", tty.output);
+                }
+                contains(
+                    &tty.output,
+                    &[
+                        "Save complete",
+                        warning,
+                        "cache changed concurrently",
+                        "Confirmed remote effects are retained",
+                    ],
+                );
+                published(&repo, &remote);
+                assert_eq!(oid(repo.path(), "refs/remotes/origin/work").unwrap(), base);
+            }
+            // The same nonfatal caution retains its meaning and stdout stream in logs.
+            let (repo, remote) = fixture(root);
+            local_hook(
+                &repo,
+                "pre-push",
+                "git update-ref refs/remotes/origin/work main",
+            );
+            let output = Command::new(executable)
+                .current_dir(repo.path())
+                .args(["save", "--publish-only"])
+                .env("TERM", "xterm-256color")
+                .env("CLICOLOR_FORCE", "1")
+                .output()
+                .unwrap();
+            let text = check(
+                output,
+                0,
+                &[
+                    "Save complete",
+                    "Local tracking cache needs attention",
+                    "cache changed concurrently",
+                ],
+            );
+            assert!(!text.contains('\x1b'));
+            published(&repo, &remote);
         },
     );
 }

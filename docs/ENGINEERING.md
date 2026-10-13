@@ -65,15 +65,49 @@ require complete publication and valid tracking, with no execution error, for
 successful completion; cancellation or incomplete execution returns `1`.
 Guided configuration cancellation succeeds without creating a file. Resolved
 lifecycle flags and settings require no further confirmation. Interactive choices
-require terminal stdin and stderr and a complete submitted line; EOF or
-cancellation stops the pending operation. Effects completed before that point
+require terminal stdin and stderr and explicit submission; keyboard selection or
+a complete line supplies that submission. EOF or cancellation stops the pending
+operation. Effects completed before that point
 remain reportable.
 
-Finite CLI menus render numbered choices in the same order used to resolve input.
-Both a displayed number and its textual choice select the existing action;
-numbered cancellation uses the same cancellation path. Free-form names, messages,
-refs and check commands bypass this mapping. Defaults and complete-line/EOF
-handling stay at their existing input boundaries.
+[`presentation.rs`](../src/presentation.rs) contains the shared Inquire prompt
+adapter and semantic heading styling. Crossterm owns keyboard input and terminal
+restoration; the CLI retains choices, validation, plan revalidation, effects and
+exit status. Select uses prefix filtering and exact numbered answers, keeping
+unmatched input correctable. Text preserves literal values. Explicit defaults
+select the existing preference; otherwise cancellation is initially selected when
+available. Esc, Ctrl-C and Ctrl-D cancel before submission. Line-oriented fallback
+requires a complete submitted line and preserves EOF cancellation.
+
+Inquire is used with only its Crossterm feature. Its documented Unix/Windows
+backend capability is distinct from application portability. It was selected over
+Cliclack because Inquire's input actions handle Ctrl-D cancellation, matching the
+CLI's EOF contract; Cliclack 0.5.6 handles Esc and Ctrl-C but ignores Ctrl-D.
+See the [Inquire documentation](https://docs.rs/inquire/0.9.4/inquire/) and
+[input actions](https://docs.rs/inquire/0.9.4/src/inquire/prompts/action.rs.html).
+The adapter uses plain complete-line input when stdout is redirected or
+`TERM=dumb`, while command eligibility continues to require terminal stdin/stderr
+for unresolved approval. `NO_COLOR` and `CLICOLOR=0` remove colour; redirected
+reports contain no styling control sequences. Shared error entry points use red,
+success report headings use green, and actual cache-attention headings use yellow.
+The caller selects an application heading and its output stream explicitly;
+supporting Git diagnostics retain their original presentation/redaction. A cache
+warning cannot change confirmed delivery or command exit status. Library rendering handles terminal
+width; application byte escaping remains responsible for literal display safety.
+
+[`activity.rs`](../src/activity.rs) scopes activity to CLI invocations and wraps
+captured inspection/workflow Git processes. Library calls remain silent. A delayed
+indicator starts only after 500 ms, using fixed operation labels without endpoint
+arguments that might contain credentials. Indicatif animates when all standard streams are terminals;
+redirected, dumb and colour-disabled streams receive one activity line and one
+process outcome. Completion joins the indicator worker before reports or prompts
+resume. A Git exit describes process completion, never verified delivery. External
+application termination retains ordinary abrupt signal semantics; it does not
+produce a final activity outcome. The indicator changes neither raw input mode
+nor cursor visibility.
+Inherited native history/editors and streamed checks bypass this boundary, so no
+indicator competes with their output or input. Transport prompting remains governed
+by the existing noninteractive Git policy.
 
 ### Current capability boundary
 
@@ -215,6 +249,12 @@ or persistent role metadata.
 [`config.rs`](../src/config.rs) separates inspection, a proposed generation plan,
 guided review, and file creation. Guided review resolves private overrides without
 exporting them, retains offline branch/remote hints, and revalidates before writing.
+Generation validates the proposed shared settings and their effective combination
+with private overrides, including workstream field relationships, before staging
+and again before publication. Guided policy JSON input keeps invalid combinations
+correctable. Private values and provenance participate in the audit without being
+exported into shared contents. Remote, branch and check availability remain
+runtime concerns, so valid future/offline configuration can be generated.
 Generation stages complete serialized bytes and publishes them without clobbering
 an existing recognized file. It creates configuration without changing branches
 or probing checks. The local-only `redact-credentials` preference controls finish

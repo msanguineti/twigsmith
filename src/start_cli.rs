@@ -63,7 +63,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
     let directory = match env::current_dir() {
         Ok(directory) => directory,
         Err(error) => {
-            eprintln!("error: cannot determine current directory: {}", text(error));
+            crate::presentation::error(format!(
+                "error: cannot determine current directory: {}",
+                text(error)
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -83,24 +86,36 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 Action::AlreadyCurrent => "Already current:",
             };
             match outcome.action {
-                Action::Create if request.source_commit.is_some() => println!(
-                    "{action} branch {} from commit {}",
-                    text(&request.target),
-                    display(request.source_commit.as_ref().unwrap())
+                Action::Create if request.source_commit.is_some() => crate::presentation::report(
+                    &format!(
+                        "{action} branch {} from commit {}",
+                        text(&request.target),
+                        display(request.source_commit.as_ref().unwrap())
+                    ),
+                    true,
                 ),
-                Action::Create => println!(
-                    "{action} branch {} from {}/{}",
-                    text(&request.target),
-                    text(&request.settings.base_remote),
-                    text(&request.settings.base)
+                Action::Create => crate::presentation::report(
+                    &format!(
+                        "{action} branch {} from {}/{}",
+                        text(&request.target),
+                        text(&request.settings.base_remote),
+                        text(&request.settings.base)
+                    ),
+                    true,
                 ),
-                Action::ResumeRemote => println!(
-                    "{action} branch {} from {}/{}",
-                    text(&request.target),
-                    text(&request.settings.publish_remote),
-                    text(&request.target)
+                Action::ResumeRemote => crate::presentation::report(
+                    &format!(
+                        "{action} branch {} from {}/{}",
+                        text(&request.target),
+                        text(&request.settings.publish_remote),
+                        text(&request.target)
+                    ),
+                    true,
                 ),
-                _ => println!("{action} branch {}", text(&request.target)),
+                _ => crate::presentation::report(
+                    &format!("{action} branch {}", text(&request.target)),
+                    true,
+                ),
             }
             ExitCode::SUCCESS
         }
@@ -112,8 +127,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
 }
 
 fn syntax_error() -> ExitCode {
-    eprintln!(
-        "error: expected start <branch-name> (alias: s); supply exactly one branch name.\nUse --from <ref> for a creation source; use --help or start --help for options"
+    crate::presentation::error(
+        "error: expected start <branch-name> (alias: s); supply exactly one branch name.\nUse --from <ref> for a creation source; use --help or start --help for options",
     );
     ExitCode::from(2)
 }
@@ -175,7 +190,7 @@ fn inspection_error(error: &InspectionError) {
 }
 
 fn resolve_error(error: &ResolveError) {
-    eprintln!("error: {}", text(error));
+    crate::presentation::error(format!("error: {}", text(error)));
     resolve_guidance(error);
 }
 
@@ -205,16 +220,16 @@ fn resolve_guidance(error: &ResolveError) {
 
 fn failure_error(failure: &Failure, target: &str) {
     if let StartError::Git { arguments, output } = &failure.error {
-        eprintln!(
+        crate::presentation::error(format!(
             "error: Git refused {} ({})",
             text(format!("{arguments:?}")),
             output.status
-        );
+        ));
         for bytes in [&output.stdout, &output.stderr] {
             eprint!("{}", crate::cli::git_diagnostics(bytes, display));
         }
     } else {
-        eprintln!("error: {}", text(&failure.error));
+        crate::presentation::error(format!("error: {}", text(&failure.error)));
     }
     match &failure.error {
         StartError::Inspection(error) => inspection_error(error),
