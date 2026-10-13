@@ -8,7 +8,7 @@ use std::{
     process::Output,
 };
 
-use super::{PreparedRequest, ResolveError, TrackingError, prepare_with_options};
+use super::{PreparedRequest, ResolveError, TrackingError, prepare_with_settings};
 use crate::{
     git,
     repository::{
@@ -272,14 +272,22 @@ impl Workflow<'_> {
     }
 
     fn validated(&self) -> Result<RepositoryState, StartError> {
+        self.validated_with_settings(false)
+    }
+
+    fn validated_with_settings(&self, after_checkout: bool) -> Result<RepositoryState, StartError> {
         let Some(context) = repository::discover(self.directory)? else {
             return Err(StartError::OutsideRepository);
         };
         if context.kind == RepositoryKind::Bare {
             return Err(StartError::Bare);
         }
-        let fresh =
-            prepare_with_options(self.directory, &self.request.target, &self.request.options)?;
+        let fresh = prepare_with_settings(
+            self.directory,
+            &self.request.target,
+            &self.request.options,
+            after_checkout.then_some(&self.request.settings),
+        )?;
         let mut expected = self.request.clone();
         expected.routing = self.routing.clone();
         expected.association = self.association.clone();
@@ -744,6 +752,18 @@ impl Workflow<'_> {
             self.recheck(&initial, Some(&commit))?;
         }
         self.establish_policy()?;
+        self.recheck(&initial, Some(&expected_commit))?;
+        let initial_commit = match &initial.head {
+            Head::Attached { commit, .. } => std::str::from_utf8(commit).unwrap(),
+            _ => unreachable!("start requires attached HEAD"),
+        };
+        let configuration = settings::checkout::Snapshot::capture(
+            self.directory,
+            &self.request.repository,
+            initial_commit,
+        )
+        .map_err(ResolveError::from)?;
+        let git_configuration = self.read(&["config", "--null", "--list"])?;
         // No force, DWIM creation, ignored-file overwrite, or recursive submodule
         // checkout. Git still checks the index, files and other worktrees itself.
         self.mutate(&[
@@ -757,7 +777,18 @@ impl Workflow<'_> {
         self.effects.push(Effect::Switched {
             target: self.request.target.clone(),
         });
-        let state = self.validated()?;
+        if !configuration
+            .matches_checkout(
+                self.directory,
+                &self.request.repository,
+                std::str::from_utf8(&expected_commit).unwrap(),
+            )
+            .map_err(ResolveError::from)?
+            || self.read(&["config", "--null", "--list"])? != git_configuration
+        {
+            return Err(StartError::Changed);
+        }
+        let state = self.validated_with_settings(true)?;
         let expected_upstream = if matches!(self.action, Some(Action::ResumeRemote)) {
             TargetUpstream {
                 remotes: vec![self.request.settings.publish_remote.as_bytes().to_vec()],

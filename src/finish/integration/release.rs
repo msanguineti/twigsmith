@@ -497,7 +497,7 @@ fn assess_after(root: &Path, previous: &Plan) -> Result<Plan, FinishError> {
         || next.snapshot.source_log != previous.snapshot.source_log
         || next.snapshot.target_log != previous.snapshot.target_log
         || next.snapshot.worktrees != previous.snapshot.worktrees
-        || next.snapshot.committed_settings != previous.snapshot.committed_settings
+        || next.snapshot.configuration_files != previous.snapshot.configuration_files
     {
         return Err(FinishError::ContextChanged);
     }
@@ -872,7 +872,11 @@ fn checkout(
         || next.source != plan.source
         || next.local_target != plan.local_target
         || next.snapshot.config != plan.snapshot.config
-        || next.snapshot.committed_settings != plan.snapshot.committed_settings
+        || !plan
+            .snapshot
+            .configuration_files
+            .matches_checkout(root, &next.repository, "HEAD")
+            .map_err(SaveError::from)?
         || next.record != plan.record
         || current_ref(&next.snapshot.state).as_deref() != Some(reference)
     {

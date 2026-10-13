@@ -158,15 +158,31 @@ fn guard(root: &Path, plan: &Plan) -> Result<(), Error> {
     Ok(())
 }
 fn fresh(root: &Path, previous: &Plan) -> Result<Plan, Error> {
+    fresh_after(root, previous, false)
+}
+fn fresh_after(root: &Path, previous: &Plan, staged_squash: bool) -> Result<Plan, Error> {
     let next = assess(root, &previous.request, previous.evidence.as_ref())?;
-    // All expected Git effects have their own proof. Configuration, history
-    // boundaries, and committed settings cannot silently change between stages.
+    // Recovery corroborates each graph transition. Only that transition's
+    // tracked shared files may change; private/untracked configuration and the
+    // accepted effective settings stay bound throughout the attempt.
+    let configuration_matches = if staged_squash {
+        previous
+            .snapshot
+            .configuration_files
+            .matches_index(&next.repository)
+    } else {
+        previous
+            .snapshot
+            .configuration_files
+            .matches_checkout(root, &next.repository, "HEAD")
+    }
+    .map_err(|e| FinishError::from(SaveError::from(e)))?;
     if next.repository != previous.repository
         || next.settings != previous.settings
         || next.snapshot.config != previous.snapshot.config
         || next.snapshot.shallow != previous.snapshot.shallow
         || next.snapshot.grafts != previous.snapshot.grafts
-        || next.snapshot.committed_settings != previous.snapshot.committed_settings
+        || !configuration_matches
     {
         return Err(FinishError::ContextChanged.into());
     }
@@ -503,7 +519,7 @@ fn execute(
     if plan.integration == Integration::SquashCommit {
         // Squash intentionally leaves a dirty index and no MERGE_HEAD. Revalidate
         // all stable bindings, target and source before committing that index.
-        let pending = fresh(root, &plan)?;
+        let pending = fresh_after(root, &plan, true)?;
         if pending.source != plan.source
             || pending.local_target != plan.local_target
             || pending.snapshot.state.operations.is_active()

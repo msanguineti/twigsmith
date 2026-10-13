@@ -1,4 +1,6 @@
 //! Public CLI lifecycle with real project and publication repositories.
+#[path = "cli_lifecycle/ordinary.rs"]
+mod ordinary;
 mod support;
 use std::{
     fs,
@@ -224,11 +226,16 @@ fn public_cli_project_and_fork_lifecycles_preserve_both_tracking_styles() {
         "public_cli_project_and_fork_lifecycles_preserve_both_tracking_styles",
         true,
         |root| {
-            for exe in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
-                for split in [false, true] {
-                    for base_tracking in [false, true] {
-                        lifecycle(root, exe, split, base_tracking);
-                    }
+            // Both binaries share the dispatcher. Keep each role/tracking
+            // combination once; command entrypoint wiring is covered separately.
+            for split in [false, true] {
+                for base_tracking in [false, true] {
+                    let exe = if base_tracking {
+                        env!("CARGO_BIN_EXE_gof")
+                    } else {
+                        env!("CARGO_BIN_EXE_git-oneflow")
+                    };
+                    lifecycle(root, exe, split, base_tracking);
                 }
             }
         },
@@ -247,16 +254,18 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
         "guided_setup_checks_prepared_work_before_successful_publication",
         true,
         |root| {
-            for exe in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
-                for format in ["toml", "yaml", "json"] {
-                    let project = Repository::new(root);
-                    commit(&project, "base", "initial\n");
-                    let local = Repository::new(root);
-                    local.success(&["remote", "add", "origin", project.path().to_str().unwrap()]);
-                    local.success(&["fetch", "origin", "main"]);
-                    local.success(&["reset", "--hard", "FETCH_HEAD"]);
-                    let log = local.path().join(".git/check-order");
-                    let checks = vec![
+            // Format parsing and configured checks have distinct contracts;
+            // repeating this complete journey for the alias binary adds none.
+            let exe = env!("CARGO_BIN_EXE_git-oneflow");
+            for format in ["toml", "yaml", "json"] {
+                let project = Repository::new(root);
+                commit(&project, "base", "initial\n");
+                let local = Repository::new(root);
+                local.success(&["remote", "add", "origin", project.path().to_str().unwrap()]);
+                local.success(&["fetch", "origin", "main"]);
+                local.success(&["reset", "--hard", "FETCH_HEAD"]);
+                let log = local.path().join(".git/check-order");
+                let checks = vec![
                         git_oneflow::settings::FinishCheck {
                             name: "Prepared base and literal arguments".into(),
                             command: vec![
@@ -274,61 +283,59 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
                             ],
                         },
                     ];
-                    let mut term = terminal::Terminal::start(
-                        exe,
-                        local.path(),
-                        &["config", "--format", format],
-                    );
-                    term.until("Publication remote");
-                    let mut answers = "\n\n\n\nmerge\ndeny\nreview\n".to_string();
-                    for check in &checks {
-                        answers.push_str(&check.name);
-                        answers.push('\n');
-                        answers.push_str(&serde_json::to_string(&check.command).unwrap());
-                        answers.push('\n');
-                    }
-                    answers.push_str("\nyes\n");
-                    term.send(answers.as_bytes());
-                    assert!(term.finish().success(), "{}", term.output);
-                    assert!(!log.exists(), "setup must not execute checks");
-                    // Commit generated shared settings with the new work; save does not run checks.
-                    local.success(&["switch", "-c", BRANCH]);
-                    local.success(&["add", "."]);
-                    local.success(&["commit", "-m", "shared settings"]);
-                    commit(&local, "work", "work\n");
-                    cli(exe, &local, &["save"], "to remote origin");
-                    assert!(!log.exists());
-                    let saved = value(&local, &["rev-parse", "HEAD"]);
-                    commit(&project, "later-base", "new project base\n");
-                    // Checks must see the newly incorporated base, rather than the old head.
-                    let output = Command::new(exe)
-                        .current_dir(local.path())
-                        .arg("finish")
-                        .args(["--mode", "review"])
-                        .stdin(Stdio::null())
-                        .output()
-                        .unwrap();
-                    assert!(output.status.success(), "{output:?}");
-                    let stderr = String::from_utf8(output.stderr).unwrap();
-                    assert!(
-                        stderr.contains("Check 1/2: Prepared base and literal arguments"),
-                        "{stderr}"
-                    );
-                    assert!(stderr.contains("Check 2 passed."), "{stderr}");
-                    assert_eq!(fs::read_to_string(&log).unwrap(), "firstsecond");
-                    let published = value(&project, &["rev-parse", WORK_REF]);
-                    assert_ne!(published, saved);
-                    assert_eq!(published, value(&local, &["rev-parse", "HEAD"]));
-                    local.success(&[
-                        "merge-base",
-                        "--is-ancestor",
-                        &value(&project, &["rev-parse", "main"]),
-                        "HEAD",
-                    ]);
-                    assert!(String::from_utf8(output.stdout).unwrap().contains(
-                        "Next: submit origin/work/parser-fix for review into origin/main."
-                    ));
+                let mut term =
+                    terminal::Terminal::start(exe, local.path(), &["config", "--format", format]);
+                term.until("Publication remote");
+                let mut answers = "\n\n\n\nmerge\ndeny\nreview\n".to_string();
+                for check in &checks {
+                    answers.push_str(&check.name);
+                    answers.push('\n');
+                    answers.push_str(&serde_json::to_string(&check.command).unwrap());
+                    answers.push('\n');
                 }
+                answers.push_str("\nyes\n");
+                term.send(answers.as_bytes());
+                assert!(term.finish().success(), "{}", term.output);
+                assert!(!log.exists(), "setup must not execute checks");
+                // Commit generated shared settings with the new work; save does not run checks.
+                local.success(&["switch", "-c", BRANCH]);
+                local.success(&["add", "."]);
+                local.success(&["commit", "-m", "shared settings"]);
+                commit(&local, "work", "work\n");
+                cli(exe, &local, &["save"], "to remote origin");
+                assert!(!log.exists());
+                let saved = value(&local, &["rev-parse", "HEAD"]);
+                commit(&project, "later-base", "new project base\n");
+                // Checks must see the newly incorporated base, rather than the old head.
+                let output = Command::new(exe)
+                    .current_dir(local.path())
+                    .arg("finish")
+                    .args(["--mode", "review"])
+                    .stdin(Stdio::null())
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{output:?}");
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                assert!(
+                    stderr.contains("Check 1/2: Prepared base and literal arguments"),
+                    "{stderr}"
+                );
+                assert!(stderr.contains("Check 2 passed."), "{stderr}");
+                assert_eq!(fs::read_to_string(&log).unwrap(), "firstsecond");
+                let published = value(&project, &["rev-parse", WORK_REF]);
+                assert_ne!(published, saved);
+                assert_eq!(published, value(&local, &["rev-parse", "HEAD"]));
+                local.success(&[
+                    "merge-base",
+                    "--is-ancestor",
+                    &value(&project, &["rev-parse", "main"]),
+                    "HEAD",
+                ]);
+                assert!(
+                    String::from_utf8(output.stdout).unwrap().contains(
+                        "Next: submit origin/work/parser-fix for review into origin/main."
+                    )
+                );
             }
         },
     );

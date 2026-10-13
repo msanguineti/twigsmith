@@ -97,6 +97,17 @@ fn local_resume_preserves_history_upstream_and_never_contacts_remote() {
             repo.success(&["config", "branch.release/V1.merge", "refs/heads/main"]);
             repo.success(&["config", "branch.release/V1.rebase", "true"]);
             repo.success(&["remote", "add", "origin", "/oneflow-unreachable-fixture"]);
+            fs::create_dir(repo.path().join(".git/info")).unwrap();
+            fs::write(
+                repo.path().join(".git/info/exclude"),
+                "git-oneflow.config.toml\n",
+            )
+            .unwrap();
+            fs::write(
+                repo.path().join("git-oneflow.config.toml"),
+                "base=\"main\"\n",
+            )
+            .unwrap();
             repo.success(&["switch", "main"]);
             let config = fs::read(repo.path().join(".git/config")).unwrap();
             let refs = repo.success(&["show-ref"]).stdout;
@@ -110,11 +121,166 @@ fn local_resume_preserves_history_upstream_and_never_contacts_remote() {
             );
             branch(&outcome.state, "release/V1", &target);
             assert_eq!(fs::read(repo.path().join(".git/config")).unwrap(), config);
+            assert_eq!(
+                fs::read_to_string(repo.path().join("git-oneflow.config.toml")).unwrap(),
+                "base=\"main\"\n"
+            );
             assert_eq!(repo.success(&["show-ref"]).stdout, refs);
             assert_eq!(oid(&repo, "refs/heads/main"), base);
             assert!(
                 matches!(outcome.state.upstream, Upstream::Configured { remote: Some(ref r), ref merge_refs, .. } if r == b"origin" && merge_refs == &[b"refs/heads/main".to_vec()])
             );
+        },
+    );
+}
+
+#[test]
+fn local_resume_restores_and_removes_tracked_shared_configuration() {
+    isolated(
+        "local_resume_restores_and_removes_tracked_shared_configuration",
+        true,
+        |root| {
+            for crlf in [false, true] {
+                let repo = Repository::new(root);
+                if crlf {
+                    repo.success(&["config", "core.autocrlf", "true"]);
+                }
+                commit(&repo, "tracked", "base\n");
+                repo.success(&["branch", "without-config"]);
+                repo.success(&["switch", "-c", "work"]);
+                let contents = git_oneflow::config::render(
+                    git_oneflow::config::Format::Toml,
+                    &git_oneflow::settings::Settings::default(),
+                );
+                let work = commit(&repo, "git-oneflow.config.toml", &contents);
+                repo.success(&["switch", "main"]);
+                let config = fs::read(repo.path().join(".git/config")).unwrap();
+                let outcome = start(repo.path(), "work").unwrap();
+                assert_eq!(outcome.action, Action::ResumeLocal);
+                branch(&outcome.state, "work", &work);
+                assert_eq!(
+                    fs::read_to_string(repo.path().join("git-oneflow.config.toml")).unwrap(),
+                    if crlf {
+                        contents.replace('\n', "\r\n")
+                    } else {
+                        contents
+                    }
+                );
+                assert_eq!(fs::read(repo.path().join(".git/config")).unwrap(), config);
+                let outcome = start(repo.path(), "without-config").unwrap();
+                assert_eq!(outcome.action, Action::ResumeLocal);
+                assert!(!repo.path().join("git-oneflow.config.toml").exists());
+                assert_eq!(fs::read(repo.path().join(".git/config")).unwrap(), config);
+            }
+        },
+    );
+}
+
+#[test]
+fn restored_settings_do_not_change_start_authority() {
+    isolated(
+        "restored_settings_do_not_change_start_authority",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            commit(&repo, "tracked", "base\n");
+            repo.success(&["switch", "-c", "work"]);
+            let work = commit(
+                &repo,
+                "git-oneflow.config.toml",
+                "base=\"work\"\npublish-remote=\"elsewhere\"\n",
+            );
+            repo.success(&["switch", "main"]);
+            let config = fs::read(repo.path().join(".git/config")).unwrap();
+            let refs = repo.success(&["show-ref"]).stdout;
+            let outcome = start(repo.path(), "work").unwrap();
+            branch(&outcome.state, "work", &work);
+            assert_eq!(
+                outcome.effects,
+                vec![Effect::Switched {
+                    target: "work".into()
+                }]
+            );
+            assert_eq!(fs::read(repo.path().join(".git/config")).unwrap(), config);
+            assert_eq!(repo.success(&["show-ref"]).stdout, refs);
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn checkout_configuration_transition_rejects_hook_changes() {
+    isolated(
+        "checkout_configuration_transition_rejects_hook_changes",
+        true,
+        |root| {
+            for scenario in [
+                "shared",
+                "shared-addition",
+                "private",
+                "routing",
+                "association",
+            ] {
+                let repo = Repository::new(root);
+                commit(&repo, "tracked", "base\n");
+                repo.success(&["switch", "-c", "work"]);
+                commit(&repo, "git-oneflow.config.toml", "base=\"main\"\n");
+                repo.success(&["switch", "main"]);
+                let hooks = repo.path().join(".git/start-hooks");
+                fs::create_dir(&hooks).unwrap();
+                let mutation = match scenario {
+                    "shared" => "printf '# hook change\\n' >> git-oneflow.config.toml",
+                    "shared-addition" => "printf '{}\\n' > git-oneflow.config.json",
+                    "private" => "printf '{}\\n' > .git/git-oneflow.config.json",
+                    "routing" => "git config branch.work.pushRemote elsewhere",
+                    _ => "git config branch.work.oneflow-policy invalid",
+                };
+                executable(
+                    &hooks.join("post-checkout"),
+                    &format!("#!/bin/sh\n{mutation}\n"),
+                );
+                repo.success(&[
+                    "config".as_ref(),
+                    "core.hooksPath".as_ref(),
+                    hooks.as_os_str(),
+                ]);
+                let failure = start(repo.path(), "work").unwrap_err();
+                assert!(
+                    matches!(failure.error, StartError::Changed),
+                    "{scenario}: {failure:?}"
+                );
+                assert_eq!(
+                    failure.effects,
+                    vec![Effect::Switched {
+                        target: "work".into()
+                    }]
+                );
+                assert_eq!(
+                    repo.success(&["symbolic-ref", "--short", "HEAD"]).stdout,
+                    b"work\n"
+                );
+                match scenario {
+                    "shared" => assert!(
+                        fs::read_to_string(repo.path().join("git-oneflow.config.toml"))
+                            .unwrap()
+                            .contains("# hook change")
+                    ),
+                    "shared-addition" => {
+                        assert!(repo.path().join("git-oneflow.config.json").exists())
+                    }
+                    "private" => assert!(repo.path().join(".git/git-oneflow.config.json").exists()),
+                    "routing" => assert_eq!(
+                        repo.success(&["config", "--get", "branch.work.pushRemote"])
+                            .stdout,
+                        b"elsewhere\n"
+                    ),
+                    _ => assert_eq!(
+                        repo.success(&["config", "--get", "branch.work.oneflow-policy"])
+                            .stdout,
+                        b"invalid\n"
+                    ),
+                }
+            }
         },
     );
 }

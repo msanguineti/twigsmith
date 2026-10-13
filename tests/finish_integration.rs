@@ -1283,6 +1283,228 @@ fn prepare_local(f: &Fixture, req: &Request) -> execution::Report {
     let p = integration::assess(f.repo.path(), req, Some(&e)).unwrap();
     execution::prepare(f.repo.path(), &p)
 }
+#[test]
+fn ordinary_published_reword_cleans_only_the_retained_original_version() {
+    isolated(
+        "ordinary_published_reword_cleans_only_the_retained_original_version",
+        true,
+        |root| {
+            let f = fixture(root);
+            f.repo.success(&["push", "fork", "A:A"]);
+            f.repo
+                .success(&["config", "sequence.editor", "sed -i 's/^pick /reword /'"]);
+            f.repo.success(&[
+                "config",
+                "core.editor",
+                "sh -c 'printf \"Prepared work\\n\" > \"$1\"' -",
+            ]);
+            let original = oid(&f.repo, "A");
+            let req = Request {
+                update: Some(FinishUpdate::Rebase),
+                history_edit: Some(git_oneflow::settings::HistoryEdit::Interactive),
+                cleanup: Some(FinishCleanup::Both),
+                ..request(FinishIntegration::FfOnly)
+            };
+            let prepared = prepare_local(&f, &req);
+            assert!(
+                prepared.is_prepared(),
+                "error={:?}; blockers={:?}",
+                prepared.error,
+                prepared.plan.as_ref().map(|p| &p.blockers)
+            );
+            let source = oid(&f.repo, "A");
+            assert_ne!(source, original);
+            assert_eq!(oid(&f.repo, "main"), source);
+            assert_eq!(
+                observed(f.fork.path(), b"refs/heads/A"),
+                RefObservation::Commit(original.clone())
+            );
+            let plan = prepared.plan.unwrap();
+            let record: Record =
+                serde_json::from_slice(&fs::read(plan.recovery_path.as_ref().unwrap()).unwrap())
+                    .unwrap();
+            assert_eq!(oid(&f.repo, &record.original_ref()), original);
+            let delivered = integration::publication::publish(f.repo.path(), &plan);
+            assert!(delivered.is_complete(), "{delivered:#?}");
+            // Even the prepared, integrated version is a changed publication:
+            // cleanup cannot replace its originally observed deletion lease.
+            f.repo
+                .success(&["push", "--force", "fork", "main:refs/heads/A"]);
+            let changed =
+                integration::assess(f.repo.path(), &req, Some(&evidence(&f, &req))).unwrap();
+            assert!(
+                changed
+                    .blockers
+                    .iter()
+                    .any(|b| matches!(b, Blocker::WorkBranchChanged(_)))
+            );
+            let refused = integration::completion::complete(f.repo.path(), &changed);
+            assert!(!refused.is_complete());
+            assert_eq!(
+                observed(f.repo.path(), b"refs/heads/A"),
+                RefObservation::Commit(source.clone())
+            );
+            assert_eq!(
+                observed(f.fork.path(), b"refs/heads/A"),
+                RefObservation::Commit(source.clone())
+            );
+            f.repo.success(&[
+                "push",
+                "--force",
+                "fork",
+                &format!("{}:refs/heads/A", text(&original)),
+            ]);
+            let restored =
+                integration::assess(f.repo.path(), &req, Some(&evidence(&f, &req))).unwrap();
+            let completed = integration::completion::complete(f.repo.path(), &restored);
+            assert!(completed.is_complete(), "{completed:#?}");
+            assert_eq!(
+                observed(f.repo.path(), b"refs/heads/A"),
+                RefObservation::Absent
+            );
+            assert_eq!(
+                observed(f.fork.path(), b"refs/heads/A"),
+                RefObservation::Absent
+            );
+            assert_eq!(
+                observed(f.project.path(), b"refs/heads/main"),
+                RefObservation::Commit(source)
+            );
+        },
+    );
+}
+
+#[test]
+fn ordinary_integration_preserves_settings_across_tracked_configuration_checkout() {
+    isolated(
+        "ordinary_integration_preserves_settings_across_tracked_configuration_checkout",
+        true,
+        |root| {
+            for method in [
+                FinishIntegration::FfOnly,
+                FinishIntegration::Merge,
+                FinishIntegration::Squash,
+            ] {
+                let f = fixture(root);
+                // The work commit introduces the shared routes; main has no file.
+                let config = fs::read(f.repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+                fs::remove_file(f.repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+                fs::write(f.repo.path().join("git-oneflow.config.toml"), &config).unwrap();
+                f.repo.success(&["add", "git-oneflow.config.toml"]);
+                f.repo.success(&["commit", "-m", "Shared project settings"]);
+                let req = request(method);
+                let before = integration::assess(f.repo.path(), &req, None)
+                    .unwrap()
+                    .settings;
+                let prepared = prepare_local(&f, &req);
+                assert!(
+                    prepared.is_prepared(),
+                    "{method:?}: error={:?}; blockers={:?}",
+                    prepared.error,
+                    prepared.plan.as_ref().map(|p| &p.blockers)
+                );
+                assert_eq!(prepared.plan.as_ref().unwrap().settings, before);
+                assert_eq!(
+                    fs::read(f.repo.path().join("git-oneflow.config.toml")).unwrap(),
+                    config
+                );
+                let delivered = integration::publication::publish(
+                    f.repo.path(),
+                    prepared.plan.as_ref().unwrap(),
+                );
+                assert!(delivered.is_complete(), "{delivered:#?}");
+            }
+        },
+    );
+}
+
+#[test]
+fn ordinary_preparation_imports_shared_configuration_without_changing_accepted_checks() {
+    isolated(
+        "ordinary_preparation_imports_shared_configuration_without_changing_accepted_checks",
+        true,
+        |root| {
+            for update in [FinishUpdate::Merge, FinishUpdate::Rebase] {
+                let f = fixture(root);
+                f.repo.success(&["switch", "main"]);
+                commit(
+                    &f.repo,
+                    "git-oneflow.config.toml",
+                    "[[finish-checks]]\nname='New project check'\ncommand=['sh','-c','exit 99']\n",
+                );
+                publish(&f);
+                f.repo.success(&["switch", "A"]);
+                let req = Request {
+                    update: Some(update),
+                    ..request(FinishIntegration::FfOnly)
+                };
+                let prepared = prepare_local(&f, &req);
+                assert!(
+                    prepared.is_prepared(),
+                    "{update:?}: error={:?}; blockers={:?}",
+                    prepared.error,
+                    prepared.plan.as_ref().map(|p| &p.blockers)
+                );
+                assert!(
+                    prepared
+                        .plan
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .finish_checks
+                        .is_empty()
+                );
+                assert!(f.repo.path().join("git-oneflow.config.toml").exists());
+                let delivered = integration::publication::publish(
+                    f.repo.path(),
+                    prepared.plan.as_ref().unwrap(),
+                );
+                assert!(delivered.is_complete(), "{delivered:#?}");
+            }
+        },
+    );
+}
+
+#[test]
+fn ordinary_integration_keeps_ignored_shared_configuration_masked_by_private_settings() {
+    isolated(
+        "ordinary_integration_keeps_ignored_shared_configuration_masked_by_private_settings",
+        true,
+        |root| {
+            let f = fixture(root);
+            fs::create_dir_all(f.repo.path().join(".git/info")).unwrap();
+            fs::write(
+                f.repo.path().join(".git/info/exclude"),
+                "git-oneflow.config.toml\n",
+            )
+            .unwrap();
+            let shared = "publish-remote='other'\nbase-remote='other'\n";
+            fs::write(f.repo.path().join("git-oneflow.config.toml"), shared).unwrap();
+            let req = request(FinishIntegration::FfOnly);
+            let prepared = prepare_local(&f, &req);
+            assert!(
+                prepared.is_prepared(),
+                "error={:?}; blockers={:?}",
+                prepared.error,
+                prepared.plan.as_ref().map(|p| &p.blockers)
+            );
+            assert_eq!(
+                fs::read_to_string(f.repo.path().join("git-oneflow.config.toml")).unwrap(),
+                shared
+            );
+            let refreshed = integration::assess(f.repo.path(), &Request::default(), None).unwrap();
+            assert!(
+                !refreshed
+                    .blockers
+                    .iter()
+                    .any(|b| matches!(b, Blocker::Recovery(Problem::ChangedBinding)))
+            );
+            let delivered =
+                integration::publication::publish(f.repo.path(), prepared.plan.as_ref().unwrap());
+            assert!(delivered.is_complete(), "{delivered:#?}");
+        },
+    );
+}
 fn hook(f: &Fixture, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let hooks = f.repo.success(&["config", "core.hooksPath"]);

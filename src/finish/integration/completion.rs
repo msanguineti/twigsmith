@@ -273,6 +273,15 @@ fn successor(root: &Path, previous: &Plan, effect: &super::Effect) -> Result<Pla
                 return Err(FinishError::ContextChanged.into());
             }
             expected.state.head = head;
+            if !previous
+                .snapshot
+                .configuration_files
+                .matches_checkout(root, &next.repository, "HEAD")
+                .map_err(|e| FinishError::from(SaveError::from(e)))?
+            {
+                return Err(FinishError::ContextChanged.into());
+            }
+            expected.configuration_files = next.snapshot.configuration_files.clone();
             expected.index = next.snapshot.index.clone();
             expected.head_log = next.snapshot.head_log.clone();
             // The current worktree's HEAD/branch fields change, but other worktrees

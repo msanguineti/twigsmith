@@ -275,7 +275,7 @@ struct Snapshot {
     target_log: Option<Vec<u8>>,
     worktrees: Vec<u8>,
     records: Vec<Option<Vec<u8>>>,
-    committed_settings: Vec<u8>,
+    configuration_files: settings::checkout::Snapshot,
     pins: Vec<(RefObservation, Option<Vec<u8>>)>,
     release: Option<release::Snapshot>,
     shared_preparation: super::history::SharedRefs,
@@ -357,7 +357,9 @@ pub fn assess(
     if repository.kind == repository::RepositoryKind::Bare {
         return Err(SaveError::BareRepository.into());
     }
-    let mut settings = settings::load(directory, &repository).map_err(SaveError::from)?;
+    let mut settings = settings::load_with_files(directory, &repository)
+        .map_err(SaveError::from)?
+        .settings;
     if request
         .message
         .as_ref()
@@ -370,24 +372,60 @@ pub fn assess(
     else {
         return Err(SaveError::OutsideRepository.into());
     };
+    let configuration_files = settings::checkout::Snapshot::capture(directory, &repository, "HEAD")
+        .map_err(SaveError::from)?;
+    let pending_tree = state.operations.is_active()
+        || state
+            .working_tree
+            .as_ref()
+            .is_some_and(|tree| tree.is_dirty());
+    let selection = recovery::select(
+        directory,
+        &repository,
+        &state,
+        &branch_ref(settings.base.as_bytes()),
+    )?;
+    let mut pinned_shared = false;
+    if let Some(source) = &selection.source_ref {
+        let branch = source.strip_prefix(b"refs/heads/").unwrap_or(source);
+        let retained = if let Some(record) = &selection.record {
+            // A regular committed shared layer stays bound to the attempt's
+            // original tree. Target checkout and native preparation may import
+            // another tree's settings, but cannot approve different effects.
+            settings::load_for_branch_from_shared_tree(
+                directory,
+                &repository,
+                branch,
+                record.original(),
+            )
+            .map_err(SaveError::from)?
+            .map(|loaded| -> Result<_, FinishError> {
+                let reconstruct = loaded.shared.is_some()
+                    || (!record.has_shared_settings()
+                        && (pending_tree
+                            || configuration_files
+                                .shared_matches_tree(&repository, "HEAD")
+                                .map_err(SaveError::from)?));
+                Ok(reconstruct.then_some(loaded.settings))
+            })
+            .transpose()?
+            .flatten()
+        } else {
+            None
+        };
+        settings = if let Some(retained) = retained {
+            pinned_shared = true;
+            retained
+        } else {
+            settings::load_for_branch(directory, &repository, branch).map_err(SaveError::from)?
+        };
+    }
     let mut target = Target {
         remote: settings.base_remote.clone(),
         reference: branch_ref(settings.base.as_bytes()),
         fetch_destination: urls(directory, &settings.base_remote, false)?.remove(0),
         push_destinations: urls(directory, &settings.base_remote, true)?,
     };
-    let selection = recovery::select(directory, &repository, &state, &target.reference)?;
-    if let Some(source) = &selection.source_ref {
-        let branch = source.strip_prefix(b"refs/heads/").unwrap_or(source);
-        settings =
-            settings::load_for_branch(directory, &repository, branch).map_err(SaveError::from)?;
-        target = Target {
-            remote: settings.base_remote.clone(),
-            reference: branch_ref(settings.base.as_bytes()),
-            fetch_destination: urls(directory, &settings.base_remote, false)?.remove(0),
-            push_destinations: urls(directory, &settings.base_remote, true)?,
-        };
-    }
     if let Some(record) = &selection.record {
         // Only the ordinal chooses the active configured route; record equality
         // below still verifies its endpoint and full settings binding.
@@ -419,9 +457,8 @@ pub fn assess(
         hint(directory, &source_ref)?
     };
     let local_target = hint(directory, &target.reference)?;
-    let mut config_args = vec!["ls-tree", "--full-tree", "-z", "HEAD", "--"];
-    config_args.extend(settings::CONFIG_FILES);
     let snapshot = Snapshot {
+        configuration_files,
         shared_preparation: if request.history_edit.unwrap_or(settings.history_edit)
             == HistoryEdit::Interactive
             || (settings
@@ -469,7 +506,6 @@ pub fn assess(
         },
         release: release::snapshot(directory, &request.release, selection.record.as_ref())?,
         records: selection.bytes,
-        committed_settings: read(directory, &config_args)?,
     };
     let mut plan = Plan {
         repository,
@@ -543,6 +579,27 @@ pub fn assess(
     if plan.snapshot.state.operations.is_active() {
         plan.state = State::IncompleteOperation;
         plan.blockers.push(Blocker::GitOperation);
+    }
+    if pinned_shared
+        && !plan.snapshot.state.operations.is_active()
+        && plan
+            .snapshot
+            .state
+            .working_tree
+            .as_ref()
+            .is_some_and(|t| !t.is_dirty())
+        && !plan
+            .snapshot
+            .configuration_files
+            .shared_matches_tree(&plan.repository, "HEAD")
+            .map_err(SaveError::from)?
+    {
+        // A fresh process has no prior worktree snapshot. A clean current tree
+        // must still explain its shared files; ignored additions cannot borrow
+        // the retained settings as authority.
+        plan.blockers
+            .push(Blocker::Recovery(recovery::Problem::ChangedBinding));
+        plan.state = State::ChangedOrUnverifiable;
     }
     // A target checked out elsewhere cannot be advanced behind its worktree.
     if in_another_worktree(&plan, &plan.target.reference) {

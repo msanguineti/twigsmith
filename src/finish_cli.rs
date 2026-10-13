@@ -1370,7 +1370,10 @@ Details:
   It edits selected work commits relative to the preparation boundary, even when up to date.
   Git sequence/commit editor, hooks, and signing preferences apply.
   Reorder, combine, reword, edit, or drop commits with Git's native todo instructions.
+  Rewording changes commit identity even when its files stay the same.
   History editing selects no integration method and grants no published-history replacement.
+  Ordinary direct finish delivers the edited result to the target without force-publishing work.
+  Both cleanup can delete only the eligible published version observed before preparation.
   Tagged release/hotfix and hosted merge-back preparation require history-edit none.
   Without terminal input/stderr, explicitly configure both sequence and commit editors.
   Complete stopped edits/conflicts with git rebase --continue, or abandon with git rebase --abort.

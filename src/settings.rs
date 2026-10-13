@@ -760,6 +760,8 @@ impl From<InspectionError> for SettingsError {
     }
 }
 
+pub(crate) mod checkout;
+
 pub const CONFIG_FILES: [&str; 4] = [
     "git-oneflow.config.toml",
     "git-oneflow.config.yaml",
@@ -1210,15 +1212,18 @@ fn read_layer(path: &Path) -> Result<Layer, SettingsError> {
         path: path.into(),
         source,
     })?;
+    parse_layer(path, &contents)
+}
+fn parse_layer(path: &Path, contents: &str) -> Result<Layer, SettingsError> {
     let result = match path.extension().and_then(|s| s.to_str()) {
-        Some("toml") => toml::from_str::<Layer>(&contents).map_err(|e| e.to_string()),
-        Some("json") => serde_json::from_str::<Layer>(&contents).map_err(|e| e.to_string()),
+        Some("toml") => toml::from_str::<Layer>(contents).map_err(|e| e.to_string()),
+        Some("json") => serde_json::from_str::<Layer>(contents).map_err(|e| e.to_string()),
         Some("yaml" | "yml") => {
             let mut options = serde_saphyr::Options::default();
             options.merge_keys = serde_saphyr::options::MergeKeyPolicy::Error;
             options.reject_unsupported_tags = true;
             options.strict_booleans = true;
-            serde_saphyr::from_str_with_options::<Layer>(&contents, options)
+            serde_saphyr::from_str_with_options::<Layer>(contents, options)
                 .map_err(|e| e.to_string())
         }
         _ => unreachable!("discovered configuration format"),
@@ -1262,13 +1267,25 @@ pub fn load_with_files(
         .map(|root| discover_layer(root, false))
         .transpose()?
         .flatten();
+    let shared_layer = shared.as_deref().map(read_layer).transpose()?;
+    load_layers(directory, repository, shared.zip(shared_layer))
+}
+fn load_layers(
+    directory: &Path,
+    repository: &RepositoryContext,
+    shared_layer: Option<(PathBuf, Layer)>,
+) -> Result<LoadedSettings, SettingsError> {
+    let shared = shared_layer.as_ref().map(|(path, _)| path.clone());
     let local = discover_layer(&repository.common_dir, true)?;
+    let local_layer = local.as_deref().map(read_layer).transpose()?;
     let mut settings = Settings::default();
     let mut redact_credentials = true;
     let mut redact_credentials_source = SettingSource::BuiltIn;
-    for (path, is_local) in [(shared.clone(), false), (local.clone(), true)] {
-        if let Some(path) = path {
-            let layer = read_layer(&path)?;
+    for (file, is_local) in [
+        (shared_layer, false),
+        (local.clone().zip(local_layer), true),
+    ] {
+        if let Some((path, layer)) = file {
             layer.validate(directory, &path, is_local)?;
             let source = if is_local {
                 SettingSource::Local(path)
@@ -1616,6 +1633,72 @@ pub fn load_for_branch(
     let mut settings = load_with_files(directory, repository)?.settings;
     apply_branch_policy(directory, branch, &mut settings)?;
     Ok(settings)
+}
+
+/// Reconstruct an attempt's accepted shared layer from its retained starting
+/// tree, while validating the current private layer and branch association.
+/// The caller must corroborate that attempt before using these settings as
+/// authority. Symlink contents are external to the tree and cannot be pinned.
+pub(crate) fn load_for_branch_from_shared_tree(
+    directory: &Path,
+    repository: &RepositoryContext,
+    branch: &[u8],
+    commit: &[u8],
+) -> Result<Option<LoadedSettings>, SettingsError> {
+    let mut arguments = vec![
+        "--no-replace-objects".into(),
+        "ls-tree".into(),
+        "--full-tree".into(),
+        "-z".into(),
+        crate::repository::os(commit)?,
+        "--".into(),
+    ];
+    arguments.extend(CONFIG_FILES.iter().map(std::ffi::OsString::from));
+    let output = git::inspect(directory, &arguments).map_err(InspectionError::Io)?;
+    if !output.status.success() {
+        // Missing retained history is diagnosed by the recovery proof.
+        return Ok(None);
+    }
+    let entries: Vec<_> = output
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|e| !e.is_empty())
+        .collect();
+    if entries.len() > 1 {
+        return Ok(None);
+    }
+    let shared = if let Some(entry) = entries.first() {
+        let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
+            return Err(InspectionError::InvalidOutput("configuration tree entry").into());
+        };
+        let fields: Vec<_> = entry[..tab].split(|b| *b == b' ').collect();
+        if fields.len() != 3 || fields[1] != b"blob" || !matches!(fields[0], b"100644" | b"100755")
+        {
+            return Ok(None);
+        }
+        let root = repository
+            .working_tree_root
+            .as_ref()
+            .ok_or(InspectionError::InvalidOutput("configuration worktree"))?;
+        let path = root.join(crate::repository::os(&entry[tab + 1..])?);
+        let arguments = vec![
+            "--no-replace-objects".into(),
+            "cat-file".into(),
+            "blob".into(),
+            crate::repository::os(fields[2])?,
+        ];
+        let blob = git::inspect(directory, &arguments).map_err(InspectionError::Io)?;
+        if !blob.status.success() {
+            return Ok(None);
+        }
+        let contents = std::str::from_utf8(&blob.stdout).map_err(|e| invalid(&path, e))?;
+        Some((path.clone(), parse_layer(&path, contents)?))
+    } else {
+        None
+    };
+    let mut loaded = load_layers(directory, repository, shared)?;
+    apply_branch_policy(directory, branch, &mut loaded.settings)?;
+    Ok(Some(loaded))
 }
 pub(crate) fn branch_policy(
     directory: &Path,

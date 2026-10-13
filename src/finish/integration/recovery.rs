@@ -94,9 +94,31 @@ pub struct Record {
     pub(super) release: Option<release::Record>,
 }
 impl Record {
-    /// Called only with a corroborated attempt. An explicitly authorized tagged
-    /// rebase may replace published commits; their exact initial version remains
-    /// eligible for conditional cleanup through the retained original source.
+    pub(super) fn has_shared_settings(&self) -> bool {
+        use settings::SettingSource;
+        let sources = &self.settings.sources;
+        [
+            &sources.publish_remote,
+            &sources.base,
+            &sources.save_action,
+            &sources.finish_mode,
+            &sources.finish_integration,
+            &sources.finish_message,
+            &sources.finish_checkout,
+            &sources.finish_cleanup,
+            &sources.finish_update,
+            &sources.history_edit,
+            &sources.finish_rewrite,
+            &sources.finish_checks,
+        ]
+        .into_iter()
+        .chain(sources.base_remote.iter())
+        .chain(sources.workstreams.values())
+        .any(|source| matches!(source, SettingSource::Shared(_)))
+    }
+    /// Called only with a corroborated attempt. Native preparation can replace
+    /// published commits without publishing the rewritten source. Cleanup still
+    /// binds only the exact initially observed version retained before editing.
     pub(super) fn incorporates_published_work(
         &self,
         root: &Path,
@@ -106,14 +128,18 @@ impl Record {
         if ancestor(root, published, &self.source)? == Some(true) {
             return Ok(true);
         }
-        Ok(release::enabled(plan)
-            && self.retained
+        Ok(self.retained
+            && self
+                .work
+                .iter()
+                .any(|d| commit(&d.branch) == Some(published))
             && self
                 .preparation
                 .as_ref()
                 .is_some_and(|p| p.method == FinishUpdate::Rebase)
             && self.preparation_completed(plan)
-            && self.rewrite.unwrap_or(self.settings.finish_rewrite) == FinishRewrite::Allow
+            && (!release::enabled(plan)
+                || self.rewrite.unwrap_or(self.settings.finish_rewrite) == FinishRewrite::Allow)
             && ancestor(root, published, self.original())? == Some(true))
     }
     pub(super) fn preparation_completed(&self, plan: &Plan) -> bool {

@@ -203,15 +203,24 @@ fn run_retained(
             check_event(presentation, &mut output, event);
         });
         output.flush();
+        for effect in &prepared.effects {
+            if let execution::Effect::WorkChanged { before, after } = effect {
+                println!(
+                    "Prepared work: {} -> {}.",
+                    observation(presentation, before),
+                    observation(presentation, after)
+                );
+            }
+        }
         preparation_effects(presentation, &mut history, &prepared);
         command_diagnostics(presentation, &mut history, &prepared.commands);
-        let needs_input = matches!(prepared.error, Some(execution::Error::UnresolvedPlan))
-            && prepared
-                .plan
-                .as_ref()
-                .is_some_and(|p| p.blockers.is_empty() && !p.required_input.is_empty());
+        // Reassessment after preparation can expose either a normal choice or
+        // a concrete blocker. Let the same loop present both, rather than hiding
+        // that assessment behind the executor's generic unresolved-plan error.
+        let reassessed = matches!(prepared.error, Some(execution::Error::UnresolvedPlan))
+            && prepared.plan.as_ref().is_some_and(|p| !p.is_ready());
         if let Some(error) = &prepared.error
-            && !needs_input
+            && !reassessed
         {
             let _ = writeln!(history, "error: {}", text(presentation, error));
             let _ = writeln!(history, "{}", text(presentation, prepared.guidance()));
@@ -301,34 +310,8 @@ fn refresh(
     history: &mut String,
 ) -> Option<Plan> {
     let report = remote::refresh(directory, plan);
-    for effect in &report.effects {
-        match effect {
-            remote::Effect::Observed {
-                destination,
-                reference,
-                value,
-            } => {
-                let _ = writeln!(
-                    history,
-                    "Observed {} at {}: {}.",
-                    display(presentation, reference),
-                    display(presentation, destination),
-                    observation(presentation, value)
-                );
-            }
-            remote::Effect::Fetched {
-                destination,
-                commit,
-            } => {
-                let _ = writeln!(
-                    history,
-                    "Fetched objects for {} from {}.",
-                    display(presentation, commit),
-                    display(presentation, destination)
-                );
-            }
-        }
-    }
+    // Successful exact-ref observations and object acquisition are backend
+    // evidence. Failure diagnostics below retain the useful Git command output.
     command_diagnostics(presentation, history, &report.commands);
     if let Some(error) = &report.error {
         let _ = writeln!(history, "error: {}", text(presentation, error));
@@ -719,9 +702,7 @@ fn complete(
             completion::Effect::CheckedOut { after, .. } => {
                 let _ = writeln!(history, "Final checkout: {}.", head(presentation, after));
             }
-            completion::Effect::SourceEvidenceRetained => {
-                history.push_str("Retained work evidence before local deletion.\n")
-            }
+            completion::Effect::SourceEvidenceRetained => {}
             completion::Effect::LocalWorkDeleted {
                 reference,
                 expected,
@@ -755,7 +736,17 @@ fn complete(
         command_diagnostics(presentation, &mut history, &destination.commands);
     }
     if !report.is_complete() {
-        if let Some(error) = &report.error {
+        let blocked = if let Ok(plan) = &report.plan {
+            for blocker in &plan.blockers {
+                blocker_message(presentation, &mut history, blocker);
+            }
+            !plan.blockers.is_empty()
+        } else {
+            false
+        };
+        if let Some(error) = &report.error
+            && !(blocked && matches!(error, completion::Error::UnverifiedAttempt))
+        {
             let _ = writeln!(history, "error: {}", text(presentation, error));
         }
         if let Err(error) = &report.plan {
@@ -986,21 +977,7 @@ fn preparation_effects(
     for effect in &report.effects {
         use execution::Effect::*;
         match effect {
-            Recorded(path) => {
-                let _ = writeln!(
-                    output,
-                    "Retained integration recovery evidence: {}.",
-                    text(presentation, path.display())
-                );
-            }
-            Retained { reference, commit } => {
-                let _ = writeln!(
-                    output,
-                    "Retained {} at {}.",
-                    text(presentation, reference),
-                    display(presentation, commit)
-                );
-            }
+            Recorded(_) | Retained { .. } => {}
             WorkChanged { before, after } => {
                 let _ = writeln!(
                     output,
@@ -1057,7 +1034,19 @@ fn blocker_message(presentation: Presentation, output: &mut String, blocker: &Bl
         Blocker::WorkBranchChanged(destination) => format!("published work changed or is not incorporated at {}; retain it and inspect the work branch", display(presentation, destination)),
         Blocker::Release(problem) => problem.clone(),
         Blocker::HistoryEdit(problem) => problem.clone(),
-        Blocker::Recovery(problem) => format!("retained integration recovery cannot be verified ({problem:?}); inspect branch history, settings, endpoints, and retained evidence before retrying"),
+        Blocker::Recovery(problem) => {
+            use integration::recovery::Problem;
+            match problem {
+                Problem::MissingRecord => "the pending finish record is missing; retain the current branches and inspect the earlier attempt".into(),
+                Problem::MalformedRecord | Problem::UnsafeRecord => "the pending finish record cannot be read safely; inspect the repository's private finish metadata and retain the current branches".into(),
+                Problem::UnassociatedHead => "the current checkout no longer identifies the pending finish; return to its unchanged work branch before retrying".into(),
+                Problem::ChangedBinding => "settings, Git configuration, destinations, or attempt choices changed; restore the intended context before retrying".into(),
+                Problem::ChangedSource => "the work branch or its history changed after preparation; retain that work and inspect its Git reflog before retrying".into(),
+                Problem::ChangedTarget => "the integration target changed outside the pending finish; retain the candidate and reconcile the target before retrying".into(),
+                Problem::MissingHistory => "commit or reflog history needed to verify the pending finish is missing; restore that history before retrying".into(),
+                Problem::InvalidResult => "the current Git history cannot verify the prepared or integrated result; inspect the branch history and retained commits before retrying".into(),
+            }
+        },
     };
     let _ = writeln!(output, "error: {message}.");
 }

@@ -34,8 +34,21 @@ impl Invocation {
     }
 }
 
-// Every scenario runs through all four spellings in a fresh fixture.
+// Detailed behavior shares the dispatcher; spelling coverage stays in the
+// grammar/help cases and the public lifecycle entrypoint matrix.
 fn cli_cases(name: &str, git_available: bool, test: impl Fn(&Path, Invocation)) {
+    isolated(name, git_available, |root| {
+        test(
+            root,
+            Invocation {
+                executable: env!("CARGO_BIN_EXE_git-oneflow"),
+                command: "start",
+            },
+        );
+    });
+}
+
+fn cli_spellings(name: &str, git_available: bool, test: impl Fn(&Path, Invocation)) {
     isolated(name, git_available, |root| {
         for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
             for command in ["start", "s"] {
@@ -270,7 +283,7 @@ fn cli_start_remote_resume_tracks_exact_counterpart_for_every_prefix() {
 
 #[test]
 fn cli_start_malformed_arguments_are_preserved_syntax_failures() {
-    cli_cases(
+    cli_spellings(
         "cli_start_malformed_arguments_are_preserved_syntax_failures",
         true,
         |root, cli| {
@@ -435,7 +448,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
 
 #[test]
 fn cli_start_help_is_independent_of_git_repository_and_settings() {
-    cli_cases(
+    cli_spellings(
         "cli_start_help_is_independent_of_git_repository_and_settings",
         true,
         |root, cli| {

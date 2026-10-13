@@ -139,7 +139,17 @@ pub fn prepare_with_options(
     input: &str,
     options: &Options,
 ) -> Result<PreparedRequest, ResolveError> {
-    let directory = directory.as_ref();
+    prepare_with_settings(directory.as_ref(), input, options, None)
+}
+
+// A completed checkout adopts the selected tree's files, while this invocation
+// retains the settings that authorized it. No new policy is loaded afterward.
+fn prepare_with_settings(
+    directory: &Path,
+    input: &str,
+    options: &Options,
+    accepted_settings: Option<&Settings>,
+) -> Result<PreparedRequest, ResolveError> {
     let repository = repository::discover(directory)?.ok_or(ResolveError::OutsideRepository)?;
     let target = if input.contains(' ') {
         phrase_slug(input)?
@@ -162,7 +172,18 @@ pub fn prepare_with_options(
         ));
     }
     let association = settings::branch_policy(directory, target.as_bytes())?;
-    let mut settings = settings::load_for_branch(directory, &repository, target.as_bytes())?;
+    let mut settings = match accepted_settings {
+        Some(settings) => settings.clone(),
+        None => settings::load_for_branch(directory, &repository, target.as_bytes())?,
+    };
+    if accepted_settings.is_some()
+        && let Some(record) = &association
+        && settings::branch_anchor(directory, target.as_bytes())?.as_ref() != Some(&record.anchor)
+    {
+        return Err(ResolveError::Input(
+            "branch policy belongs to an earlier branch instance; resolve the association before using recreated work".into(),
+        ));
+    }
     if let Some(record) = &association {
         if options
             .policy

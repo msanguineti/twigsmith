@@ -129,6 +129,10 @@ upstream tracking. Existing valid tracking is preserved. Start refreshes the
 selected remote-tracking reference; local base history and the fork base retain
 their history.
 
+A switch restores the target branch's tracked shared configuration, including
+its absence. Start completes the originally selected checkout; the restored
+settings apply to subsequent commands.
+
 Start requires an attached branch with at least one commit. Switching requires
 a clean index, working tree, and submodules. Git also refuses a switch that would
 overwrite ignored files. Active Git operations or a target checked out in another
@@ -283,11 +287,15 @@ Finish retains the original work before starting. Local shared refs and fresh
 remote observations are compared after editing; concurrent movement stops further
 effects instead of authorizing a different range.
 
+Rewording changes a commit's identity even when its files stay the same.
 Editing chooses local history changes. Review replacement of published history
 still requires separate rewrite permission, proof that the original work included
 the observed remote work, and unchanged destination expectations. Direct
-integration delivers only the target result; it leaves published source history
-unchanged unless selected cleanup can safely delete its observed version.
+integration publishes the actual prepared result to the integration target.
+It retains published source history with keep/local cleanup; both cleanup can
+delete the exact version observed before editing when the retained original work
+and completed preparation prove its eligibility. This requires no force-publication
+of rewritten work and no separate published-history replacement permission.
 Integration method, final message, checks, checkout, and cleanup remain independent.
 
 A completed edit can change the final tree or retain all existing commits. Checks
@@ -342,10 +350,11 @@ may first become necessary after preparation; stopping then retains prepared wor
 Checkout and deletion follow verified delivery to every target destination.
 `--checkout work` requires `--cleanup keep`. Local cleanup deletes the verified
 local work branch; both also deletes its exact observed published version at every
-`publish-remote` push destination. The published version must be contained in the
-verified source. For a verified authorized tagged rebase, incorporation in the
-retained original work establishes eligibility for that same originally observed
-version. New work, another worktree’s checkout, or changed destinations
+`publish-remote` push destination. Cleanup proves inclusion in the verified source
+or, after verified preparation, in the retained original work. That original proof
+covers only the same originally observed published version. Tagged rebase
+additionally requires its selected rewrite authorization.
+New work, another worktree’s checkout, or changed destinations
 blocks deletion. Target delivery and published-work cleanup use their independent
 remote roles.
 
@@ -1257,6 +1266,12 @@ reported problem. The associated verified attempt supplies omitted choices and
 an accepted message, including when settings specify ask. Explicit conflicting
 choices or changed settings, Git configuration, endpoints, history, or association
 block recovery. Preserve private Git metadata, retained refs, and reflogs.
+An already completed interactive preparation is reused without opening the editor
+again. Finish asks for any integration method or message still needed on the
+prepared result. Expected tracked shared-configuration changes during preparation
+and target checkout retain the attempt's original settings and destinations.
+Start and save load the configuration of their current branch for new work.
+
 Recovery requires compatible retained state. For a pending attempt from an
 incompatible pre-release build, finish with a compatible executable and preserved
 metadata, or complete the pending Git operations and deliveries manually. Clear

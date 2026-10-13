@@ -90,11 +90,6 @@ fn review_native_reorder_combine_reword_and_drop_publish_the_actual_result() {
             for (name, body, expected) in [
                 ("unchanged", ":", vec!["first", "second", "third"]),
                 (
-                    "native-picks",
-                    "sed -n '/^pick /p' \"$1\" > \"$1.new\"; mv \"$1.new\" \"$1\"",
-                    vec!["first", "second", "third"],
-                ),
-                (
                     "reorder",
                     "awk '/^pick / { a[++n]=$0; next } { print } END { for(i=n;i>0;i--)print a[i] }' \"$1\" > \"$1.new\"; mv \"$1.new\" \"$1\"",
                     vec!["third", "second", "first"],

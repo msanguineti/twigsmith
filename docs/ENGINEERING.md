@@ -145,9 +145,11 @@ Finish additionally binds effective Git configuration, committed shared-settings
 blob IDs, history boundaries, fresh remote evidence, and recovery state. Integration
 also binds source/target/HEAD reflogs, worktree occupancy, selected private records,
 and retention refs. The full effective Git configuration is compared conservatively,
-so even an unrelated changed value can require reassessment. Settings-file formatting
-alone does not invalidate equal resolved values and sources, unless the committed
-configuration blob changes.
+so even an unrelated changed value can require reassessment. Save and review
+compare settings by resolved values and sources, with finish additionally binding
+committed configuration blobs. Start's checkout guard and integration stages
+snapshot recognized shared and private file contents and modes; only verified
+tracked-tree transitions may change shared files during the selected Git effects.
 
 These are several reads, not an atomic snapshot or cross-process lock. Restored
 transient changes can escape observation, and hooks can act after a guard. Remote
@@ -326,6 +328,14 @@ the remaining-state report preserves that fact. Git's switch parser can also
 refuse a syntactically valid literal such as `@`; start reports that refusal
 without renaming or adding a detached-checkout workaround. These cases are covered
 by [start workflow tests](../tests/start_workflow.rs).
+
+Checkout can restore, remove, or change tracked shared configuration. The final
+guard compares recognized configuration files with the approved target tree and
+keeps the pre-switch private configuration and effective Git configuration bound.
+It validates the original request using its original settings; restored settings
+grant no additional start effects. Subsequent commands load the current branch's
+configuration. Unexpected file changes, including checkout-hook changes, still
+stop execution.
 
 ## Save: preserve selected work, then publish
 
@@ -531,9 +541,15 @@ recreation, lost evidence, changed settings/routes, or unfinished/aborted operat
 cannot supply the earlier edit's delivery authority. Review replacement still
 requires current rewrite permission and retained exact remote incorporation proof.
 Direct integration preserves its selected ff-only, no-ff merge, or squash method;
-source editing alone supplies no remote source publication or deletion permission.
+source editing alone supplies no remote source publication permission. Direct
+cleanup can use the retained original-source incorporation proof for the exact
+published version observed before preparation, after verifying the native
+preparation and integration transitions.
 [Ordinary CLI editing tests](../tests/cli_history.rs) exercise native operations,
 actual resulting history, no-work integration, and cross-process retries.
+The [ordinary lifecycle fixtures](../tests/cli_lifecycle/ordinary.rs) combine
+shared setup, save preservation, branch resume, prepared delivery and work cleanup,
+and fresh-process continuation through the public commands.
 
 ### Rebase recovery proves incorporation
 
@@ -769,8 +785,9 @@ During recovery, target endpoints may be at the original target or exact result;
 other movement blocks the attempt. The fetch endpoint may lag at the original
 target. Planning pins checkout and local/remote deletion to expected versions.
 Remote cleanup requires proof that the published work version is contained in
-the pinned source; rewritten source history cannot inherit that proof from an
-old observation. New work, another worktree's occupation, uncertain publication,
+the pinned source or its corroborated retained original before preparation.
+An old remote observation alone supplies no incorporation proof. New work,
+another worktree's occupation, uncertain publication,
 or changed destinations block destructive completion. An absent branch counts as
 completed cleanup only within verified attempt evidence.
 
@@ -855,9 +872,10 @@ recovery records remain available throughout completion and retry.
 
 Published-work cleanup uses the publication remote's endpoints independently of
 base-remote delivery. Each eligible recorded source version must be proven included
-in the integrated source. Tagged one-time rebase can instead corroborate exact
-original-publication incorporation in the retained original work, verified native
-preparation, and its bound rewrite authorization. This proof covers only the
+in the integrated source. Verified ordinary preparation can instead corroborate
+exact original-publication incorporation in the retained original work and the
+native preparation transition. Tagged one-time rebase additionally requires its
+bound rewrite authorization. This proof covers only the
 originally observed version, with the original retention and branch evidence still
 required; newer publication cannot borrow it. The executor observes the exact head
 immediately before
@@ -936,6 +954,22 @@ The current record format is required; malformed or unsupported records block
 recovery. Branch-policy schema failures identify the local association key for
 deliberate correction after pending work is resolved. Metadata replacement alone
 cannot establish prior delivery or cleanup authority.
+
+A retained attempt continues with its original settings, reconstructed from its
+retained original regular shared-configuration file (or original absence) and
+current private layer. Untracked shared files and symlinked settings retain strict
+resolved-settings equality. Expected tracked configuration changes from
+preparation, target checkout, and integration
+are checked against the current committed tree rather than treated as new policy.
+An authorized squash's staged configuration is checked against its exact index
+blobs before committing the candidate.
+Private settings, Git configuration, routes, endpoints, and branch associations
+remain bound to the attempt. A changed or recreated branch cannot use this
+configuration handling to inherit another attempt's authority.
+The checkout guard supports Git's ordinary LF/CRLF conversion without running
+external filters. Custom transformations of shared configuration that cannot be
+matched to the selected tree stop this guard conservatively.
+
 Acknowledged retention requires the matching private ref and its creation reflog;
 an acknowledged result also requires the verified commit and result ref.
 
