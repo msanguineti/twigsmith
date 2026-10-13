@@ -106,9 +106,9 @@ fn pair(root: &Path) -> (Repository, Repository) {
     (remote, local)
 }
 #[test]
-fn cli_start_phrase_and_literal_names_use_fresh_base() {
+fn cli_start_literal_names_use_fresh_base() {
     cli_cases(
-        "cli_start_phrase_and_literal_names_use_fresh_base",
+        "cli_start_literal_names_use_fresh_base",
         true,
         |root, cli| {
             let (remote, local) = pair(root);
@@ -118,16 +118,16 @@ fn cli_start_phrase_and_literal_names_use_fresh_base() {
             let nested = local.path().join("nested");
             fs::create_dir(&nested).unwrap();
             check(
-                cli.run(&nested, &["start", "Add CAFÉ avatars"]),
+                cli.run(&nested, &["start", "Add-CAFÉ-avatars"]),
                 0,
-                &["Created branch add-café-avatars"],
+                &["Created branch Add-CAFÉ-avatars"],
             );
             assert_eq!(oid(&local, "HEAD"), fresh);
             local.success(&["switch", "main"]);
             check(
-                cli.start(&local, "--- nasty deployment bug !!!"),
+                cli.start(&local, "Nasty-Deployment-Bug"),
                 0,
-                &["Created branch nasty-deployment-bug"],
+                &["Created branch Nasty-Deployment-Bug"],
             );
             for name in [
                 "feature",
@@ -140,6 +140,7 @@ fn cli_start_phrase_and_literal_names_use_fresh_base() {
                 "notes",
                 "docs/École",
                 "custom/$;literal",
+                "中文/工作",
             ] {
                 local.success(&["switch", "main"]);
                 check(
@@ -197,9 +198,9 @@ fn cli_start_local_resume_and_dirty_current_noop_do_not_contact_remote() {
 }
 
 #[test]
-fn cli_start_resumes_exact_unicode_names_and_canonical_phrases() {
+fn cli_start_resumes_exact_unicode_names() {
     cli_cases(
-        "cli_start_resumes_exact_unicode_names_and_canonical_phrases",
+        "cli_start_resumes_exact_unicode_names",
         true,
         |root, cli| {
             let repo = Repository::new(root);
@@ -210,6 +211,7 @@ fn cli_start_resumes_exact_unicode_names_and_canonical_phrases() {
                 "docs/École",
                 "docs/E\u{301}cole",
                 "feature",
+                "中文/工作",
             ] {
                 repo.success(&["switch", "-c", name, "main"]);
                 let work = commit(&repo, name);
@@ -228,13 +230,14 @@ fn cli_start_resumes_exact_unicode_names_and_canonical_phrases() {
             }
             assert_eq!(oid(&repo, "main"), base);
             repo.success(&["branch", "café-work"]);
-            for input in ["CAFÉ work", "CAFE\u{301} work"] {
+            for input in ["CAFÉ work", "CAFE\u{301} work", "中文 工作"] {
+                let before = snapshot(root);
                 check(
                     cli.start(&repo, input),
-                    0,
-                    &["Resumed local branch café-work"],
+                    1,
+                    &["invalid target branch name", "without spaces"],
                 );
-                repo.success(&["switch", "main"]);
+                assert_eq!(snapshot(root), before);
             }
         },
     );
@@ -317,7 +320,7 @@ fn cli_start_malformed_arguments_are_preserved_syntax_failures() {
                     .args([OsString::from(cli.command), OsString::from_vec(vec![0xff])])
                     .output()
                     .unwrap();
-                check(output, 2, &["expected start <branch-name-or-phrase>"]);
+                check(output, 2, &["expected start <branch-name>"]);
                 assert_eq!(snapshot(root), before);
             }
         },
@@ -380,7 +383,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                 ("@{-1}", "invalid target branch"),
                 ("main~1", "invalid target branch"),
                 ("a..b", "invalid target branch"),
-                (" !!! ", "no usable letters or numbers"),
+                (" !!! ", "invalid target branch name"),
             ] {
                 let before = snapshot(root);
                 check(cli.start(&repo, input), 1, &[expected]);
@@ -395,11 +398,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             check(
                 cli.start(&repo, "work"),
                 1,
-                &[
-                    "invalid settings:",
-                    "duplicate key",
-                    "check git-oneflow.config",
-                ],
+                &["invalid settings:", "duplicate key", "gof config show"],
             );
             assert_eq!(snapshot(root), before);
             fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
@@ -480,7 +479,7 @@ fn cli_start_help_is_independent_of_git_repository_and_settings() {
                     let help = check(output, 0, &[]);
                     if args[0] == "start" {
                         for content in [
-                            "Usage: git-oneflow start <branch-name-or-phrase>",
+                            "Usage: git-oneflow start <branch-name>",
                             "Alias: s",
                             "Arguments:",
                             "Options:",

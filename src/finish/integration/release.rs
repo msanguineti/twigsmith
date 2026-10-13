@@ -990,6 +990,81 @@ pub fn deliver(
     skip: bool,
     commands: &mut Vec<CommandReport>,
 ) -> Result<Plan, FinishError> {
+    deliver_with_caches(root, initial, skip, commands, &mut vec![])
+}
+
+/// Deliver the selected release refs and report independent local cache issues.
+pub fn deliver_with_caches(
+    root: &Path,
+    initial: &Plan,
+    skip: bool,
+    commands: &mut Vec<CommandReport>,
+    caches: &mut Vec<crate::save::publication::CacheReport>,
+) -> Result<Plan, FinishError> {
+    let record = initial.record.as_ref().and_then(|r| r.release.as_ref());
+    let prepared = record.map(|record| {
+        let tag = crate::tracking::cache::Prepared::new(
+            root,
+            &initial.target.remote,
+            &record.reference(),
+        );
+        let marker = record.marker.as_ref().map(|marker| {
+            crate::tracking::cache::Prepared::new(root, &initial.target.remote, &marker.reference)
+        });
+        (tag, marker)
+    });
+    let result = deliver_inner(root, initial, skip, commands);
+    if let Some((tag, marker)) = prepared
+        && let Some(record) = record
+    {
+        let observations = delivery_observations(initial, commands);
+        let desired_tag = record.tag_object.as_deref();
+        let tags = observations
+            .iter()
+            .filter(|d| {
+                desired_tag.is_some_and(|oid| d.tag == RefObservation::Commit(oid.to_vec()))
+            })
+            .map(|d| (d.destination.clone(), None))
+            .collect::<Vec<_>>();
+        if !tags.is_empty() {
+            caches.push(tag.refresh(root, &tags, desired_tag))
+        }
+        if let Some(cache) = marker
+            && let Some(marker) = &record.marker
+        {
+            let markers = observations
+                .iter()
+                .filter(|d| d.marker == Some(RefObservation::Commit(record.source.clone())))
+                .map(|d| {
+                    (
+                        d.destination.clone(),
+                        marker
+                            .destinations
+                            .as_ref()
+                            .and_then(|ds| ds.iter().find(|old| old.destination == d.destination))
+                            .and_then(|d| commit(&d.branch).map(<[u8]>::to_vec)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !markers.is_empty() {
+                caches.push(cache.refresh(root, &markers, Some(&record.source)))
+            }
+        }
+    }
+    if let Ok(plan) = &result {
+        // Cache hooks must preserve the returned plan. Release readiness is
+        // checked by delivery itself; ordinary plans can retain cleanup blockers.
+        revalidate(root, plan, plan.evidence.as_ref())?
+    }
+    result
+}
+
+fn deliver_inner(
+    root: &Path,
+    initial: &Plan,
+    skip: bool,
+    commands: &mut Vec<CommandReport>,
+) -> Result<Plan, FinishError> {
     let mut plan = initial.clone();
     if plan.has_remaining_destinations() {
         return Err(invalid("integration destinations remain pending"));

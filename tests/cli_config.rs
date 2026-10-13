@@ -858,7 +858,9 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     );
                     terminal.until("Publication remote");
                     assert!(terminal.output.contains("hint-only"));
-                    terminal.send(if custom {
+                    terminal.send(if custom && format == "toml" {
+                        b"future-remote\n\nfuture/base\n4\n3\n2\n1\n1\n1\n1\n1\n\n"
+                    } else if custom {
                         b"future-remote\n\nfuture/base\nwip\nmerge\nallow\n\n\n\n\n\n\n"
                     } else {
                         b"\n\n\n\n\n\n\n\n\n\n\n\n"
@@ -908,7 +910,7 @@ fn guided_formats_defaults_custom_values_and_private_precedence() {
                     assert!(!contents.contains("redact-credentials"));
                     assert!(!contents.contains("private-check"));
                     assert!(terminal.output.replace('\r', "").contains(&contents));
-                    terminal.send(b"yes\n");
+                    terminal.send(if format == "toml" { b"1\n" } else { b"yes\n" });
                     assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
                     assert_eq!(
                         fs::read_to_string(repo.path().join(filename)).unwrap(),
@@ -1040,7 +1042,7 @@ fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
             terminal.interrupt();
             assert!(!terminal.finish().success());
             assert_eq!(snapshot(repo.path()), before);
-            for answer in [b"no\n".as_slice(), b"\n"] {
+            for answer in [b"no\n".as_slice(), b"2\n", b"3\n", b"\n"] {
                 let repo = Repository::new(root);
                 let before = snapshot(repo.path());
                 let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);

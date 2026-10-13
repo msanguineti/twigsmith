@@ -179,6 +179,18 @@ fn input(prompt: &str) -> Result<Option<String>, ConfigError> {
         Ok(Some(line))
     }
 }
+fn menu_input(prompt: &str, choices: &[&str]) -> Result<Option<String>, ConfigError> {
+    let Some(answer) = input(prompt)? else {
+        return Ok(None);
+    };
+    let answer = crate::cli::menu_answer(answer, choices);
+    Ok((answer != "cancel").then_some(answer))
+}
+fn menu(choices: &[&str]) {
+    for (index, choice) in choices.iter().enumerate() {
+        eprintln!("  {}) {choice}", index + 1);
+    }
+}
 fn cancelled() -> Result<(), ConfigError> {
     eprintln!("Setup cancelled; no configuration created.");
     Ok(())
@@ -186,10 +198,11 @@ fn cancelled() -> Result<(), ConfigError> {
 fn policy<T>(
     label: &str,
     default: &str,
+    choices: &[&str],
     parse: impl Fn(&str) -> Result<T, String>,
 ) -> Result<Option<T>, ConfigError> {
     loop {
-        let Some(answer) = input(&format!("Default {label} [{default}]: "))? else {
+        let Some(answer) = menu_input(&format!("Default {label} [{default}]: "), choices)? else {
             return Ok(None);
         };
         match parse(if answer.is_empty() { default } else { &answer }) {
@@ -207,7 +220,7 @@ fn guided(
     let mut plan = config::prepare_guided(directory, format)?;
     let defaults = settings::Settings::default();
     eprintln!(
-        "Configure shared start/save/finish settings. Enter keeps the built-in default; type cancel to stop."
+        "Configure shared start/save/finish settings. Enter keeps the built-in default; enter a displayed number or name for choices, or cancel to stop."
     );
     for (label, bytes) in [
         ("Local remotes", &plan.review().remotes),
@@ -298,13 +311,14 @@ fn guided(
         );
     }
     eprintln!(
-        "Save with uncommitted changes:\n  ask          Choose an action each time at a terminal.\n  publish-only Publish existing commits; uncommitted work stays local.\n  staged       Commit exactly the selected staged work, then publish; requires a message. Unstaged/untracked work stays local.\n  wip          Create separate WIP commits for staged and remaining work, then publish; ignored files stay local.\n  stash        Retain work, including untracked files, in a local stash; publish existing commits. Ignored files stay local.\nClean trees publish existing commits directly. Explicit save flags override this preference."
+        "Save with uncommitted changes:\n  1) ask          Choose an action each time at a terminal.\n  2) publish-only Publish existing commits; uncommitted work stays local.\n  3) staged       Commit the staged selection, then publish; requires a message.\n               Unstaged and untracked work stays local.\n  4) wip          Checkpoint staged and remaining work separately, then publish.\n               Ignored files stay local.\n  5) stash        Retain a local stash including untracked work; publish existing commits.\n  6) cancel  Stop setup.\nClean trees publish existing commits directly. Explicit save flags override this preference."
     );
+
     loop {
-        let Some(answer) = input(&format!(
-            "Default save action [{}]: ",
-            defaults.save_action.as_str()
-        ))?
+        let Some(answer) = menu_input(
+            &format!("Default save action [{}]: ", defaults.save_action.as_str()),
+            &["ask", "publish-only", "staged", "wip", "stash", "cancel"],
+        )?
         else {
             return cancelled();
         };
@@ -321,10 +335,15 @@ fn guided(
         }
     }
     eprintln!(
-        "Finish update when the branch needs the remote base:\n  ask     Choose rebase, merge, or none at a terminal.\n  rebase  Replay branch commits onto the observed base.\n  merge   Incorporate the observed base with a merge or fast-forward.\n  none    Publish current history without updating from the base.\nExplicit finish --update overrides this preference."
+        "Finish update when the branch needs the remote base:\n  1) ask     Choose rebase, merge, or none at a terminal.\n  2) rebase  Replay branch commits onto the observed base.\n  3) merge   Incorporate the observed base with a merge or fast-forward.\n  4) none    Publish current history without updating from the base.\n  5) cancel  Stop setup.\nExplicit finish --update overrides this preference."
     );
+
     loop {
-        let Some(answer) = input("Default finish update [ask]: ")? else {
+        let Some(answer) = menu_input(
+            "Default finish update [ask]: ",
+            &["ask", "rebase", "merge", "none", "cancel"],
+        )?
+        else {
             return cancelled();
         };
         match settings::parse_update(if answer.is_empty() {
@@ -340,10 +359,15 @@ fn guided(
         }
     }
     eprintln!(
-        "Finish replacement of published history:\n  ask    Request separate authorization when replacement is required.\n  allow  Standing authorization for eligible replacement; incorporation proof and exact remote leases remain required.\n  deny   Deny replacement.\nSelecting rebase supplies no replacement authorization. Explicit rewrite flags override this preference."
+        "Finish replacement of published history:\n  1) ask    Request separate authorization when replacement is required.\n  2) allow  Standing authorization for eligible replacement.\n            Incorporation proof and exact remote leases remain required.\n  3) deny   Deny replacement.\n  4) cancel  Stop setup.\nSelecting rebase supplies no replacement authorization. Explicit rewrite flags override this preference."
     );
+
     loop {
-        let Some(answer) = input("Default finish rewrite [ask]: ")? else {
+        let Some(answer) = menu_input(
+            "Default finish rewrite [ask]: ",
+            &["ask", "allow", "deny", "cancel"],
+        )?
+        else {
             return cancelled();
         };
         match settings::parse_rewrite(if answer.is_empty() {
@@ -359,11 +383,12 @@ fn guided(
         }
     }
     eprintln!(
-        "Finish completion:\n  ask        Choose review or integrate at a terminal.\n  review     Prepare and publish the working branch for manual review.\n  integrate  Integrate into the project target, publish it, and complete checkout and cleanup."
+        "Finish completion:\n  1) ask        Choose review or integrate at a terminal.\n  2) review     Prepare and publish the working branch for manual review.\n  3) integrate  Deliver to the project target, then complete checkout and cleanup.\n  4) cancel  Stop setup."
     );
     let Some(mode) = policy(
         "finish mode",
         defaults.finish_mode.as_str(),
+        &["ask", "review", "integrate", "cancel"],
         settings::parse_mode,
     )?
     else {
@@ -372,11 +397,12 @@ fn guided(
     plan.proposed.finish_mode = mode;
     if mode != settings::FinishMode::Review {
         eprintln!(
-            "Final integration method (separate from finish-update):\n  ask      Choose at a terminal.\n  ff-only  Fast-forward only; creates no integration commit.\n  merge    Create a merge commit, including when fast-forward is possible.\n  squash   Create one commit containing the integrated work."
+            "Final integration method (separate from finish-update):\n  1) ask      Choose at a terminal.\n  2) ff-only  Fast-forward only; creates no integration commit.\n  3) merge    Create a merge commit, including when fast-forward is possible.\n  4) squash   Create one commit containing the integrated work.\n  5) cancel  Stop setup."
         );
         let Some(integration) = policy(
             "finish integration",
             defaults.finish_integration.as_str(),
+            &["ask", "ff-only", "merge", "squash", "cancel"],
             settings::parse_integration,
         )?
         else {
@@ -385,11 +411,12 @@ fn guided(
         plan.proposed.finish_integration = integration;
         if integration != settings::FinishIntegration::FfOnly {
             eprintln!(
-                "Final integration commit message:\n  ask   Offer an editable suggestion at a terminal.\n  auto  Use the generated message.\nfinish -m/--message supplies the final integration commit message; existing work commits and review descriptions are unchanged."
+                "Final integration commit message:\n  1) ask   Offer an editable suggestion at a terminal.\n  2) auto  Use the generated message.\n  3) cancel  Stop setup.\nfinish -m/--message supplies the final integration commit message; existing work commits and review descriptions are unchanged."
             );
             let Some(message) = policy(
                 "finish message",
                 defaults.finish_message.as_str(),
+                &["ask", "auto", "cancel"],
                 settings::parse_message,
             )?
             else {
@@ -398,11 +425,12 @@ fn guided(
             plan.proposed.finish_message = message;
         }
         eprintln!(
-            "After confirmed target publication, finish checkout selects target (the local integration target) or work (the working branch)."
+            "After confirmed target publication:\n  1) target  Check out the local integration target.\n  2) work    Keep the work branch checked out.\n  3) cancel  Stop setup."
         );
         let Some(checkout) = policy(
             "finish checkout",
             defaults.finish_checkout.as_str(),
+            &["target", "work", "cancel"],
             settings::parse_checkout,
         )?
         else {
@@ -410,11 +438,12 @@ fn guided(
         };
         plan.proposed.finish_checkout = checkout;
         eprintln!(
-            "After confirmed target publication, finish cleanup selects ask (choose at a terminal), keep (retain work branches), local (delete the local work branch), or both (delete local and published work branches)."
+            "Work branch cleanup after confirmed target publication:\n  1) ask     Choose cleanup at a terminal.\n  2) keep    Retain local and published work.\n  3) local   Delete local work; keep published work.\n  4) both    Delete local and published work.\n  5) cancel  Stop setup."
         );
         let Some(cleanup) = policy(
             "finish cleanup",
             defaults.finish_cleanup.as_str(),
+            &["ask", "keep", "local", "both", "cancel"],
             settings::parse_cleanup,
         )?
         else {
@@ -666,8 +695,10 @@ fn guided(
             review_route(&resolved, true);
         }
     }
+    menu(&["yes", "no", "cancel"]);
     loop {
-        let Some(answer) = input("Create this file? [yes/no]: ")? else {
+        let Some(answer) = menu_input("Create this file? [yes/no]: ", &["yes", "no", "cancel"])?
+        else {
             return cancelled();
         };
         match answer.as_str() {
@@ -1101,109 +1132,56 @@ fn show(inspection: &config::Inspection) {
 }
 fn help() {
     println!(
-        "Inspect configuration or set up shared start/save/finish settings.
+        r#"Set up shared workflow settings or inspect effective configuration.
 
-Usage: git-oneflow config show
-       git-oneflow config --yes [--format <toml|yaml|json>] [--oneflow|--oneflow-hosted] [--marker <branch>]
-       git-oneflow config [--format <toml|yaml|json>] [--oneflow|--oneflow-hosted] [--marker <branch>]
+Usage: git-oneflow config [OPTIONS]
+       git-oneflow config show
 
 Arguments:
-  show             Display effective settings and their sources
+  show                      Inspect settings, their sources, and local routing
 
 Options:
-  --oneflow        Create an editable direct OneFlow policy bundle
-  --oneflow-hosted Create an editable hosted OneFlow review policy bundle
-  --marker <branch>  Configure release/hotfix marker (requires either bundle)
-  -y, --yes        Create shared defaults without interactive input
-  --format <toml|yaml|json>
-                   Generated format (default: toml)
-  -h, --help       Show help
+  -y, --yes                 Create shared defaults without terminal input
+  --format <toml|yaml|json>  Select the new file format (default: toml)
+  --oneflow                 Generate editable direct OneFlow workstream policies
+  --oneflow-hosted          Generate editable review OneFlow workstream policies
+  --marker <branch>         Enable a release marker with either OneFlow bundle
+  -h, --help                Show help
 
 Examples:
   gof config
   gof config show
-  gof config -y
   gof config --yes --format yaml
-  git-oneflow config --yes --format json
   gof config --oneflow --yes --marker stable
-  gof config --oneflow-hosted --yes
 
-Details:
-  Inspection reports effective values, file locations, and validation errors.
-  Precedence per key: explicit workflow flags > local > shared > built-in defaults.
-  Run from the root or any nested directory. Bare repositories support inspection.
-  Generation creates git-oneflow.config.toml, .yaml, or .json at the working-tree root.
-  Built-in defaults: publish-remote = origin; base-remote follows publication; base = main; save-action = ask.
-  Local publication settings override shared publication settings.
-  Explicit base-remote resolves independently; start, save, and finish support separate roles.
-  Finish defaults: finish-mode = ask; finish-update = ask; finish-history-edit = none; finish-rewrite = ask.
-  finish-mode: ask, review, integrate. Review prepares and publishes for manual review.
-  Integrate delivers to base-remote, then completes selected checkout and work cleanup.
-  finish-integration: ask (default), ff-only, merge (merge commit), squash.
-  finish-message: ask (default; editable suggestion), auto (generated message).
-  finish-checkout: target (default), work; applies after target publication.
-  finish-cleanup: ask (default), keep, local, both; applies after target publication.
-  local deletes local work; both deletes local and published work; keep retains branches.
-  Guided review delivery omits integration settings and questions.
-  Other modes ask integration policies; ff-only omits the message policy.
-  --yes retains unresolved ask policies and the target checkout default.
-  --oneflow explicitly selects editable ordinary/release/hotfix policies.
-  The direct bundle prepares ordinary work by merge; tagged work defaults to no preparation.
-  It selects version tags, history-preserving merge integration, and full work cleanup for releases/hotfixes.
-  --oneflow-hosted selects review delivery and retains original and merge-back branches.
-  Hosted release/hotfix publish original work to the project base-remote and merge-back to review-remote.
-  review-remote follows the policy publication remote when omitted; the hosted bundle sets it explicitly.
-  merge-back-branch is an exact optional policy branch; finish --merge-back supplies explicit input.
-  Hosted tagged review requires merge integration guidance, work checkout, keep cleanup, and no rewrite allow.
-  Hosted updates ask, merge, or none affect only merge-back; rebase cannot retain released history.
-  Submit merge-back into the target with no-ff integration using your chosen means.
-  Advance a configured marker to the released tag by fast-forward and clean branches after integration.
-  Hotfix active-release is explicitly none until edited to an active release branch.
-  Markers are disabled unless --marker supplies an exact branch.
-  integration-targets is a nonempty ordered list of distinct tagged release/hotfix destinations.
-  Select integration-target or integration-targets; a private choice replaces the shared alternative.
-  Hotfix lists start with the declared active-release when one is configured.
-  version-tag-identity: work-source (default), integrated-result (first destination result).
-  Tagged direct finish-update is none; --update rebase selects one-time preparation explicitly.
-  Integrated-result review publishes work, then leaves validation, tagging and marker steps manual.
-  Review supports one destination; direct integration delivers all configured destinations.
-  Shared/private workstreams fields merge independently; ordinary defaults apply without this bundle.
-  finish-checks is an ordered list of objects with a name string and command list.
-  command is a nonempty executable-and-argument list; shell syntax requires an explicit shell.
-  Defaults contain no checks. A local list replaces the shared list; [] disables inherited checks.
-  Inspection displays checks and their source without running commands or checking executables.
-  Finish runs checks after preparation and before publication; --skip-checks bypasses them explicitly.
-  Start and save never execute finish checks.
-  Finish output redacts HTTP(S) URL credentials by default. redact-credentials is private and local-only.
-  Use gof finish --show-credentials for one invocation when debugging; output and captured logs can expose credentials.
-  finish-update: ask, rebase, merge, none; finish-history-edit: none, interactive.
-  finish-rewrite: ask, allow, deny. Interactive editing requires rebase and ordinary work.
-  Rewrite allow is standing authorization for eligible replacement; remote safeguards remain.
-  Private overrides take precedence; guided review shows effective roles, checks, and their sources.
-  Equal role choices omit base-remote so the base follows publication.
-  Remote names provide hints only; setup assigns no roles from their names.
-  publish-remote governs gof operations; ordinary Git commands use your Git configuration.
-  Guided setup validates private files; --yes reports their locations without parsing.
-  Every recognized shared file or symlink, including .yml, prevents generation.
-  --yes permits unattended creation; existing files are preserved.
-  Generation works offline with dirty, unborn, or detached working trees.
-  It leaves existing work, the index, refs, and Git configuration unchanged.
-  Run config to choose publication, a base source that follows publication or a separate remote,
-  the base branch, save action, finish policies, and optional ordered checks at a terminal.
-  For each check, enter a name and a JSON array such as [\"cargo\", \"test\", \"--locked\"].
-  Enter a blank name for no checks or to finish the list. Each string is one literal argument.
-  For shell features, enter an explicit shell: [\"sh\", \"-c\", \"npm run lint && npm test\"].
-  Setup never runs checks or probes executables; --yes always generates no checks.
-  Failed checks stop publication; fix the problem and rerun finish to run all checks again.
-  Setup starts with built-in defaults and offers offline repository hints.
-  Review the destination, exact contents, and private overrides; enter yes to create.
-  Cancellation or end-of-input creates no file. Changed review context stops setup.
+Notes:
+  Setup creates git-oneflow.config.<format> at the working-tree root, including
+  when invoked from a nested directory. An existing recognized shared file is preserved.
+  Guided setup reviews exact contents and private overrides before creation.
+  Enter keeps the displayed default; finite choices accept a number or name.
+  Cancel or end-of-input creates no file. Changed review context stops creation.
+  --yes needs no terminal and retains unresolved ask choices; it creates no checks.
+  Setup changes no branches, contacts no remote, and runs no configured checks.
+  The OneFlow bundles are alternatives; edit their generated routes to suit the project.
+  Direct tagged policies integrate and clean up work; hosted policies prepare manual
+  review and retain work. Marker advancement after hosted review remains manual.
+
+Defaults:
+  publish-remote: origin; base-remote follows publication; base: main.
+  save-action, finish-mode, finish-update, finish-rewrite: ask.
+  finish-integration, finish-message, finish-cleanup: ask; finish-checkout: target.
+  finish-history-edit: none; finish-checks: [].
+
+Configuration:
+  One git-oneflow.config.toml, .yaml, .yml, or .json file per layer.
+  Shared files live at the worktree root; local overrides live in the Git common directory.
+  Explicit command flags override local, shared, and built-in values in that order.
+  Local finish-checks replaces the shared list; [] disables inherited checks.
+  redact-credentials is local-only; HTTP(S) credentials are hidden by default.
 
 Exit status:
   0  Inspection, generation, help, or cancellation completed
-  1  Terminal, repository, settings, or write failure
-  2  Invalid syntax
-
-See docs/USAGE.md for settings and recovery."
+  1  Repository, settings, input, or generation failure
+  2  Invalid syntax"#
     );
 }

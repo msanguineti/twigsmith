@@ -1,4 +1,5 @@
-//! Guarded delivery of a retained integration result. No tracking or completion.
+//! Guarded delivery and cache maintenance for a retained integration result.
+//! Upstream configuration and final completion remain separate.
 use super::*;
 use crate::{
     finish::{checks, preparation::CommandReport},
@@ -78,6 +79,7 @@ pub struct Report {
     pub commit: Option<Vec<u8>>,
     pub state: PublicationState,
     pub destinations: Vec<DestinationOutcome>,
+    pub caches: Vec<shared::CacheReport>,
     /// Reassessed recovery with this attempt's destination observations. An
     /// uncertain response remains unavailable until an explicit refresh.
     pub plan: Result<Plan, FinishError>,
@@ -265,6 +267,7 @@ pub fn publish_with_checks(
                 error: None,
             })
             .collect(),
+        caches: vec![],
         plan: assess(root, &plan.request, plan.evidence.as_ref()),
         remaining: repository::inspect(root),
         error: None,
@@ -275,6 +278,11 @@ pub fn publish_with_checks(
         if report.destinations.is_empty() {
             return Err(Error::UnverifiedResult);
         }
+        let cache = crate::tracking::cache::Prepared::new(
+            root,
+            &plan.target.remote,
+            &plan.target.reference,
+        );
         sequence::verify_completed_delivery(root, plan, &mut report.destinations[0].commands)?;
         release::pending_routes(root, plan, &mut report.destinations[0].commands)?;
         // Observe first: a retry delivered elsewhere needs no candidate execution.
@@ -306,6 +314,17 @@ pub fn publish_with_checks(
                     d.error = push(root, plan, d).err();
                 }
             }
+        }
+        let confirmed = report
+            .destinations
+            .iter()
+            .filter(|d| d.state.is_published())
+            .map(|d| (d.destination.clone(), Some(d.expected.clone())))
+            .collect::<Vec<_>>();
+        if !confirmed.is_empty() {
+            report
+                .caches
+                .push(cache.refresh(root, &confirmed, plan.result.as_deref()));
         }
         guard(root, plan)?;
         if state(&report.destinations) != PublicationState::Complete

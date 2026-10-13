@@ -79,6 +79,7 @@ pub struct Report {
     pub local_tag: Option<RefObservation>,
     pub local_candidate: Option<RefObservation>,
     pub publications: Vec<PublicationStatus>,
+    pub caches: Vec<save::publication::CacheReport>,
     pub plan: Option<Plan>,
     pub commands: Vec<preparation::CommandReport>,
     pub error: Option<FinishError>,
@@ -987,6 +988,7 @@ pub fn execute(
 ) -> Report {
     let mut report = Report::default();
     let mut plan = initial.clone();
+    let mut caches = vec![];
     let result = (|| -> Result<(), FinishError> {
         revalidate(root, &plan)?;
         clean(&plan.state)?;
@@ -1094,6 +1096,17 @@ pub fn execute(
         }
         pending_routes(root, &plan, &mut report.commands)?;
         let mut record = plan.record.clone().unwrap();
+        for route in &record.routes {
+            if !caches.iter().any(|(remote, reference, _)| {
+                remote == &route.remote && reference == &route.reference
+            }) {
+                caches.push((
+                    route.remote.clone(),
+                    route.reference.clone(),
+                    crate::tracking::cache::Prepared::new(root, &route.remote, &route.reference),
+                ));
+            }
+        }
         retain_pin(
             root,
             &plan,
@@ -1371,6 +1384,51 @@ pub fn execute(
                 observed,
                 expected,
             });
+        }
+        for (remote, reference, cache) in &caches {
+            let confirmed = report
+                .publications
+                .iter()
+                .filter(|p| {
+                    p.remote == *remote
+                        && p.reference == *reference
+                        && p.expected
+                            .as_ref()
+                            .is_some_and(|oid| p.observed == RefObservation::Commit(oid.clone()))
+                })
+                .map(|p| {
+                    (
+                        p.destination.clone(),
+                        record
+                            .routes
+                            .iter()
+                            .find(|route| {
+                                route.remote == p.remote
+                                    && route.reference == p.reference
+                                    && route.endpoint == p.destination
+                            })
+                            .and_then(|route| match &route.before {
+                                RefObservation::Commit(oid) => Some(oid.clone()),
+                                _ => None,
+                            }),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !confirmed.is_empty() {
+                let desired = report
+                    .publications
+                    .iter()
+                    .find(|p| p.remote == *remote && p.reference == *reference)
+                    .and_then(|p| p.expected.as_deref());
+                report.caches.push(cache.refresh(root, &confirmed, desired));
+            }
+        }
+        if !report.caches.is_empty()
+            && report.error.is_none()
+            && let Err(error) = revalidate(root, current)
+        {
+            report.ready = false;
+            report.error = Some(error);
         }
     }
     report

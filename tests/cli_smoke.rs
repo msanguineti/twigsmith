@@ -43,6 +43,26 @@ fn cli_runs_outside_git_without_node_or_rust_tools() {
             }
         }
 
+        for command in ["start", "save", "finish", "status", "config"] {
+            let output = Command::new(executable)
+                .args([command, "--help"])
+                .current_dir("/")
+                .env_clear()
+                .env("PATH", "")
+                .output()
+                .expect("command help should run without Git");
+            assert!(output.status.success(), "command: {command}");
+            assert!(output.stderr.is_empty());
+            let help = String::from_utf8(output.stdout).unwrap();
+            for section in ["Usage:", "Options:", "Examples:", "Exit status:"] {
+                assert!(help.contains(section), "{command}: missing {section}");
+            }
+            assert!(
+                !help.contains("docs/"),
+                "installed help must be self-contained: {command}"
+            );
+        }
+
         for args in [["start"].as_slice(), ["--help", "start"].as_slice()] {
             let output = Command::new(executable)
                 .args(args)

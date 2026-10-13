@@ -96,6 +96,7 @@ pub struct Report {
     pub effects: Vec<Effect>,
     pub targets: Vec<DestinationEvidence>,
     pub destinations: Vec<DestinationOutcome>,
+    pub caches: Vec<crate::save::publication::CacheReport>,
     pub source: Result<RefObservation, FinishError>,
     pub target: Result<RefObservation, FinishError>,
     pub plan: Result<Plan, FinishError>,
@@ -588,6 +589,7 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         effects: vec![],
         targets: vec![],
         destinations: vec![],
+        caches: vec![],
         source: hint(root, &approved.source_ref),
         target: hint(root, &approved.target.reference),
         plan: assess(root, &approved.request, approved.evidence.as_ref()),
@@ -595,6 +597,29 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         error: None,
     };
     let mut plan = approved.clone();
+    let work_cache = crate::tracking::cache::Prepared::new(
+        root,
+        &plan.settings.publish_remote,
+        &plan.source_ref,
+    );
+    let target_cache =
+        crate::tracking::cache::Prepared::new(root, &plan.target.remote, &plan.target.reference);
+    let completed_caches = plan.record.as_ref().map_or_else(Vec::new, |record| {
+        record
+            .completed
+            .iter()
+            .map(|done| {
+                (
+                    done.clone(),
+                    crate::tracking::cache::Prepared::new(
+                        root,
+                        &done.target.remote,
+                        &done.target.reference,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
     report.error = (|| {
         guard(directory, &plan)?;
         guard(root, &plan)?;
@@ -726,6 +751,52 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         Ok(())
     })()
     .err();
+    let targets = report
+        .targets
+        .iter()
+        .filter(|d| d.branch == RefObservation::Commit(plan.result.clone().unwrap_or_default()))
+        .map(|d| {
+            (
+                d.destination.clone(),
+                plan.record.as_ref().map(|r| r.target_before.clone()),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !targets.is_empty() {
+        report
+            .caches
+            .push(target_cache.refresh(root, &targets, plan.result.as_deref()));
+    }
+    if !report.targets.is_empty() {
+        for (done, cache) in &completed_caches {
+            let endpoints = done
+                .target
+                .push_destinations
+                .iter()
+                .map(|endpoint| (endpoint.clone(), None))
+                .collect::<Vec<_>>();
+            report
+                .caches
+                .push(cache.refresh(root, &endpoints, Some(&done.result)));
+        }
+    }
+    let deleted = report
+        .destinations
+        .iter()
+        .filter(|d| d.state.is_complete())
+        .map(|d| {
+            (
+                d.destination.clone(),
+                commit(&d.expected).map(<[u8]>::to_vec),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !deleted.is_empty() {
+        report.caches.push(work_cache.refresh(root, &deleted, None));
+    }
+    if !report.caches.is_empty() && report.error.is_none() {
+        report.error = guard(root, &plan).err();
+    }
     report.source = hint(root, &approved.source_ref);
     report.target = hint(root, &approved.target.reference);
     let mut final_evidence = plan.evidence.clone();

@@ -55,7 +55,21 @@ pub(super) fn run(
             );
             return ExitCode::FAILURE;
         }
-        let answer = match read_answer(presentation, prompt) {
+        if label == "preparation method" {
+            eprintln!(
+                "  1) merge   Incorporate the project target into merge-back.\n  2) none    Retain merge-back history.\n  3) cancel  Stop finish."
+            );
+        }
+        let answer = match if label == "preparation method" {
+            super::read_menu_answer(
+                presentation,
+                prompt,
+                &["merge", "none", "cancel"],
+                "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
+            )
+        } else {
+            read_answer(presentation, prompt)
+        } {
             Ok(answer) => answer,
             Err(error) => {
                 eprintln!("{error}");
@@ -131,6 +145,10 @@ pub(super) fn run(
         }
     });
     check_output.flush();
+    eprint!(
+        "{}",
+        crate::cli::cache_issues(&report.caches, |bytes| display(presentation, bytes))
+    );
     let mut diagnostics = String::new();
     command_diagnostics(presentation, &mut diagnostics, &report.commands);
     println!(

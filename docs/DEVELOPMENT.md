@@ -25,6 +25,15 @@ Use `./dev` for development commands.
 Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 `target/`. Both directories are ignored by Git.
 
+Windows and macOS build/runtime support have not been validated. Bash completion
+is an optional script, separate from both executables; it adds no runtime dependency
+to core commands. Direct integration's message editor currently launches the
+Git-selected editor through POSIX `sh` on PATH. `-m/--message` or
+`finish-message = auto` bypasses that launcher. Native interactive rebase delegates
+editor launching to Git. Configured finish checks use Unix process-group management
+and are unsupported on non-Unix systems. Linux tests do not establish portability
+of these paths.
+
 ## Development
 
 For implementation, dependency, configuration, or tooling changes, run
@@ -63,6 +72,7 @@ their exact targets with `./dev test-groups`, then select a capability:
 ./dev test-group config
 ./dev test-group shared
 ./dev test-group smoke
+./dev test-group completion
 ./dev test-group finish-planning
 ./dev test-group oneflow
 ./dev test-group hosted-oneflow
@@ -70,9 +80,10 @@ their exact targets with `./dev test-groups`, then select a capability:
 ```
 
 The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
-`lifecycle`, `smoke`, `finish-planning`, `history-edit`, `oneflow`, and `hosted-oneflow`. Command groups include
-backend and CLI coverage. `smoke` pairs CLI smoke checks with development
-launcher selection. `finish-planning` selects review finish planning and
+`lifecycle`, `smoke`, `completion`, `finish-planning`, `history-edit`, `oneflow`, and `hosted-oneflow`. Command groups include
+backend and CLI coverage. `completion` checks the sourceable Bash artifact and literal Readline insertion.
+`smoke` pairs CLI smoke checks with development
+launcher selection and completion. `finish-planning` selects review finish planning and
 eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles,
 ordered destination delivery, selected version identity, and one-time preparation
 recovery.
@@ -157,12 +168,30 @@ not goals; keep full validation comprehensive and focused selections useful.
 ```sh
 ./target/debug/git-oneflow --help
 ./target/debug/gof status
-./dev cargo run --locked -- start "add user avatars"
+./dev cargo run --locked -- start add-user-avatars
 ./dev cargo run --locked --bin gof -- --help
 ```
 
 Cargo defaults to `git-oneflow`. The development launcher runs from this
 project's root. To use another checkout, run a built executable from that checkout.
+
+### Bash completion
+
+From the repository root, enable completion for both executable names in your
+current Bash session:
+
+```sh
+source completions/git-oneflow.bash
+export PATH="$PWD/target/debug:$PATH"
+```
+
+Build first with `./dev build`. Bash is needed to use the script and run its
+completion tests; both executables build and run independently of it. Completion
+has been exercised with Bash 5.2.37 on Linux. The script completes commands, aliases, options,
+finite option values and existing local or remote-tracking branch names. Static
+choices work outside a repository. Branch suggestions use available local refs
+and can be stale; completion does not fetch or verify remote existence. It runs
+no prompts, hooks or publication. Source the script again after changing it.
 
 For optimized executables:
 

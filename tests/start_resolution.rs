@@ -27,11 +27,11 @@ fn defaults_nested_and_literal_targets() {
         fs::create_dir(&nested).unwrap();
         // Preparation does not depend on reading a healthy index or born HEAD.
         fs::write(repo.path().join(".git/index"), "invalid index").unwrap();
-        let request = preserved(root, repo.path(), "Fix bug").unwrap();
-        assert_eq!(request.target, "fix-bug");
+        let request = preserved(root, repo.path(), "Fix/Bug").unwrap();
+        assert_eq!(request.target, "Fix/Bug");
         assert_eq!(request.settings, Settings::default());
         assert_eq!(request.repository.kind, RepositoryKind::Working);
-        assert_eq!(request, preserved(root, &nested, "Fix bug").unwrap());
+        assert_eq!(request, preserved(root, &nested, "Fix/Bug").unwrap());
         for name in [
             "plain",
             "release/V1",
@@ -82,87 +82,48 @@ fn defaults_nested_and_literal_targets() {
         ));
         assert!(matches!(
             preserved(root, &nested, " 🚀 "),
-            Err(ResolveError::UnusablePhrase)
+            Err(ResolveError::InvalidTarget(_))
         ));
     });
 }
 
 #[test]
-fn phrase_conversion_and_literal_unicode_are_distinct_contracts() {
+fn literal_unicode_preserves_normalization_and_rejects_spaces() {
     isolated(
-        "phrase_conversion_and_literal_unicode_are_distinct_contracts",
+        "literal_unicode_preserves_normalization_and_rejects_spaces",
         true,
         |root| {
             let repo = Repository::new(root);
-            for (input, expected) in [
-                ("nasty deployment bug", "nasty-deployment-bug"),
-                (" Fix__ BUG / now... ", "fix-bug-now"),
-                ("CAFÉ 123", "café-123"),
-                ("Cafe\u{301} 123", "café-123"),
-                ("ΑΒΓ МОСКВА 中文１２", "αβγ-москва-中文１２"),
-                ("İSTANBUL work", "i\u{307}stanbul-work"),
-                ("हिन्दी عَرَبِيّ", "हिन्दी-عَرَبِيّ"),
-                ("\u{301}ABC /\u{301}DEF", "abc-def"),
-                ("a\t/_.🚀\u{a0} b", "a-b"),
+            for name in [
+                "中文",
+                "CAFÉ",
+                "Cafe\u{301}",
+                "a\u{a0}b",
+                "हिन्दी",
+                "عَرَبِيّ",
+                "🚀",
             ] {
-                assert_eq!(
-                    preserved(root, repo.path(), input).unwrap().target,
-                    expected
-                );
+                assert_eq!(preserved(root, repo.path(), name).unwrap().target, name);
             }
             for (a, b) in [
                 ("Å", "A\u{30a}"),
                 ("각", "각"),
                 ("É\u{323}", "E\u{323}\u{301}"),
             ] {
-                // Git accepts both exact spellings; preparation must not merge them.
                 assert_ne!(a, b);
                 assert_eq!(preserved(root, repo.path(), a).unwrap().target, a);
                 assert_eq!(preserved(root, repo.path(), b).unwrap().target, b);
-                assert_eq!(
-                    preserved(root, repo.path(), &format!("{a} work"))
-                        .unwrap()
-                        .target,
-                    preserved(root, repo.path(), &format!("{b} work"))
-                        .unwrap()
-                        .target,
-                );
             }
-            // No arbitrary product length limit or summarization.
-            let input = "Long_word ".repeat(200);
-            let expected = vec!["long-word"; 200].join("-");
-            assert_eq!(
-                preserved(root, repo.path(), &input).unwrap().target,
-                expected
-            );
             let literal = "É_".repeat(300);
             assert_eq!(
                 preserved(root, repo.path(), &literal).unwrap().target,
                 literal
             );
-            for input in [" ", " \t", " ---...🚀 ", " \u{301}\u{20dd}"] {
-                assert!(matches!(
-                    preserved(root, repo.path(), input),
-                    Err(ResolveError::UnusablePhrase)
-                ));
-            }
-            // Tabs alone do not trigger repair; Unicode spaces valid in Git stay literal.
-            for input in ["a\tb", "\t", "a\nb"] {
+            for input in ["Fix bug", " CAFÉ ", "中文 工作", "a\tb", "a\nb"] {
                 assert!(matches!(
                     preserved(root, repo.path(), input),
                     Err(ResolveError::InvalidTarget(_))
                 ));
-            }
-            for input in [
-                "CAFÉ",
-                "Cafe\u{301}",
-                "a\u{a0}b",
-                "🚀",
-                "Fix/DeploymentBug",
-                "fix/parser_v2",
-                "feature",
-            ] {
-                assert_eq!(preserved(root, repo.path(), input).unwrap().target, input);
             }
         },
     );
@@ -197,10 +158,10 @@ fn settings_overrides_and_errors() {
             preserved(root, repo.path(), "Feature/École"),
             Err(ResolveError::ProtectedBase(_))
         ));
-        // Phrase names receive the same protected-base check.
+        // Protected names are matched literally.
         fs::write(&path, "base='okay-work'").unwrap();
         assert!(matches!(
-            preserved(root, repo.path(), "okay work"),
+            preserved(root, repo.path(), "okay-work"),
             Err(ResolveError::ProtectedBase(_))
         ));
         for contents in [

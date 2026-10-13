@@ -56,6 +56,7 @@ pub struct Report {
     /// One outcome per configured URL, in configuration order, including repeats.
     pub destinations: Vec<DestinationOutcome>,
     pub tracking: TrackingReport,
+    pub caches: Vec<shared::CacheReport>,
     /// Assessed rewrite evidence; retained on disk even after complete success.
     /// This proves incorporation, never publication or reusable authorization.
     pub recovery: Recovery,
@@ -325,6 +326,7 @@ pub fn publish_with_checks(
             after: Err(SaveError::ContextChanged),
             writes: vec![],
         },
+        caches: vec![],
         recovery: plan.recovery.clone(),
         remaining: repository::inspect(root),
         error: None,
@@ -343,12 +345,36 @@ pub fn publish_with_checks(
         if report.checks.error.is_some() {
             return Err(PublicationError::ChecksFailed);
         }
+        let cache = crate::tracking::cache::Prepared::new(
+            root,
+            &plan.settings.publish_remote,
+            &plan.publication.branch_ref,
+        );
         for destination in &mut report.destinations {
             // Local context changes stop subsequent destinations. A transport or
             // remote-only failure stops that destination; independent ones retain
             // their original safeguards and may still complete.
             guard(root, plan)?;
             destination.error = publish_destination(root, plan, destination).err();
+        }
+        let confirmed = report
+            .destinations
+            .iter()
+            .filter(|d| d.state.is_published())
+            .map(|d| {
+                (
+                    d.destination.clone(),
+                    match &d.expected {
+                        RefObservation::Commit(oid) => Some(oid.clone()),
+                        _ => None,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        if !confirmed.is_empty() {
+            report
+                .caches
+                .push(cache.refresh(root, &confirmed, Some(&plan.commit)));
         }
         guard(root, plan)?;
         if publication_state(&report.destinations) != PublicationState::Complete {

@@ -2403,6 +2403,16 @@ fn advance_project(root: &Path, f: &Fixture) -> Vec<u8> {
     other.success(&["push", f.project.path().to_str().unwrap(), "main"]);
     tip
 }
+fn refs_without_project_main_cache(f: &Fixture) -> Vec<u8> {
+    f.repo
+        .success(&["show-ref"])
+        .stdout
+        .split_inclusive(|byte| *byte == b'\n')
+        .filter(|line| !line.ends_with(b" refs/remotes/project/main\n"))
+        .flatten()
+        .copied()
+        .collect()
+}
 #[test]
 fn remote_refresh_and_publication_cover_methods_roles_and_retention() {
     isolated(
@@ -2425,7 +2435,7 @@ fn remote_refresh_and_publication_cover_methods_roles_and_retention() {
                 let fork = preservation::snapshot(f.fork.path());
                 let p = remote_candidate(&f, &req);
                 let result = p.result.clone().unwrap();
-                let before_refs = f.repo.success(&["show-ref"]).stdout;
+                let before_refs = refs_without_project_main_cache(&f);
                 let r = target_publication::publish(f.repo.path(), &p);
                 assert!(r.is_complete(), "{r:#?}");
                 assert_eq!(r.checks.completed, 1);
@@ -2435,7 +2445,11 @@ fn remote_refresh_and_publication_cover_methods_roles_and_retention() {
                     RefObservation::Commit(result)
                 );
                 assert_eq!(fork, preservation::snapshot(f.fork.path()));
-                assert_eq!(before_refs, f.repo.success(&["show-ref"]).stdout);
+                assert_eq!(before_refs, refs_without_project_main_cache(&f));
+                assert_eq!(
+                    observed(f.repo.path(), b"refs/remotes/project/main"),
+                    RefObservation::Commit(p.result.clone().unwrap())
+                );
                 assert_eq!(oid(&f.repo, "A"), commit_of(&p.source));
                 assert!(matches!(
                     r.plan.as_ref().unwrap().state,
@@ -2896,7 +2910,7 @@ fn target_publication_killed_between_destinations_reuses_retained_result() {
             let f = fixture(root);
             let second = second_target(root, &f);
             let p = remote_candidate(&f, &request(FinishIntegration::Squash));
-            let before = f.repo.success(&["show-ref"]).stdout;
+            let before = refs_without_project_main_cache(&f);
             let output = target_child(
                 &f,
                 "publish",
@@ -2916,7 +2930,11 @@ fn target_publication_killed_between_destinations_reuses_retained_result() {
             assert_eq!(r["complete"], true, "{r}");
             assert_eq!(r["destinations"][0]["pushes"], 0);
             assert_eq!(r["destinations"][1]["pushes"], 1);
-            assert_eq!(before, f.repo.success(&["show-ref"]).stdout);
+            assert_eq!(before, refs_without_project_main_cache(&f));
+            assert_eq!(
+                observed(f.repo.path(), b"refs/remotes/project/main"),
+                RefObservation::Commit(p.result.clone().unwrap())
+            );
         },
     );
 }
@@ -3089,7 +3107,7 @@ fn target_publication_contains_refspec_mirror_tags_and_tracking_configuration() 
             f.repo.success(&["config", "push.followTags", "true"]);
             f.repo.success(&["config", "push.autoSetupRemote", "true"]);
             let p = remote_candidate(&f, &request(FinishIntegration::Squash));
-            let refs = f.repo.success(&["show-ref"]).stdout;
+            let refs = refs_without_project_main_cache(&f);
             let config = fs::read(f.repo.path().join(".git/config")).unwrap();
             let r = target_publication::publish(f.repo.path(), &p);
             assert!(r.is_complete(), "{r:#?}");
@@ -3099,7 +3117,11 @@ fn target_publication_contains_refspec_mirror_tags_and_tracking_configuration() 
                 remote_refs.stdout,
                 format!("{} refs/heads/main\n", text(p.result.as_ref().unwrap())).as_bytes()
             );
-            assert_eq!(refs, f.repo.success(&["show-ref"]).stdout);
+            assert_eq!(refs, refs_without_project_main_cache(&f));
+            assert_eq!(
+                observed(f.repo.path(), b"refs/remotes/project/main"),
+                RefObservation::Commit(p.result.clone().unwrap())
+            );
             assert_eq!(config, fs::read(f.repo.path().join(".git/config")).unwrap());
         },
     );
@@ -3174,6 +3196,120 @@ fn completion_pushes(r: &completion::Report) -> usize {
         .flat_map(|d| &d.commands)
         .filter(|c| c.arguments.iter().any(|a| a == "push"))
         .count()
+}
+
+#[test]
+fn completion_updates_only_eligible_target_and_deleted_work_caches() {
+    isolated(
+        "completion_updates_only_eligible_target_and_deleted_work_caches",
+        true,
+        |root| {
+            for case in ["ordinary", "custom", "newer", "symbolic", "locked"] {
+                let f = fixture(root);
+                let work_cache = if case == "custom" {
+                    "refs/remotes/cache/work-A"
+                } else {
+                    "refs/remotes/fork/A"
+                };
+                let target_cache = if case == "custom" {
+                    "refs/remotes/cache/project-main"
+                } else {
+                    "refs/remotes/project/main"
+                };
+                if case == "custom" {
+                    f.repo.success(&[
+                        "config",
+                        "remote.fork.fetch",
+                        "+refs/heads/*:refs/remotes/cache/work-*",
+                    ]);
+                    f.repo.success(&[
+                        "config",
+                        "remote.project.fetch",
+                        "+refs/heads/main:refs/remotes/cache/project-main",
+                    ]);
+                }
+                f.repo.success(&["push", "fork", "A"]);
+                let req = completion_request(
+                    FinishIntegration::Squash,
+                    FinishCleanup::Both,
+                    FinishCheckout::Target,
+                );
+                let p = delivered(&f, &req);
+                let result = p.result.clone().unwrap();
+                assert_eq!(
+                    observed(f.repo.path(), target_cache.as_bytes()),
+                    RefObservation::Commit(result.clone())
+                );
+                match case {
+                    "newer" => {
+                        f.repo.success(&["update-ref", work_cache, text(&result)]);
+                    }
+                    "symbolic" => {
+                        f.repo
+                            .success(&["symbolic-ref", work_cache, "refs/heads/main"]);
+                    }
+                    "locked" => {
+                        fs::write(
+                            f.repo
+                                .path()
+                                .join(".git")
+                                .join(format!("{work_cache}.lock")),
+                            "held",
+                        )
+                        .unwrap();
+                    }
+                    _ => (),
+                }
+                let completed = completion::complete(f.repo.path(), &p);
+                assert!(completed.is_complete(), "{case}: {completed:#?}");
+                assert_eq!(
+                    observed(f.project.path(), b"refs/heads/main"),
+                    RefObservation::Commit(result.clone())
+                );
+                assert_eq!(
+                    observed(f.fork.path(), b"refs/heads/A"),
+                    RefObservation::Absent
+                );
+                assert_eq!(
+                    observed(f.repo.path(), b"refs/heads/A"),
+                    RefObservation::Absent
+                );
+                assert_eq!(oid(&f.repo, "main"), result.clone());
+                assert_eq!(
+                    completed.caches.iter().any(|c| c.has_issue()),
+                    matches!(case, "newer" | "symbolic" | "locked"),
+                    "{case}: {completed:#?}"
+                );
+                if matches!(case, "newer" | "symbolic") {
+                    assert_eq!(
+                        observed(f.repo.path(), work_cache.as_bytes()),
+                        RefObservation::Commit(result)
+                    );
+                } else if case == "locked" {
+                    assert_eq!(observed(f.repo.path(), work_cache.as_bytes()), p.source);
+                    fs::remove_file(
+                        f.repo
+                            .path()
+                            .join(".git")
+                            .join(format!("{work_cache}.lock")),
+                    )
+                    .unwrap();
+                    let retry = completion::complete(f.repo.path(), &refreshed(&f, &req));
+                    assert!(retry.is_complete(), "{retry:#?}");
+                    assert_eq!(completion_pushes(&retry), 0);
+                    assert_eq!(
+                        observed(f.repo.path(), work_cache.as_bytes()),
+                        RefObservation::Absent
+                    );
+                } else {
+                    assert_eq!(
+                        observed(f.repo.path(), work_cache.as_bytes()),
+                        RefObservation::Absent
+                    );
+                }
+            }
+        },
+    );
 }
 #[test]
 fn completion_methods_policies_and_observational_retry() {
@@ -4061,6 +4197,10 @@ fn tagged_library_completion_requires_tag_and_marker_at_every_endpoint() {
                     .unwrap();
             assert_eq!(
                 observed(f.project.path(), b"refs/heads/stable"),
+                RefObservation::Commit(source.clone())
+            );
+            assert_eq!(
+                observed(f.repo.path(), b"refs/remotes/project/stable"),
                 RefObservation::Commit(source.clone())
             );
             assert_eq!(

@@ -1,4 +1,5 @@
 //! Shared exact-ref porcelain decoding. Callers apply their own rewrite policy.
+pub(crate) mod transport;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Status {
     Created,

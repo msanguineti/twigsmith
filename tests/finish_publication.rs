@@ -167,6 +167,11 @@ fn authorized_rebase_uses_exact_original_lease_and_retains_recovery() {
         |root| {
             let (local, remote) = fixture(root);
             let original = oid(&local, "HEAD");
+            local.success(&[
+                "update-ref",
+                "refs/remotes/origin/feature/exact",
+                std::str::from_utf8(&original).unwrap(),
+            ]);
             let plan = rewrite(&local, &remote);
             let record = local
                 .path()
@@ -175,6 +180,11 @@ fn authorized_rebase_uses_exact_original_lease_and_retains_recovery() {
             let report = publication::publish(local.path(), &plan);
             complete(&report, &[DestinationState::Rewritten]);
             assert_eq!(oid(&remote, REF), plan.commit);
+            assert_eq!(
+                oid(&local, "refs/remotes/origin/feature/exact"),
+                plan.commit
+            );
+            assert!(!report.caches[0].has_issue(), "{report:#?}");
             let args = &report.destinations[0].commands.last().unwrap().arguments;
             assert!(
                 args.contains(

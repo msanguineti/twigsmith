@@ -8,9 +8,6 @@ pub use workflow::{
 
 use std::{fmt, path::Path};
 
-use unicode_general_category::{GeneralCategory as Category, get_general_category};
-use unicode_normalization::UnicodeNormalization;
-
 use crate::{
     repository::{self, InspectionError, RepositoryContext},
     settings::{self, Settings, SettingsError, WorkstreamKind, valid_branch},
@@ -43,7 +40,6 @@ pub enum ResolveError {
     Repository(InspectionError),
     OutsideRepository,
     Settings(SettingsError),
-    UnusablePhrase,
     InvalidTarget(String),
     ProtectedBase(String),
     Input(String),
@@ -55,7 +51,6 @@ impl fmt::Display for ResolveError {
             Self::Repository(error) => write!(f, "{error}"),
             Self::OutsideRepository => write!(f, "start preparation requires a Git repository"),
             Self::Settings(error) => write!(f, "{error}"),
-            Self::UnusablePhrase => write!(f, "phrase contains no usable letters or numbers"),
             Self::InvalidTarget(name) => write!(f, "invalid target branch name: {name:?}"),
             Self::Input(reason) => f.write_str(reason),
             Self::ProtectedBase(name) => {
@@ -86,50 +81,8 @@ impl From<SettingsError> for ResolveError {
     }
 }
 
-/// Generate a canonical, locale-independent name. Marks are retained only
-/// after a letter/number (or another retained mark) in the current word.
-fn phrase_slug(input: &str) -> Result<String, ResolveError> {
-    let normalized: String = input
-        .nfc()
-        .collect::<String>()
-        .to_lowercase()
-        .nfc()
-        .collect();
-    let mut slug = String::new();
-    let mut separator = false;
-    for ch in normalized.chars() {
-        match get_general_category(ch) {
-            Category::UppercaseLetter
-            | Category::LowercaseLetter
-            | Category::TitlecaseLetter
-            | Category::ModifierLetter
-            | Category::OtherLetter
-            | Category::DecimalNumber
-            | Category::LetterNumber
-            | Category::OtherNumber => {
-                if separator && !slug.is_empty() {
-                    slug.push('-');
-                }
-                slug.push(ch);
-                separator = false;
-            }
-            Category::NonspacingMark | Category::SpacingMark | Category::EnclosingMark => {
-                if !slug.is_empty() && !separator {
-                    slug.push(ch);
-                }
-            }
-            _ => separator = true,
-        }
-    }
-    if slug.is_empty() {
-        return Err(ResolveError::UnusablePhrase);
-    }
-    Ok(slug)
-}
-
-/// Resolve repository settings and a target without contacting remotes or
-/// changing files, refs, HEAD, or index. Ordinary ASCII spaces select canonical
-/// phrase conversion; all other inputs must be safe literal branch names.
+/// Resolve repository settings and an exact literal branch name without
+/// contacting remotes or changing files, refs, HEAD, or index.
 pub fn prepare(directory: impl AsRef<Path>, input: &str) -> Result<PreparedRequest, ResolveError> {
     prepare_with_options(directory, input, &Options::default())
 }
@@ -151,11 +104,7 @@ fn prepare_with_settings(
     accepted_settings: Option<&Settings>,
 ) -> Result<PreparedRequest, ResolveError> {
     let repository = repository::discover(directory)?.ok_or(ResolveError::OutsideRepository)?;
-    let target = if input.contains(' ') {
-        phrase_slug(input)?
-    } else {
-        input.to_owned()
-    };
+    let target = input.to_owned();
     if !valid_branch(directory, &target)? {
         return Err(ResolveError::InvalidTarget(target));
     }
@@ -343,38 +292,4 @@ fn resolve_commit(directory: &Path, source: &str) -> Result<Vec<u8>, ResolveErro
         return Err(InspectionError::InvalidOutput("creation commit").into());
     }
     Ok(commit.to_vec())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canonical_phrase_slugs() {
-        for (input, expected) in [
-            (" Fix__ BUG / now... ", "fix-bug-now"),
-            ("CAFÉ 123", "café-123"),
-            ("Cafe\u{301} 123", "café-123"),
-            ("ΑΒΓ МОСКВА 中文１２", "αβγ-москва-中文１２"),
-            ("İSTANBUL", "i\u{307}stanbul"),
-            ("हिन्दी عَرَبِيّ", "हिन्दी-عَرَبِيّ"),
-            ("\u{301}ABC /\u{301}DEF", "abc-def"),
-            ("ΟΣ", "ος"),
-        ] {
-            assert_eq!(phrase_slug(input).unwrap(), expected);
-        }
-        for input in ["", " \t", "---...🚀", "\u{301}\u{20dd}"] {
-            assert!(matches!(
-                phrase_slug(input),
-                Err(ResolveError::UnusablePhrase)
-            ));
-        }
-        for (a, b) in [
-            ("Å", "A\u{30a}"),
-            ("각", "각"),
-            ("É\u{323}", "E\u{323}\u{301}"),
-        ] {
-            assert_eq!(phrase_slug(a).unwrap(), phrase_slug(b).unwrap());
-        }
-    }
 }

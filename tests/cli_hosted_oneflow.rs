@@ -230,11 +230,20 @@ fn hosted_release_project_fork_and_exact_version_history() {
             );
             let candidate = oid(f.personal.path(), "refs/heads/review/v1").unwrap();
             assert_eq!(
+                oid(f.local.path(), "refs/remotes/project/release/current"),
+                Some(source.clone())
+            );
+            assert_eq!(
+                oid(f.local.path(), "refs/remotes/personal/review/v1"),
+                Some(candidate.clone())
+            );
+            assert_eq!(
                 value(&f.local, &["show", "-s", "--format=%P", &candidate]),
                 format!("{source} {target}")
             );
             assert_eq!(oid(f.project.path(), "refs/heads/main"), Some(target));
             assert_eq!(oid(f.project.path(), "refs/heads/review/v1"), None);
+            assert_eq!(oid(f.local.path(), "refs/remotes/project/review/v1"), None);
             assert_eq!(oid(f.personal.path(), "refs/tags/v1"), None);
             assert_eq!(oid(f.project.path(), "refs/heads/released"), None);
             assert_eq!(value(&f.local, &["branch", "--show-current"]), "review/v1");

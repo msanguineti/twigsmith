@@ -382,7 +382,10 @@ fn save_preferences_explicit_selection_and_message_validation() {
                 check(
                     cli.run(repo.path(), &["--message", "incompatible"]),
                     2,
-                    &["effective save action is staged"],
+                    &[
+                        "--message requires the staged action",
+                        "gof save --staged --message",
+                    ],
                 );
                 assert_eq!(snapshot(repo.path()), before);
                 assert!(oid(&remote, "refs/heads/work").is_none());
@@ -460,7 +463,12 @@ fn save_terminal_choices_and_message_entry_use_the_same_backend() {
         "save_terminal_choices_and_message_entry_use_the_same_backend",
         true,
         |root, cli| {
-            for action in ["publish-only", "staged", "wip", "stash"] {
+            for (action, answer) in [
+                ("publish-only", "publish-only"),
+                ("staged", "2"),
+                ("wip", "3"),
+                ("stash", "stash"),
+            ] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
                 let mut terminal = cli.terminal(repo.path(), &[]);
@@ -469,13 +477,13 @@ fn save_terminal_choices_and_message_entry_use_the_same_backend() {
                     &terminal.output,
                     &[
                         "1 staged, 1 unstaged tracked, 1 untracked",
-                        "staged       Commit/publish exactly the index",
+                        "2) staged       Commit/publish exactly the index",
                         "publish-only Publish existing commits",
                         "stash        Retain a local stash",
                         "cancel",
                     ],
                 );
-                terminal.send(format!("{action}\n").as_bytes());
+                terminal.send(format!("{answer}\n").as_bytes());
                 if action == "staged" {
                     terminal.until("Staged commit message");
                     terminal.send(b"literal --wip ;$ message\n");
@@ -550,6 +558,9 @@ fn save_terminal_cancel_eof_blank_invalid_and_interrupt_leave_no_effects() {
         |root, cli| {
             for input in [
                 b"cancel\n".as_slice(),
+                b"5\n",
+                b"0\n",
+                b"99\n",
                 b"\x04",
                 b"wip\x04\x04",
                 b"invalid\n",

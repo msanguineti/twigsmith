@@ -2,6 +2,9 @@
 //! Push acknowledgements are evidence from the actual push transports, never
 //! inferred from fetch URLs or local tracking refs. No rollback is attempted.
 use super::{Plan, SaveError, UpstreamSettings};
+pub use crate::tracking::cache::{
+    RefOutcome as CacheRefOutcome, Report as CacheReport, State as CacheState,
+};
 use crate::{git, repository};
 use std::{ffi::OsString, fmt, io, path::Path, process::Output};
 
@@ -47,7 +50,7 @@ pub struct TrackingRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackingObservation {
     pub upstream: UpstreamSettings,
-    /// Git can update remote-tracking refs even if another destination fails.
+    /// Verified cache maintenance can complete even if another destination fails.
     /// These local observations are not evidence of remote publication.
     pub remote_refs: Vec<TrackingRef>,
 }
@@ -87,6 +90,8 @@ pub struct Report {
     /// Raw completed process or I/O error, including failed/interrupted output.
     pub push: Option<Result<Output, io::Error>>,
     pub tracking: TrackingReport,
+    /// Local cache maintenance is independent of confirmed remote delivery.
+    pub caches: Vec<CacheReport>,
     pub error: Option<PublishError>,
 }
 impl Report {
@@ -223,9 +228,9 @@ fn branch_ref(plan: &Plan) -> Vec<u8> {
     [b"refs/heads/".as_slice(), &plan.branch].concat()
 }
 
-// A normal push also writes fetch-mapped tracking refs. Refuse mappings into
-// local history/tags/custom namespaces; do not silently rewrite user config.
-// Conservatively validate all positive destinations, even nonmatching ones.
+// Preserve publication's mapping containment independently of isolated transport
+// and narrow cache maintenance. Refuse destinations in local history, tags, or
+// custom namespaces, including nonmatching positive mappings; never rewrite config.
 fn protect_tracking(directory: &Path, plan: &Plan) -> Result<(), PublishError> {
     // Legacy $GIT_DIR/remotes and $GIT_DIR/branches files have their own fetch
     // mappings, which config --get-all cannot observe. Do not bypass that guard.
@@ -445,6 +450,7 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             after: Err(SaveError::ContextChanged),
             writes: vec![],
         },
+        caches: vec![],
         error: None,
     };
     let result = (|| -> Result<(), PublishError> {
@@ -462,22 +468,48 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             .as_path();
         super::revalidate(root, plan)?;
         report.configured_destinations = preflight(root, plan)?;
+        let cache = crate::tracking::cache::Prepared::new(
+            root,
+            &plan.settings.publish_remote,
+            &report.branch_ref,
+        );
         let submodules = submodule_policy(root)?;
         let refspec = [&plan.commit, b":".as_slice(), &report.branch_ref].concat();
-        let arguments = vec![
-            "-c".into(),
-            format!("remote.{}.mirror=false", plan.settings.publish_remote).into(),
-            "-c".into(),
-            "push.autoSetupRemote=false".into(),
+        let config = super::read(root, &["config".into(), "--null".into(), "--list".into()])?;
+        let (mut arguments, remote) = crate::publication::transport::destinations(
+            &config,
+            &plan.settings.publish_remote,
+            &report.configured_destinations,
+        )
+        .map_err(SaveError::from)?;
+        for destination in &report.configured_destinations {
+            let (mut resolution, selected) = crate::publication::transport::endpoint(
+                &config,
+                &plan.settings.publish_remote,
+                destination,
+            )
+            .map_err(SaveError::from)?;
+            resolution.extend([
+                "ls-remote".into(),
+                "--get-url".into(),
+                "--".into(),
+                selected.into(),
+            ]);
+            if super::read(root, &resolution)?.strip_suffix(b"\n") != Some(destination.as_slice()) {
+                return Err(PublishError::InvalidDestinations);
+            }
+        }
+        super::revalidate(root, plan)?;
+        arguments.extend([
             "push".into(),
             "--porcelain".into(),
             "--no-force".into(),
             "--no-follow-tags".into(),
             submodules.into(),
             "--".into(),
-            plan.settings.publish_remote.clone().into(),
+            remote.into(),
             repository::os(&refspec).map_err(SaveError::from)?,
-        ];
+        ]);
         let push = git::workflow(root, &arguments);
         let mut valid = false;
         let mut process_success = false;
@@ -508,6 +540,24 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         } else {
             PublicationState::Unconfirmed
         };
+        // A matching fresh endpoint observation can update its cache even when
+        // another destination failed. This never upgrades the publication state.
+        if matches!(
+            report.state,
+            PublicationState::Complete | PublicationState::Partial
+        ) {
+            report.caches.push(
+                cache.refresh(
+                    root,
+                    &report
+                        .configured_destinations
+                        .iter()
+                        .map(|d| (d.clone(), None))
+                        .collect::<Vec<_>>(),
+                    Some(&plan.commit),
+                ),
+            );
+        }
         if report.state != PublicationState::Complete {
             return Err(if process_success {
                 PublishError::UnconfirmedResponse
@@ -515,8 +565,8 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
                 PublishError::PushFailed
             });
         }
-        // Git may have written remote-tracking refs while pushing. Assessment
-        // intentionally ignores those caches, so fresh guards remain meaningful.
+        // Cache transaction hooks can change workflow context. Recheck before
+        // granting subsequent tracking-configuration effects.
         super::revalidate(root, plan)?;
         if plan.publication.as_ref().unwrap().establish_upstream {
             establish_tracking(root, plan, &mut report.tracking.writes)?;

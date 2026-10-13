@@ -401,10 +401,14 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         eprintln!(
-            "Finish completion:\n  review     Prepare and publish the working branch for manual review.\n  integrate  Deliver to the project base, then complete checkout and cleanup.\n  cancel     Stop finish."
+            "Finish completion:\n  1) review     Prepare and publish the working branch for manual review.\n  2) integrate  Deliver to the project base, then complete checkout and cleanup.\n  3) cancel     Stop finish."
         );
-        let answer = match read_answer(presentation, "Completion mode (review/integrate/cancel): ")
-        {
+        let answer = match read_menu_answer(
+            presentation,
+            "Completion mode (review/integrate/cancel): ",
+            &["review", "integrate", "cancel"],
+            "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
+        ) {
             Ok(answer) => answer,
             Err(error) => {
                 eprintln!("{error}");
@@ -688,6 +692,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
             }
         });
     check_output.flush();
+    eprint!(
+        "{}",
+        crate::cli::cache_issues(&published.caches, |bytes| display(presentation, bytes))
+    );
     if published.is_complete() {
         println!(
             "Published {} to {} at {}.",
@@ -735,6 +743,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             display(presentation, &published.commit),
             text(presentation, &published.remote)
         );
+        output.push('\n');
         role_summary(presentation, &mut output, &plan.settings);
         preparation_effects(presentation, &mut output, &refresh);
         preparation_effects(presentation, &mut output, &prepared);
@@ -771,7 +780,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         remaining(presentation, &mut output, &published.remaining);
         let _ = writeln!(
             output,
-            "Inspect reported destinations and Git state, resolve the failure, then rerun finish. Completed effects are retained."
+            "\nResolve the reported failure, then rerun finish. Completed effects are retained."
         );
         eprint!("{output}");
         ExitCode::FAILURE
@@ -880,7 +889,7 @@ fn prompt(
     let prompt = match choice {
         RequiredInput::Update => {
             eprintln!(
-                "  rebase  Replay branch commits onto the observed remote base.\n  merge   Incorporate the observed remote base with a merge or fast-forward.\n  none    Publish current history without updating from the base.\n  cancel  Stop before branch execution."
+                "  1) rebase  Replay branch commits onto the observed remote base.\n  2) merge   Incorporate the observed remote base with a merge or fast-forward.\n  3) none    Publish current history without updating from the base.\n  4) cancel  Stop before branch execution."
             );
             "Update (rebase/merge/none/cancel): "
         }
@@ -903,12 +912,36 @@ fn prompt(
                 }
             }
             eprintln!(
-                "  allow   Authorize eligible replacement for this finish; incorporation proof and exact remote leases remain required.\n  deny    Stop the required replacement.\n  cancel  Stop before branch execution."
+                "  1) allow   Authorize eligible replacement for this finish.\n             Incorporation proof and exact remote leases remain required.\n  2) deny    Stop the required replacement.\n  3) cancel  Stop before branch execution."
             );
             "Replace published history (allow/deny/cancel): "
         }
     };
-    read_answer(presentation, prompt)
+    read_menu_answer(
+        presentation,
+        prompt,
+        match choice {
+            RequiredInput::Update => &["rebase", "merge", "none", "cancel"],
+            RequiredInput::Rewrite => &["allow", "deny", "cancel"],
+        },
+        "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
+    )
+}
+fn read_menu_answer(
+    presentation: Presentation,
+    prompt: &str,
+    choices: &[&str],
+    cancellation: &str,
+) -> Result<String, String> {
+    let answer = crate::cli::menu_answer(
+        read_answer_with_cancellation(presentation, prompt, cancellation)?,
+        choices,
+    );
+    if answer == "cancel" {
+        Err(cancellation.into())
+    } else {
+        Ok(answer)
+    }
 }
 fn read_answer(presentation: Presentation, prompt: &str) -> Result<String, String> {
     read_answer_with_cancellation(
@@ -1033,9 +1066,13 @@ fn preparation_failure(
     if let Some(error) = &report.error {
         let _ = writeln!(output, "error: {}", text(presentation, error));
     }
+    if report.error.is_some() {
+        let _ = writeln!(output, "Next: {}", text(presentation, report.guidance()));
+    }
     if let Some(plan) = &report.plan {
         role_summary(presentation, &mut output, &plan.settings);
     }
+    output.push('\n');
     preparation_effects(presentation, &mut output, report);
     command_diagnostics(presentation, &mut output, &report.commands);
     // Input may have changed context since refresh; report an actual new observation.
@@ -1053,9 +1090,6 @@ fn preparation_failure(
         current.as_ref().unwrap_or(&report.remaining),
     );
     let _ = writeln!(output, "Branch publication not attempted.");
-    if report.error.is_some() {
-        let _ = writeln!(output, "{}", text(presentation, report.guidance()));
-    }
     eprint!("{output}");
     if let Some(preparation::PreparationError::Finish(error)) = &report.error {
         error_diagnostics(presentation, error);
@@ -1140,7 +1174,9 @@ fn command_diagnostics(
                 let _ = writeln!(out, "Git process: {}", result.status);
                 for bytes in [&result.stdout, &result.stderr] {
                     if !bytes.is_empty() {
-                        let _ = writeln!(out, "Git: {}", display(presentation, bytes));
+                        out.push_str(&crate::cli::git_diagnostics(bytes, |line| {
+                            display(presentation, line)
+                        }));
                     }
                 }
             }
@@ -1203,7 +1239,7 @@ fn remaining_state(
     observation: &Result<Observation, InspectionError>,
     operation_guidance: bool,
 ) {
-    let _ = writeln!(out, "Remaining state (observed):");
+    let _ = writeln!(out, "\nRemaining state (observed):");
     match observation {
         Ok(Observation::Repository(state)) => {
             match &state.head {
@@ -1271,7 +1307,10 @@ fn error_diagnostics(presentation: Presentation, error: &(dyn std::error::Error 
     if let Some(InspectionError::Git { output, .. }) = error.downcast_ref::<InspectionError>()
         && !output.stderr.is_empty()
     {
-        eprintln!("Git: {}", display(presentation, &output.stderr));
+        eprint!(
+            "{}",
+            crate::cli::git_diagnostics(&output.stderr, |line| display(presentation, line))
+        );
     }
     if let Some(InspectionError::Io(_)) = error.downcast_ref::<InspectionError>() {
         eprintln!("Ensure Git is installed on PATH and repository paths are accessible.");
@@ -1282,150 +1321,79 @@ fn error_diagnostics(presentation: Presentation, error: &(dyn std::error::Error 
 }
 fn help() {
     println!(
-        "Complete the current working branch. Alias: f.
+        r#"Prepare and deliver finished work for review or integration. Alias: f.
 
-Usage: git-oneflow finish [--mode <review|integrate>] [--integration <ff-only|merge|squash>]
-                          [--tag <name>] [--tag-message <text>] [--sign-tag] [--merge-back <branch>]
-                          [-m|--message <text>] [--checkout <target|work>] [--cleanup <keep|local|both>]
-                          [--update <rebase|merge|none>] [--history-edit <none|interactive>]
-                          [--allow-rewrite|--no-rewrite] [--skip-checks] [--show-credentials]
+Usage: git-oneflow finish [OPTIONS]
 
 Options:
-  --mode <review|integrate>   Override finish-mode
-  --integration <ff-only|merge|squash>
-                             Select the final target integration method
-  -m, --message <text>        Supply the final integration commit message
-  --checkout <target|work>    Select checkout after target publication
-  --cleanup <keep|local|both> Select work-branch retention after target publication
-  --update <rebase|merge|none>  Override finish-update
+  --mode <review|integrate>      Override completion mode
+  --update <rebase|merge|none>   Select preparation against the project base
   --history-edit <none|interactive>
-                             Edit ordinary work history with native interactive rebase
-  --allow-rewrite             Authorize eligible published-history replacement
-  --no-rewrite                Deny published-history replacement
-  --tag <name>                Select the explicit version tag for tagged work
-  --tag-message <text>        Annotate the version tag (separate from -m)
-  --sign-tag                  Sign the version tag using Git configuration
-  --merge-back <branch>        Select the distinct tagged-review submission branch
-  --skip-checks               Bypass configured checks for this attempt
-  --show-credentials          Show HTTP(S) URL credentials in finish output
-  -h, --help                  Show help
+                                Edit ordinary work with native interactive rebase
+  --integration <ff-only|merge|squash>
+                                Select final target integration
+  -m, --message <text>          Supply the final integration commit message
+  --checkout <target|work>      Select checkout after target delivery
+  --cleanup <keep|local|both>   Select work retention after target delivery
+  --allow-rewrite               Authorize eligible published-history replacement
+  --no-rewrite                  Deny published-history replacement
+  --tag <name>                  Select the version tag for tagged work
+  --tag-message <text>          Annotate that tag separately from -m
+  --sign-tag                    Sign the version tag using Git configuration
+  --merge-back <branch>         Name a distinct tagged-review submission branch
+  --skip-checks                 Bypass configured checks for this attempt
+  --show-credentials            Show HTTP(S) credentials in finish output
+  -h, --help                    Show help
 
 Examples:
   gof finish
   gof f --mode review --update merge
-  git-oneflow finish --mode review --update rebase --allow-rewrite
-  gof f --mode integrate --update rebase --history-edit interactive --integration ff-only
-  gof finish --update none --no-rewrite
-  gof finish --skip-checks
-  gof f --mode integrate --integration ff-only --cleanup local
-  gof f --mode review --tag winter-2026 --merge-back review/winter-2026
-  gof finish --mode integrate --integration squash -m \"Complete feature\" --cleanup keep
-  gof finish --tag winter-2026 --tag-message \"Winter release\" -m \"Merge release\"
+  gof finish --mode integrate --integration ff-only --cleanup both
+  gof finish --update rebase --history-edit interactive
+  gof finish --integration squash -m "Complete parser work" --cleanup keep
+  gof finish --tag v1.2 --merge-back review/v1.2
 
-Details:
-  Completion mode resolves before remote refresh. ask needs terminal input and stderr.
-  review prepares and publishes the work branch for manual review, keeping it checked out.
-  integrate delivers the verified result to base-remote, then applies checkout and cleanup.
-  Direct tagged work uses ordered integration-targets with merge or ff-only integration.
-  Configuration version-tag-identity selects work-source (default) or integrated-result.
-  --update rebase explicitly prepares tagged direct work once against preparation-source.
-  Configuration finish-update must be none for tagged direct work; ordinary preferences do not enable rebase.
-  Rebase can incorporate commits after the release cutoff; validate the prepared version.
-  Work-source tagged review publishes source to publish-remote, the exact tag to base-remote,
-  and --merge-back to review-remote; merge/none preparation changes only merge-back.
-  Submit merge-back into the named target with no-ff integration using your chosen tools.
-  Hosted finish retains both branches and leaves marker advancement and later cleanup manual.
-  Work-source review tags the checked source; candidate checks inspect prepared merge-back.
-  Integrated-result review publishes work without a tag or marker; merge, validate and tag
-  the actual result manually, then perform applicable marker and cleanup steps.
-  Review supports one destination. Multiple destinations require direct integration.
-  Tagged completion requires original Git objects; replacement refs must be removed.
-  Git tag signing preferences apply; --tag-message supplies annotation separately from -m.
-  Direct integration advances enabled release markers by fast-forward to the selected tag commit.
-  Tag, all target results, and marker delivery at every project endpoint precede source cleanup.
-  Final target checkout selects the first configured destination.
-  Integration retries reuse the verified attempt's choices and accepted message.
-  Delivered retries complete remaining checkout/cleanup without repeating checks or publication.
-  Work-branch review rejects integration and tag options. Work-source tagged review accepts tag options,
-  --integration merge, --checkout work, and --cleanup keep; it performs no integration.
-  Integration merge means a merge commit; --update merge prepares the work branch.
-  -m supplies a literal nonblank final integration message, retaining its whitespace.
-  It never amends work commits or supplies a review description.
-  Ask opens Git's selected editor with a suggested merge/squash message.
-  Save and exit to accept; clear all message text or exit unsuccessfully to cancel.
-  Editing follows commit.cleanup and Git comment settings; auto uses the suggestion.
-  ff-only, already-integrated work, and retained results need no message editing.
-  New attempts require a clean, attached working branch with a commit, separate from the base.
-  Integration recovery also supports an associated target checkout after local work deletion.
-  Runs configured checks in order from the working-tree root after preparation.
-  Commands inherit the environment, receive EOF on stdin, and stream stdout/stderr.
-  Arguments are literal; shell features require an explicit shell.
-  A failed, interrupted, or state-changing check stops before publication.
-  --skip-checks reports the bypass; Git hooks and all other guards remain active.
-  Review observes the base and each exact publish-remote push destination.
-  Integration observes the base-remote target destinations and, for both cleanup or tagged rebase,
-  the publish-remote work destinations. It never publishes rewritten work history.
-  Rebase replays commits onto the remote base; merge incorporates it; none retains history.
-  Interactive history editing requires update rebase and ordinary work.
-  It edits selected work commits relative to the preparation boundary, even when up to date.
-  Git sequence/commit editor, hooks, and signing preferences apply.
-  Reorder, combine, reword, edit, or drop commits with Git's native todo instructions.
-  Rewording changes commit identity even when its files stay the same.
-  History editing selects no integration method and grants no published-history replacement.
-  Ordinary direct finish delivers the edited result to the target without force-publishing work.
-  Both cleanup can delete only the eligible published version observed before preparation.
-  Tagged release/hotfix and hosted merge-back preparation require history-edit none.
-  Without terminal input/stderr, explicitly configure both sequence and commit editors.
-  Complete stopped edits/conflicts with git rebase --continue, or abandon with git rebase --abort.
-  Rerun finish to use a corroborated completed edit; failed editing cannot authorize delivery.
-  Branches already including the base need no update choice unless history editing is selected.
-  Explicit flags override settings; rewrite flags are mutually exclusive.
-  Prompts require terminal input and stderr. Enter a displayed choice or cancel.
-  HTTP(S) URL credentials are redacted by default; redact-credentials is a private local setting.
-  --show-credentials overrides that setting for this invocation. Output and captured logs can expose credentials.
-  Rebase selection and replacement authorization are separate choices.
-  Choices resolve before their dependent effects; preparation can reveal method/message input.
-  Changed context while answering or editing stops execution.
-  Cancellation retains preparation and check effects.
-  Review and ordinary integration rerun checks before pending delivery.
-  Tagged retries reuse confirmed checks for unchanged commits and configuration.
-  A previous bypass requires --skip-checks again while delivery remains pending.
-  Scripts must resolve relevant choices with flags or settings.
-  Publication uses incorporation proof and exact destination leases for replacement.
-  Review success reports branch, destination, commit, and a manual submission next step.
-  Integration success reports result, target, final checkout, and work retention.
-  Recover conflicts with Git, then rerun finish. Failures retain completed effects.
-  Submit the published branch manually for review into the project base.
-  Existing publication-branch or project-base tracking is retained.
+Notes:
+  Review prepares and publishes work for manual submission into the project base.
+  Integrate delivers to base-remote, then applies checkout and work cleanup.
+  --update merge prepares work; --integration merge creates the target merge commit.
+  --cleanup local deletes local work; both also deletes published work; keep retains both.
+  Checkout work requires cleanup keep. Tag and all required target/marker deliveries
+  must be confirmed before cleanup. Failures retain completed effects and report pending work.
+  -m supplies a final integration message; work commits and review descriptions remain unchanged.
+  Merge/squash may open Git's editor with a suggested message. Save and exit to accept;
+  clear all message text or exit unsuccessfully to cancel. ff-only needs no message.
+  Integration message editing requires POSIX sh on PATH; -m/--message or auto bypasses it.
+  Interactive history editing requires update rebase and ordinary work; native Git editors,
+  hooks and signing apply. Without a terminal, configure sequence and commit editors explicitly.
+  Finish rebase/merge conflicts with git rebase --continue or git merge --continue;
+  use the corresponding --abort to abandon preparation, then rerun finish.
+  Rebase and history editing grant no replacement authorization; --allow-rewrite is separate.
+  Tagged direct rebase requires explicit --update rebase; validate the prepared version.
+  Work-source tagged review preserves the released version and prepares a separate merge-back
+  branch for manual no-ff submission. It retains both branches; marker and later cleanup are manual.
+  Integrated-result review defers tagging until the actual review result is merged and validated.
+  Review supports one target. Multiple tagged destinations require integrate mode.
+  Checks run in order from the worktree root after preparation. Failure stops publication.
+  --skip-checks bypasses checks for this attempt; Git hooks and publication guards remain active.
+  New work needs a clean, attached branch with a commit. Retained integration recovery can
+  resume after target checkout or local work deletion. Retry finishes pending effects.
+  Existing publication-branch or project-base tracking is preserved.
   Ordinary Git commands use your Git configuration for routing and tracking.
+  HTTP(S) credentials are hidden by default; --show-credentials exposes them in output/logs.
 
 Settings:
-  publish-remote: origin (default); base-remote follows publication unless configured
-  base: main (default)
-  finish-mode: ask (default), review, integrate
-  finish-integration: ask (default), ff-only, merge, squash
-  finish-message: ask (default; editable suggestion), auto (generated message)
-  finish-checkout: target (default), work
-  finish-cleanup: ask (default), keep, local, both
-  Checkout and cleanup apply after confirmed target publication.
-  checkout work requires cleanup keep; local and both require checkout target.
-  ff-only creates no commit and needs no message.
-  cleanup local deletes local work; both deletes local and published work; keep retains both.
-  finish-update: ask (default), rebase, merge, none
-  finish-history-edit: none (default), interactive
-  finish-rewrite: ask (default), allow, deny
-  finish-checks: [] (default); ordered name/command objects in repository configuration
-  allow is standing authorization for eligible replacement; remote safeguards remain.
-  Precedence: explicit flags > local overrides > shared settings > defaults.
-  Use gof config for guided setup or gof config show to inspect values.
+  Explicit flags override local, shared and built-in settings. Defaults ask for mode,
+  update, integration, message, cleanup and eligible rewrite authorization; checkout
+  defaults to target, history editing to none, and checks to [].
+  Finite choices accept a displayed number or name. Cancel or end-of-input stops finish;
+  completed preparation/check effects remain. Scripts must resolve choices with flags/settings.
+  Run gof config for setup or gof config show to inspect effective settings.
 
 Exit status:
   0  Confirmed complete review publication or integration with checkout and cleanup
   1  Failure, unresolved input, cancellation, or incomplete execution
-  2  Invalid syntax
-
-The gof executable accepts identical commands and options.
-See docs/USAGE.md for configuration, automation, and Git recovery."
+  2  Invalid syntax"#
     );
 }
 

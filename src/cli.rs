@@ -59,14 +59,14 @@ Options:
   -V, --version    Show version
 
 Examples:
-  gof start \"add user avatars\"
+  gof start add-user-avatars
   gof save
   gof finish
   gof status
   gof config show
 
 The gof executable accepts the same commands and options.
-Use <command> --help for command details. See docs/USAGE.md for the user guide."
+Use <command> --help for command details."
     );
 }
 
@@ -92,9 +92,7 @@ Details:
 Exit status:
   0  Observation completed
   1  Repository or inspection failure
-  2  Invalid syntax
-
-See docs/USAGE.md for settings and recovery."
+  2  Invalid syntax"
     );
 }
 
@@ -134,4 +132,66 @@ fn run_status() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Numeric answers resolve only within a finite menu. Names and messages never
+/// pass through this mapping; invalid numbers remain invalid textual answers.
+pub(crate) fn menu_answer(answer: String, choices: &[&str]) -> String {
+    answer
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .and_then(|number| number.checked_sub(1))
+        .and_then(|index| choices.get(index))
+        .map(|choice| (*choice).into())
+        .unwrap_or(answer)
+}
+
+/// Cache observations do not change confirmed remote outcomes. Keep normal
+/// completion brief and explain only refresh problems requiring attention.
+pub(crate) fn cache_issues(
+    caches: &[crate::save::publication::CacheReport],
+    present: impl Fn(&[u8]) -> String,
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for cache in caches.iter().filter(|cache| cache.has_issue()) {
+        let _ = writeln!(
+            out,
+            "\nLocal tracking cache needs attention for {} on {}.",
+            present(&cache.reference),
+            present(cache.remote.as_bytes())
+        );
+        for issue in &cache.issues {
+            let _ = writeln!(out, "  {}", present(issue.as_bytes()));
+        }
+        for reference in &cache.refs {
+            if let Some(issue) = &reference.issue {
+                let _ = writeln!(
+                    out,
+                    "  {}: {}",
+                    present(&reference.reference),
+                    present(issue.as_bytes())
+                );
+            }
+        }
+    }
+    if !out.is_empty() {
+        out.push_str("Confirmed remote effects are retained. Inspect the listed local refs and remote fetch mappings before relying on status or log comparisons.\n");
+    }
+    out
+}
+
+/// Keep Git's diagnostic lines readable while escaping terminal controls within
+/// each line. The caller supplies its credential presentation policy.
+pub(crate) fn git_diagnostics(bytes: &[u8], present: impl Fn(&[u8]) -> String) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if !bytes.is_empty() {
+        for line in bytes.split(|byte| *byte == b'\n') {
+            let _ = writeln!(out, "  Git: {}", present(line));
+        }
+    }
+    out
 }

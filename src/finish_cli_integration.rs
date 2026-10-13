@@ -248,6 +248,9 @@ fn run_retained(
             check_event(presentation, &mut output, event);
         });
     output.flush();
+    let cache_issues =
+        crate::cli::cache_issues(&delivered.caches, |bytes| display(presentation, bytes));
+    eprint!("{cache_issues}");
     let _ = writeln!(history, "Target delivery: {:?}.", delivered.state);
     for destination in &delivered.destinations {
         let _ = writeln!(
@@ -382,33 +385,40 @@ fn choose(
     let prompt = match choice {
         RequiredInput::Rewrite => {
             eprintln!(
-                "Rebase may replace incorporated published work; all exact publication guards remain required.\n  allow   Authorize eligible replacement for this attempt.\n  deny    Retain published history.\n  cancel  Stop finish."
+                "Rebase may replace incorporated published work; all exact publication guards remain required.\n  1) allow   Authorize eligible replacement for this attempt.\n  2) deny    Retain published history.\n  3) cancel  Stop finish."
             );
             "Rewrite (allow/deny/cancel): "
         }
         RequiredInput::Update => {
             eprintln!(
-                "  rebase  Replay work commits onto the target.\n  merge   Incorporate the target into the work branch.\n  none    Retain the current work history.\n  cancel  Stop finish."
+                "  1) rebase  Replay work commits onto the target.\n  2) merge   Incorporate the target into the work branch.\n  3) none    Retain the current work history.\n  4) cancel  Stop finish."
             );
             "Update (rebase/merge/none/cancel): "
         }
         RequiredInput::Integration => {
             eprintln!(
-                "  ff-only  Advance the target only when it can fast-forward.\n  merge    Create an integration merge commit.\n  squash   Create one integration commit from the work changes.\n  cancel   Stop finish."
+                "  1) ff-only  Advance the target only when it can fast-forward.\n  2) merge    Create an integration merge commit.\n  3) squash   Create one integration commit from the work changes.\n  4) cancel   Stop finish."
             );
             "Integration (ff-only/merge/squash/cancel): "
         }
         RequiredInput::Cleanup => {
             eprintln!(
-                "  keep    Retain local and published work branches.\n  local   Delete the local work branch after delivery.\n  both    Delete local and published work branches after delivery.\n  cancel  Stop finish."
+                "  1) keep    Retain local and published work branches.\n  2) local   Delete the local work branch after delivery.\n  3) both    Delete local and published work branches after delivery.\n  4) cancel  Stop finish."
             );
             "Cleanup (keep/local/both/cancel): "
         }
         RequiredInput::Message | RequiredInput::TagName => unreachable!(),
     };
-    let answer = read_answer_with_cancellation(
+    let answer = super::read_menu_answer(
         presentation,
         prompt,
+        match choice {
+            RequiredInput::Rewrite => &["allow", "deny", "cancel"],
+            RequiredInput::Update => &["rebase", "merge", "none", "cancel"],
+            RequiredInput::Integration => &["ff-only", "merge", "squash", "cancel"],
+            RequiredInput::Cleanup => &["keep", "local", "both", "cancel"],
+            _ => unreachable!(),
+        },
         "Finish cancelled; completed effects and retained work remain available.",
     )?;
     let invalid = || format!("error: invalid choice; rerun finish and {guidance}.");
@@ -478,6 +488,8 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
     // Git editor values are shell commands. Only that configured value is shell
     // syntax; the pathname is a positional argument and message bytes never enter
     // the command. The temporary file also permits editor atomic-save replacement.
+    // This launcher requires POSIX sh on the inherited PATH, independently of
+    // Git's own platform shell resolution. Windows path/quoting is unvalidated.
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$@\""))
@@ -667,7 +679,18 @@ fn complete(
         };
     }
     let mut commands = Vec::new();
-    let delivered = integration::release::deliver(root, plan, skip_checks, &mut commands);
+    let mut caches = Vec::new();
+    let delivered = integration::release::deliver_with_caches(
+        root,
+        plan,
+        skip_checks,
+        &mut commands,
+        &mut caches,
+    );
+    eprint!(
+        "{}",
+        crate::cli::cache_issues(&caches, |bytes| display(presentation, bytes))
+    );
     command_diagnostics(presentation, &mut history, &commands);
     let release_destinations = integration::release::delivery_observations(plan, &commands);
     for destination in &release_destinations {
@@ -697,6 +720,10 @@ fn complete(
     };
     let plan = &plan;
     let report = completion::complete(root, plan);
+    eprint!(
+        "{}",
+        crate::cli::cache_issues(&report.caches, |bytes| display(presentation, bytes))
+    );
     for effect in &report.effects {
         match effect {
             completion::Effect::CheckedOut { after, .. } => {
@@ -816,6 +843,9 @@ fn complete(
             );
         }
     }
+    if !plan.completed_destinations().is_empty() || integration::release::identity(plan).is_some() {
+        println!();
+    }
     println!(
         "Integrated {} at {} into {}/{}.",
         display(presentation, &plan.source_ref),
@@ -839,6 +869,9 @@ fn complete(
             observation(presentation, &destination.branch)
         );
     }
+    if !report.destinations.is_empty() {
+        println!();
+    }
     for destination in &report.destinations {
         println!(
             "  Published work at {}: {}.",
@@ -851,7 +884,7 @@ fn complete(
         );
     }
     if let Ok(Observation::Repository(state)) = &report.remaining {
-        println!("Final checkout: {}.", head(presentation, &state.head));
+        println!("\nFinal checkout: {}.", head(presentation, &state.head));
     }
     println!(
         "Work branches: {}.",
@@ -871,7 +904,9 @@ fn failure(
     stage: &str,
     observed: &Result<Observation, InspectionError>,
 ) -> ExitCode {
-    let mut output = format!("Finish integration incomplete during {stage}.\n{history}");
+    let mut output = format!(
+        "Finish integration incomplete during {stage}.\nResolve the reported problem, then rerun finish --mode integrate.\n\n{history}"
+    );
     if let Ok(Observation::Repository(state)) = observed
         && let Some(tree) = &state.working_tree
         && let Ok(plan) = integration::assess(&tree.root, &integration::Request::default(), None)
@@ -945,7 +980,7 @@ fn failure(
     }
 
     remaining_state(presentation, &mut output, observed, false);
-    output.push_str("Resolve the reported problem, then rerun finish --mode integrate. Completed effects and retained work remain available; verified retries reuse the attempt's choices and result.\n");
+    output.push_str("\nCompleted effects and retained work remain available; retries complete the pending steps.\n");
     eprint!("{output}");
     ExitCode::FAILURE
 }

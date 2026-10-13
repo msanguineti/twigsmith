@@ -9,7 +9,8 @@ conventions; they do not select different operations.
 Use `git-oneflow` or the equivalent executable `gof` from a Git working tree.
 Both accept the same commands and options. Git 2.45 or newer must be on PATH.
 The [development guide](DEVELOPMENT.md) explains how to build the executables;
-use their full paths when they are not on PATH.
+use their full paths when they are not on PATH. The development guide also covers
+[enabling Bash completion](DEVELOPMENT.md#bash-completion) for both names.
 
 In this manual: [a working session](#a-working-session),
 [commands](#command-reference), [settings](#repository-settings),
@@ -30,7 +31,7 @@ gof config
 Then create a branch, make changes, save progress, and publish for review:
 
 ```sh
-gof start "add user avatars"
+gof start add-user-avatars
 # Edit files, then select the changes for a commit.
 git add src/avatars.rs
 gof save --staged --message "Add user avatars"
@@ -38,7 +39,7 @@ gof save --staged --message "Add user avatars"
 gof finish --mode review --update merge --no-rewrite
 ```
 
-The phrase creates `add-user-avatars`. Save commits your staged selection and
+Start creates or resumes `add-user-avatars`. Save commits your staged selection and
 publishes that branch. Finish incorporates the current remote base when needed,
 runs configured checks, publishes the prepared branch, and reports where to
 submit it manually for review. The branch remains checked out and available.
@@ -81,23 +82,27 @@ gof config --help
 directory. Start, save, and finish require a working tree; status and configuration
 inspection also support bare repositories.
 
+Finite menus display numbered choices; enter the number or the displayed text.
+Free-form names, messages and command definitions retain their normal input.
+Resolved choices from flags or settings need no extra confirmation.
+
 ### Start or resume work
 
 ```text
-gof start <branch-name-or-phrase> [OPTIONS]
-gof s <branch-name-or-phrase> [OPTIONS]
+gof start <branch-name> [OPTIONS]
+gof s <branch-name> [OPTIONS]
 ```
 
-Supply one branch name or quoted phrase. Ordinary start without options uses the
-existing defaults; explicit workstream options select policy and source: Literal Git names retain their exact
-spelling, case, prefixes, and Unicode form. An ordinary ASCII space selects phrase
-conversion: Unicode words are normalized, lowercased, and joined with hyphens.
-The input determines only the branch name; no prefix or numbered suffix is added.
+Supply exactly one literal branch name. Start preserves spelling, case,
+punctuation and Unicode form. Valid Chinese names work like other Git branch
+names. Shell quotes control argument grouping; spaces remain invalid even inside
+quotes. Extra positional arguments are syntax errors. Use `--from` to select a
+creation source.
 
 ```sh
-gof start "nasty deployment bug"    # nasty-deployment-bug
-gof s Fix/DeploymentBug            # exact literal name
-gof start fix/parser_v2
+gof start fix/deployment-bug
+gof s Fix/DeploymentBug
+gof start 修复/部署错误
 ```
 
 | Option | Effect |
@@ -158,8 +163,9 @@ default `save-action = ask` lets you choose what to preserve.
 | `--message <message>` | Supply the staged commit message | Applies only to the staged action |
 
 Choose one action flag; it overrides `save-action`. `--message` also works with
-a configured staged preference. Quote it as one argument. Save does not accept
-`-m`. A clean tree needs no checkpoint message.
+a configured staged preference. It supplies a message without selecting an action;
+use `gof save --staged --message "Selected changes"` to select both. Quote the
+message as one argument. Save does not accept `-m`. A clean tree needs no checkpoint message.
 
 ```sh
 gof save
@@ -344,6 +350,9 @@ policy offers an editable suggestion through your Git editor when a new merge or
 squash commit needs a message. Supply `-m` to avoid editing. Fast-forward,
 already-integrated work, and reuse of a retained result need no editor. Editor
 failure, cancellation, invalid output, or a blank message stops the pending stage.
+The integration message editor launcher currently requires POSIX `sh` on PATH;
+`-m/--message` or `finish-message = auto` bypasses it. Windows editor behavior has
+not been validated. Native interactive rebase uses Git's own editor launcher.
 Message text remains literal and Git hooks, cleanup, and signing apply. A message
 may first become necessary after preparation; stopping then retains prepared work.
 
@@ -1139,6 +1148,20 @@ git ls-remote <push-destination> refs/heads/work/parser-fix
 Inspect every push destination after a partial or uncertain result. A local
 remote-tracking cache does not prove the remote update succeeded or failed.
 
+After confirmed publication or remote work deletion, gof updates eligible mapped
+remote-tracking refs for the verified endpoint. With one origin using the usual
+fetch mapping, direct finish aligns `main` and `origin/main`; deleting published
+work removes its `origin/<work>` cache. Custom mappings and separate project and
+publication remotes retain their own roles.
+
+Excluded and unmapped refs stay untouched. Ambiguous mappings, symbolic refs,
+endpoint mismatch, concurrent changes or unavailable inspection can leave an
+eligible cache unchanged. The report identifies
+that cache issue separately from confirmed remote effects. A cache refresh issue
+alone does not turn completed delivery into failure. Inspect its mapping and
+endpoint before refreshing with native Git; repeating delivery is unnecessary.
+No blanket fetch/prune or new tracking configuration is performed.
+
 Configuration creation leaves the recognized file absent or complete. After
 interruption, inspect and remove any leftover unrecognized
 `.git-oneflow-config-*.tmp` file at the working-tree root before retrying.
@@ -1320,5 +1343,4 @@ can verify delivery and finish remaining work. Completed effects remain in place
 
 Literal `@` is a valid target name, but tested Git 2.47.3 refuses `git switch @`.
 Choose another name or resolve that checkout with Git. Other literal names retain
-their exact spelling; phrase conversion applies only when the input contains an
-ordinary ASCII space.
+their exact spelling. Spaces are invalid branch-name characters.

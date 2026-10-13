@@ -57,7 +57,9 @@ fn parse(args: &[OsString]) -> Result<Request, &'static str> {
             .action
             .is_some_and(|action| action != SaveAction::Staged)
     {
-        return Err("--message applies only when the effective save action is staged");
+        return Err(
+            "--message requires the staged action; use gof save --staged --message \"Your commit message\"",
+        );
     }
     Ok(request)
 }
@@ -101,10 +103,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let approved = plan.clone();
         let input = (|| -> Result<(), InputError> {
             if plan.required_input == RequiredInput::Action {
-                for action in &plan.applicable_actions {
-                    eprintln!("  {}", choice(*action));
+                for (index, action) in plan.applicable_actions.iter().enumerate() {
+                    eprintln!("  {}) {}", index + 1, choice(*action));
                 }
-                eprintln!("  cancel       Leave the repository unchanged");
+                eprintln!(
+                    "  {}) cancel       Leave the repository unchanged",
+                    plan.applicable_actions.len() + 1
+                );
                 let actions = plan
                     .applicable_actions
                     .iter()
@@ -112,7 +117,16 @@ pub fn run(args: &[OsString]) -> ExitCode {
                     .chain(std::iter::once("cancel"))
                     .collect::<Vec<_>>()
                     .join("/");
-                let action = read_input(&format!("Action ({actions}): "))?;
+                let choices = plan
+                    .applicable_actions
+                    .iter()
+                    .map(|action| action_name(*action))
+                    .chain(std::iter::once("cancel"))
+                    .collect::<Vec<_>>();
+                let action = crate::cli::menu_answer(
+                    read_input(&format!("Action ({actions}): "))?,
+                    &choices,
+                );
                 if action.trim() == "cancel" {
                     return Err(InputError::Cancelled);
                 }
@@ -225,7 +239,7 @@ fn choice(action: SaveAction) -> &'static str {
 }
 fn scope_summary(plan: &Plan) {
     eprintln!(
-        "Save branch {} to publication remote {}: {} staged, {} unstaged tracked, {} untracked paths (counts may overlap).",
+        "Save branch {} to publication remote {}:\n  {} staged, {} unstaged tracked, {} untracked paths (counts may overlap).",
         display(&plan.branch),
         text(&plan.settings.publish_remote),
         plan.scope.staged.len(),
@@ -240,7 +254,9 @@ fn syntax_error(error: &str) -> ExitCode {
 }
 fn assessment_error(error: &SaveError) -> ExitCode {
     if matches!(error, SaveError::MessageNotApplicable) {
-        return syntax_error("--message applies only when the effective save action is staged");
+        return syntax_error(
+            "--message requires the staged action; use gof save --staged --message \"Your commit message\"",
+        );
     }
     eprintln!("error: {}", text(error));
     match error {
@@ -248,7 +264,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             inspection_diagnostics(error);
         }
         SaveError::Settings(_) => eprintln!(
-            "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory; supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite; local-only: redact-credentials"
+            "check the reported configuration file; run gof config show to inspect settings and their sources"
         ),
         SaveError::NoStagedChanges => eprintln!(
             "stage the intended selection yourself, or select --publish-only, --wip, or --stash"
@@ -272,7 +288,7 @@ fn inspection_diagnostics(error: &InspectionError) {
     match error {
         InspectionError::Git { output, .. } => {
             if !output.stderr.is_empty() {
-                eprintln!("Git: {}", display(&output.stderr));
+                eprint!("{}", crate::cli::git_diagnostics(&output.stderr, display));
             }
         }
         InspectionError::Io(_) => {
@@ -288,7 +304,7 @@ fn diagnostics(out: &mut String, label: &str, result: &Result<std::process::Outp
             let _ = writeln!(out, "{label}: {}", output.status);
             for bytes in [&output.stdout, &output.stderr] {
                 if !bytes.is_empty() {
-                    let _ = writeln!(out, "  Git: {}", display(bytes));
+                    out.push_str(&crate::cli::git_diagnostics(bytes, display));
                 }
             }
         }
@@ -303,7 +319,7 @@ fn save_diagnostics(out: &mut String, error: &SaveError) {
             InspectionError::Git { output, .. } => {
                 for bytes in [&output.stdout, &output.stderr] {
                     if !bytes.is_empty() {
-                        let _ = writeln!(out, "  Git: {}", display(bytes));
+                        out.push_str(&crate::cli::git_diagnostics(bytes, display));
                     }
                 }
             }
@@ -354,7 +370,7 @@ fn local_state(out: &mut String, observation: &LocalObservation) {
                 }
                 let _ = writeln!(
                     out,
-                    "Work still local: {staged} staged, {remaining} unstaged tracked, {untracked} untracked, {conflicts} conflicted paths (counts may overlap). Ignored files remain excluded."
+                    "Work still local: {staged} staged, {remaining} unstaged tracked, {untracked} untracked, {conflicts} conflicted paths (counts may overlap)."
                 );
             }
             if state.operations.is_active() {
@@ -402,6 +418,9 @@ fn render(plan: &Plan, report: &Report) -> String {
             }
         }
     }
+    if !report.effects.is_empty() {
+        out.push('\n');
+    }
     for effect in &report.effects {
         match effect {
             Effect::Checkpoint { commit, message } => {
@@ -434,6 +453,7 @@ fn render(plan: &Plan, report: &Report) -> String {
             }
         }
     }
+    out.push('\n');
     match &report.publication {
         None => {
             let _ = writeln!(
@@ -453,10 +473,10 @@ fn render(plan: &Plan, report: &Report) -> String {
             };
             let _ = writeln!(
                 out,
-                "Branch publication: {} at {} to remote {} — {state}.",
+                "Branch publication: {} to remote {} — {state}.\n  Commit: {}",
                 display(&publication.branch_ref),
-                display(&publication.commit),
-                text(&publication.remote)
+                text(&publication.remote),
+                display(&publication.commit)
             );
             for destination in &publication.destinations {
                 let state = match destination.state {
@@ -480,6 +500,7 @@ fn render(plan: &Plan, report: &Report) -> String {
                     publication.missing_responses
                 );
             }
+            out.push_str(&crate::cli::cache_issues(&publication.caches, display));
             if !publication.is_complete() {
                 if let Some(error) = &publication.error {
                     let _ = writeln!(out, "error: {}", text(error));
@@ -534,11 +555,12 @@ fn render(plan: &Plan, report: &Report) -> String {
             diagnostics(&mut out, label, &command.result);
         }
     }
+    out.push('\n');
     local_state(&mut out, &report.after);
     if !report.is_complete() {
         let _ = writeln!(
             out,
-            "No rollback was attempted. Failed/interrupted Git steps can leave additional effects beyond verified checkpoints. Inspect HEAD, git status, git stash list and upstream settings before retrying from actual state. Check each push destination if publication is partial or unconfirmed; resolve access or history rejection yourself. Retrying save does not create empty checkpoints."
+            "\nNo rollback was attempted. Failed/interrupted Git steps can leave additional effects.\nResolve the reported failure and rerun save from the observed state.\nCheck any unconfirmed push destination before retrying; completed local checkpoints are retained."
         );
     }
     out
@@ -546,7 +568,7 @@ fn render(plan: &Plan, report: &Report) -> String {
 
 fn help() {
     println!(
-        "Preserve progress and publish the current branch. Alias: v.
+        r#"Preserve progress and publish the current branch. Alias: v.
 
 Usage: git-oneflow save [ACTION] [--message <message>]
 
@@ -561,39 +583,33 @@ Options:
 Examples:
   gof save
   gof v --wip
-  gof save --staged --message \"selected parser changes\"
-  git-oneflow save --stash
+  gof save --staged --message "Fix parser selection"
+  gof save --stash
 
-Details:
-  Choose one action flag. Explicit selection overrides save-action.
-  Clean trees publish directly. Dirty trees default to ask.
-  Prompts require terminal input and stderr; enter a displayed action or cancel.
-  Staged checkpoints need a nonblank message, supplied or requested at a terminal.
-  Scripts need an explicit/configured action and any required message.
-  WIP messages are [WIP - Staged] and [WIP - Unstaged] for groups with changes.
-  Stash contents remain local. Ignored untracked files remain outside checkpoints.
-  Publication creates or fast-forwards the same branch on publish-remote.
-  Save uses publication destinations without fetching the project base.
-  Save requires an attached working branch with a commit.
-  Tracking may be absent, the published counterpart, or the configured project base.
-  Existing publication-branch or project-base tracking is preserved.
-  Missing tracking follows confirmed publication. Ordinary Git commands use your Git configuration.
-  An effective explicit Git push remote must agree with publish-remote.
-  The configured base, conflicts, active operations, and dirty submodules block save.
+Notes:
+  Choose one action flag to override save-action. Clean trees publish directly;
+  dirty trees default to ask. Finite menus accept a displayed number or action name.
+  Prompts require terminal input and stderr; cancel or end-of-input stops save.
+  --message requires the staged action; it does not select that action.
+  Staged work needs a nonblank message; supply one or enter it at a terminal.
+  WIP keeps staged and remaining work in separate commits. Stashes remain local.
+  Ignored files stay outside checkpoints. Unselected local work remains available.
+  Publication creates or fast-forwards the same branch on publish-remote without
+  fetching the project base. Existing publication-branch or project-base tracking
+  is preserved; absent tracking is set after confirmed publication.
+  Save needs an attached work branch with a commit, distinct from the base.
+  Conflicts, active Git operations, dirty submodules and conflicting routing block save.
   Failures retain completed effects; inspect the report before retrying.
 
 Settings:
-  git-oneflow.config.toml, .yaml, .yml, or .json: one file per layer
-  Shared: working-tree root; local overrides: Git common directory
-  Precedence: explicit action flag > local > shared > defaults
-  publish-remote = origin; base-remote follows publication; base = main (defaults)
-  save-action: ask (default), publish-only, staged, wip, stash
+  save-action: ask (default), publish-only, staged, wip, stash.
+  publish-remote: origin; base-remote follows publication; base: main (defaults).
+  Scripts must resolve the action and any required message with flags or settings.
+  Run gof config for setup or gof config show to inspect effective settings.
 
 Exit status:
   0  Selected action completed, including unchanged publication
   1  Failure, unresolved input, cancellation, or incomplete execution
-  2  Invalid syntax
-
-See docs/USAGE.md for settings and recovery."
+  2  Invalid syntax"#
     );
 }

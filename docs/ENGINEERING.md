@@ -28,6 +28,16 @@ return typed plans, effects, errors, and observations without application prompt
 Explicit interactive preparation delegates history editing to Git.
 Help is handled before repository discovery or configuration loading.
 
+The sourceable [Bash completion artifact](../completions/git-oneflow.bash) keeps
+static CLI grammar usable outside a repository. Branch hints invert configured
+full-head fetch mappings for available non-symbolic tracking refs, respecting
+negative exclusions, and include local heads. Source and tag arguments retain
+separate contexts. Its Git calls use the inspection guards and perform no remote
+contact. Readline insertion preserves literal names through quote-context escaping;
+[completion tests](../tests/bash_completion.rs) exercise actual Tab input as well
+as prompt-free local inspection. These are local hints rather than proof that a
+remote branch exists or belongs to the configured publication role.
+
 The implementation has three main boundaries:
 
 | Boundary | Responsibility |
@@ -58,6 +68,12 @@ lifecycle flags and settings require no further confirmation. Interactive choice
 require terminal stdin and stderr and a complete submitted line; EOF or
 cancellation stops the pending operation. Effects completed before that point
 remain reportable.
+
+Finite CLI menus render numbered choices in the same order used to resolve input.
+Both a displayed number and its textual choice select the existing action;
+numbered cancellation uses the same cancellation path. Free-form names, messages,
+refs and check commands bypass this mapping. Defaults and complete-line/EOF
+handling stay at their existing input boundaries.
 
 ### Current capability boundary
 
@@ -273,18 +289,15 @@ independent report facts.
 
 [`start::prepare`](../src/start.rs) discovers context, loads settings, resolves a
 target, and snapshots its routing configuration without reading the index or
-contacting remotes. Input containing ASCII space is a phrase; other input is an
-exact literal branch name. Phrase conversion normalizes to NFC, applies Rust's
-locale-independent Unicode lowercase, normalizes again, retains Unicode letters
-and numbers plus attached combining marks, and collapses other runs to ASCII
-hyphens. It adds no prefix, suffix, truncation, or collision repair. Literal names
-retain case and Unicode normalization form.
+contacting remotes. The request accepts one literal branch name and preserves its
+spelling, case and Unicode form. Spaces are invalid rather than converted. The CLI rejects
+extra positional arguments as syntax errors; explicit source selection uses
+`--from` or `--from-tag`.
 
 Targets are checked as full `refs/heads/<name>` refs, avoiding checkout-shorthand
 expansion by `check-ref-format --branch`. Leading `-`, reserved `HEAD`, NUL,
-revision expressions, and the exact configured base name are rejected. Unicode
-dependency/toolchain changes can affect phrase names; the
-[resolution tests](../tests/start_resolution.rs) cover literal and canonical behavior.
+revision expressions, and the exact configured base name are rejected. The
+[resolution tests](../tests/start_resolution.rs) cover literal names and invalid inputs.
 
 [`start::execute`](../src/start/workflow.rs) requires a working tree and attached,
 existing HEAD, with no active Git operation or occupation of the target by another
@@ -388,9 +401,9 @@ and hook-failure cases are exercised in [save execution tests](../tests/save_exe
 [`save::publication`](../src/save/publication.rs) accepts a resolved plan with no
 pending local steps. It permits dirty publish-only work and an existing index
 lock because publication performs no staging, commit, stash, or index edit.
-It revalidates the selected branch/commit and scope, then pushes through the
-configured remote name with a literal `<approved-oid>:refs/heads/<branch>`
-refspec. A pre-push hook moving the local branch cannot change that pinned source.
+It revalidates the selected branch/commit and scope, then pushes through a
+command-scoped remote with the configured endpoints and a literal
+`<approved-oid>:refs/heads/<branch>` refspec. A pre-push hook moving the local branch cannot change that pinned source.
 
 Save uses Git's ordinary non-forced creation/fast-forward/equality rules. It
 does not fetch, repair history, or use a lease. All resolved push URLs remain
@@ -404,7 +417,7 @@ Exact-ref containment also requires controlling Git's incidental effects:
 - `push.autoSetupRemote=false` prevents incidental upstream writes. Recursive
   submodule publication is disabled, including implicit recursion, while the
   nonmutating `push.recurseSubmodules=check` policy stays effective.
-- Git can update fetch-mapped local refs after pushing. Positive fetch mappings
+- Ordinary named Git pushes can update fetch-mapped local refs. Positive fetch mappings
   with destinations must have full destinations under `refs/remotes/`; any
   mapping elsewhere is refused, including unrelated mappings. Matching symbolic
   tracking refs are refused. Negative mappings, source-only refspecs, and
@@ -413,7 +426,8 @@ Exact-ref containment also requires controlling Git's incidental effects:
   their separate mappings cannot be checked through this configuration boundary.
 
 Signing, receive-pack, push options, credentials, helpers, and normal hooks remain
-effective. Unsafe configuration is reported rather than rewritten. The containment
+effective. A pre-push hook receives the command-scoped remote name and selected
+endpoint. Unsafe configuration is reported rather than rewritten. The containment
 rationale is supported by positive-control ordinary Git examples in
 [save publication tests](../tests/save_publication.rs): even a non-forced
 single-branch push can change local branch history through a fetch mapping.
@@ -651,8 +665,8 @@ while excluding fetch/push refspec and mirror expansion. No remote is written to
 configuration. Explicit push URL selection prevents another `pushInsteadOf`
 expansion. Tag following, automatic tracking setup, and submodule publication are
 contained as in save; hooks/helpers remain effective. A pre-push hook sees the
-command-scoped remote name and actual URL. These transports do not update the
-configured remote's tracking caches.
+command-scoped remote name and actual URL. These transports suppress Git's implicit tracking-cache writes; eligible caches are
+maintained separately after verified delivery.
 
 Retries confirm completed destinations through fresh equality and retain original
 expectations for pending replacements. The rebase record remains intact; no final
@@ -661,6 +675,39 @@ Publication pins the prepared base and does not reread it or prepare again.
 An advancing base requires fresh assessment/preparation when that newer base is
 wanted. [Finish publication tests](../tests/finish_publication.rs) exercise leases,
 multiple endpoints, partial success, lost acknowledgements, and cross-process retry.
+
+## Tracking caches after delivery
+
+[`tracking::cache`](../src/tracking/cache.rs) maintains only the remote-tracking
+refs identified by configured fetch mappings for an independently confirmed
+publication or deletion. Publication transports use the shared
+[command-scoped endpoint builder](../src/publication/transport.rs) without fetch mappings so Git cannot write these caches implicitly. A cache supplies no
+publication, incorporation, lease or deletion proof.
+
+The helper binds repository identity, routing configuration, the configured fetch
+endpoint and each mapped ref's version and raw reflog before delivery. Positive
+mappings must identify full destinations under `refs/remotes/`; negative mappings
+exclude sources. Inverse mapping collisions, symbolic refs, endpoint mismatch and
+changed observations leave caches intact. An exact fresh remote observation must
+still match the confirmed effect. Conditional no-deref ref transactions lock the
+cache and recheck binding and remote equality after transaction hooks before
+committing. Existing newer or unrelated local observations are preserved; history
+evidence
+must establish safe advancement when exact previous-remote equality does not.
+Graft history cannot supply that ancestry proof. Fetch matching/exclusions follow
+[Git fetch refspec semantics](https://git-scm.com/docs/git-fetch); the conditional
+write and prepare/commit lock boundary follow
+[Git update-ref](https://git-scm.com/docs/git-update-ref). The stricter eligibility
+and post-hook checks are application containment policy.
+
+Cache results are separate from delivery and upstream configuration. Unavailable
+refresh does not erase confirmed effects or authorize another push/deletion. A
+retry observes actual remote state through the workflow's normal guards; cache
+contents grant no additional authority. Maintenance performs no blanket fetch or
+prune and changes no branch tracking configuration. As with publication, the
+remote observation and local transaction are separate boundaries; a remote can
+move after observation. Tests and journey checks exercise these limits with real
+Git and local transports.
 
 ## Publication reports and failure diagnosis
 
@@ -730,6 +777,16 @@ Git’s editor preference resolution, documented in [git-var](https://git-scm.co
 The editor receives a private message file and inherited terminal I/O for normal
 interactive editor operation; message text is never shell input. Finish redacts
 its own rendered output, while the external editor controls its terminal display.
+The integration message editor resolves `git var GIT_EDITOR` and always launches
+that command through POSIX `sh` on the inherited PATH. This existing launcher is
+separate from Git's platform-specific shell resolution; Windows availability,
+path conversion and quoting are unvalidated. `-m/--message` and automatic messages
+bypass it. Native rebase delegates its editor launching to Git itself. Git documents
+editor values as shell-interpreted commands in
+[git-var](https://git-scm.com/docs/git-var); replacing this launcher with Windows
+`cmd.exe` would change those command semantics. The optional completion script
+adds no Bash or Linux dependency to either executable.
+
 Messages are required only for new merge/squash commits. Git commit hooks,
 message cleanup, and signing remain effective.
 
@@ -865,8 +922,8 @@ provides the conditional deletion and transaction boundary. The transaction bind
 deletion to the approved version; integration proof supplies eligibility separately.
 
 Deletion removes the source ref and its reflog. Source-associated Git configuration
-is retained: completion makes no configuration edits and removes no tracking cache
-or unrelated ref. The existing private attempt retains the source evidence needed
+is retained: completion makes no configuration edits. Verified remote deletion can
+remove its eligible mapped tracking cache; unrelated refs remain outside cleanup. The existing private attempt retains the source evidence needed
 to corroborate preparation after reflog removal. Original/result refs and private
 recovery records remain available throughout completion and retry.
 

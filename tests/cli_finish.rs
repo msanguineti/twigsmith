@@ -515,12 +515,22 @@ fn finish_terminal_choices_and_separate_authorization() {
                         &term.output,
                         &["Replay branch", "Incorporate", "without updating"],
                     );
-                    term.send(format!("{update}\n").as_bytes());
+                    let answer = if command == "f" {
+                        match update {
+                            "rebase" => "1",
+                            "merge" => "2",
+                            "none" => "3",
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        update
+                    };
+                    term.send(format!("{answer}\n").as_bytes());
                     if update == "rebase" {
                         term.until("Replace published history (allow/deny/cancel)");
                         unchanged_work(&local, &before);
                         assert_eq!(oid(&remote, REF), oid(&local, "HEAD"));
-                        term.send(b"allow\n");
+                        term.send(if command == "f" { b"1\n" } else { b"allow\n" });
                     }
                     assert_eq!(term.finish().code(), Some(0), "{}", term.output);
                     published(&local, &remote);
@@ -564,6 +574,9 @@ fn finish_terminal_cancel_eof_and_invalid_input_preserve_branch_work() {
             for rewrite in [false, true] {
                 for answer in [
                     b"cancel\n".as_slice(),
+                    b"numeric-cancel",
+                    b"0\n",
+                    b"99\n",
                     b"\x04",
                     b"allow\x04\x04",
                     b"invalid\n",
@@ -581,7 +594,11 @@ fn finish_terminal_cancel_eof_and_invalid_input_preserve_branch_work() {
                     } else {
                         "Update ("
                     });
-                    term.send(answer);
+                    term.send(if answer == b"numeric-cancel" {
+                        if rewrite { b"3\n" } else { b"4\n" }
+                    } else {
+                        answer
+                    });
                     assert_eq!(term.finish().code(), Some(1), "{}", term.output);
                     contains(
                         &term.output,
@@ -935,6 +952,9 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
             for command in ["finish", "f"] {
                 for answer in [
                     b"cancel\n".as_slice(),
+                    b"3\n",
+                    b"0\n",
+                    b"99\n",
                     b"\x04",
                     b"review\x04\x04",
                     b"invalid\n",
@@ -951,7 +971,7 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
                 let (local, remote) = fixture(root, false, false);
                 let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
                 term.until("Completion mode (");
-                term.send(b"review\n");
+                term.send(if command == "f" { b"1\n" } else { b"review\n" });
                 assert!(term.finish().success(), "{}", term.output);
                 assert!(!term.output.contains("Integration commit message"));
                 published(&local, &remote);
@@ -1514,7 +1534,7 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                     assert_eq!(remote_oid(f.fork.path(), REF), work);
                 }
             }
-            for answer in [b"ff-only\n".as_slice(), b"merge\n", b"squash\n"] {
+            for answer in [b"ff-only\n".as_slice(), b"2\n", b"3\n"] {
                 let f = integration_fixture(root, false);
                 let mut term = terminal::Terminal::start(
                     exe,

@@ -506,6 +506,7 @@ fn linked_worktree_native_edit_completion_keeps_recovery_interval_offsets() {
         true,
         |root| {
             let (local, remote) = fixture(root, false);
+            let original_base = oid(&local, "origin/main");
             local.success(&["switch", "--no-track", "-c", "parking", "origin/main"]);
             let linked = root.join("linked-work");
             local.success(&["worktree", "add", linked.to_str().unwrap(), WORK]);
@@ -535,8 +536,9 @@ fn linked_worktree_native_edit_completion_keeps_recovery_interval_offsets() {
                 .unwrap();
             success(output);
             assert_eq!(oid(&remote, "main"), oid(&local, WORK));
+            assert_eq!(oid(&local, "origin/main"), oid(&remote, "main"));
             assert_eq!(
-                subjects(&local, "origin/main", WORK),
+                subjects(&local, &original_base, WORK),
                 ["Linked edit", "Linked edit", "Linked edit"]
             );
             assert_eq!(oid(&local, "HEAD"), oid(&local, "parking"));

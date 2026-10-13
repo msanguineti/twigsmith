@@ -111,6 +111,14 @@ fn assert_completed(local: &Repository, remote: &Repository, original: &str) {
     assert_ne!(result, original);
     assert_eq!(result, value(remote, &["rev-parse", "main"]));
     assert_eq!(
+        result,
+        value(local, &["rev-parse", "refs/remotes/origin/main"])
+    );
+    assert_eq!(
+        optional_oid(local, "refs/remotes/origin/work/parser-fix"),
+        None
+    );
+    assert_eq!(
         value(local, &["log", "-1", "--format=%s"]),
         "Prepared feature"
     );
@@ -568,6 +576,8 @@ fn default_config_wip_switch_resume_native_reword_and_both_cleanup() {
         true,
         |root| {
             let (local, remote) = fixture(root);
+            local.success(&["config", "branch.main.remote", "origin"]);
+            local.success(&["config", "branch.main.merge", "refs/heads/main"]);
             let original = generated_wip(&local, &remote);
             local.success(&["switch", "main"]);
             assert!(!local.path().join(SHARED).exists());
@@ -588,14 +598,26 @@ fn default_config_wip_switch_resume_native_reword_and_both_cleanup() {
                 ],
             );
             term.until("Update (rebase/merge/none/cancel):");
-            term.send(b"rebase\n");
+            term.send(b"1\n");
             term.until("Cleanup (keep/local/both/cancel):");
-            term.send(b"both\n");
+            term.send(b"3\n");
             term.until("Integration (ff-only/merge/squash/cancel):");
-            term.send(b"ff-only\n");
+            term.send(b"1\n");
             assert!(term.finish().success(), "{}", term.output);
             assert_delivery_and_cleanup(&term.output);
             assert_completed(&local, &remote, &original);
+            assert_eq!(
+                value(
+                    &local,
+                    &["rev-list", "--left-right", "--count", "main...origin/main"]
+                ),
+                "0\t0"
+            );
+            let status = value(&local, &["status", "--short", "--branch"]);
+            assert!(
+                !status.contains("ahead") && !status.contains("behind"),
+                "{status}"
+            );
         },
     );
 }

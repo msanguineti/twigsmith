@@ -53,9 +53,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 };
                 options.target = Some(value.into());
             }
-            Some(value) if input.is_none() && (!value.starts_with('-') || value.contains(' ')) => {
-                input = Some(value)
-            }
+            Some(value) if input.is_none() && !value.starts_with('-') => input = Some(value),
             _ => return syntax_error(),
         }
     }
@@ -115,77 +113,59 @@ pub fn run(args: &[OsString]) -> ExitCode {
 
 fn syntax_error() -> ExitCode {
     eprintln!(
-        "error: expected start <branch-name-or-phrase> (alias: s); use --help or start --help"
+        "error: expected start <branch-name> (alias: s); supply exactly one branch name.\nUse --from <ref> for a creation source; use --help or start --help for options"
     );
     ExitCode::from(2)
 }
 
 fn help_start() {
     println!(
-        "Create or resume a workstream. Alias: s.
+        r#"Create or resume an exact work branch. Alias: s.
 
-Usage: git-oneflow start <branch-name-or-phrase> [--policy <ordinary|release|hotfix>]
-                         [--from <commit-ref> | --from-tag <tag>] [--target <branch>]
+Usage: git-oneflow start <branch-name> [OPTIONS]
 
 Arguments:
-  <branch-name-or-phrase>  Exact branch name or quoted phrase
+  <branch-name>                      One literal Git branch name
 
 Options:
-  --policy <ordinary|release|hotfix>  Select and persist explicit work policy
-  --from <commit-ref>   Create from an exact locally available commit reference
-  --from-tag <tag>      Select a hotfix version by exact lightweight/annotated tag
-  --target <branch>     Ordinary contribution creation/preparation/integration target
-  -h, --help       Show help
+  --policy <ordinary|release|hotfix>  Select and retain explicit work policy
+  --from <commit-ref>                Create from a locally available commit
+  --from-tag <tag>                   Create hotfix work from an exact local tag
+  --target <branch>                  Set an ordinary contribution target
+  -h, --help                         Show help
 
 Examples:
-  gof start \"add user avatars\"
+  gof start add-user-avatars
   gof s fix/parser_v2
-  git-oneflow start Fix/DeploymentBug
-  gof start release/winter-2026 --policy release --from main~1
-  gof start hotfix/winter-fix --policy hotfix --from-tag winter-2026
-  gof start contribution --policy ordinary --target release/winter-2026
+  gof start 中文/修复
+  gof start release/winter --policy release --from main~1
+  gof start hotfix/parser --policy hotfix --from-tag v1.2
 
-Details:
-  Literal Git names keep their spelling, case, prefixes, and Unicode form.
-  Ordinary spaces select phrase conversion: normalized lowercase words
-  joined with hyphens. Existing exact names mean resume.
-  Explicit sources resolve local Git commit references/expressions once; no fetch is performed for them.
-  Ambiguous names and noncommit references fail. --from-tag requires an exact existing local tag.
-  Hotfix creation-source may explicitly select refs/tags/TAG in configuration.
-  The configured creation-source also uses locally available history. Without a selected source,
-  ordinary creation fetches the exact base branch from base-remote.
-  Resume preserves history, policy, and routes; incompatible creation requests fail.
-  Explicit hotfix policy can resume existing local/published work without selecting a new tag.
-  New hotfix creation requires --from-tag or a configured exact refs/tags/TAG source.
-  Local branches resume using local history, including offline.
-  Otherwise resume from publish-remote or create from the fresh base-remote base.
-  Tracking may be absent, the published counterpart, or the configured project base.
-  An effective explicit Git push remote must agree with publish-remote.
-  Ordinary Git commands use your Git configuration for routing and tracking.
-  Switching requires a clean tree, attached HEAD, and an existing commit.
-  An already-current target succeeds with uncommitted work.
-  Active operations and targets occupied by another worktree block start.
+Notes:
+  Names retain spelling, case, punctuation and Unicode form. Spaces are invalid,
+  including inside shell quotes. Supply one name; start performs no conversion.
+  Exact local names resume offline. Otherwise start resumes from publish-remote
+  or creates from the fresh base on base-remote. --from and --from-tag are alternatives.
+  Sources must exist locally. New hotfix work needs --from-tag or a configured tag source.
+  Resume preserves history and established policy; incompatible source/route input fails.
+  Switching requires a clean tree and attached HEAD with a commit. An already-current
+  branch succeeds with local changes. Active Git operations and occupied worktrees block start.
 
 Settings:
-  git-oneflow.config.toml, .yaml, .yml, or .json: one file per layer
-  Shared: working-tree root; local overrides: Git common directory
-  Precedence: local > shared > defaults
-  publish-remote = origin; base-remote follows publication; base = main (defaults)
-  Linked worktrees have separate shared files and common local overrides.
+  publish-remote: origin; base-remote follows publication; base: main (defaults).
+  Run gof config for setup or gof config show to inspect effective settings.
 
 Exit status:
   0  Created, resumed, or already current
   1  Input, repository, settings, or workflow failure
-  2  Invalid syntax
-
-See docs/USAGE.md for settings and recovery."
+  2  Invalid syntax"#
     );
 }
 
 fn inspection_error(error: &InspectionError) {
     match error {
         InspectionError::Git { output, .. } if !output.stderr.is_empty() => {
-            eprintln!("Git: {}", display(&output.stderr));
+            eprint!("{}", crate::cli::git_diagnostics(&output.stderr, display));
         }
         InspectionError::Io(_) => {
             eprintln!("ensure Git is installed on PATH and repository paths are accessible");
@@ -208,22 +188,34 @@ fn resolve_guidance(error: &ResolveError) {
         }
         ResolveError::Settings(_) => {
             eprintln!(
-                "check git-oneflow.config.{{toml,yaml,yml,json}} at the working-tree root and in the Git common directory; supported keys: publish-remote, base-remote, base, save-action, finish-update, finish-rewrite; local-only: redact-credentials"
+                "check the reported configuration file; run gof config show to inspect settings and their sources"
             );
         }
         ResolveError::Input(_) => {}
-        ResolveError::UnusablePhrase
-        | ResolveError::InvalidTarget(_)
-        | ResolveError::ProtectedBase(_) => {
+        ResolveError::ProtectedBase(_) => {
+            eprintln!("choose a work branch distinct from the configured base or release marker")
+        }
+        ResolveError::InvalidTarget(_) => {
             eprintln!(
-                "use a valid literal Git branch name or a quoted phrase containing ordinary spaces and letters/numbers; choose a target other than the configured base"
+                "use one literal Git branch name without spaces, such as fix/parser; shell quotes preserve the name"
             );
         }
     }
 }
 
 fn failure_error(failure: &Failure, target: &str) {
-    eprintln!("error: {}", text(&failure.error));
+    if let StartError::Git { arguments, output } = &failure.error {
+        eprintln!(
+            "error: Git refused {} ({})",
+            text(format!("{arguments:?}")),
+            output.status
+        );
+        for bytes in [&output.stdout, &output.stderr] {
+            eprint!("{}", crate::cli::git_diagnostics(bytes, display));
+        }
+    } else {
+        eprintln!("error: {}", text(&failure.error));
+    }
     match &failure.error {
         StartError::Inspection(error) => inspection_error(error),
         StartError::Resolve(error) => resolve_guidance(error),
@@ -235,7 +227,7 @@ fn failure_error(failure: &Failure, target: &str) {
         ),
         _ => {}
     }
-    eprintln!("Completed steps: {}", failure.effects.len());
+    eprintln!("\nCompleted steps: {}", failure.effects.len());
     for effect in &failure.effects {
         match effect {
             Effect::Fetched {
@@ -260,7 +252,7 @@ fn failure_error(failure: &Failure, target: &str) {
             Effect::Switched { target } => eprintln!("  Switched to {}", text(target)),
         }
     }
-    eprintln!("Remaining state (observed after failure):");
+    eprintln!("\nRemaining state (observed after failure):");
     match &failure.remaining.repository {
         Ok(Observation::Repository(state)) => {
             match &state.head {
@@ -328,7 +320,7 @@ fn failure_error(failure: &Failure, target: &str) {
         Err(error) => eprintln!("  Target upstream unavailable: {}", text(error)),
     }
     eprintln!(
-        "No rollback was attempted. A failed Git step may itself have effects; inspect state before retrying."
+        "\nNo rollback was attempted. Resolve the reported problem and retry from the observed state."
     );
 }
 

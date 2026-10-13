@@ -105,7 +105,7 @@ fn hosted_cancel_eof_and_context_changes_stop_before_effects() {
                 (
                     vec!["finish", "--tag", "v1", "--merge-back", "review/v1"],
                     "Merge-back update (merge/none/cancel)",
-                    b"cancel\n".as_slice(),
+                    b"3\n".as_slice(),
                     false,
                 ),
                 (

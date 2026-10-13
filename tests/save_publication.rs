@@ -689,15 +689,10 @@ fn server_rejection_and_multiple_destination_partial_results_retain_effects() {
                 assert_eq!(oid(rejected, REF), None);
                 assert_eq!(oid(accepted, REF), oid(repo.path(), "HEAD"));
                 assert!(has_config(&repo, "remote").is_none());
-                // A successful destination can leave a local cache despite failure.
-                assert!(
-                    !report
-                        .tracking
-                        .after
-                        .as_ref()
-                        .unwrap()
-                        .remote_refs
-                        .is_empty()
+                // Only the endpoint used for fetching can populate its cache.
+                assert_eq!(
+                    oid(repo.path(), &format!("refs/remotes/origin/{BRANCH}")),
+                    (!reject_first).then(|| oid(repo.path(), "HEAD").unwrap())
                 );
                 check();
             }
@@ -782,7 +777,10 @@ fn normal_pre_push_hooks_run_and_failure_does_not_prove_rejection() {
                 );
                 let report = publish(&repo);
                 let args = fs::read(repo.path().join(".git/hook-args")).unwrap();
-                assert_eq!(args, format!("origin\n{}\n", remote.display()).as_bytes());
+                assert_eq!(
+                    args,
+                    format!("oneflow-finish-publication\n{}\n", remote.display()).as_bytes()
+                );
                 let input = fs::read(repo.path().join(".git/hook-input")).unwrap();
                 assert!(input.windows(REF.len()).any(|w| w == REF.as_bytes()));
                 if fails {
@@ -1182,6 +1180,198 @@ fn fetch_refspecs_without_local_destinations_do_not_block_publication() {
                 );
                 assert_eq!(oid(&remote, REF), oid(repo.path(), "HEAD"));
                 check();
+            }
+        },
+    );
+}
+
+#[test]
+fn cache_refresh_honors_custom_mappings_exclusions_and_shared_destinations() {
+    isolated(
+        "cache_refresh_honors_custom_mappings_exclusions_and_shared_destinations",
+        true,
+        |root| {
+            for case in [
+                "pattern",
+                "duplicate",
+                "excluded",
+                "same-remote-alias",
+                "other-remote-alias",
+            ] {
+                let (repo, remote) = fixture(root);
+                let cache = "refs/remotes/custom/Exact_Name";
+                let mapping = if case == "pattern" {
+                    "+refs/heads/Feature/*:refs/remotes/custom/*".to_owned()
+                } else {
+                    format!("+{REF}:{cache}")
+                };
+                repo.success(&["config", "remote.origin.fetch", &mapping]);
+                match case {
+                    "duplicate" => {
+                        repo.success(&["config", "--add", "remote.origin.fetch", &mapping]);
+                    }
+                    "excluded" => {
+                        repo.success(&[
+                            "config",
+                            "--add",
+                            "remote.origin.fetch",
+                            &format!("^{REF}"),
+                        ]);
+                    }
+                    "same-remote-alias" => {
+                        repo.success(&[
+                            "config",
+                            "--add",
+                            "remote.origin.fetch",
+                            &format!("+refs/heads/other:{cache}"),
+                        ]);
+                    }
+                    "other-remote-alias" => {
+                        repo.success(&["remote", "add", "other", remote.to_str().unwrap()]);
+                        repo.success(&["config", "remote.other.fetch", &format!("+{REF}:{cache}")]);
+                    }
+                    _ => (),
+                }
+                let report = publish(&repo);
+                assert!(report.is_complete(), "{case}: {report:#?}");
+                assert_eq!(oid(&remote, REF), oid(repo.path(), "HEAD"));
+                assert_eq!(
+                    oid(repo.path(), cache),
+                    matches!(case, "pattern" | "duplicate")
+                        .then(|| oid(repo.path(), "HEAD").unwrap())
+                );
+                assert_eq!(
+                    report.caches[0].has_issue(),
+                    case.ends_with("alias"),
+                    "{case}: {report:#?}"
+                );
+                assert_eq!(
+                    oid(repo.path(), &format!("refs/remotes/origin/{BRANCH}")),
+                    None
+                );
+            }
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_refresh_preserves_newer_concurrent_and_grafted_observations() {
+    isolated(
+        "cache_refresh_preserves_newer_concurrent_and_grafted_observations",
+        true,
+        |root| {
+            for case in ["newer", "concurrent", "same-oid-recreated", "grafted"] {
+                let (repo, remote) = fixture(root);
+                let source = oid(repo.path(), "HEAD").unwrap();
+                let newer = commit(&repo, "later observation\n");
+                repo.success(&["reset", "--hard", &source]);
+                let cache = format!("refs/remotes/origin/{BRANCH}");
+                let original = if case == "same-oid-recreated" {
+                    &source
+                } else {
+                    &newer
+                };
+                if case != "concurrent" {
+                    repo.success(&["update-ref", &cache, original]);
+                }
+                if case == "grafted" {
+                    fs::create_dir_all(repo.path().join(".git/info")).unwrap();
+                    fs::write(
+                        repo.path().join(".git/info/grafts"),
+                        format!("{source} {newer}\n"),
+                    )
+                    .unwrap();
+                }
+                if matches!(case, "concurrent" | "same-oid-recreated") {
+                    let hooks = local_hooks(&repo);
+                    let body = if case == "same-oid-recreated" {
+                        format!(
+                            "git update-ref -d '{cache}'\ngit update-ref -m 'concurrent recreation' '{cache}' {source}"
+                        )
+                    } else {
+                        format!("git update-ref '{cache}' {newer}")
+                    };
+                    hook(&hooks, "pre-push", &format!("#!/bin/sh\n{body}\n"));
+                }
+                let report = publish(&repo);
+                assert!(report.is_complete(), "{case}: {report:#?}");
+                assert_eq!(oid(&remote, REF), Some(source.clone()));
+                assert_eq!(oid(repo.path(), &cache), Some(original.clone()));
+                assert!(report.caches[0].has_issue(), "{case}: {report:#?}");
+            }
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cache_transaction_refuses_symbolic_replacement_and_survives_lock_failure() {
+    isolated(
+        "cache_transaction_refuses_symbolic_replacement_and_survives_lock_failure",
+        true,
+        |root| {
+            for case in ["symbolic", "locked", "remote-moved", "workflow-changed"] {
+                let (repo, remote) = fixture(root);
+                let source = oid(repo.path(), "HEAD").unwrap();
+                let cache = format!("refs/remotes/origin/{BRANCH}");
+                let path = repo.path().join(".git").join(&cache);
+                if case == "locked" {
+                    fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    fs::write(path.with_extension("lock"), "held").unwrap();
+                } else {
+                    let hooks = local_hooks(&repo);
+                    let effect = match case {
+                        "symbolic" => format!("printf 'ref: refs/heads/main\\n' > '.git/{cache}'"),
+                        "remote-moved" => format!(
+                            "git --git-dir='{}' update-ref -d '{REF}'",
+                            remote.to_str().unwrap().replace('\'', "'\\''")
+                        ),
+                        "workflow-changed" => "git config remote.pushDefault different".into(),
+                        _ => unreachable!(),
+                    };
+                    // Run only for cache transactions; source/remote publication
+                    // and tracking configuration are distinct effects.
+                    hook(
+                        &hooks,
+                        "reference-transaction",
+                        &format!(
+                            "#!/bin/sh\ninput=$(cat)\nif test \"$1\" = prepared && printf '%s' \"$input\" | grep -q '{cache}'; then\n{effect}\nfi\n"
+                        ),
+                    );
+                }
+                let report = publish(&repo);
+                assert_eq!(
+                    report.state,
+                    PublicationState::Complete,
+                    "{case}: {report:#?}"
+                );
+                assert_eq!(oid(repo.path(), "main"), Some(source.clone()));
+                assert!(report.caches[0].has_issue(), "{case}: {report:#?}");
+                assert_eq!(
+                    report.is_complete(),
+                    case != "workflow-changed",
+                    "{case}: {report:#?}"
+                );
+                if case == "symbolic" {
+                    assert_eq!(
+                        repo.success(&["symbolic-ref", &cache]).stdout,
+                        b"refs/heads/main\n"
+                    );
+                } else if case != "workflow-changed" {
+                    assert_eq!(oid(repo.path(), &cache), None);
+                }
+                assert_eq!(
+                    oid(&remote, REF),
+                    (case != "remote-moved").then_some(source.clone())
+                );
+                if case == "locked" {
+                    fs::remove_file(path.with_extension("lock")).unwrap();
+                    let retry = publish(&repo);
+                    assert!(retry.is_complete(), "{retry:#?}");
+                    assert!(!retry.caches[0].has_issue(), "{retry:#?}");
+                    assert_eq!(oid(repo.path(), &cache), Some(source));
+                }
             }
         },
     );

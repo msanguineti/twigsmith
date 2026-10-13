@@ -8,6 +8,8 @@ use crate::{
 };
 use std::{fmt, path::Path};
 
+pub(crate) mod cache;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamSettings {
     pub remotes: Vec<Vec<u8>>,
