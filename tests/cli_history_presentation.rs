@@ -368,7 +368,7 @@ fn native_editor_receives_terminal_input_without_a_redundant_confirmation() {
                 local.path(),
                 &["finish", "--update", "rebase", "--no-rewrite"],
             );
-            terminal.until("Completion mode (");
+            terminal.until("How should this work be delivered?");
             terminal.send(b"\x1b[A\x1b[A\r");
             terminal.until("Native sequence input:");
             terminal.assert_restored();

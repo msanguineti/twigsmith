@@ -17,6 +17,7 @@ pub(super) fn run(
     initial: Plan,
     presentation: Presentation,
     skip_checks: bool,
+    mut context_shown: bool,
 ) -> ExitCode {
     let mut history = String::new();
     if let Some(policy) = &initial.settings.workstream
@@ -36,11 +37,19 @@ pub(super) fn run(
         .unwrap_or_else(|| directory.to_path_buf());
     let mut next = initial;
     loop {
-        match run_retained(&root, next, presentation, skip_checks, history) {
+        match run_retained(
+            &root,
+            next,
+            presentation,
+            skip_checks,
+            history,
+            context_shown,
+        ) {
             Progress::Finished(code) => return code,
             Progress::Destination(plan, retained_history) => {
                 next = *plan;
                 history = retained_history;
+                context_shown = false;
             }
         }
     }
@@ -52,6 +61,7 @@ fn run_retained(
     presentation: Presentation,
     skip_checks: bool,
     mut history: String,
+    mut context_shown: bool,
 ) -> Progress {
     let root = initial
         .repository
@@ -86,6 +96,42 @@ fn run_retained(
             ));
         }
         if let Some(choice) = plan.required_input.first().copied() {
+            if !context_shown && io::stdin().is_terminal() && io::stderr().is_terminal() {
+                crate::presentation::section("Integrate work");
+                crate::presentation::prose(&format!(
+                    "Work: {}\nDeliver to: {}/{}",
+                    display(
+                        presentation,
+                        plan.source_ref
+                            .strip_prefix(b"refs/heads/")
+                            .unwrap_or(&plan.source_ref)
+                    ),
+                    text(presentation, &plan.target.remote),
+                    display(
+                        presentation,
+                        plan.target
+                            .reference
+                            .strip_prefix(b"refs/heads/")
+                            .unwrap_or(&plan.target.reference)
+                    )
+                ));
+                if let Some(preparation) =
+                    plan.evidence.as_ref().and_then(|e| e.preparation.as_ref())
+                {
+                    crate::presentation::prose(&format!(
+                        "Update from: {}/{}",
+                        text(presentation, &plan.settings.base_remote),
+                        display(
+                            presentation,
+                            preparation
+                                .reference
+                                .strip_prefix(b"refs/heads/")
+                                .unwrap_or(&preparation.reference)
+                        )
+                    ));
+                }
+                context_shown = true;
+            }
             let request = match choose(&root, &plan, choice, presentation) {
                 Ok(request) => request,
                 Err(error) => {
@@ -360,24 +406,12 @@ fn choose(
             }
         ));
     }
-    eprintln!(
-        "Integrate {} into {}/{}.",
-        display(presentation, &plan.source_ref),
-        text(presentation, &plan.target.remote),
-        display(
-            presentation,
-            plan.target
-                .reference
-                .strip_prefix(b"refs/heads/")
-                .unwrap_or(&plan.target.reference)
-        )
-    );
     let mut request = plan.request().clone();
     if choice == RequiredInput::TagName {
         request.release.tag = Some(read_reference_name(
             root,
             presentation,
-            "Version tag name",
+            "What version tag should identify this release?",
             "refs/tags/",
             "Finish cancelled; retained work remains available.",
         )?);
@@ -387,43 +421,68 @@ fn choose(
         request.message = Some(edit_message(root, plan, presentation)?);
         return Ok(request);
     }
-    let prompt = match choice {
+    let (question, choices): (&str, &[(&str, &str)]) = match choice {
         RequiredInput::Rewrite => {
-            eprintln!(
-                "Allow authorizes eligible replacement of incorporated published work for this attempt; all exact publication guards remain required. Deny retains published history."
+            crate::presentation::prose(
+                "Publishing the updated work may replace commits already on the remote work branch.",
             );
-            "Rewrite (allow/deny/cancel)"
+            (
+                "Allow replacing published work history?",
+                &[
+                    (
+                        "allow",
+                        "Allow replacement for this finish; stop if remote history changes",
+                    ),
+                    (
+                        "deny",
+                        "Keep published history; stop if replacement is required",
+                    ),
+                    ("cancel", "Cancel"),
+                ],
+            )
         }
-        RequiredInput::Update => {
-            eprintln!(
-                "Rebase replays work commits onto the target. Merge incorporates the target into work. None retains current work history."
-            );
-            "Update (rebase/merge/none/cancel)"
-        }
-        RequiredInput::Integration => {
-            eprintln!(
-                "Ff-only advances a target that can fast-forward. Merge creates an integration merge commit. Squash creates one integration commit from work changes."
-            );
-            "Integration (ff-only/merge/squash/cancel)"
-        }
-        RequiredInput::Cleanup => {
-            eprintln!(
-                "Keep retains local and published work branches. Local deletes the local work branch after delivery. Both deletes local and published work branches after delivery."
-            );
-            "Cleanup (keep/local/both/cancel)"
-        }
+        RequiredInput::Update => (
+            "How should the work branch be updated?",
+            &[
+                ("rebase", "Rebase work commits onto the update source"),
+                ("merge", "Merge the update source into the work branch"),
+                ("none", "Keep current work history"),
+                ("cancel", "Cancel"),
+            ],
+        ),
+        RequiredInput::Integration => (
+            "How should the work be integrated into the target?",
+            &[
+                (
+                    "ff-only",
+                    "Fast-forward the target; require compatible history",
+                ),
+                ("merge", "Create a merge commit on the target"),
+                ("squash", "Create one target commit from the work changes"),
+                ("cancel", "Cancel"),
+            ],
+        ),
+        RequiredInput::Cleanup => (
+            "Which work branches should remain after delivery?",
+            &[
+                ("keep", "Keep local and published work branches"),
+                (
+                    "local",
+                    "Delete the local work branch after verified delivery",
+                ),
+                (
+                    "both",
+                    "Delete local and published work branches after verified delivery",
+                ),
+                ("cancel", "Cancel"),
+            ],
+        ),
         RequiredInput::Message | RequiredInput::TagName => unreachable!(),
     };
     let answer = super::read_menu_answer(
         presentation,
-        prompt,
-        match choice {
-            RequiredInput::Rewrite => &["allow", "deny", "cancel"],
-            RequiredInput::Update => &["rebase", "merge", "none", "cancel"],
-            RequiredInput::Integration => &["ff-only", "merge", "squash", "cancel"],
-            RequiredInput::Cleanup => &["keep", "local", "both", "cancel"],
-            _ => unreachable!(),
-        },
+        question,
+        choices,
         "Finish cancelled; completed effects and retained work remain available.",
     )?;
     let invalid = || format!("error: invalid choice; rerun finish and {guidance}.");

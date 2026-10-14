@@ -510,10 +510,14 @@ fn finish_terminal_choices_and_separate_authorization() {
                         local.path(),
                         &[command, "--mode", "review"],
                     );
-                    term.until("Update (rebase/merge/none/cancel)");
+                    term.until("How should the work branch be updated?");
                     contains(
                         &term.output,
-                        &["replays branch", "incorporates", "without updating"],
+                        &[
+                            "Rebase work commits",
+                            "Merge the update source",
+                            "without updating",
+                        ],
                     );
                     let answer = if command == "f" {
                         match update {
@@ -527,15 +531,31 @@ fn finish_terminal_choices_and_separate_authorization() {
                     };
                     term.send(format!("{answer}\n").as_bytes());
                     if update == "rebase" {
-                        term.until("Replace published history (allow/deny/cancel)");
+                        term.until("Allow replacing published work history?");
                         unchanged_work(&local, &before);
                         assert_eq!(oid(&remote, REF), oid(&local, "HEAD"));
                         term.send(if command == "f" { b"1\n" } else { b"allow\n" });
                     }
                     assert_eq!(term.finish().code(), Some(0), "{}", term.output);
+                    assert_eq!(
+                        term.output.matches("Prepare for review").count(),
+                        1,
+                        "{}",
+                        term.output
+                    );
+                    assert_eq!(
+                        term.output.matches("Work: fix/deployment-bug").count(),
+                        1,
+                        "{}",
+                        term.output
+                    );
                     published(&local, &remote);
                     if update != "rebase" {
-                        assert!(!term.output.contains("Replace published history ("));
+                        assert!(
+                            !term
+                                .output
+                                .contains("Allow replacing published work history?")
+                        );
                     }
                     contains(&term.output, &["Published", "Next:"]);
                 }
@@ -547,7 +567,7 @@ fn finish_terminal_choices_and_separate_authorization() {
                 local.path(),
                 &["finish", "--mode", "review", "--update", "rebase"],
             );
-            term.until("Replace published history (");
+            term.until("Allow replacing published work history?");
             term.send(b"deny\n");
             assert_eq!(term.finish().code(), Some(1));
             contains(&term.output, &["replacement denied"]);
@@ -567,7 +587,7 @@ fn finish_terminal_cancel_eof_and_invalid_input_preserve_branch_work() {
             let before = work_snapshot(&local);
             let mut term =
                 terminal::Terminal::start(exe, local.path(), &["finish", "--mode", "review"]);
-            term.until("Update (");
+            term.until("How should the work branch be updated?");
             term.interrupt();
             assert!(!term.finish().success());
             unchanged_work(&local, &before);
@@ -590,9 +610,9 @@ fn finish_terminal_cancel_eof_and_invalid_input_preserve_branch_work() {
                     };
                     let mut term = terminal::Terminal::start(exe, local.path(), &args);
                     term.until(if rewrite {
-                        "Replace published history ("
+                        "Allow replacing published work history?"
                     } else {
-                        "Update ("
+                        "How should the work branch be updated?"
                     });
                     term.send(if answer == b"numeric-cancel" {
                         if rewrite { b"3\n" } else { b"4\n" }
@@ -645,9 +665,9 @@ fn finish_terminal_revalidates_local_and_remote_changes_during_input() {
                     };
                     let mut term = terminal::Terminal::start(exe, local.path(), &args);
                     term.until(if rewrite {
-                        "Replace published history ("
+                        "Allow replacing published work history?"
                     } else {
-                        "Update ("
+                        "How should the work branch be updated?"
                     });
                     match mutation {
                         "head" => {
@@ -678,7 +698,7 @@ fn finish_terminal_revalidates_local_and_remote_changes_during_input() {
                     // Remote-only changes are detected by preparation's repeated refresh,
                     // after both choices have been resolved.
                     if !rewrite && ["remote", "base"].contains(&mutation) {
-                        term.until("Replace published history (");
+                        term.until("Allow replacing published work history?");
                         term.send(b"allow\n");
                     }
                     assert_eq!(term.finish().code(), Some(1), "{}", term.output);
@@ -966,7 +986,7 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
                     let (local, _remote) = fixture(root, false, true);
                     let before = preservation::snapshot(root);
                     let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
-                    term.until("Completion mode (");
+                    term.until("How should this work be delivered?");
                     term.send(answer);
                     if [b"0\n".as_slice(), b"99\n", b"invalid\n"].contains(&answer) {
                         term.until("Choose a listed name or number");
@@ -978,14 +998,14 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
                 }
                 let (local, remote) = fixture(root, false, false);
                 let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
-                term.until("Completion mode (");
+                term.until("How should this work be delivered?");
                 term.send(if command == "f" { b"1\n" } else { b"review\n" });
                 assert!(term.finish().success(), "{}", term.output);
                 assert!(!term.output.contains("Integration commit message"));
                 published(&local, &remote);
                 let (local, _remote) = fixture(root, false, true);
                 let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
-                term.until("Completion mode (");
+                term.until("How should this work be delivered?");
                 fs::write(
                     local.path().join(".git/git-oneflow.config.toml"),
                     "finish-mode='integrate'\n",
@@ -1481,10 +1501,10 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                         fs::write(private, settings).unwrap();
                     }
                     let prompt = match choice {
-                        "mode" => "Completion mode (",
-                        "update" => "Update (",
-                        "method" => "Integration (",
-                        "cleanup" => "Cleanup (",
+                        "mode" => "How should this work be delivered?",
+                        "update" => "How should the work branch be updated?",
+                        "method" => "How should the work be integrated into the target?",
+                        "cleanup" => "Which work branches should remain after delivery?",
                         _ => unreachable!(),
                     };
                     let mut term = terminal::Terminal::start(exe, f.local.path(), &args);
@@ -1549,13 +1569,27 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                     f.local.path(),
                     &["finish", "--cleanup", "keep"],
                 );
-                term.until("Integration (");
+                term.until("How should the work be integrated into the target?");
                 term.send(answer);
                 assert!(term.finish().success(), "{}", term.output);
-                assert!(!term.output.contains("Update ("), "{}", term.output);
-                assert!(!term.output.contains("Cleanup ("), "{}", term.output);
                 assert!(
-                    !term.output.contains("Replace published history ("),
+                    !term
+                        .output
+                        .contains("How should the work branch be updated?"),
+                    "{}",
+                    term.output
+                );
+                assert!(
+                    !term
+                        .output
+                        .contains("Which work branches should remain after delivery?"),
+                    "{}",
+                    term.output
+                );
+                assert!(
+                    !term
+                        .output
+                        .contains("Allow replacing published work history?"),
                     "{}",
                     term.output
                 );
@@ -1568,7 +1602,7 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                     f.local.path(),
                     &["finish", "--cleanup", "keep"],
                 );
-                term.until("Integration (");
+                term.until("How should the work be integrated into the target?");
                 term.send(answer);
                 if answer == b"bogus\n" {
                     term.until("Choose a listed name or number");
@@ -1727,7 +1761,7 @@ fn integration_cancelled_editor_after_preparation_retains_work_and_retries() {
                 f.local.path(),
                 &["finish", "--update", "merge", "--cleanup", "keep"],
             );
-            term.until("Integration (");
+            term.until("How should the work be integrated into the target?");
             term.send(b"merge\n");
             assert_eq!(term.finish().code(), Some(1), "{}", term.output);
             let prepared = oid(&f.local, REF);
@@ -1980,20 +2014,34 @@ fn finish_capable_navigation_review_and_integration_delivery_cancel_and_failure(
         |root, exe| {
             let (local, remote) = fixture(root, false, true);
             let mut terminal = terminal::Terminal::start_capable(exe, local.path(), &["finish"]);
-            terminal.until("Completion mode (");
+            terminal.until("How should this work be delivered?");
+            contains(
+                &terminal.output,
+                &[
+                    "Work: fix/deployment-bug",
+                    "Publish to: origin",
+                    "Deliver to: origin/main",
+                ],
+            );
             terminal.send(b"\x1b[A\x1b[A\r");
-            terminal.until("Update (");
+            terminal.until("How should the work branch be updated?");
             terminal.send(b"\x1b[A\r");
             assert!(terminal.finish().success(), "{}", terminal.output);
+            assert_eq!(
+                terminal.output.matches("Work: fix/deployment-bug").count(),
+                1,
+                "{}",
+                terminal.output
+            );
             terminal.assert_restored();
             published(&local, &remote);
 
             let f = integration_fixture(root, false);
             let original = oid(&f.local, REF);
             let mut terminal = terminal::Terminal::start_capable(exe, f.local.path(), &["finish"]);
-            terminal.until("Integration (");
+            terminal.until("How should the work be integrated into the target?");
             terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
-            terminal.until("Cleanup (");
+            terminal.until("Which work branches should remain after delivery?");
             terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
             assert!(terminal.finish().success(), "{}", terminal.output);
             terminal.assert_restored();
@@ -2005,7 +2053,7 @@ fn finish_capable_navigation_review_and_integration_delivery_cancel_and_failure(
             let before = work_snapshot(&f.local);
             let target = remote_oid(f.project.path(), "main");
             let mut terminal = terminal::Terminal::start_capable(exe, f.local.path(), &["finish"]);
-            terminal.until("Integration (");
+            terminal.until("How should the work be integrated into the target?");
             terminal.send(b"\x1b");
             assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
             terminal.assert_restored();
@@ -2025,7 +2073,7 @@ fn finish_capable_navigation_review_and_integration_delivery_cancel_and_failure(
                 f.local.path(),
                 &["finish", "--cleanup", "keep"],
             );
-            terminal.until("Integration (");
+            terminal.until("How should the work be integrated into the target?");
             terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
             assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
             terminal.assert_restored();

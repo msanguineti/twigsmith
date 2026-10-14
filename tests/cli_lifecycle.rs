@@ -285,15 +285,22 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
                     ];
                 let mut term =
                     terminal::Terminal::start(exe, local.path(), &["config", "--format", format]);
-                term.until("Publication remote");
-                let mut answers = "\n\n\n\nmerge\ndeny\nreview\n".to_string();
+                term.until("Remote receiving work");
+                let mut answers = "\n\n\n\nedit\nreview\nmerge\ndeny\n\n".to_string();
                 for check in &checks {
+                    answers.push_str("add\n");
                     answers.push_str(&check.name);
                     answers.push('\n');
-                    answers.push_str(&serde_json::to_string(&check.command).unwrap());
+                    answers.push_str(&check.command[0]);
                     answers.push('\n');
+                    for argument in &check.command[1..] {
+                        answers.push_str("add\n");
+                        answers.push_str(argument);
+                        answers.push('\n');
+                    }
+                    answers.push('\n'); // finish this command
                 }
-                answers.push_str("\nyes\n");
+                answers.push_str("\nyes\n"); // retain check list, approve creation
                 term.send(answers.as_bytes());
                 assert!(term.finish().success(), "{}", term.output);
                 assert!(!log.exists(), "setup must not execute checks");

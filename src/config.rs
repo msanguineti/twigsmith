@@ -247,18 +247,100 @@ fn review(directory: &Path, plan: &GenerationPlan) -> Result<Review, ConfigError
         redact_credentials_source: loaded.redact_credentials_source,
         local: loaded.local,
         remotes: observation(directory, &["remote"], false)?,
-        remote_config: observation(directory, &["config", "--get-regexp", "^remote\\."], true)?,
+        remote_config: observation(
+            directory,
+            &["config", "--null", "--get-regexp", "^remote\\."],
+            true,
+        )?,
         branches: observation(
             directory,
-            &[
-                "for-each-ref",
-                "--format=%(refname)",
-                "refs/heads/",
-                "refs/remotes/",
-            ],
+            &["for-each-ref", "--format=%(refname)%09%(symref)"],
             false,
         )?,
     })
+}
+impl Review {
+    pub fn remote_suggestions(&self) -> Vec<String> {
+        self.remotes
+            .split(|b| *b == b'\n')
+            .filter_map(|value| {
+                let value = std::str::from_utf8(value).ok()?;
+                (!value.is_empty()).then(|| value.to_owned())
+            })
+            .collect()
+    }
+
+    /// Local heads and exact source names inferred from this remote's fetch
+    /// mappings are hints only. Tracking display names never become policy values.
+    pub fn branch_suggestions(&self, remote: &str) -> Vec<String> {
+        fn map(pattern: &str, replacement: &str, value: &str) -> Option<String> {
+            match (pattern.split_once('*'), replacement.split_once('*')) {
+                (None, None) => (pattern == value).then(|| replacement.to_owned()),
+                (Some((prefix, suffix)), Some((before, after)))
+                    if !suffix.contains('*') && !after.contains('*') =>
+                {
+                    let middle = value.strip_prefix(prefix)?.strip_suffix(suffix)?;
+                    Some(format!("{before}{middle}{after}"))
+                }
+                _ => None,
+            }
+        }
+        let key = format!("remote.{remote}.fetch");
+        let mappings: Vec<_> = self
+            .remote_config
+            .split(|b| *b == 0)
+            .filter_map(|entry| std::str::from_utf8(entry).ok()?.split_once('\n'))
+            .filter(|(name, _)| *name == key)
+            .map(|(_, value)| value.strip_prefix('+').unwrap_or(value))
+            .collect();
+        let mut candidates = std::collections::BTreeSet::new();
+        for entry in self.branches.split(|b| *b == b'\n') {
+            let Some((reference, symbolic)) = std::str::from_utf8(entry)
+                .ok()
+                .and_then(|entry| entry.split_once('\t'))
+            else {
+                continue;
+            };
+            if !symbolic.is_empty() {
+                continue;
+            }
+            if let Some(name) = reference.strip_prefix("refs/heads/") {
+                candidates.insert(name.to_owned());
+            }
+            let mut sources = std::collections::BTreeSet::new();
+            for mapping in &mappings {
+                let Some((source, target)) = mapping.split_once(':') else {
+                    continue;
+                };
+                if !source.starts_with("refs/heads/") || !target.starts_with("refs/") {
+                    continue;
+                }
+                let Some(source) = map(target, source, reference) else {
+                    continue;
+                };
+                if mappings
+                    .iter()
+                    .filter_map(|m| m.strip_prefix('^'))
+                    .any(|negative| map(negative, negative, &source).is_some())
+                {
+                    continue;
+                }
+                sources.insert(source);
+            }
+            // Multiple source heads sharing a destination cannot establish which
+            // literal branch this tracking ref represents. Keep only exact hints.
+            if sources.len() == 1
+                && let Some(name) = sources
+                    .iter()
+                    .next()
+                    .and_then(|source| source.strip_prefix("refs/heads/"))
+            {
+                candidates.insert(name.to_owned());
+            }
+        }
+        candidates.remove("HEAD");
+        candidates.into_iter().collect()
+    }
 }
 pub fn prepare_guided(directory: &Path, format: Format) -> Result<GenerationPlan, ConfigError> {
     let mut plan = prepare(directory, format)?;

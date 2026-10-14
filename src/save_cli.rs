@@ -106,17 +106,14 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let approved = plan.clone();
         let input = (|| -> Result<(), InputError> {
             if plan.required_input == RequiredInput::Action {
-                for action in &plan.applicable_actions {
-                    eprintln!("  {}", choice(*action));
-                }
                 let choices = plan
                     .applicable_actions
                     .iter()
-                    .map(|action| action_name(*action))
-                    .chain(std::iter::once("cancel"))
+                    .map(|action| (action_name(*action), choice(*action)))
+                    .chain(std::iter::once(("cancel", "Cancel")))
                     .collect::<Vec<_>>();
-                let action = crate::presentation::select(
-                    &format!("Action ({})", choices.join("/")),
+                let action = crate::presentation::select_described(
+                    "How would you like to save this work?",
                     &choices,
                     None,
                 )
@@ -136,7 +133,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             }
             if plan.required_input == RequiredInput::Message {
                 loop {
-                    request.message = Some(read_input("Staged commit message (one line)")?);
+                    request.message = Some(read_input("Staged commit message")?);
                     match resolve(&directory, &approved, &request) {
                         Ok(resolved) => {
                             plan = resolved;
@@ -212,31 +209,24 @@ fn action_name(action: SaveAction) -> &'static str {
 }
 fn choice(action: SaveAction) -> &'static str {
     match action {
-        SaveAction::PublishOnly => {
-            "publish-only Publish existing commits; all uncommitted work stays local"
-        }
-        SaveAction::Staged => {
-            "staged       Commit/publish exactly the index; unstaged/untracked work stays local"
-        }
-        SaveAction::Wip => {
-            "wip          Commit/publish staged and remaining work separately; ignored files stay local"
-        }
-        SaveAction::Stash => {
-            "stash        Retain a local stash including untracked work; publish existing commits only"
-        }
+        SaveAction::PublishOnly => "Publish existing commits; keep uncommitted work local",
+        SaveAction::Staged => "Commit staged work and publish; keep other work local",
+        SaveAction::Wip => "Checkpoint staged and remaining work separately, then publish",
+        SaveAction::Stash => "Stash tracked/untracked work locally; publish existing commits",
         SaveAction::Ask => unreachable!("ask is not an applicable execution action"),
     }
 }
 fn scope_summary(plan: &Plan) {
-    eprintln!(
-        "Save branch {} to publication remote {}:\n  {} staged, {} unstaged tracked, {} untracked paths (counts may overlap).",
+    crate::presentation::section("Save work");
+    crate::presentation::prose(&format!(
+        "Branch: {} · Publish to: {}\n{} staged, {} unstaged tracked, {} untracked paths (counts may overlap).",
         display(&plan.branch),
         text(&plan.settings.publish_remote),
         plan.scope.staged.len(),
         plan.scope.remaining_tracked.len(),
         plan.scope.untracked.len()
-    );
-    eprintln!("Ignored files are excluded. Stash contents are never remotely published.");
+    ));
+    crate::presentation::prose("Ignored files stay local.");
 }
 fn syntax_error(error: &str) -> ExitCode {
     crate::presentation::error(format!("error: {error}; use save --help (alias: v)"));
@@ -323,23 +313,29 @@ fn save_diagnostics(out: &mut String, error: &SaveError) {
         }
     }
 }
-fn local_state(out: &mut String, observation: &LocalObservation) {
+fn local_state(out: &mut String, observation: &LocalObservation, report: &Report, branch: &[u8]) {
     match &observation.repository {
         Ok(Observation::Repository(state)) => {
-            match &state.head {
-                Head::Attached { branch, commit } => {
-                    let _ = writeln!(
-                        out,
-                        "Observed HEAD: {} at {}",
-                        display(branch),
-                        display(commit)
-                    );
-                }
-                Head::Detached { commit } => {
-                    let _ = writeln!(out, "Observed HEAD: detached at {}", display(commit));
-                }
-                Head::Unborn { branch } => {
-                    let _ = writeln!(out, "Observed HEAD: unborn {}", display(branch));
+            let published_head = report.publication.as_ref().is_some_and(|publication| {
+                matches!(&state.head, Head::Attached { branch: observed, commit }
+                    if observed == branch && commit == &publication.commit)
+            });
+            if !report.is_complete() || !published_head {
+                match &state.head {
+                    Head::Attached { branch, commit } => {
+                        let _ = writeln!(
+                            out,
+                            "Observed HEAD: {} at {}",
+                            display(branch),
+                            display(commit)
+                        );
+                    }
+                    Head::Detached { commit } => {
+                        let _ = writeln!(out, "Observed HEAD: detached at {}", display(commit));
+                    }
+                    Head::Unborn { branch } => {
+                        let _ = writeln!(out, "Observed HEAD: unborn {}", display(branch));
+                    }
                 }
             }
             if let Some(tree) = &state.working_tree {
@@ -378,14 +374,14 @@ fn local_state(out: &mut String, observation: &LocalObservation) {
         let _ = writeln!(out, "Index observation unavailable: {}", text(error));
     }
     match &observation.stash {
-        Ok(Some(commit)) => {
+        Ok(Some(commit)) if !report.is_complete() => {
             let _ = writeln!(
                 out,
                 "Observed local stash: {} (contents not remotely published).",
                 display(commit)
             );
         }
-        Ok(None) => {}
+        Ok(_) => {}
         Err(error) => {
             let _ = writeln!(out, "Stash observation unavailable: {}", text(error));
         }
@@ -550,7 +546,7 @@ fn render(plan: &Plan, report: &Report) -> String {
         }
     }
     out.push('\n');
-    local_state(&mut out, &report.after);
+    local_state(&mut out, &report.after, report, &plan.branch);
     if !report.is_complete() {
         let _ = writeln!(
             out,

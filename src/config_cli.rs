@@ -159,40 +159,627 @@ pub fn run(args: &[OsString]) -> ExitCode {
     }
 }
 fn input(prompt: &str) -> Result<Option<String>, ConfigError> {
-    crate::presentation::input(prompt)
-        .map(|value| value.filter(|value| value != "cancel"))
-        .map_err(ConfigError::Input)
-}
-fn menu_input(
-    prompt: &str,
-    choices: &[&str],
-    default: Option<&str>,
-) -> Result<Option<String>, ConfigError> {
-    crate::presentation::select(prompt, choices, default).map_err(ConfigError::Input)
+    crate::presentation::input(prompt).map_err(ConfigError::Input)
 }
 fn cancelled() -> Result<(), ConfigError> {
     eprintln!("Setup cancelled; no configuration created.");
     Ok(())
 }
-fn policy<T>(
-    label: &str,
+fn described(
+    prompt: &str,
+    choices: &[(&str, &str)],
     default: &str,
-    choices: &[&str],
+) -> Result<Option<String>, ConfigError> {
+    crate::presentation::select_described(prompt, choices, Some(default))
+        .map_err(ConfigError::Input)
+}
+fn hinted(prompt: &str, suggestions: &[String]) -> Result<Option<String>, ConfigError> {
+    crate::presentation::input_with_suggestions(prompt, suggestions).map_err(ConfigError::Input)
+}
+fn choose<T>(
+    prompt: &str,
+    default: &str,
+    choices: &[(&str, &str)],
     parse: impl Fn(&str) -> Result<T, String>,
 ) -> Result<Option<T>, ConfigError> {
     loop {
-        let Some(answer) = menu_input(
-            &format!("Default {label} [{default}]: "),
-            choices,
-            Some(default),
-        )?
-        else {
+        let Some(answer) = described(prompt, choices, default)? else {
             return Ok(None);
         };
-        match parse(if answer.is_empty() { default } else { &answer }) {
+        match parse(&answer) {
             Ok(value) => return Ok(Some(value)),
-            Err(reason) => eprintln!("{reason}; or enter cancel."),
+            Err(reason) => crate::presentation::prose(&reason),
         }
+    }
+}
+fn edit_group(prompt: &str) -> Result<Option<bool>, ConfigError> {
+    Ok(described(
+        prompt,
+        &[
+            ("keep", "Keep these preferences"),
+            ("edit", "Change these preferences"),
+        ],
+        "keep",
+    )?
+    .map(|answer| answer == "edit"))
+}
+fn repository_group(
+    directory: &Path,
+    plan: &mut config::GenerationPlan,
+) -> Result<bool, ConfigError> {
+    crate::presentation::section("Repository");
+    let remotes = plan.review().remote_suggestions();
+    loop {
+        let Some(answer) = hinted(
+            &format!(
+                "Remote receiving work [{}]: ",
+                text(&plan.proposed.publish_remote)
+            ),
+            &remotes,
+        )?
+        else {
+            return Ok(false);
+        };
+        let value = if answer.is_empty() {
+            plan.proposed.publish_remote.clone()
+        } else {
+            answer
+        };
+        if settings::valid_remote(directory, &value)? {
+            plan.proposed.publish_remote = value;
+            if plan.proposed.sources.base_remote.is_none() {
+                plan.proposed.base_remote = plan.proposed.publish_remote.clone();
+            }
+            break;
+        }
+        crate::presentation::prose(
+            "Use a named Git remote without spaces or a leading '-'. Future names are allowed.",
+        );
+    }
+    crate::presentation::prose(
+        "New work and finish preparation use the project source. Enter keeps the displayed preference; naming the remote receiving work makes the source follow publication.",
+    );
+    loop {
+        let current = if plan.proposed.sources.base_remote.is_none() {
+            "follow publication"
+        } else {
+            &plan.proposed.base_remote
+        };
+        let Some(answer) = hinted(
+            &format!("Project source remote [{}]: ", text(current)),
+            &remotes,
+        )?
+        else {
+            return Ok(false);
+        };
+        if answer == plan.proposed.publish_remote
+            || (answer.is_empty() && plan.proposed.sources.base_remote.is_none())
+        {
+            plan.proposed.base_remote = plan.proposed.publish_remote.clone();
+            plan.proposed.sources.base_remote = None;
+            break;
+        }
+        let value = if answer.is_empty() {
+            plan.proposed.base_remote.clone()
+        } else {
+            answer
+        };
+        if settings::valid_remote(directory, &value)? {
+            plan.proposed.base_remote = value;
+            plan.proposed.sources.base_remote = Some(SettingSource::Shared(plan.destination()));
+            break;
+        }
+        crate::presentation::prose("Use a named Git remote without spaces or a leading dash.");
+    }
+    let branches = plan.review().branch_suggestions(&plan.proposed.base_remote);
+    loop {
+        let Some(answer) = hinted(
+            &format!("Project base branch [{}]: ", text(&plan.proposed.base)),
+            &branches,
+        )?
+        else {
+            return Ok(false);
+        };
+        let value = if answer.is_empty() {
+            plan.proposed.base.clone()
+        } else {
+            answer
+        };
+        if settings::valid_branch(directory, &value)? {
+            plan.proposed.base = value;
+            return Ok(true);
+        }
+        crate::presentation::prose(
+            "Use a literal Git branch name without spaces, HEAD, or a leading '-'. Future names are allowed.",
+        );
+    }
+}
+const SAVE_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Choose when saving uncommitted work"),
+    (
+        "publish-only",
+        "Publish existing commits; leave uncommitted work local",
+    ),
+    (
+        "staged",
+        "Commit staged changes with your message, then publish",
+    ),
+    (
+        "wip",
+        "Checkpoint staged and remaining work separately, then publish",
+    ),
+    (
+        "stash",
+        "Keep a local stash including untracked work; publish existing commits",
+    ),
+];
+const MODE_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Choose review or direct delivery when finishing"),
+    ("review", "Prepare and publish work for manual review"),
+    (
+        "integrate",
+        "Deliver to the project target, then apply checkout and cleanup",
+    ),
+];
+const UPDATE_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Choose how to bring the project base into work"),
+    ("rebase", "Replay work commits onto the project base"),
+    (
+        "merge",
+        "Bring the project base into work with a merge or fast-forward",
+    ),
+    ("none", "Keep current work history without a base update"),
+];
+const REWRITE_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Ask before replacing already published work commits"),
+    (
+        "allow",
+        "Allow guarded replacement of already published work commits",
+    ),
+    (
+        "deny",
+        "Stop when published work history would need replacement",
+    ),
+];
+const INTEGRATION_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Choose the delivery method when finishing"),
+    (
+        "ff-only",
+        "Advance the target only when no integration commit is needed",
+    ),
+    ("merge", "Create a merge commit in the target"),
+    ("squash", "Create one target commit containing the work"),
+];
+const MESSAGE_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Offer an editable integration commit message"),
+    ("auto", "Use the generated integration commit message"),
+];
+const CHECKOUT_CHOICES: &[(&str, &str)] = &[
+    (
+        "target",
+        "Check out the local integration target after delivery",
+    ),
+    ("work", "Keep the work branch checked out after delivery"),
+];
+const CLEANUP_CHOICES: &[(&str, &str)] = &[
+    ("ask", "Choose branch cleanup after delivery"),
+    ("keep", "Keep local and published work branches"),
+    ("local", "Delete local work; keep the published branch"),
+    ("both", "Delete local and published work branches"),
+];
+const HISTORY_CHOICES: &[(&str, &str)] = &[
+    (
+        "none",
+        "Keep commit selection and messages during preparation",
+    ),
+    (
+        "interactive",
+        "Open Git's interactive editor during rebase preparation",
+    ),
+];
+fn save_group(plan: &mut config::GenerationPlan) -> Result<bool, ConfigError> {
+    crate::presentation::section("Saving work");
+    crate::presentation::prose(&format!(
+        "Uncommitted work: {}. Clean work publishes existing commits directly.",
+        description(SAVE_CHOICES, plan.proposed.save_action.as_str())
+    ));
+    let Some(edit) = edit_group("Saving preferences: ")? else {
+        return Ok(false);
+    };
+    if edit {
+        let Some(value) = choose(
+            "When saving uncommitted work: ",
+            plan.proposed.save_action.as_str(),
+            SAVE_CHOICES,
+            settings::parse_action,
+        )?
+        else {
+            return Ok(false);
+        };
+        plan.proposed.save_action = value;
+    }
+    Ok(true)
+}
+fn finish_group(plan: &mut config::GenerationPlan) -> Result<bool, ConfigError> {
+    crate::presentation::section("Finishing work");
+    finish_summary(&plan.proposed);
+    let Some(edit) = edit_group("Finishing preferences: ")? else {
+        return Ok(false);
+    };
+    if !edit {
+        return Ok(true);
+    }
+    macro_rules! field {
+        ($field:ident, $prompt:expr, $choices:expr, $parse:expr) => {
+            let Some(value) = choose($prompt, plan.proposed.$field.as_str(), $choices, $parse)?
+            else {
+                return Ok(false);
+            };
+            plan.proposed.$field = value;
+        };
+    }
+    field!(
+        finish_mode,
+        "How should finished work be delivered? ",
+        MODE_CHOICES,
+        settings::parse_mode
+    );
+    field!(
+        finish_update,
+        "How should work receive the project base? ",
+        UPDATE_CHOICES,
+        settings::parse_update
+    );
+    field!(
+        finish_rewrite,
+        "When preparation replaces published work commits: ",
+        REWRITE_CHOICES,
+        settings::parse_rewrite
+    );
+    if plan.proposed.finish_mode != settings::FinishMode::Review {
+        field!(
+            finish_integration,
+            "How should work enter the target? ",
+            INTEGRATION_CHOICES,
+            settings::parse_integration
+        );
+        if plan.proposed.finish_integration != settings::FinishIntegration::FfOnly {
+            field!(
+                finish_message,
+                "Integration commit message: ",
+                MESSAGE_CHOICES,
+                settings::parse_message
+            );
+        }
+        field!(
+            finish_checkout,
+            "After successful direct delivery: ",
+            CHECKOUT_CHOICES,
+            settings::parse_checkout
+        );
+        field!(
+            finish_cleanup,
+            "Work branches after direct delivery: ",
+            CLEANUP_CHOICES,
+            settings::parse_cleanup
+        );
+    }
+    let Some(advanced) = described(
+        "Advanced history preparation: ",
+        &[
+            ("keep", "Keep the current history-edit preference"),
+            (
+                "edit",
+                "Choose whether to open Git's interactive history editor",
+            ),
+        ],
+        "keep",
+    )?
+    else {
+        return Ok(false);
+    };
+    if advanced == "edit" {
+        field!(
+            history_edit,
+            "History editing during rebase preparation: ",
+            HISTORY_CHOICES,
+            settings::parse_history_edit
+        );
+    }
+    Ok(true)
+}
+fn checks_group(plan: &mut config::GenerationPlan) -> Result<bool, ConfigError> {
+    crate::presentation::section("Finish checks");
+    crate::presentation::prose(
+        "Checks run in order after preparation and before publication. Setup records literal commands without running or probing them.",
+    );
+    let mut draft = plan.proposed.finish_checks.clone();
+    loop {
+        for (index, check) in draft.iter().enumerate() {
+            crate::presentation::prose(&format!(
+                "{}. {} ({} arguments)",
+                index + 1,
+                text(&check.name),
+                check.command.len().saturating_sub(1)
+            ));
+        }
+        let mut choices = vec![
+            ("keep", "Keep this ordered list"),
+            ("add", "Add a check"),
+            ("clear", "Remove all shared checks"),
+        ];
+        if !draft.is_empty() {
+            choices.extend([("edit", "Edit one check"), ("remove", "Remove one check")]);
+        }
+        let Some(answer) = described("Finish checks: ", &choices, "keep")? else {
+            return Ok(false);
+        };
+        match answer.as_str() {
+            "keep" => {
+                plan.proposed.finish_checks = draft;
+                return Ok(true);
+            }
+            "clear" => draft.clear(),
+            "edit" | "remove" => {
+                let items: Vec<_> = draft
+                    .iter()
+                    .enumerate()
+                    .map(|(index, check)| ((index + 1).to_string(), text(&check.name)))
+                    .collect();
+                let choices: Vec<_> = items
+                    .iter()
+                    .map(|(key, label)| (key.as_str(), label.as_str()))
+                    .collect();
+                let Some(selected) = described("Which check? ", &choices, "1")? else {
+                    return Ok(false);
+                };
+                let index = selected.parse::<usize>().expect("numbered choice") - 1;
+                if answer == "remove" {
+                    draft.remove(index);
+                } else if !edit_check(&mut draft[index])? {
+                    return Ok(false);
+                }
+            }
+
+            "add" => {
+                let name = loop {
+                    let Some(value) = input("Check display name: ")? else {
+                        return Ok(false);
+                    };
+                    if !value.trim().is_empty() {
+                        break value;
+                    }
+                    crate::presentation::prose("Use a nonblank display name.");
+                };
+                let executable = loop {
+                    let Some(value) = crate::presentation::input("Executable name or path: ")
+                        .map_err(ConfigError::Input)?
+                    else {
+                        return Ok(false);
+                    };
+                    if !value.is_empty() && !value.contains('\0') {
+                        break value;
+                    }
+                    crate::presentation::prose(
+                        "Use a nonempty executable name or path without NUL.",
+                    );
+                };
+                let mut command = vec![executable];
+                if !arguments_input(&mut command, false)? {
+                    return Ok(false);
+                }
+                draft.push(settings::FinishCheck { name, command });
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+fn arguments_input(command: &mut Vec<String>, editing: bool) -> Result<bool, ConfigError> {
+    loop {
+        if editing {
+            for (index, argument) in command.iter().skip(1).enumerate() {
+                crate::presentation::prose(&format!(
+                    "Argument {}: {}",
+                    index + 1,
+                    serde_json::to_string(argument).expect("argument string")
+                ));
+            }
+        }
+        let mut choices = vec![
+            ("done", "Finish this command"),
+            (
+                "add",
+                "Add one literal argument, including an empty argument",
+            ),
+        ];
+        if editing {
+            choices.push(("clear", "Remove all arguments and keep the executable"));
+        }
+        let Some(answer) = described("Command arguments: ", &choices, "done")? else {
+            return Ok(false);
+        };
+        if answer == "done" {
+            return Ok(true);
+        }
+        if answer == "clear" {
+            command.truncate(1);
+            continue;
+        }
+        loop {
+            let Some(value) = input("Literal argument (Enter adds an empty argument): ")? else {
+                return Ok(false);
+            };
+            if !value.contains('\0') {
+                command.push(value);
+                break;
+            }
+            crate::presentation::prose(
+                "Process arguments cannot contain NUL; enter the argument again.",
+            );
+        }
+    }
+}
+fn edit_check(check: &mut settings::FinishCheck) -> Result<bool, ConfigError> {
+    loop {
+        crate::presentation::prose(&format!(
+            "{}: executable {}; {} arguments",
+            text(&check.name),
+            text(&check.command[0]),
+            check.command.len() - 1
+        ));
+        let Some(field) = described(
+            "Check field: ",
+            &[
+                ("done", "Finish editing this check"),
+                ("name", "Change the display name"),
+                ("executable", "Change the literal executable"),
+                ("arguments", "Inspect or change literal arguments"),
+            ],
+            "done",
+        )?
+        else {
+            return Ok(false);
+        };
+        if field == "done" {
+            return Ok(true);
+        }
+        if field == "arguments" {
+            if !arguments_input(&mut check.command, true)? {
+                return Ok(false);
+            }
+            continue;
+        }
+        loop {
+            let Some(value) = input(if field == "name" {
+                "Check display name: "
+            } else {
+                "Executable name or path: "
+            })?
+            else {
+                return Ok(false);
+            };
+            if field == "name" && !value.trim().is_empty() {
+                check.name = value;
+                break;
+            }
+            if field == "executable" && !value.is_empty() && !value.contains('\0') {
+                check.command[0] = value;
+                break;
+            }
+            crate::presentation::prose("Use a nonblank name or a nonempty executable without NUL.");
+        }
+    }
+}
+fn description<'a>(choices: &'a [(&str, &str)], value: &str) -> &'a str {
+    choices
+        .iter()
+        .find(|(key, _)| *key == value)
+        .map(|(_, label)| *label)
+        .unwrap_or("Configured preference")
+}
+fn finish_summary(value: &settings::Settings) {
+    for (label, description) in [
+        (
+            "Delivery",
+            description(MODE_CHOICES, value.finish_mode.as_str()),
+        ),
+        (
+            "Preparation",
+            description(UPDATE_CHOICES, value.finish_update.as_str()),
+        ),
+        (
+            "Published history",
+            description(REWRITE_CHOICES, value.finish_rewrite.as_str()),
+        ),
+    ] {
+        crate::presentation::prose(&format!("{label}: {description}."));
+    }
+    if value.history_edit == settings::HistoryEdit::Interactive {
+        crate::presentation::prose(
+            "History editing: Git's interactive editor during rebase preparation.",
+        );
+    }
+    if value.finish_mode != settings::FinishMode::Review {
+        crate::presentation::prose(&format!(
+            "Direct delivery: {}; {}; {}.",
+            description(INTEGRATION_CHOICES, value.finish_integration.as_str()),
+            description(CHECKOUT_CHOICES, value.finish_checkout.as_str()),
+            description(CLEANUP_CHOICES, value.finish_cleanup.as_str())
+        ));
+        if value.finish_integration != settings::FinishIntegration::FfOnly {
+            crate::presentation::prose(&format!(
+                "Integration message: {}.",
+                description(MESSAGE_CHOICES, value.finish_message.as_str())
+            ));
+        }
+    }
+}
+fn workflow_summary(value: &settings::Settings) {
+    use settings::{
+        FinishCheckout, FinishCleanup, FinishIntegration, FinishMessage, FinishMode, FinishRewrite,
+        FinishUpdate, SaveAction,
+    };
+    let saving = match value.save_action {
+        SaveAction::Ask => "choose how to preserve uncommitted work",
+        SaveAction::PublishOnly => "publish commits; leave uncommitted work local",
+        SaveAction::Staged => "commit staged work, then publish",
+        SaveAction::Wip => "checkpoint staged and remaining work, then publish",
+        SaveAction::Stash => "stash local work; publish existing commits",
+    };
+    crate::presentation::prose(&format!("Save: {saving}."));
+    let delivery = match value.finish_mode {
+        FinishMode::Ask => "choose review or direct delivery",
+        FinishMode::Review => "prepare and publish for manual review",
+        FinishMode::Integrate => "deliver directly to the project target",
+    };
+    let preparation = match value.finish_update {
+        FinishUpdate::Ask => "choose base preparation",
+        FinishUpdate::Rebase => "replay work onto the base",
+        FinishUpdate::Merge => "merge the base into work",
+        FinishUpdate::None => "keep current work history",
+    };
+    crate::presentation::prose(&format!("Finish: {delivery}; {preparation}."));
+    let replacement = match value.finish_rewrite {
+        FinishRewrite::Ask => "ask before replacing published work",
+        FinishRewrite::Allow => "allow guarded replacement of published work",
+        FinishRewrite::Deny => "deny replacement of published work",
+    };
+    crate::presentation::prose(&format!(
+        "History: {replacement}{}.",
+        if value.history_edit == settings::HistoryEdit::Interactive {
+            "; edit interactively during rebase"
+        } else {
+            ""
+        }
+    ));
+    if value.finish_mode != FinishMode::Review {
+        let method = match value.finish_integration {
+            FinishIntegration::Ask => "choose integration method",
+            FinishIntegration::FfOnly => "fast-forward only",
+            FinishIntegration::Merge => "merge commit",
+            FinishIntegration::Squash => "one squash commit",
+        };
+        let cleanup = match value.finish_cleanup {
+            FinishCleanup::Ask => "choose cleanup",
+            FinishCleanup::Keep => "keep work branches",
+            FinishCleanup::Local => "delete local work branch",
+            FinishCleanup::Both => "delete local and published work",
+        };
+        crate::presentation::prose(&format!(
+            "Direct: {method}; {}{}; {cleanup}.",
+            if value.finish_checkout == FinishCheckout::Target {
+                "check out target"
+            } else {
+                "stay on work"
+            },
+            if value.finish_integration == FinishIntegration::FfOnly {
+                ""
+            } else if value.finish_message == FinishMessage::Auto {
+                "; generated message"
+            } else {
+                "; editable message"
+            }
+        ));
     }
 }
 fn guided(
@@ -202,470 +789,304 @@ fn guided(
     marker: Option<String>,
 ) -> Result<(), ConfigError> {
     let mut plan = config::prepare_guided(directory, format)?;
-    let defaults = settings::Settings::default();
-    eprintln!(
-        "Configure shared start/save/finish settings. Enter keeps the displayed default. Navigate choices with arrow keys; plain prompts accept a number or name. Esc, Ctrl-C, Ctrl-D, or cancel stops setup."
+    crate::presentation::prose(
+        "Set up shared start, save and finish preferences. Names may be configured before they exist.",
     );
-    for (label, bytes) in [
-        ("Local remotes", &plan.review().remotes),
-        ("Local branch references", &plan.review().branches),
-    ] {
-        let shown = display(bytes);
-        let lines: Vec<_> = shown.lines().collect();
-        eprintln!(
-            "{label} (offline hint): {}",
-            if lines.is_empty() {
-                "none".into()
-            } else {
-                lines
-                    .iter()
-                    .take(10)
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-        );
-        if lines.len() > 10 {
-            eprintln!("  {} more entries available locally.", lines.len() - 10);
-        }
-    }
-    eprintln!("Names can be configured before remotes or branches exist.");
-    loop {
-        let Some(answer) = input(&format!(
-            "Publication remote for working branches [{}]: ",
-            text(&defaults.publish_remote)
-        ))?
-        else {
-            return cancelled();
-        };
-        let value = if answer.is_empty() {
-            &defaults.publish_remote
-        } else {
-            &answer
-        };
-        if settings::valid_remote(directory, value)? {
-            plan.proposed.publish_remote = value.into();
-            plan.proposed.base_remote = value.into();
-            break;
-        }
-        eprintln!(
-            "Use a valid named Git remote, such as origin or upstream (no URL, spaces, or leading '-')."
-        );
-    }
-    eprintln!(
-        "The base source supplies new work and finish updates. Enter follows publication; enter another remote to select a separate source."
-    );
-    loop {
-        let Some(answer) = input("Base source remote [follow publication]: ")? else {
-            return cancelled();
-        };
-        if answer.is_empty() || answer == plan.proposed.publish_remote {
-            plan.proposed.base_remote = plan.proposed.publish_remote.clone();
-            plan.proposed.sources.base_remote = None;
-            break;
-        }
-        if settings::valid_remote(directory, &answer)? {
-            plan.proposed.base_remote = answer;
-            plan.proposed.sources.base_remote = Some(SettingSource::Shared(plan.destination()));
-            break;
-        }
-        eprintln!(
-            "Use a valid named Git remote (no URL, spaces, or leading '-'), or Enter to follow publication."
-        );
-    }
-    loop {
-        let Some(answer) = input(&format!(
-            "Base branch for new work and finish [{}]: ",
-            text(&defaults.base)
-        ))?
-        else {
-            return cancelled();
-        };
-        let value = if answer.is_empty() {
-            &defaults.base
-        } else {
-            &answer
-        };
-        if settings::valid_branch(directory, value)? {
-            plan.proposed.base = value.into();
-            break;
-        }
-        eprintln!(
-            "Use a valid literal Git branch name, such as main or feature/base (no spaces, HEAD, or leading '-')."
-        );
-    }
-    eprintln!(
-        "Save with uncommitted changes:\n  ask          Choose an action each time at a terminal.\n  publish-only Publish existing commits; uncommitted work stays local.\n  staged       Commit the staged selection, then publish; requires a message.\n               Unstaged and untracked work stays local.\n  wip          Checkpoint staged and remaining work separately, then publish.\n               Ignored files stay local.\n  stash        Retain a local stash including untracked work; publish existing commits.\nClean trees publish existing commits directly. Explicit save flags override this preference."
-    );
-
-    loop {
-        let Some(answer) = menu_input(
-            &format!("Default save action [{}]: ", defaults.save_action.as_str()),
-            &["ask", "publish-only", "staged", "wip", "stash", "cancel"],
-            Some(defaults.save_action.as_str()),
-        )?
-        else {
-            return cancelled();
-        };
-        match settings::parse_action(if answer.is_empty() {
-            defaults.save_action.as_str()
-        } else {
-            &answer
-        }) {
-            Ok(action) => {
-                plan.proposed.save_action = action;
-                break;
-            }
-            Err(reason) => eprintln!("{reason}; or enter cancel."),
-        }
-    }
-    eprintln!(
-        "Finish update when the branch needs the remote base:\n  ask     Choose rebase, merge, or none at a terminal.\n  rebase  Replay branch commits onto the observed base.\n  merge   Incorporate the observed base with a merge or fast-forward.\n  none    Publish current history without updating from the base.\nExplicit finish --update overrides this preference."
-    );
-
-    loop {
-        let Some(answer) = menu_input(
-            "Default finish update [ask]: ",
-            &["ask", "rebase", "merge", "none", "cancel"],
-            Some(defaults.finish_update.as_str()),
-        )?
-        else {
-            return cancelled();
-        };
-        match settings::parse_update(if answer.is_empty() {
-            defaults.finish_update.as_str()
-        } else {
-            &answer
-        }) {
-            Ok(update) => {
-                plan.proposed.finish_update = update;
-                break;
-            }
-            Err(reason) => eprintln!("{reason}; or enter cancel."),
-        }
-    }
-    eprintln!(
-        "Finish replacement of published history:\n  ask    Request separate authorization when replacement is required.\n  allow  Standing authorization for eligible replacement.\n            Incorporation proof and exact remote leases remain required.\n  deny   Deny replacement.\nSelecting rebase supplies no replacement authorization. Explicit rewrite flags override this preference."
-    );
-
-    loop {
-        let Some(answer) = menu_input(
-            "Default finish rewrite [ask]: ",
-            &["ask", "allow", "deny", "cancel"],
-            Some(defaults.finish_rewrite.as_str()),
-        )?
-        else {
-            return cancelled();
-        };
-        match settings::parse_rewrite(if answer.is_empty() {
-            defaults.finish_rewrite.as_str()
-        } else {
-            &answer
-        }) {
-            Ok(rewrite) => {
-                plan.proposed.finish_rewrite = rewrite;
-                break;
-            }
-            Err(reason) => eprintln!("{reason}; or enter cancel."),
-        }
-    }
-    eprintln!(
-        "Finish completion:\n  ask        Choose review or integrate at a terminal.\n  review     Prepare and publish the working branch for manual review.\n  integrate  Deliver to the project target, then complete checkout and cleanup."
-    );
-    let Some(mode) = policy(
-        "finish mode",
-        defaults.finish_mode.as_str(),
-        &["ask", "review", "integrate", "cancel"],
-        settings::parse_mode,
-    )?
-    else {
+    if !repository_group(directory, &mut plan)?
+        || !save_group(&mut plan)?
+        || !finish_group(&mut plan)?
+        || !checks_group(&mut plan)?
+    {
         return cancelled();
-    };
-    plan.proposed.finish_mode = mode;
-    if mode != settings::FinishMode::Review {
-        eprintln!(
-            "Final integration method (separate from finish-update):\n  ask      Choose at a terminal.\n  ff-only  Fast-forward only; creates no integration commit.\n  merge    Create a merge commit, including when fast-forward is possible.\n  squash   Create one commit containing the integrated work."
-        );
-        let Some(integration) = policy(
-            "finish integration",
-            defaults.finish_integration.as_str(),
-            &["ask", "ff-only", "merge", "squash", "cancel"],
-            settings::parse_integration,
-        )?
-        else {
-            return cancelled();
-        };
-        plan.proposed.finish_integration = integration;
-        if integration != settings::FinishIntegration::FfOnly {
-            eprintln!(
-                "Final integration commit message:\n  ask   Offer an editable suggestion at a terminal.\n  auto  Use the generated message.\nfinish -m/--message supplies the final integration commit message; existing work commits and review descriptions are unchanged."
-            );
-            let Some(message) = policy(
-                "finish message",
-                defaults.finish_message.as_str(),
-                &["ask", "auto", "cancel"],
-                settings::parse_message,
-            )?
-            else {
-                return cancelled();
-            };
-            plan.proposed.finish_message = message;
-        }
-        eprintln!(
-            "After confirmed target publication:\n  target  Check out the local integration target.\n  work    Keep the work branch checked out."
-        );
-        let Some(checkout) = policy(
-            "finish checkout",
-            defaults.finish_checkout.as_str(),
-            &["target", "work", "cancel"],
-            settings::parse_checkout,
-        )?
-        else {
-            return cancelled();
-        };
-        plan.proposed.finish_checkout = checkout;
-        eprintln!(
-            "Work branch cleanup after confirmed target publication:\n  ask     Choose cleanup at a terminal.\n  keep    Retain local and published work.\n  local   Delete local work; keep published work.\n  both    Delete local and published work."
-        );
-        let Some(cleanup) = policy(
-            "finish cleanup",
-            defaults.finish_cleanup.as_str(),
-            &["ask", "keep", "local", "both", "cancel"],
-            settings::parse_cleanup,
-        )?
-        else {
-            return cancelled();
-        };
-        plan.proposed.finish_cleanup = cleanup;
-    }
-    eprintln!(
-        "Optional finish checks run in order after preparation and before publication. Setup only records commands; it never runs them or probes executables.\nEnter a name, then a JSON array of strings: [\"cargo\", \"test\", \"--locked\"]. The first string is the executable; each remaining string is one literal argument. Shell features require an explicit shell."
-    );
-    loop {
-        let prompt = if plan.proposed.finish_checks.is_empty() {
-            "Finish check name [Enter to finish; default: no checks]: "
-        } else {
-            "Finish check name [Enter to finish]: "
-        };
-        let Some(name) = input(prompt)? else {
-            return cancelled();
-        };
-        if name.is_empty() {
-            break;
-        }
-        if name.trim().is_empty() {
-            eprintln!("Use a nonblank display name, or Enter to finish.");
-            continue;
-        }
-        loop {
-            let Some(answer) = input("Command as JSON executable-and-argument array: ")? else {
-                return cancelled();
-            };
-            let command = match serde_json::from_str::<Vec<String>>(&answer) {
-                Ok(command) => command,
-                Err(_) => {
-                    eprintln!(
-                        "Use a JSON array of strings, such as [\"cargo\", \"test\"]. Keep each argument in its own string."
-                    );
-                    continue;
-                }
-            };
-            let check = settings::FinishCheck {
-                name: name.clone(),
-                command,
-            };
-            if let Err(reason) = settings::validate_finish_checks(std::slice::from_ref(&check)) {
-                eprintln!("{reason}; enter the command again.");
-                continue;
-            }
-            plan.proposed.finish_checks.push(check);
-            break;
-        }
     }
     if let Some(bundle) = oneflow {
         bundle.apply(&mut plan.proposed, marker);
-        eprintln!("OneFlow routes are editable as JSON objects; Enter keeps each proposed policy.");
-        if matches!(bundle, OneflowBundle::Hosted) {
-            eprintln!(
-                "Hosted tagged finish publishes the version in the project and a separate merge-back branch for manual review. It retains branches; marker advancement and later cleanup are manual."
-            );
+        if !policies_group(directory, &mut plan)? {
+            return cancelled();
         }
-        for kind in [
-            settings::WorkstreamKind::Ordinary,
-            settings::WorkstreamKind::Release,
-            settings::WorkstreamKind::Hotfix,
-        ] {
-            if !edit_policy(directory, &mut plan, kind)? {
-                return cancelled();
+    }
+    let mut private_shown = Vec::new();
+    loop {
+        // Audit both proposed and effective templates, including private-only
+        // templates inheriting the newly selected shared defaults.
+        let kinds: std::collections::BTreeSet<_> = plan
+            .proposed
+            .workstreams
+            .keys()
+            .chain(plan.review().overrides.workstreams.keys())
+            .copied()
+            .collect();
+        for kind in kinds {
+            if let Err(error) = config::audit_workstream(directory, &plan, kind) {
+                crate::presentation::error(format!(
+                    "{} preferences need correction: {}",
+                    kind.as_str(),
+                    text(error)
+                ));
+                if !edit_policy(directory, &mut plan, kind)? {
+                    return cancelled();
+                }
             }
         }
-    }
-    // Private-only policies can also inherit the newly selected shared defaults.
-    // Audit them before the creation decision and offer the same correction input.
-    let kinds: std::collections::BTreeSet<_> = plan
-        .proposed
-        .workstreams
-        .keys()
-        .chain(plan.review().overrides.workstreams.keys())
-        .copied()
-        .collect();
-    for kind in kinds {
-        if let Err(error) = config::audit_workstream(directory, &plan, kind) {
-            crate::presentation::error(format!(
-                "Configuration needs correction for {}: {}",
-                kind.as_str(),
-                text(error)
-            ));
-            if !edit_policy(directory, &mut plan, kind)? {
-                return cancelled();
+        let effective = config::audit(directory, &plan)?;
+        config::revalidate_review(directory, &plan)?;
+        crate::presentation::section("Review");
+        crate::presentation::prose(&format!(
+            "Create shared settings in {}",
+            text(plan.destination().display())
+        ));
+        crate::presentation::prose(&format!(
+            "Work is published to {}. New work starts from {}/{}.",
+            text(&effective.publish_remote),
+            text(&effective.base_remote),
+            text(&effective.base)
+        ));
+        workflow_summary(&effective);
+        crate::presentation::prose(&format!(
+            "Finish checks: {}.",
+            if effective.finish_checks.is_empty() {
+                "none".into()
+            } else {
+                effective
+                    .finish_checks
+                    .iter()
+                    .map(|check| text(&check.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             }
-        }
-    }
-    let effective = config::audit(directory, &plan)?;
-    config::revalidate_review(directory, &plan)?;
-    eprintln!(
-        "Destination: {}\nExact proposed shared configuration:\n{}",
-        text(plan.destination().display()),
-        plan.contents()
-    );
-    review_checks(
-        "Proposed shared finish checks",
-        &plan.proposed.finish_checks,
-    );
-    let review = plan.review();
-    let roles = &effective;
-    eprintln!(
-        "Effective publish-remote: {} ({})",
-        text(&roles.publish_remote),
-        source(&roles.sources.publish_remote)
-    );
-    eprintln!(
-        "Effective base-remote: {} ({})",
-        text(&roles.base_remote),
-        base_remote_source(roles)
-    );
-    let effective_completion = &effective;
-    for (key, value, origin) in completion_values(effective_completion) {
-        eprintln!("Effective {key}: {value} ({})", source(origin));
-    }
-    if effective_completion.finish_mode == settings::FinishMode::Review {
-        eprintln!(
-            "Integration method, message, checkout, and cleanup settings are inactive for review delivery."
-        );
-    } else if effective_completion.finish_integration == settings::FinishIntegration::FfOnly {
-        eprintln!("Message policy is inactive for fast-forward-only integration.");
-    }
-    if let Some(path) = &review.local {
-        eprintln!(
-            "Private overrides: {} (take precedence; values are not copied).",
-            text(path.display())
-        );
-        let effective = &review.overrides;
-        for (key, value, origin) in [
-            ("base", effective.base.as_str(), &effective.sources.base),
-            (
-                "save-action",
-                effective.save_action.as_str(),
-                &effective.sources.save_action,
-            ),
-            (
-                "finish-update",
-                effective.finish_update.as_str(),
-                &effective.sources.finish_update,
-            ),
-            (
-                "finish-history-edit",
-                effective.history_edit.as_str(),
-                &effective.sources.history_edit,
-            ),
-            (
-                "finish-rewrite",
-                effective.finish_rewrite.as_str(),
-                &effective.sources.finish_rewrite,
-            ),
-        ] {
-            if matches!(origin, SettingSource::Local(_)) {
-                eprintln!("  Effective {key}: {} ({})", text(value), source(origin));
-            }
-        }
-        if matches!(review.redact_credentials_source, SettingSource::Local(_)) {
-            eprintln!(
-                "  Effective redact-credentials: {} ({})",
-                review.redact_credentials,
-                source(&review.redact_credentials_source)
-            );
-        }
-        if matches!(effective.sources.finish_checks, SettingSource::Local(_)) {
-            eprintln!(
-                "  Effective finish-checks: {} ({})",
-                checks(&effective.finish_checks),
-                source(&effective.sources.finish_checks)
-            );
-            review_checks(
-                "Effective private finish checks (replace the shared list)",
-                &effective.finish_checks,
-            );
-        }
-    } else {
-        eprintln!("Private overrides: none.");
-    }
-    if !matches!(
-        review.overrides.sources.finish_checks,
-        SettingSource::Local(_)
-    ) {
-        review_checks(
-            "Effective finish checks (shared)",
-            &plan.proposed.finish_checks,
-        );
-    }
-    if !effective.workstreams.is_empty() {
+        ));
         for kind in effective.workstreams.keys() {
             let mut resolved = effective.clone();
             settings::resolve_workstream(&mut resolved, *kind, None)?;
-            let policy = resolved.workstream.as_ref().unwrap();
-            eprintln!(
-                "Effective {} policy: publication {} ({}); preparation {}/{}; integration {}/{}; tagging {}; marker {}.",
+            let policy = resolved.workstream.as_ref().expect("resolved template");
+            crate::presentation::prose(&format!(
+                "{}: start from {}; prepare from {}/{} ({}); publish work to {}.",
                 kind.as_str(),
-                text(&resolved.publish_remote),
-                source(&resolved.sources.publish_remote),
-                text(&resolved.base_remote),
+                text(policy.creation_source.as_deref().unwrap_or(
+                    if *kind == settings::WorkstreamKind::Hotfix {
+                        "explicit version tag"
+                    } else {
+                        &resolved.base
+                    }
+                )),
+                text(&policy.base_remote),
                 text(&policy.preparation_source),
-                text(&resolved.base_remote),
-                text(policy.integration_targets.join(" -> ")),
+                resolved.finish_update.as_str(),
+                text(&policy.publish_remote)
+            ));
+            crate::presentation::prose(&format!(
+                "{}: {} to {}; version tag {}{}{}.",
+                kind.as_str(),
+                if resolved.finish_mode == settings::FinishMode::Review {
+                    "manual review".into()
+                } else {
+                    format!("direct {}", resolved.finish_integration.as_str())
+                },
+                text(policy.integration_targets.join(" → ")),
                 if policy.version_tagging {
-                    "required"
+                    policy.version_tag_identity.as_str()
                 } else {
                     "disabled"
                 },
-                text(policy.release_marker.as_deref().unwrap_or("none"))
-            );
-            review_route(&resolved, true);
+                policy
+                    .release_marker
+                    .as_ref()
+                    .map(|marker| format!("; marker {}", text(marker)))
+                    .unwrap_or_default(),
+                policy
+                    .active_release
+                    .as_ref()
+                    .map(|branch| format!("; active release {}", text(branch)))
+                    .unwrap_or_default()
+            ));
+            if resolved.finish_mode == settings::FinishMode::Integrate {
+                crate::presentation::prose(&format!(
+                    "{} after delivery: {}; {}.",
+                    kind.as_str(),
+                    description(CHECKOUT_CHOICES, resolved.finish_checkout.as_str()),
+                    description(CLEANUP_CHOICES, resolved.finish_cleanup.as_str())
+                ));
+            }
+            if resolved.finish_mode == settings::FinishMode::Review
+                && policy.version_tagging
+                && policy.version_tag_identity == settings::VersionTagIdentity::IntegratedResult
+            {
+                crate::presentation::prose(
+                    "Tag the actual integrated result after external review and validation; setup records the policy only.",
+                );
+            }
+            if resolved.finish_mode == settings::FinishMode::Review
+                && policy.version_tagging
+                && policy.version_tag_identity == settings::VersionTagIdentity::WorkSource
+            {
+                crate::presentation::prose(&format!(
+                    "Version review uses a separate merge-back branch on {}; submission, marker advancement and later cleanup are manual.",
+                    text(&policy.review_remote)
+                ));
+            }
         }
-    }
-    loop {
-        let Some(answer) = menu_input(
-            "Create this file? [yes/no]: ",
-            &["yes", "no", "cancel"],
-            Some("no"),
-        )?
-        else {
+        private_summary(&plan, &effective, &mut private_shown);
+        let mut choices = vec![
+            ("yes", "Create the reviewed shared file"),
+            ("no", "Cancel without creating a file"),
+            ("contents", "Inspect exact generated contents"),
+            ("repository", "Edit repository choices"),
+            ("save", "Edit saving preferences"),
+            ("finish", "Edit finishing preferences"),
+            ("checks", "Edit finish checks"),
+        ];
+        if !effective.workstreams.is_empty() {
+            choices.push(("policies", "Edit workstream preferences"));
+        }
+        let Some(answer) = described("Create this file? ", &choices, "no")? else {
             return cancelled();
         };
-        match answer.as_str() {
-            "yes" => break,
-            "no" | "" => return cancelled(),
-            _ => eprintln!("Enter yes to create the reviewed file, or no/cancel to stop."),
+        let continued = match answer.as_str() {
+            "yes" => {
+                let generated = config::generate(directory, &plan)?;
+                crate::presentation::report(
+                    &format!(
+                        "Created shared configuration: {}",
+                        text(generated.path.display())
+                    ),
+                    true,
+                );
+                return Ok(());
+            }
+            "no" => return cancelled(),
+            "contents" => {
+                crate::presentation::section("Exact shared contents");
+                eprintln!("{}", plan.contents());
+                true
+            }
+            "repository" => repository_group(directory, &mut plan)?,
+            "save" => save_group(&mut plan)?,
+            "finish" => finish_group(&mut plan)?,
+            "checks" => checks_group(&mut plan)?,
+            "policies" => policies_group(directory, &mut plan)?,
+            _ => unreachable!(),
+        };
+        if !continued {
+            return cancelled();
         }
     }
-    let generated = config::generate(directory, &plan)?;
-    crate::presentation::report(
-        &format!(
-            "Created shared configuration: {}",
-            text(generated.path.display())
-        ),
-        true,
+}
+fn private_summary(
+    plan: &config::GenerationPlan,
+    effective: &settings::Settings,
+    shown: &mut Vec<String>,
+) {
+    let review = plan.review();
+    let Some(path) = &review.local else { return };
+    let mut changes = Vec::new();
+    macro_rules! changed {
+        ($field:ident, $label:expr, $value:expr) => {
+            if effective.$field != plan.proposed.$field {
+                changes.push(format!("{}: {}", $label, $value));
+            }
+        };
+    }
+    changed!(
+        publish_remote,
+        "work remote",
+        text(&effective.publish_remote)
     );
-    Ok(())
+    changed!(base_remote, "project remote", text(&effective.base_remote));
+    changed!(base, "project base", text(&effective.base));
+    changed!(
+        save_action,
+        "saving",
+        description(SAVE_CHOICES, effective.save_action.as_str())
+    );
+    changed!(
+        finish_mode,
+        "delivery",
+        description(MODE_CHOICES, effective.finish_mode.as_str())
+    );
+    changed!(
+        finish_update,
+        "preparation",
+        description(UPDATE_CHOICES, effective.finish_update.as_str())
+    );
+    changed!(
+        finish_rewrite,
+        "published history",
+        description(REWRITE_CHOICES, effective.finish_rewrite.as_str())
+    );
+    changed!(
+        history_edit,
+        "history editing",
+        description(HISTORY_CHOICES, effective.history_edit.as_str())
+    );
+    if effective.finish_mode != settings::FinishMode::Review {
+        changed!(
+            finish_integration,
+            "direct delivery",
+            description(INTEGRATION_CHOICES, effective.finish_integration.as_str())
+        );
+        if effective.finish_integration != settings::FinishIntegration::FfOnly {
+            changed!(
+                finish_message,
+                "integration message",
+                description(MESSAGE_CHOICES, effective.finish_message.as_str())
+            );
+        }
+        changed!(
+            finish_checkout,
+            "checkout",
+            description(CHECKOUT_CHOICES, effective.finish_checkout.as_str())
+        );
+        changed!(
+            finish_cleanup,
+            "cleanup",
+            description(CLEANUP_CHOICES, effective.finish_cleanup.as_str())
+        );
+    }
+    if effective.finish_checks != plan.proposed.finish_checks {
+        changes.push("finish checks replace the shared list".into());
+    }
+    for kind in effective.workstreams.keys() {
+        let resolve = |settings: &settings::Settings| {
+            let mut resolved = settings.clone();
+            settings::resolve_workstream(&mut resolved, *kind, None)?;
+            Ok::<_, SettingsError>((
+                resolved.workstream,
+                resolved.finish_mode,
+                resolved.finish_update,
+                resolved.history_edit,
+                resolved.finish_rewrite,
+                resolved.finish_integration,
+                resolved.finish_message,
+                resolved.finish_checkout,
+                resolved.finish_cleanup,
+            ))
+        };
+        let shared = resolve(&plan.proposed);
+        let local = resolve(effective);
+        if shared.as_ref().ok() != local.as_ref().ok() {
+            changes.push(format!(
+                "{} workstream routes or preferences change the shared proposal",
+                kind.as_str()
+            ));
+        }
+    }
+    if !review.redact_credentials {
+        changes.push("HTTP(S) credentials are visible in finish output".into());
+    }
+    let new_changes: Vec<_> = changes
+        .iter()
+        .filter(|change| !shown.contains(change))
+        .collect();
+    if !new_changes.is_empty() {
+        crate::presentation::prose(&format!(
+            "Private overrides in {} take precedence and stay private:",
+            text(path.display())
+        ));
+        for change in new_changes {
+            crate::presentation::prose(&format!("  {change}."));
+        }
+    }
+    *shown = changes;
 }
 
 fn completion_values(
@@ -699,52 +1120,263 @@ fn completion_values(
         ),
     ]
 }
+fn policies_group(
+    directory: &Path,
+    plan: &mut config::GenerationPlan,
+) -> Result<bool, ConfigError> {
+    crate::presentation::section("Workstream preferences");
+    let kinds: std::collections::BTreeSet<_> = plan
+        .proposed
+        .workstreams
+        .keys()
+        .chain(plan.review().overrides.workstreams.keys())
+        .copied()
+        .collect();
+    for kind in kinds {
+        let Some(edit) = edit_group(&format!("{} workstream: ", kind.as_str()))? else {
+            return Ok(false);
+        };
+        if edit && !edit_policy(directory, plan, kind)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+// Presentation metadata addresses the existing sparse schema. Values are edited
+// through WorkstreamConfig itself, with no second policy model or new defaults.
+const POLICY_FIELDS: &[(&str, &str)] = &[
+    ("done", "Finish editing this workstream"),
+    ("creation-source", "Branch supplying new work"),
+    (
+        "preparation-source",
+        "Branch brought into work during preparation",
+    ),
+    ("integration-target", "Single destination branch"),
+    (
+        "integration-targets",
+        "Ordered destination branches for tagged direct delivery",
+    ),
+    ("publish-remote", "Remote receiving the work branch"),
+    (
+        "base-remote",
+        "Remote supplying project branches and direct destinations",
+    ),
+    (
+        "review-remote",
+        "Remote receiving a tagged version's merge-back branch",
+    ),
+    (
+        "merge-back-branch",
+        "Separate branch prepared for tagged version review",
+    ),
+    (
+        "version-tagging",
+        "Whether finishing requires a version tag",
+    ),
+    (
+        "version-tag-identity",
+        "Whether the version identifies work or the integrated result",
+    ),
+    (
+        "release-marker",
+        "Optional branch marking the released version",
+    ),
+    (
+        "active-release",
+        "Declared active release branch for hotfix routing",
+    ),
+    ("finish-mode", "Review or direct delivery"),
+    ("finish-update", "Bring the preparation base into work"),
+    ("finish-history-edit", "Git's interactive history editor"),
+    (
+        "finish-integration",
+        "Method for direct integration into a destination",
+    ),
+    ("finish-message", "Integration commit message"),
+    ("finish-checkout", "Checkout after direct delivery"),
+    ("finish-cleanup", "Branch cleanup after direct delivery"),
+    (
+        "finish-rewrite",
+        "Replacement of already published work history",
+    ),
+];
 fn edit_policy(
     directory: &Path,
     plan: &mut config::GenerationPlan,
     kind: settings::WorkstreamKind,
 ) -> Result<bool, ConfigError> {
+    crate::presentation::section(&format!("{} workstream", kind.as_str()));
+    crate::presentation::prose(
+        "Choose a field to change. Omitted fields inherit shared preferences; 'none' disables optional marker or active-release branches.",
+    );
     loop {
-        let proposed = plan
+        let Some(field) = described("Workstream field: ", POLICY_FIELDS, "done")? else {
+            return Ok(false);
+        };
+        if field == "done" {
+            match config::audit_workstream(directory, plan, kind) {
+                Ok(()) => return Ok(true),
+                Err(error) => {
+                    crate::presentation::error(format!(
+                        "{} preferences need correction: {}",
+                        kind.as_str(),
+                        text(error)
+                    ));
+                    if plan.review().local.is_some() {
+                        crate::presentation::prose(
+                            "Private workstream fields take precedence. Change complementary shared fields, or cancel to edit the private file.",
+                        );
+                    }
+                    continue;
+                }
+            }
+        }
+        let current = plan
             .proposed
             .workstreams
             .get(&kind)
             .cloned()
             .unwrap_or_default();
-        let json = serde_json::to_string(&proposed).expect("policy serialization");
-        let Some(answer) = input(&format!("{} policy [{}]: ", kind.as_str(), json))? else {
-            return Ok(false);
+        let mut values = serde_json::to_value(&current).expect("policy serialization");
+        let values = values.as_object_mut().expect("policy object");
+        if let Some(value) = values.get(&field) {
+            match value {
+                serde_json::Value::String(value) => {
+                    crate::presentation::prose(&format!("Current value: {}", text(value)))
+                }
+                serde_json::Value::Array(values) => {
+                    for (index, value) in values.iter().enumerate() {
+                        crate::presentation::prose(&format!(
+                            "{}. {}",
+                            index + 1,
+                            text(value.as_str().expect("branch string"))
+                        ));
+                    }
+                }
+                _ => unreachable!(),
+            }
+        } else {
+            crate::presentation::prose("Current value: inherited.");
+        }
+        let choices = match field.as_str() {
+            "finish-mode" => Some(MODE_CHOICES),
+            "finish-update" => Some(UPDATE_CHOICES),
+            "finish-history-edit" => Some(HISTORY_CHOICES),
+            "finish-integration" => Some(INTEGRATION_CHOICES),
+            "finish-message" => Some(MESSAGE_CHOICES),
+            "finish-checkout" => Some(CHECKOUT_CHOICES),
+            "finish-cleanup" => Some(CLEANUP_CHOICES),
+            "finish-rewrite" => Some(REWRITE_CHOICES),
+            "version-tagging" => Some(
+                &[
+                    ("disabled", "Finish without a version tag"),
+                    ("required", "Finish with an explicit version tag"),
+                ][..],
+            ),
+            "version-tag-identity" => Some(
+                &[
+                    ("work-source", "Tag the completed work before merge-back"),
+                    ("integrated-result", "Tag the actual integrated result"),
+                ][..],
+            ),
+            _ => None,
         };
-        if !answer.is_empty() {
-            match serde_json::from_str::<settings::WorkstreamConfig>(&answer) {
-                Ok(value) => {
-                    plan.proposed.workstreams.insert(kind, value);
+        if let Some(choices) = choices {
+            let mut choices = choices.to_vec();
+            choices.push(("inherit", "Omit this field and inherit its preference"));
+            let default = values
+                .get(&field)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("inherit");
+            let Some(answer) = described("Workstream preference: ", &choices, default)? else {
+                return Ok(false);
+            };
+            if answer == "inherit" {
+                values.remove(&field);
+            } else {
+                values.insert(field.clone(), answer.into());
+            }
+        } else {
+            let Some(action) = described(
+                "Change this field: ",
+                &[
+                    ("keep", "Keep its current value"),
+                    ("set", "Set an explicit value"),
+                    ("inherit", "Omit this field and inherit"),
+                ],
+                "keep",
+            )?
+            else {
+                return Ok(false);
+            };
+            match action.as_str() {
+                "keep" => continue,
+                "inherit" => {
+                    values.remove(&field);
                 }
-                Err(error) => {
-                    eprintln!(
-                        "{}; enter a policy JSON object again, or cancel.",
-                        text(error)
+                "set" if field == "integration-targets" => {
+                    let mut targets = Vec::<String>::new();
+                    loop {
+                        let Some(action) = described(
+                            "Destination branches: ",
+                            &[
+                                ("add", "Add the next branch in delivery order"),
+                                ("done", "Finish the destination list"),
+                            ],
+                            if targets.is_empty() { "add" } else { "done" },
+                        )?
+                        else {
+                            return Ok(false);
+                        };
+                        if action == "done" {
+                            break;
+                        }
+                        let hints = plan.review().branch_suggestions(
+                            current
+                                .base_remote
+                                .as_deref()
+                                .unwrap_or(&plan.proposed.base_remote),
+                        );
+                        let Some(branch) = hinted("Destination branch: ", &hints)? else {
+                            return Ok(false);
+                        };
+                        targets.push(branch);
+                    }
+                    values.remove("integration-target");
+                    values.insert(
+                        field.clone(),
+                        serde_json::to_value(targets).expect("branch list"),
                     );
-                    continue;
                 }
+                "set" => {
+                    let is_remote = field.ends_with("remote");
+                    let hints = if is_remote {
+                        plan.review().remote_suggestions()
+                    } else {
+                        plan.review().branch_suggestions(
+                            current
+                                .base_remote
+                                .as_deref()
+                                .unwrap_or(&plan.proposed.base_remote),
+                        )
+                    };
+                    let Some(value) = hinted("Literal value: ", &hints)? else {
+                        return Ok(false);
+                    };
+                    if field == "integration-target" {
+                        values.remove("integration-targets");
+                    }
+                    values.insert(field.clone(), value.into());
+                }
+                _ => unreachable!(),
             }
         }
-        match config::audit_workstream(directory, plan, kind) {
-            Ok(()) => return Ok(true),
-            Err(error) => {
-                eprintln!(
-                    "Configuration needs correction for {}: {}. Enter a corrected policy JSON object, or cancel.",
-                    kind.as_str(),
-                    text(error)
-                );
-                if let Some(path) = &plan.review().local {
-                    eprintln!(
-                        "Private overrides in {} take precedence; adjust complementary shared fields or cancel to edit the private file.",
-                        text(path.display())
-                    );
-                }
-            }
-        }
+        let value: settings::WorkstreamConfig =
+            serde_json::from_value(serde_json::Value::Object(values.clone()))
+                .expect("schema fields and typed values");
+        // Keep incomplete related-field edits correctable. Done audits both
+        // shared and effective policy relationships before review can proceed.
+        plan.proposed.workstreams.insert(kind, value);
     }
 }
 
@@ -758,26 +1390,6 @@ fn source(source: &SettingSource) -> String {
 // JSON preserves argument boundaries and escapes terminal controls for inspection.
 fn checks(checks: &[settings::FinishCheck]) -> String {
     serde_json::to_string(checks).expect("finish checks serialization")
-}
-// Numbering shows execution order; JSON strings preserve argument boundaries
-// and escape control characters rather than letting them affect the terminal.
-fn review_checks(label: &str, checks: &[settings::FinishCheck]) {
-    eprintln!(
-        "{label}: {}",
-        if checks.is_empty() {
-            "none"
-        } else {
-            "in execution order"
-        }
-    );
-    for (index, check) in checks.iter().enumerate() {
-        eprintln!(
-            "  {}. {}: {}",
-            index + 1,
-            serde_json::to_string(&check.name).expect("check name serialization"),
-            serde_json::to_string(&check.command).expect("check command serialization")
-        );
-    }
 }
 fn base_remote_source(settings: &settings::Settings) -> String {
     match &settings.sources.base_remote {
@@ -1082,9 +1694,12 @@ Examples:
 Notes:
   Setup creates git-oneflow.config.<format> at the working-tree root, including
   when invoked from a nested directory. An existing recognized shared file is preserved.
-  Guided setup reviews exact contents and private overrides before creation.
-  Enter keeps the displayed default. Use arrow keys for terminal choices; plain
-  prompts accept a number or name. Esc, Ctrl-C, Ctrl-D, or cancel stops setup.
+  Guided setup groups preferences and reviews effective behavior before creation.
+  Review offers exact contents and editing earlier choices; creation defaults to no.
+  Enter keeps the displayed default. Tab offers local remote and branch hints.
+  Use arrow keys for terminal choices; plain menus accept a number or name.
+  Esc, Ctrl-C, Ctrl-D, or end-of-input cancels. Plain menus also accept cancel.
+  Checks use a literal executable and individually entered arguments, including empty ones.
   Cancel or end-of-input creates no file. Changed review context stops creation.
   --yes needs no terminal and retains unresolved ask choices; it creates no checks.
   Setup changes no branches, contacts no remote, and runs no configured checks.

@@ -73,8 +73,13 @@ remain reportable.
 [`presentation.rs`](../src/presentation.rs) contains the shared Inquire prompt
 adapter and semantic heading styling. Crossterm owns keyboard input and terminal
 restoration; the CLI retains choices, validation, plan revalidation, effects and
-exit status. Select uses prefix filtering and exact numbered answers, keeping
-unmatched input correctable. Text preserves literal values. Explicit defaults
+exit status. Descriptive choices return their original tokens; prefix filtering
+and exact numbered answers keep unmatched input correctable. Sections and
+questions provide hierarchy, while wrapped descriptions and bounded menus keep
+narrow terminals usable. Text preserves literal values. Local suggestions use
+prefix filtering and Tab completion of a highlighted value or common Unicode
+prefix. They assign no defaults, and control-bearing suggestions are omitted
+rather than displayed as executable terminal controls. Explicit defaults
 select the existing preference; otherwise cancellation is initially selected when
 available. Esc, Ctrl-C and Ctrl-D cancel before submission. Line-oriented fallback
 requires a complete submitted line and preserves EOF cancellation.
@@ -249,11 +254,18 @@ or persistent role metadata.
 [`config.rs`](../src/config.rs) separates inspection, a proposed generation plan,
 guided review, and file creation. Guided review resolves private overrides without
 exporting them, retains offline branch/remote hints, and revalidates before writing.
+Hints split record delimiters before display and invert the selected remote's
+full-head fetch mappings, respecting exclusions and discarding ambiguous or
+symbolic cache refs. Stored branch suggestions are source branch names, independent
+of their local cache display names; remote names assign no workflow roles.
 Generation validates the proposed shared settings and their effective combination
 with private overrides, including workstream field relationships, before staging
-and again before publication. Guided policy JSON input keeps invalid combinations
-correctable. Private values and provenance participate in the audit without being
-exported into shared contents. Remote, branch and check availability remain
+and again before publication. Grouped guided input retains existing preferences,
+exposes structured workstream fields and literal executable/argument entry, and
+keeps invalid combinations correctable. Review summarizes effective behavior and
+consequential private changes; exact serialized contents remain available before
+explicit creation. Private values and provenance participate in the audit without
+being exported into shared contents. Remote, branch and check availability remain
 runtime concerns, so valid future/offline configuration can be generated.
 Generation stages complete serialized bytes and publishes them without clobbering
 an existing recognized file. It creates configuration without changing branches

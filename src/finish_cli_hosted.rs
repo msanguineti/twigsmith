@@ -9,6 +9,7 @@ pub(super) fn run(
     completion: &Completion,
     presentation: Presentation,
     skip: bool,
+    mut context_shown: bool,
 ) -> ExitCode {
     if completion.message.is_some()
         || completion
@@ -35,13 +36,19 @@ pub(super) fn run(
     };
     loop {
         let missing = if plan.tag.is_none() {
-            Some(("version tag", "Version tag (or cancel)"))
+            Some((
+                "version tag",
+                "What version tag should identify this release?",
+            ))
         } else if plan.merge_back.is_none() {
-            Some(("merge-back branch", "Merge-back branch (or cancel)"))
+            Some((
+                "merge-back branch",
+                "Which branch should carry merge-back review work?",
+            ))
         } else if plan.update == FinishUpdate::Ask {
             Some((
                 "preparation method",
-                "Merge-back update (merge/none/cancel)",
+                "How should merge-back work be updated?",
             ))
         } else {
             None
@@ -50,21 +57,34 @@ pub(super) fn run(
             break;
         };
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-            crate::presentation::error(
+            crate::presentation::error(format!(
                 "error: unresolved {label}; supply --tag, --merge-back, and --update merge|none as needed, or configure the corresponding settings.",
-            );
+            ));
             return ExitCode::FAILURE;
         }
-        if label == "preparation method" {
-            eprintln!(
-                "Merge incorporates the project target into merge-back. None retains merge-back history."
-            );
+        if !context_shown {
+            crate::presentation::section("Prepare version review");
+            let policy = plan.settings.workstream.as_ref().expect("hosted policy");
+            crate::presentation::prose(&format!(
+                "Released work: {}\nReview into: {}/{}\nThe version stays fixed; a separate branch carries merge-back review work.",
+                display(presentation, &plan.source_branch),
+                text(presentation, &policy.base_remote),
+                text(presentation, &policy.integration_target)
+            ));
+            context_shown = true;
         }
         let answer = match if label == "preparation method" {
             super::read_menu_answer(
                 presentation,
                 prompt,
-                &["merge", "none", "cancel"],
+                &[
+                    (
+                        "merge",
+                        "Merge the project target into the merge-back branch",
+                    ),
+                    ("none", "Keep merge-back history unchanged"),
+                    ("cancel", "Cancel"),
+                ],
                 "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
             )
         } else {
@@ -127,7 +147,7 @@ pub(super) fn run(
         };
     }
     println!(
-        "Released source: {} at {}. Checks validate this version before delivery, then the prepared merge-back candidate.",
+        "Released source: {} at {}.",
         display(presentation, &plan.source_branch),
         display(presentation, &plan.source)
     );
@@ -174,23 +194,34 @@ pub(super) fn run(
     );
     let mut diagnostics = String::new();
     command_diagnostics(presentation, &mut diagnostics, &report.commands);
-    println!(
-        "Local version tag object: {}. Merge-back candidate: {}.",
-        observation(
-            presentation,
-            report
-                .local_tag
-                .as_ref()
-                .unwrap_or(&finish::RefObservation::Unavailable)
-        ),
-        observation(
-            presentation,
-            report
-                .local_candidate
-                .as_ref()
-                .unwrap_or(&finish::RefObservation::Unavailable)
-        )
-    );
+    if let Some(error) = &report.error {
+        crate::presentation::report(
+            &format!(
+                "error: {}\nResolve the reported problem, then retry finish; confirmed effects are retained.\n",
+                text(presentation, error)
+            ),
+            false,
+        );
+    }
+    if !report.ready {
+        println!(
+            "Local version tag object: {}. Merge-back candidate: {}.",
+            observation(
+                presentation,
+                report
+                    .local_tag
+                    .as_ref()
+                    .unwrap_or(&finish::RefObservation::Unavailable)
+            ),
+            observation(
+                presentation,
+                report
+                    .local_candidate
+                    .as_ref()
+                    .unwrap_or(&finish::RefObservation::Unavailable)
+            )
+        );
+    }
     for publication in &report.publications {
         let status = if publication
             .expected
@@ -216,11 +247,8 @@ pub(super) fn run(
             observation(presentation, &publication.observed)
         );
     }
-    if let Some(error) = &report.error {
-        crate::presentation::report(
-            &format!("{diagnostics}error: {}\n", text(presentation, error)),
-            false,
-        );
+    if report.error.is_some() {
+        eprint!("{diagnostics}");
         eprintln!(
             "Retained source: {} at {}. Version tag: {}. Merge-back: {}.",
             display(presentation, &plan.source_branch),
@@ -281,9 +309,6 @@ pub(super) fn run(
             text(presentation, plan.tag.as_deref().unwrap())
         );
     }
-    println!(
-        "Submission, integration, and later follow-up are yours to perform; finish does not track them."
-    );
     ExitCode::SUCCESS
 }
 

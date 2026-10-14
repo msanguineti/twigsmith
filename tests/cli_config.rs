@@ -839,230 +839,6 @@ fn unwritable_root_reports_write_failure_without_changing_existing_files() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn guided_formats_defaults_custom_values_and_private_precedence() {
-    cases(
-        "guided_formats_defaults_custom_values_and_private_precedence",
-        true,
-        |root, exe| {
-            for (format, filename) in [
-                ("toml", CONFIG_FILES[0]),
-                ("yaml", CONFIG_FILES[1]),
-                ("json", CONFIG_FILES[3]),
-            ] {
-                for custom in [false, true] {
-                    let repo = Repository::new(root);
-                    repo.success(&["remote", "add", "hint-only", "/unreachable/offline"]);
-                    let private = repo.path().join(".git/git-oneflow.config.toml");
-                    fs::write(&private, "publish-remote = 'private'\nsave-action = 'stash'\nfinish-update = 'none'\nfinish-rewrite = 'deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
-                    let before_git = snapshot(&repo.path().join(".git"));
-                    let mut terminal = terminal::Terminal::start(
-                        exe,
-                        repo.path(),
-                        &["config", "--format", format],
-                    );
-                    terminal.until("Publication remote");
-                    assert!(terminal.output.contains("hint-only"));
-                    terminal.send(if custom && format == "toml" {
-                        b"future-remote\n\nfuture/base\n4\n3\n2\n1\n1\n1\n1\n1\n\n"
-                    } else if custom {
-                        b"future-remote\n\nfuture/base\nwip\nmerge\nallow\n\n\n\n\n\n\n"
-                    } else {
-                        b"\n\n\n\n\n\n\n\n\n\n\n\n"
-                    });
-                    terminal.until("Create this file?");
-                    assert!(!repo.path().join(filename).exists());
-                    assert!(
-                        terminal
-                            .output
-                            .contains("Effective publish-remote: private")
-                    );
-                    assert!(terminal.output.contains("Effective save-action: stash"));
-                    assert!(terminal.output.contains("Effective finish-update: none"));
-                    assert!(terminal.output.contains("Effective finish-rewrite: deny"));
-                    assert!(terminal.output.contains(
-                        r#"Effective finish-checks: [{"name":"Private tests","command":["private-check",""]}] (local:"#
-                    ));
-                    let proposed = Settings {
-                        publish_remote: if custom { "future-remote" } else { "origin" }.into(),
-                        base_remote: if custom { "future-remote" } else { "origin" }.into(),
-                        base: if custom { "future/base" } else { "main" }.into(),
-                        save_action: if custom {
-                            SaveAction::Wip
-                        } else {
-                            SaveAction::Ask
-                        },
-                        finish_update: if custom {
-                            FinishUpdate::Merge
-                        } else {
-                            FinishUpdate::Ask
-                        },
-                        finish_rewrite: if custom {
-                            FinishRewrite::Allow
-                        } else {
-                            FinishRewrite::Ask
-                        },
-                        ..Settings::default()
-                    };
-                    let contents = config::render(
-                        match format {
-                            "toml" => Format::Toml,
-                            "yaml" => Format::Yaml,
-                            _ => Format::Json,
-                        },
-                        &proposed,
-                    );
-                    assert!(!contents.contains("redact-credentials"));
-                    assert!(!contents.contains("private-check"));
-                    assert!(terminal.output.replace('\r', "").contains(&contents));
-                    terminal.send(if format == "toml" { b"1\n" } else { b"yes\n" });
-                    assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
-                    assert_eq!(
-                        fs::read_to_string(repo.path().join(filename)).unwrap(),
-                        contents
-                    );
-                    assert_eq!(snapshot(&repo.path().join(".git")), before_git);
-                    let effective = load(repo.path());
-                    assert_eq!(effective.publish_remote, "private");
-                    assert_eq!(effective.base, proposed.base);
-                    assert_eq!(effective.finish_update, FinishUpdate::None);
-                    assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
-                    assert!(terminal.output.contains("Standing authorization"));
-                    assert_eq!(effective.save_action, SaveAction::Stash);
-                    assert_eq!(
-                        git_oneflow::start::prepare(repo.path(), "work")
-                            .unwrap()
-                            .settings,
-                        effective
-                    );
-                    commit(&repo);
-                    repo.success(&["switch", "-c", "work"]);
-                    repo.success(&["remote", "add", "private", "/offline"]);
-                    let save = git_oneflow::save::assess(repo.path(), &Default::default()).unwrap();
-                    assert_eq!(save.settings, effective);
-                    assert_eq!(save.action, SaveAction::Stash);
-                    fs::remove_file(private).unwrap();
-                    let effective = load(repo.path());
-                    assert_eq!(effective.publish_remote, proposed.publish_remote);
-                    assert_eq!(effective.save_action, proposed.save_action);
-                    assert_eq!(effective.finish_update, proposed.finish_update);
-                    assert_eq!(effective.finish_rewrite, proposed.finish_rewrite);
-                    repo.success(&["remote", "add", &proposed.publish_remote, "/offline"]);
-                    let save = git_oneflow::save::assess(repo.path(), &Default::default()).unwrap();
-                    assert_eq!(save.settings, effective);
-                    assert_eq!(save.action, proposed.save_action);
-                    assert!(matches!(
-                        git_oneflow::start::prepare(repo.path(), &proposed.base),
-                        Err(git_oneflow::start::ResolveError::ProtectedBase(_))
-                    ));
-                }
-            }
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_invalid_answers_retry_and_confirmation_is_explicit() {
-    cases(
-        "guided_invalid_answers_retry_and_confirmation_is_explicit",
-        true,
-        |root, exe| {
-            let repo = Repository::new(root);
-            let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            terminal.until("Publication remote");
-            terminal.send(b"bad remote\n");
-            terminal.until("Use a valid named Git remote");
-            terminal.send(b"upstream\nbad remote\n");
-            terminal.until("Use a valid named Git remote (no URL");
-            terminal.send(b"\nHEAD\n");
-            terminal.until("Use a valid literal Git branch");
-            terminal.send(b"trunk\nunknown\n");
-            terminal.until("Choose a listed name or number");
-            terminal.send(b"staged\ninvalid\n");
-            terminal.until("Default finish update");
-            terminal.send(b"none\ninvalid\n");
-            terminal.until("Default finish rewrite");
-            terminal.send(b"deny\n\n\n\n\n\n\n");
-            terminal.until("Create this file?");
-            terminal.send(b"y\n");
-            terminal.until("Create this file?");
-            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-            terminal.send(b"yes\n");
-            assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
-            let settings = load(repo.path());
-            assert_eq!(settings.publish_remote, "upstream");
-            assert_eq!(settings.base, "trunk");
-            assert_eq!(settings.save_action, SaveAction::Staged);
-            assert_eq!(settings.finish_update, FinishUpdate::None);
-            assert_eq!(settings.finish_rewrite, FinishRewrite::Deny);
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_cancel_eof_and_declined_confirmation_preserve_repository() {
-    cases(
-        "guided_cancel_eof_and_declined_confirmation_preserve_repository",
-        true,
-        |root, exe| {
-            for (answers, prompt) in [
-                ("", "Publication remote"),
-                ("\n", "Base source remote"),
-                ("\n\n", "Base branch"),
-                ("\n\n\n", "Default save action"),
-                ("\n\n\n\n", "Default finish update"),
-                ("\n\n\n\n\n", "Default finish rewrite"),
-                ("\n\n\n\n\n\n", "Default finish mode"),
-                ("\n\n\n\n\n\n\n", "Default finish integration"),
-                ("\n\n\n\n\n\n\n\n", "Default finish message"),
-                ("\n\n\n\n\n\n\n\n\n", "Default finish checkout"),
-                ("\n\n\n\n\n\n\n\n\n\n", "Default finish cleanup"),
-                ("\n\n\n\n\n\n\n\n\n\n\n", "Finish check name"),
-                ("\n\n\n\n\n\n\n\n\n\n\nCheck\n", "Command as JSON"),
-                (
-                    "\n\n\n\n\n\n\n\n\n\n\nCheck\n[\"missing\"]\n",
-                    "Finish check name [Enter to finish]:",
-                ),
-                ("\n\n\n\n\n\n\n\n\n\n\n\n", "Create this file?"),
-            ] {
-                for cancel in [b"cancel\n".as_slice(), b"\x04", b"partial\x04\x04"] {
-                    let repo = Repository::new(root);
-                    let before = snapshot(repo.path());
-                    let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-                    terminal.until("Publication remote");
-                    terminal.send(answers.as_bytes());
-                    terminal.until(prompt);
-                    terminal.send(cancel);
-                    assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
-                    assert!(terminal.output.contains("Setup cancelled"));
-                    assert_eq!(snapshot(repo.path()), before);
-                }
-            }
-            let repo = Repository::new(root);
-            let before = snapshot(repo.path());
-            let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            terminal.until("Publication remote");
-            terminal.interrupt();
-            assert!(!terminal.finish().success());
-            assert_eq!(snapshot(repo.path()), before);
-            for answer in [b"no\n".as_slice(), b"2\n", b"3\n", b"\n"] {
-                let repo = Repository::new(root);
-                let before = snapshot(repo.path());
-                let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-                terminal.until("Publication remote");
-                terminal.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
-                terminal.until("Create this file?");
-                terminal.send(answer);
-                assert_eq!(terminal.finish().code(), Some(0));
-                assert_eq!(snapshot(repo.path()), before);
-            }
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
 fn guided_rechecks_changes_during_answers_and_confirmation() {
     cases(
         "guided_rechecks_changes_during_answers_and_confirmation",
@@ -1089,9 +865,9 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                         .unwrap();
                     }
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
-                    terminal.until("Publication remote");
+                    terminal.until("Remote receiving work");
                     if confirmation {
-                        terminal.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
+                        terminal.send(b"\n\n\n\n\n\n");
                         terminal.until("Create this file?");
                     }
                     match mutation {
@@ -1138,7 +914,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     terminal.send(if confirmation {
                         b"yes\n"
                     } else {
-                        b"\n\n\n\n\n\n\n\n\n\n\n\n"
+                        b"\n\n\n\n\n\n"
                     });
                     assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
                     assert_eq!(snapshot(repo.path()), before);
@@ -1189,13 +965,13 @@ fn guided_existing_files_fail_before_prompt_and_yes_never_prompts() {
                 let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
                 assert_eq!(terminal.finish().code(), Some(1));
                 assert!(terminal.output.contains("config show"));
-                assert!(!terminal.output.contains("Publication remote"));
+                assert!(!terminal.output.contains("Remote receiving work"));
                 assert_eq!(snapshot(repo.path()), before);
             }
             let repo = Repository::new(root);
             let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config", "--yes"]);
             assert_eq!(terminal.finish().code(), Some(0));
-            assert!(!terminal.output.contains("Publication remote"));
+            assert!(!terminal.output.contains("Remote receiving work"));
             assert!(!terminal.output.contains("Create this file?"));
             assert_defaults(repo.path(), CONFIG_FILES[0]);
         },
@@ -1374,372 +1150,6 @@ fn generated_remote_roles_round_trip_in_each_format() {
     );
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_remote_roles_review_selected_intent_with_private_precedence() {
-    cases(
-        "guided_remote_roles_review_selected_intent_with_private_precedence",
-        true,
-        |root, exe| {
-            for (format, filename) in [
-                ("toml", CONFIG_FILES[0]),
-                ("yaml", CONFIG_FILES[1]),
-                ("json", CONFIG_FILES[3]),
-            ] {
-                for base_answer in ["", "personal", "project"] {
-                    for private_case in ["none", "publication", "roles", "base"] {
-                        let repo = Repository::new(root);
-                        // Names are hints, not assigned roles.
-                        for name in ["origin", "upstream", "fork"] {
-                            repo.success(&["remote", "add", name, "/offline"]);
-                        }
-                        let (private_name, private_text, publication, private_base) =
-                            match private_case {
-                                "publication" => (
-                                    CONFIG_FILES[0],
-                                    "publish-remote='private'\n",
-                                    "private",
-                                    None,
-                                ),
-                                "roles" => (
-                                    CONFIG_FILES[0],
-                                    "publish-remote='selected'\nbase-remote='local-base'\n",
-                                    "selected",
-                                    Some("local-base"),
-                                ),
-                                "base" => (
-                                    CONFIG_FILES[0],
-                                    "base-remote='local-base'\nredact-credentials=false\n",
-                                    "personal",
-                                    Some("local-base"),
-                                ),
-                                _ => ("", "", "personal", None),
-                            };
-                        if !private_name.is_empty() {
-                            fs::write(repo.path().join(".git").join(private_name), private_text)
-                                .unwrap();
-                        }
-                        let mut term = terminal::Terminal::start(
-                            exe,
-                            repo.path(),
-                            &["config", "--format", format],
-                        );
-                        term.until("Publication remote");
-                        term.send(
-                            format!("personal\n{base_answer}\n{}", "\n".repeat(10)).as_bytes(),
-                        );
-                        term.until("Create this file?");
-                        let split = base_answer == "project";
-                        let base =
-                            private_base.unwrap_or(if split { "project" } else { publication });
-                        assert!(
-                            term.output
-                                .contains(&format!("Effective publish-remote: {publication}")),
-                            "{}",
-                            term.output
-                        );
-                        assert!(
-                            term.output
-                                .contains(&format!("Effective base-remote: {base}")),
-                            "{}",
-                            term.output
-                        );
-                        let follows = !split && private_base.is_none();
-                        assert_eq!(
-                            term.output.contains("follows publish-remote"),
-                            follows,
-                            "{}",
-                            term.output
-                        );
-                        term.send(b"yes\n");
-                        assert!(term.finish().success(), "{}", term.output);
-                        let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
-                        assert_eq!(contents.contains("base-remote"), split);
-                        assert!(!contents.contains("redact-credentials"));
-                        assert!(!contents.contains("private-check"));
-                        assert!(!contents.contains("private"));
-                        assert!(!contents.contains("local-base"));
-                        let effective = load(repo.path());
-                        assert_eq!(effective.publish_remote, publication);
-                        assert_eq!(effective.base_remote, base);
-                        assert_eq!(effective.sources.base_remote.is_none(), follows);
-                        let shown = check(
-                            run(exe, repo.path(), &["config", "show"]),
-                            0,
-                            &[
-                                &format!("publish-remote: {publication}"),
-                                &format!("base-remote: {base}"),
-                            ],
-                        );
-                        assert_eq!(shown.contains("(follows publish-remote;"), follows);
-                    }
-                }
-            }
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_checks_preserve_order_arguments_and_private_list_replacement() {
-    cases(
-        "guided_checks_preserve_order_arguments_and_private_list_replacement",
-        true,
-        |root, exe| {
-            let checks = vec![
-                settings::FinishCheck {
-                    name: "Literal arguments ✓".into(),
-                    command: vec![
-                        "unavailable executable".into(),
-                        "".into(),
-                        " two words ".into(),
-                        "\"quotes\" 'single' \\path".into(),
-                        "$HOME; $(touch must-not-exist) && *".into(),
-                        "line\nbreak\t\u{1b}".into(),
-                    ],
-                },
-                settings::FinishCheck {
-                    name: "Second".into(),
-                    command: vec!["another-unavailable-check".into(), "雪".into()],
-                },
-            ];
-            for (format, filename) in [
-                ("toml", CONFIG_FILES[0]),
-                ("yaml", CONFIG_FILES[1]),
-                ("json", CONFIG_FILES[3]),
-            ] {
-                for private_case in ["inherit", "replace", "disable"] {
-                    let repo = Repository::new(root);
-                    let replacement = vec![settings::FinishCheck {
-                        name: "Private only".into(),
-                        command: vec!["private-executable".into(), "".into()],
-                    }];
-                    let private = match private_case {
-                        "replace" => serde_json::json!({"finish-checks": replacement}),
-                        "disable" => serde_json::json!({"finish-checks": []}),
-                        _ => serde_json::json!({"save-action": "stash"}),
-                    };
-                    fs::write(
-                        repo.path().join(".git").join(CONFIG_FILES[3]),
-                        private.to_string(),
-                    )
-                    .unwrap();
-                    let before = snapshot(repo.path());
-                    let mut term = terminal::Terminal::start(
-                        exe,
-                        repo.path(),
-                        &["config", "--format", format],
-                    );
-                    term.until("Publication remote");
-                    let mut answers = "\n\n\n\n\n\n\n\n\n\n\n".to_string();
-                    for check in &checks {
-                        answers.push_str(&check.name);
-                        answers.push('\n');
-                        answers.push_str(&serde_json::to_string(&check.command).unwrap());
-                        answers.push('\n');
-                    }
-                    answers.push('\n');
-                    term.send(answers.as_bytes());
-                    term.until("Create this file?");
-                    assert_eq!(
-                        snapshot(repo.path()),
-                        before,
-                        "setup must only read before approval"
-                    );
-                    for (index, check) in checks.iter().enumerate() {
-                        assert!(
-                            term.output.contains(&format!(
-                                "{}. {}: {}",
-                                index + 1,
-                                serde_json::to_string(&check.name).unwrap(),
-                                serde_json::to_string(&check.command).unwrap()
-                            )),
-                            "{}",
-                            term.output
-                        );
-                    }
-                    if private_case != "inherit" {
-                        assert!(
-                            term.output.contains(
-                                "Effective private finish checks (replace the shared list)"
-                            )
-                        );
-                    }
-                    if private_case == "disable" {
-                        assert!(term.output.contains(
-                            "Effective private finish checks (replace the shared list): none"
-                        ));
-                    }
-                    term.send(b"yes\n");
-                    assert!(term.finish().success(), "{}", term.output);
-                    let effective = load(repo.path());
-                    let expected = match private_case {
-                        "replace" => replacement,
-                        "disable" => vec![],
-                        _ => checks.clone(),
-                    };
-                    assert_eq!(effective.finish_checks, expected);
-                    let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
-                    assert!(!contents.contains("private-executable"));
-                    fs::remove_file(repo.path().join(".git").join(CONFIG_FILES[3])).unwrap();
-                    assert_eq!(load(repo.path()).finish_checks, checks);
-                }
-            }
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_invalid_check_entries_can_be_corrected() {
-    cases(
-        "guided_invalid_check_entries_can_be_corrected",
-        true,
-        |root, exe| {
-            let repo = Repository::new(root);
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            term.until("Publication remote");
-            term.send(b"\n\n\n\n\n\n\n\n\n\n\n   \n");
-            term.until("Use a nonblank display name");
-            term.send(b"Tests\ncargo test\n[1]\nnull\n{\"command\": []}\n");
-            term.until("Use a JSON array of strings");
-            term.send(b"[]\n[\"\"]\n");
-            term.until("command must contain a nonempty executable");
-            term.send(b"[\"cargo\", \"\\u0000\"]\n");
-            term.until("command strings must not contain NUL");
-            term.send(b"[\"cargo\", \"test\", \"\"]\n\nyes\n");
-            assert!(term.finish().success(), "{}", term.output);
-            assert_eq!(
-                load(repo.path()).finish_checks,
-                vec![settings::FinishCheck {
-                    name: "Tests".into(),
-                    command: vec!["cargo".into(), "test".into(), "".into()],
-                }]
-            );
-        },
-    );
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn guided_completion_questions_generation_and_effective_private_review() {
-    cases(
-        "guided_completion_questions_generation_and_effective_private_review",
-        true,
-        |root, exe| {
-            for (format, filename) in [
-                ("toml", CONFIG_FILES[0]),
-                ("yaml", CONFIG_FILES[1]),
-                ("json", CONFIG_FILES[3]),
-            ] {
-                for (mode, method, message) in [
-                    ("review", "ask", "ask"),
-                    ("integrate", "ff-only", "ask"),
-                    ("integrate", "merge", "auto"),
-                    ("ask", "squash", "ask"),
-                ] {
-                    let repo = Repository::new(root);
-                    fs::write(repo.path().join(".git/git-oneflow.config.toml"), "finish-mode='integrate'\nfinish-integration='squash'\nfinish-message='auto'\nfinish-checkout='work'\nfinish-cleanup='both'\n").unwrap();
-                    let before = snapshot(&repo.path().join(".git"));
-                    let mut term = terminal::Terminal::start(
-                        exe,
-                        repo.path(),
-                        &["config", "--format", format],
-                    );
-                    term.until("Publication remote");
-                    let mut answers = format!("{}{}\n", "\n".repeat(6), mode);
-                    if mode != "review" {
-                        answers.push_str(&format!("{method}\n"));
-                        if method != "ff-only" {
-                            answers.push_str(&format!("{message}\n"));
-                        }
-                        answers.push_str("target\nlocal\n");
-                    }
-                    answers.push('\n'); // no checks
-                    term.send(answers.as_bytes());
-                    term.until("Create this file?");
-                    assert_eq!(
-                        term.output.contains("Default finish integration"),
-                        mode != "review",
-                        "{}",
-                        term.output
-                    );
-                    assert_eq!(
-                        term.output.contains("Default finish message"),
-                        mode != "review" && method != "ff-only",
-                        "{}",
-                        term.output
-                    );
-                    assert_eq!(
-                        term.output.contains("Default finish checkout"),
-                        mode != "review",
-                        "{}",
-                        term.output
-                    );
-                    assert_eq!(
-                        term.output.contains("Default finish cleanup"),
-                        mode != "review",
-                        "{}",
-                        term.output
-                    );
-                    for (key, value) in [
-                        ("mode", "integrate"),
-                        ("integration", "squash"),
-                        ("message", "auto"),
-                        ("checkout", "work"),
-                        ("cleanup", "both"),
-                    ] {
-                        assert!(
-                            term.output
-                                .contains(&format!("Effective finish-{key}: {value} (local:")),
-                            "{}",
-                            term.output
-                        );
-                    }
-                    term.send(b"yes\n");
-                    assert!(term.finish().success(), "{}", term.output);
-                    assert_eq!(snapshot(&repo.path().join(".git")), before);
-                    let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
-                    for key in ["finish-integration", "finish-checkout", "finish-cleanup"] {
-                        assert_eq!(contents.contains(key), mode != "review", "{contents}");
-                    }
-                    assert_eq!(
-                        contents.contains("finish-message"),
-                        mode != "review" && method != "ff-only"
-                    );
-                    fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
-                    let shared = load(repo.path());
-                    assert_eq!(shared.finish_mode.as_str(), mode);
-                    assert_eq!(shared.finish_integration.as_str(), method);
-                    assert_eq!(shared.finish_message.as_str(), message);
-                    assert_eq!(shared.finish_checkout.as_str(), "target");
-                    assert_eq!(
-                        shared.finish_cleanup.as_str(),
-                        if mode == "review" { "ask" } else { "local" }
-                    );
-                }
-            }
-            // Review with no private override accurately shows omitted policies as built-ins.
-            let repo = Repository::new(root);
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            term.until("Publication remote");
-            term.send(b"\n\n\n\n\n\nreview\n\n");
-            term.until("Create this file?");
-            assert!(
-                term.output
-                    .contains("Effective finish-mode: review (shared:")
-            );
-            assert!(
-                term.output
-                    .contains("Effective finish-cleanup: ask (built-in default)")
-            );
-            assert!(term.output.contains("inactive for review delivery"));
-            term.send(b"no\n");
-            assert!(term.finish().success());
-        },
-    );
-}
-
 #[test]
 fn unattended_oneflow_bundle_generation_round_trips_every_format() {
     use settings::{FinishMode, WorkstreamKind};
@@ -1881,65 +1291,6 @@ fn inspection_reports_ordered_tag_identity_and_declared_active_release_read_only
     );
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_oneflow_templates_are_editable_and_cancel_preserves_repository() {
-    use settings::WorkstreamKind;
-    cases(
-        "guided_oneflow_templates_are_editable_and_cancel_preserves_repository",
-        true,
-        |root, exe| {
-            for (format, filename) in [
-                ("toml", CONFIG_FILES[0]),
-                ("yaml", CONFIG_FILES[1]),
-                ("json", CONFIG_FILES[3]),
-            ] {
-                for cancel in [false, true] {
-                    let repo = Repository::new(root);
-                    let before_git = snapshot(&repo.path().join(".git"));
-                    let mut term = terminal::Terminal::start(
-                        exe,
-                        repo.path(),
-                        &["config", "--oneflow", "--format", format],
-                    );
-                    term.until("Publication remote");
-                    term.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
-                    term.until("ordinary policy [");
-                    assert!(!repo.path().join(filename).exists());
-                    if cancel {
-                        term.send(b"cancel\n");
-                        assert_eq!(term.finish().code(), Some(0), "{}", term.output);
-                        assert!(term.output.contains("Setup cancelled"));
-                        assert!(!repo.path().join(filename).exists());
-                    } else {
-                        let mut proposed = Settings::default();
-                        settings::oneflow_bundle(&mut proposed, None);
-                        let ordinary = proposed
-                            .workstreams
-                            .get_mut(&WorkstreamKind::Ordinary)
-                            .unwrap();
-                        ordinary.preparation_source = Some("release/preview".into());
-                        let json = serde_json::to_string(ordinary).unwrap();
-                        term.send(format!("{json}\n\n\n").as_bytes());
-                        term.until("Create this file?");
-                        assert!(term.output.contains("release/preview"));
-                        assert!(!repo.path().join(filename).exists());
-                        term.send(b"yes\n");
-                        assert_eq!(term.finish().code(), Some(0), "{}", term.output);
-                        assert_eq!(
-                            load(repo.path()).workstreams[&WorkstreamKind::Ordinary]
-                                .preparation_source
-                                .as_deref(),
-                            Some("release/preview")
-                        );
-                    }
-                    assert_eq!(snapshot(&repo.path().join(".git")), before_git);
-                }
-            }
-        },
-    );
-}
-
 #[test]
 fn inspection_reports_established_explicit_creation_commit_separately_from_default_route() {
     cases(
@@ -2071,65 +1422,6 @@ fn unattended_hosted_setup_is_editable_and_reports_effective_routes_in_every_for
     );
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_hosted_setup_edits_routes_and_cancellation_preserves_work() {
-    use settings::WorkstreamKind;
-    cases(
-        "guided_hosted_setup_edits_routes_and_cancellation_preserves_work",
-        true,
-        |root, exe| {
-            for cancel in [false, true] {
-                let repo = Repository::new(root);
-                let before = snapshot(&repo.path().join(".git"));
-                let mut term =
-                    terminal::Terminal::start(exe, repo.path(), &["config", "--oneflow-hosted"]);
-                term.until("Publication remote");
-                term.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
-                term.until("ordinary policy [");
-                assert!(
-                    term.output
-                        .contains("Hosted tagged finish publishes the version")
-                );
-                if cancel {
-                    term.send(b"cancel\n");
-                    assert!(term.finish().success(), "{}", term.output);
-                    assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-                } else {
-                    term.send(b"\n");
-                    term.until("release policy [");
-                    let mut proposed = Settings::default();
-                    settings::oneflow_hosted_bundle(&mut proposed, None);
-                    let release = proposed
-                        .workstreams
-                        .get_mut(&WorkstreamKind::Release)
-                        .unwrap();
-                    release.review_remote = Some("fork".into());
-                    release.merge_back_branch = Some("review/version".into());
-                    term.send(
-                        format!("{}\n\n", serde_json::to_string(release).unwrap()).as_bytes(),
-                    );
-                    term.until("Create this file?");
-                    assert!(
-                        term.output.contains("review source review/version on fork"),
-                        "{}",
-                        term.output
-                    );
-                    term.send(b"yes\n");
-                    assert!(term.finish().success(), "{}", term.output);
-                    assert_eq!(
-                        load(repo.path()).workstreams[&WorkstreamKind::Release]
-                            .review_remote
-                            .as_deref(),
-                        Some("fork")
-                    );
-                }
-                assert_eq!(snapshot(&repo.path().join(".git")), before);
-            }
-        },
-    );
-}
-
 #[test]
 fn hosted_inspection_keeps_template_routes_independent_of_selected_branch_policy() {
     cases(
@@ -2193,111 +1485,6 @@ fn hosted_inspection_keeps_template_routes_independent_of_selected_branch_policy
     );
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_policy_relationships_and_effective_private_overrides_are_correctable() {
-    use settings::WorkstreamKind;
-    cases(
-        "guided_policy_relationships_and_effective_private_overrides_are_correctable",
-        true,
-        |root, exe| {
-            let repo = Repository::new(root);
-            fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
-                "finish-integration = 'squash'\n",
-            )
-            .unwrap();
-            let before_git = snapshot(&repo.path().join(".git"));
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config", "--oneflow"]);
-            term.until("Publication remote");
-            term.send(b"\n\n\n\n\n\n\n\n\n\n\n\n");
-            term.until("ordinary policy [");
-            term.send(b"\n");
-            term.until("release policy [");
-            let mut proposed = Settings::default();
-            settings::oneflow_bundle(&mut proposed, None);
-            let release = proposed
-                .workstreams
-                .get_mut(&WorkstreamKind::Release)
-                .unwrap();
-            release.finish_integration = None;
-            term.send(format!("{}\n", serde_json::to_string(release).unwrap()).as_bytes());
-            term.until("Configuration needs correction for release");
-            assert!(
-                term.output.contains("history-preserving integration"),
-                "{}",
-                term.output
-            );
-            assert!(term.output.contains("Private overrides"), "{}", term.output);
-            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-            release.finish_integration = Some("merge".into());
-            release.release_marker = Some("main".into());
-            term.send(format!("{}\n", serde_json::to_string(release).unwrap()).as_bytes());
-            term.until("release marker must differ from every integration target");
-            release.release_marker = Some("stable".into());
-            term.send(format!("{}\n\n", serde_json::to_string(release).unwrap()).as_bytes());
-            term.until("Create this file?");
-            assert!(term.output.contains("marker stable"), "{}", term.output);
-            term.send(b"yes\n");
-            assert!(term.finish().success(), "{}", term.output);
-            let mut effective = load(repo.path());
-            settings::resolve_workstream(&mut effective, WorkstreamKind::Release, None).unwrap();
-            assert_eq!(
-                effective.finish_integration,
-                settings::FinishIntegration::Merge
-            );
-            assert_eq!(
-                effective.workstream.unwrap().release_marker.as_deref(),
-                Some("stable")
-            );
-            assert_eq!(snapshot(&repo.path().join(".git")), before_git);
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_private_only_policy_is_audited_before_creation() {
-    use settings::WorkstreamKind;
-    cases(
-        "guided_private_only_policy_is_audited_before_creation",
-        true,
-        |root, exe| {
-            let repo = Repository::new(root);
-            fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
-                "[workstreams.release]\nrelease-marker = 'stable'\n",
-            )
-            .unwrap();
-            let before_git = snapshot(&repo.path().join(".git"));
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            term.until("Publication remote");
-            term.send(b"\n\nstable\n\n\n\n\n\n\n\n\n\n");
-            term.until("Configuration needs correction for release");
-            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-            term.send(b"{\"integration-target\":\"future/base\"}\n");
-            term.until("Create this file?");
-            assert!(
-                term.output.contains("integration origin/future/base"),
-                "{}",
-                term.output
-            );
-            term.send(b"yes\n");
-            assert!(term.finish().success(), "{}", term.output);
-            let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
-            assert!(!contents.contains("release-marker"), "{contents}");
-            let mut effective = load(repo.path());
-            settings::resolve_workstream(&mut effective, WorkstreamKind::Release, None).unwrap();
-            assert_eq!(effective.base, "future/base");
-            assert_eq!(
-                effective.workstream.unwrap().release_marker.as_deref(),
-                Some("stable")
-            );
-            assert_eq!(snapshot(&repo.path().join(".git")), before_git);
-        },
-    );
-}
-
 #[test]
 fn unattended_generation_audits_combined_private_policy_without_writing_invalid_settings() {
     cases(
@@ -2325,63 +1512,6 @@ fn unattended_generation_audits_combined_private_policy_without_writing_invalid_
 
 #[cfg(target_os = "linux")]
 #[test]
-fn guided_keyboard_navigation_validates_text_and_preserves_unicode_names() {
-    cases(
-        "guided_keyboard_navigation_validates_text_and_preserves_unicode_names",
-        true,
-        |root, exe| {
-            let repo = Repository::new(root);
-            let before_git = snapshot(&repo.path().join(".git"));
-            let mut term = terminal::Terminal::start_capable_narrow(exe, repo.path(), &["config"]);
-            term.until("Publication remote");
-            term.send(b"bad remote\r");
-            term.until("Use a valid named Git remote");
-            term.send("réseau\r".as_bytes());
-            term.until("Base source remote");
-            term.send(b"\r");
-            term.until("Base branch");
-            term.send("feature/β\r".as_bytes());
-            term.until("Default save action");
-            term.send(b"\x1b[B\x1b[B\x1b[B\r");
-            term.until("Default finish update");
-            term.send(b"\x1b[B\x1b[B\x1b[B\r");
-            term.until("Default finish rewrite");
-            term.send(b"\x1b[B\x1b[B\r");
-            term.until("Default finish mode");
-            term.send(b"\x1b[B\x1b[B\r");
-            term.until("Default finish integration");
-            term.send(b"\x1b[B\r");
-            term.until("Default finish checkout");
-            term.send(b"\r");
-            term.until("Default finish cleanup");
-            term.send(b"\x1b[B\r");
-            term.until("Finish check name");
-            term.send(b"\r");
-            term.until("Create this file?");
-            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-            term.send(b"\x1b[A\r");
-            assert!(term.finish().success(), "{}", term.output);
-            term.assert_restored();
-            let effective = load(repo.path());
-            assert_eq!(effective.publish_remote, "réseau");
-            assert_eq!(effective.base_remote, "réseau");
-            assert_eq!(effective.base, "feature/β");
-            assert_eq!(effective.save_action, SaveAction::Wip);
-            assert_eq!(effective.finish_update, FinishUpdate::None);
-            assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
-            assert_eq!(effective.finish_mode, settings::FinishMode::Integrate);
-            assert_eq!(
-                effective.finish_integration,
-                settings::FinishIntegration::FfOnly
-            );
-            assert_eq!(effective.finish_cleanup, settings::FinishCleanup::Keep);
-            assert_eq!(snapshot(&repo.path().join(".git")), before_git);
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
 fn guided_keyboard_cancellation_creates_no_configuration() {
     cases(
         "guided_keyboard_cancellation_creates_no_configuration",
@@ -2391,7 +1521,7 @@ fn guided_keyboard_cancellation_creates_no_configuration() {
                 let repo = Repository::new(root);
                 let before = snapshot(repo.path());
                 let mut term = terminal::Terminal::start_capable(exe, repo.path(), &["config"]);
-                term.until("Publication remote");
+                term.until("Remote receiving work");
                 term.send(cancel);
                 assert!(term.finish().success(), "{}", term.output);
                 assert!(term.output.contains("Setup cancelled"), "{}", term.output);
@@ -2400,4 +1530,431 @@ fn guided_keyboard_cancellation_creates_no_configuration() {
             }
         },
     );
+}
+
+#[cfg(target_os = "linux")]
+fn default_journey(term: &mut terminal::Terminal) {
+    term.until("Remote receiving work");
+    term.send(b"\n\n\n\n\n\n");
+    term.until("Create this file?");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_group_defaults_formats_exact_contents_and_private_isolation() {
+    cases("guided_group_defaults_formats", true, |root, exe| {
+        for (format, filename) in [
+            ("toml", CONFIG_FILES[0]),
+            ("yaml", CONFIG_FILES[1]),
+            ("json", CONFIG_FILES[3]),
+        ] {
+            let repo = Repository::new(root);
+            let private = repo.path().join(".git/git-oneflow.config.toml");
+            fs::write(&private, "publish-remote='private'\nsave-action='stash'\nfinish-update='none'\nfinish-rewrite='deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
+            let before = snapshot(&repo.path().join(".git"));
+            let mut term =
+                terminal::Terminal::start(exe, repo.path(), &["config", "--format", format]);
+            default_journey(&mut term);
+            assert!(!repo.path().join(filename).exists());
+            assert!(
+                term.output
+                    .contains("Work is published to private. New work starts from private/main.")
+            );
+            assert!(term.output.contains("Private overrides in"));
+            assert!(
+                term.output
+                    .contains("finish checks replace the shared list")
+            );
+            assert!(!term.output.contains("Exact shared contents"));
+            assert!(!term.output.contains("private-check"));
+            term.send(b"contents\n");
+            term.until("Exact shared contents");
+            term.until("finish-checks");
+            assert!(!repo.path().join(filename).exists());
+            term.send(b"yes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
+            assert!(!contents.contains("private"));
+            assert!(!contents.contains("redact-credentials"));
+            assert!(term.output.replace('\r', "").contains(&contents));
+            assert_eq!(term.output.matches("Private overrides in").count(), 1);
+            assert_eq!(snapshot(&repo.path().join(".git")), before);
+            let effective = load(repo.path());
+            assert_eq!(effective.publish_remote, "private");
+            assert_eq!(effective.save_action, SaveAction::Stash);
+            assert_eq!(effective.finish_update, FinishUpdate::None);
+            assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
+            fs::remove_file(private).unwrap();
+            assert_defaults(repo.path(), filename);
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_custom_direct_preferences_and_earlier_correction() {
+    cases("guided_custom_direct_preferences", true, |root, exe| {
+        let repo = Repository::new(root);
+        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+        term.until("Remote receiving work");
+        term.send("future-remote\nupstream\nfeature/β\nedit\nwip\nedit\nintegrate\nrebase\nallow\nsquash\nauto\nwork\nboth\nedit\ninteractive\nkeep\n".as_bytes());
+        term.until("Create this file?");
+        term.send(b"repository\n\nfuture-project\nfuture/base\nyes\n");
+        assert!(term.finish().success(), "{}", term.output);
+        let value = load(repo.path());
+        assert_eq!(value.publish_remote, "future-remote");
+        assert_eq!(value.base_remote, "future-project");
+        assert_eq!(value.base, "future/base");
+        assert_eq!(value.save_action, SaveAction::Wip);
+        assert_eq!(value.finish_mode, settings::FinishMode::Integrate);
+        assert_eq!(value.finish_update, FinishUpdate::Rebase);
+        assert_eq!(value.finish_rewrite, FinishRewrite::Allow);
+        assert_eq!(value.history_edit, settings::HistoryEdit::Interactive);
+        assert_eq!(
+            value.finish_integration,
+            settings::FinishIntegration::Squash
+        );
+        assert_eq!(value.finish_message, settings::FinishMessage::Auto);
+        assert_eq!(value.finish_checkout, settings::FinishCheckout::Work);
+        assert_eq!(value.finish_cleanup, settings::FinishCleanup::Both);
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_review_skips_inactive_delivery_choices_and_ff_skips_message() {
+    cases("guided_review_skips_inactive", true, |root, exe| {
+        for review in [true, false] {
+            let repo = Repository::new(root);
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Remote receiving work");
+            term.send(if review {
+                b"\n\n\nkeep\nedit\nreview\nmerge\ndeny\nkeep\nkeep\nyes\n"
+            } else {
+                b"\n\n\nkeep\nedit\nintegrate\nnone\ndeny\nff-only\ntarget\nkeep\nkeep\nkeep\nyes\n"
+            });
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(
+                term.output.contains("How should work enter the target?"),
+                !review
+            );
+            assert!(!term.output.contains("Integration commit message:"));
+            assert_eq!(
+                term.output.contains("Work branches after direct delivery:"),
+                !review
+            );
+            let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
+            assert!(!contents.contains("finish-message"));
+            if review {
+                assert!(!contents.contains("finish-integration"));
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_invalid_input_correctable_and_creation_explicit() {
+    cases("guided_invalid_input_correctable", true, |root, exe| {
+        let repo = Repository::new(root);
+        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+        term.until("Remote receiving work");
+        term.send(b"bad remote\n");
+        term.until("Use a named Git remote");
+        term.send(b"follow\nbad remote\n\nHEAD\ntrunk\ninvalid\nkeep\nkeep\nkeep\ny\n");
+        term.until("Create this file?");
+        term.until("Enter a listed number");
+        assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+        term.send(b"yes\n");
+        assert!(term.finish().success(), "{}", term.output);
+        assert_eq!(load(repo.path()).publish_remote, "follow");
+        assert_eq!(load(repo.path()).base_remote, "follow");
+        assert_eq!(load(repo.path()).base, "trunk");
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_cancellation_at_group_and_literal_entry_preserves_repository() {
+    cases("guided_cancellation_at_group", true, |root, exe| {
+        for (answers, prompt) in [
+            ("", "Remote receiving work"),
+            ("\n", "Project source remote"),
+            ("\n\n", "Project base branch"),
+            ("\n\n\n", "Saving preferences:"),
+            ("\n\n\nedit\n", "When saving uncommitted work:"),
+            ("\n\n\nkeep\n", "Finishing preferences:"),
+            (
+                "\n\n\nkeep\nedit\n",
+                "How should finished work be delivered?",
+            ),
+            ("\n\n\nkeep\nkeep\n", "Finish checks:"),
+            ("\n\n\nkeep\nkeep\nadd\n", "Check display name:"),
+            ("\n\n\nkeep\nkeep\nadd\nTests\n", "Executable name or path:"),
+            (
+                "\n\n\nkeep\nkeep\nadd\nTests\ncargo\nadd\n",
+                "Literal argument",
+            ),
+            ("\n\n\nkeep\nkeep\nkeep\n", "Create this file?"),
+        ] {
+            let repo = Repository::new(root);
+            let before = snapshot(repo.path());
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Remote receiving work");
+            term.send(answers.as_bytes());
+            term.until(prompt);
+            term.send(b"\x04");
+            assert!(term.finish().success(), "{}", term.output);
+            assert!(term.output.contains("Setup cancelled"));
+            assert_eq!(snapshot(repo.path()), before);
+        }
+        let repo = Repository::new(root);
+        let before = snapshot(repo.path());
+        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+        term.until("Remote receiving work");
+        term.interrupt();
+        assert!(!term.finish().success());
+        assert_eq!(snapshot(repo.path()), before);
+        for answer in [b"\n".as_slice(), b"no\n", b"cancel\n"] {
+            let repo = Repository::new(root);
+            let before = snapshot(repo.path());
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            default_journey(&mut term);
+            term.send(answer);
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(snapshot(repo.path()), before);
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_literal_checks_order_empty_arguments_and_private_replacement() {
+    cases("guided_literal_checks_order", true, |root, exe| {
+        for replacement in [false, true] {
+            let repo = Repository::new(root);
+            if replacement {
+                fs::write(
+                    repo.path().join(".git/git-oneflow.config.toml"),
+                    "finish-checks=[]\n",
+                )
+                .unwrap();
+            }
+            let before = snapshot(&repo.path().join(".git"));
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Remote receiving work");
+            term.send(b"\n\n\nkeep\nkeep\nadd\n   \nTests\n\n/offline/executable\nadd\n\nadd\ncancel\nadd\n$(touch NEVER)\ndone\nadd\nSecond\ncancel\nadd\nspace argument\ndone\nkeep\nchecks\nedit\n1\nexecutable\n/offline/edited\ndone\nkeep\nyes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            assert!(term.output.contains("Use a nonblank display name"));
+            assert!(term.output.contains("Use a nonempty executable"));
+            assert_eq!(snapshot(&repo.path().join(".git")), before);
+            let expected = vec![
+                settings::FinishCheck {
+                    name: "Tests".into(),
+                    command: vec![
+                        "/offline/edited".into(),
+                        "".into(),
+                        "cancel".into(),
+                        "$(touch NEVER)".into(),
+                    ],
+                },
+                settings::FinishCheck {
+                    name: "Second".into(),
+                    command: vec!["cancel".into(), "space argument".into()],
+                },
+            ];
+            let effective = load(repo.path());
+            if replacement {
+                assert!(effective.finish_checks.is_empty());
+                assert!(
+                    term.output
+                        .contains("finish checks replace the shared list")
+                );
+                fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+            }
+            assert_eq!(load(repo.path()).finish_checks, expected);
+            assert!(!repo.path().join("NEVER").exists());
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_bundle_structured_edit_and_relationship_correction() {
+    cases("guided_bundle_structured_edit", true, |root, exe| {
+        for hosted in [false, true] {
+            let repo = Repository::new(root);
+            let mut term = terminal::Terminal::start(
+                exe,
+                repo.path(),
+                &[
+                    "config",
+                    if hosted {
+                        "--oneflow-hosted"
+                    } else {
+                        "--oneflow"
+                    },
+                ],
+            );
+            term.until("Remote receiving work");
+            term.send(b"\n\n\nkeep\nkeep\nkeep\nedit\ncreation-source\nset\nfuture/base\ndone\nedit\nrelease-marker\nset\nmain\ndone\n");
+            term.until("preferences need correction:");
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            term.send(if hosted { b"release-marker\nset\nstable\nreview-remote\nset\nfuture-fork\nmerge-back-branch\nset\nreview/version\ndone\nkeep\nyes\n" } else { b"release-marker\nset\nstable\nintegration-targets\nset\nadd\nmain\nadd\nstable/base\ndone\ndone\nkeep\nyes\n" });
+            assert!(term.finish().success(), "{}", term.output);
+            let value = load(repo.path());
+            assert_eq!(
+                value.workstreams[&settings::WorkstreamKind::Ordinary]
+                    .creation_source
+                    .as_deref(),
+                Some("future/base")
+            );
+            let release = &value.workstreams[&settings::WorkstreamKind::Release];
+            assert_eq!(release.release_marker.as_deref(), Some("stable"));
+            if hosted {
+                assert_eq!(release.review_remote.as_deref(), Some("future-fork"));
+                assert_eq!(release.merge_back_branch.as_deref(), Some("review/version"));
+            } else {
+                assert!(release.integration_target.is_none());
+                assert_eq!(
+                    release.integration_targets,
+                    Some(vec!["main".into(), "stable/base".into()])
+                );
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_private_only_policy_audit_and_changed_override_review() {
+    cases("guided_private_only_policy_audit", true, |root, exe| {
+        let repo = Repository::new(root);
+        fs::write(repo.path().join(".git/git-oneflow.config.toml"), "save-action='stash'\n[workstreams.release]\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nrelease-marker='stable'\n").unwrap();
+        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+        term.until("Remote receiving work");
+        term.send(b"\n\nstable\nkeep\nkeep\nkeep\n");
+        term.until("preferences need correction:");
+        term.send(b"integration-target\nset\nfuture/base\ndone\n");
+        term.until("Create this file?");
+        assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+        term.send(b"save\nedit\nstash\nsave\nedit\nwip\nyes\n");
+        assert!(term.finish().success(), "{}", term.output);
+        assert_eq!(term.output.matches("saving: Keep a local stash").count(), 2);
+        let generated = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
+        assert!(generated.contains("future/base"));
+        assert!(!generated.contains("version-tagging"));
+        assert_eq!(load(repo.path()).save_action, SaveAction::Stash);
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_keyboard_suggestions_and_unicode_literal_values() {
+    cases("guided_keyboard_suggestions", true, |root, exe| {
+        let repo = Repository::new(root);
+        commit(&repo);
+        repo.success(&["remote", "add", "réseau", "/offline"]);
+        repo.success(&["branch", "feature/β;$"]);
+        let before = snapshot(&repo.path().join(".git"));
+        let mut term = terminal::Terminal::start_capable_narrow(exe, repo.path(), &["config"]);
+        term.until("Remote receiving work");
+        term.send("ré\t\r".as_bytes());
+        term.until("Project source remote");
+        term.send(b"\r");
+        term.until("Project base branch");
+        term.send("feature/\t\r".as_bytes());
+        term.until("Saving preferences:");
+        term.send(b"\r");
+        term.until("Finishing preferences:");
+        term.send(b"\r");
+        term.until("Finish checks:");
+        term.send(b"\r");
+        term.until("Create this file?");
+        term.send(b"\x1b[A\r");
+        assert!(term.finish().success(), "{}", term.output);
+        term.assert_restored();
+        assert_eq!(load(repo.path()).publish_remote, "réseau");
+        assert_eq!(load(repo.path()).base, "feature/β;$");
+        assert_eq!(snapshot(&repo.path().join(".git")), before);
+        assert!(!term.output.contains("Local branch references"));
+    });
+}
+
+#[test]
+fn local_branch_hints_invert_fetch_mappings_and_omit_ambiguity() {
+    isolated("local_branch_hints", true, |root| {
+        let repo = Repository::new(root);
+        commit(&repo);
+        repo.success(&["branch", "local/β;$"]);
+        repo.success(&["remote", "add", "project", "/offline"]);
+        repo.success(&["config", "--unset-all", "remote.project.fetch"]);
+        for mapping in [
+            "+refs/heads/topic/*:refs/cache/project/*",
+            "refs/heads/fixed:refs/cache/exact",
+            "^refs/heads/topic/hidden",
+            "refs/heads/first/*:refs/cache/ambiguous/*",
+            "refs/heads/second/*:refs/cache/ambiguous/*",
+        ] {
+            repo.success(&["config", "--add", "remote.project.fetch", mapping]);
+        }
+        for reference in [
+            "refs/cache/project/β;$",
+            "refs/cache/project/hidden",
+            "refs/cache/exact",
+            "refs/cache/ambiguous/value",
+            "refs/remotes/other/nope",
+        ] {
+            repo.success(&["update-ref", reference, "HEAD"]);
+        }
+        repo.success(&[
+            "symbolic-ref",
+            "refs/cache/project/HEAD",
+            "refs/cache/project/β;$",
+        ]);
+        let before = snapshot(repo.path());
+        let plan = config::prepare_guided(repo.path(), Format::Toml).unwrap();
+        assert_eq!(plan.review().remote_suggestions(), ["project"]);
+        assert_eq!(
+            plan.review().branch_suggestions("project"),
+            ["fixed", "local/β;$", "main", "topic/β;$"]
+        );
+        assert_eq!(
+            plan.review().branch_suggestions("future"),
+            ["local/β;$", "main"]
+        );
+        assert_eq!(snapshot(repo.path()), before);
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_remote_roles_keep_literal_names_and_sparse_follow_relationship() {
+    cases("guided_remote_roles_sparse_follow", true, |root, exe| {
+        for (project, expected, follows) in [
+            ("work", "private", true),
+            ("follow", "follow", false),
+            ("cancel", "cancel", false),
+        ] {
+            let repo = Repository::new(root);
+            fs::write(
+                repo.path().join(".git/git-oneflow.config.toml"),
+                "publish-remote='private'\n",
+            )
+            .unwrap();
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Remote receiving work");
+            term.send(format!("work\n{project}\ncancel\nkeep\nkeep\nkeep\nyes\n").as_bytes());
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(load(repo.path()).base_remote, expected);
+            assert_eq!(load(repo.path()).base, "cancel");
+            let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
+            assert_eq!(contents.contains("base-remote"), !follows);
+            fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+            assert_eq!(
+                load(repo.path()).base_remote,
+                if follows { "work" } else { project }
+            );
+        }
+    });
 }

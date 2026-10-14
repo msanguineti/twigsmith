@@ -252,6 +252,8 @@ fn save_all_dirty_actions_preserve_and_report_their_selected_scope() {
                     &["Save complete", "confirmed at every destination"],
                 );
                 published(&repo, &remote);
+                assert!(!output.contains("Observed HEAD"), "{output}");
+                assert!(!output.contains("Observed local stash"), "{output}");
                 match action {
                     "--publish-only" => {
                         assert_eq!(oid(repo.path(), "HEAD"), head);
@@ -472,14 +474,14 @@ fn save_terminal_choices_and_message_entry_use_the_same_backend() {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
                 let mut terminal = cli.terminal(repo.path(), &[]);
-                terminal.until("Action (");
+                terminal.until("How would you like to save this work?");
                 contains(
                     &terminal.output,
                     &[
                         "1 staged, 1 unstaged tracked, 1 untracked",
-                        "staged       Commit/publish exactly the index",
-                        "publish-only Publish existing commits",
-                        "stash        Retain a local stash",
+                        "Commit staged work and publish; keep other work local",
+                        "Publish existing commits; keep uncommitted work local",
+                        "Stash tracked/untracked work locally; publish existing commits",
                         "cancel",
                     ],
                 );
@@ -489,6 +491,18 @@ fn save_terminal_choices_and_message_entry_use_the_same_backend() {
                     terminal.send(b"literal --wip ;$ message\n");
                 }
                 assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+                assert_eq!(
+                    terminal.output.matches("Save work").count(),
+                    1,
+                    "{}",
+                    terminal.output
+                );
+                assert_eq!(
+                    terminal.output.matches("Branch: work").count(),
+                    1,
+                    "{}",
+                    terminal.output
+                );
                 contains(
                     &terminal.output,
                     &["Save complete", "confirmed at every destination"],
@@ -501,7 +515,11 @@ fn save_terminal_choices_and_message_entry_use_the_same_backend() {
                 dirty(&repo, true, false);
                 let mut terminal = cli.terminal(repo.path(), &args);
                 terminal.until("Staged commit message");
-                assert!(!terminal.output.contains("Action ("));
+                assert!(
+                    !terminal
+                        .output
+                        .contains("How would you like to save this work?")
+                );
                 let message = if args.is_empty() {
                     "configured or explicit message"
                 } else {
@@ -528,8 +546,8 @@ fn save_terminal_omits_inapplicable_actions_and_does_not_prompt_resolved_actions
             let (repo, _) = fixture(root);
             dirty(&repo, false, true);
             let mut terminal = cli.terminal(repo.path(), &[]);
-            terminal.until("Action (");
-            assert!(!terminal.output.contains("staged       Commit/publish"));
+            terminal.until("How would you like to save this work?");
+            assert!(!terminal.output.contains("Commit staged work and publish"));
             terminal.send(b"staged\n");
             terminal.until("Choose a listed name or number");
             terminal.send(b"cancel\n");
@@ -539,7 +557,11 @@ fn save_terminal_omits_inapplicable_actions_and_does_not_prompt_resolved_actions
                 settings(&repo, preference);
                 let mut terminal = cli.terminal(repo.path(), &[]);
                 assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
-                assert!(!terminal.output.contains("Action ("));
+                assert!(
+                    !terminal
+                        .output
+                        .contains("How would you like to save this work?")
+                );
                 assert!(!terminal.output.contains("Staged commit message"));
                 published(&repo, &remote);
             }
@@ -552,7 +574,11 @@ fn save_terminal_omits_inapplicable_actions_and_does_not_prompt_resolved_actions
                 settings(&repo, preference);
                 let mut terminal = cli.terminal(repo.path(), &args);
                 assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
-                assert!(!terminal.output.contains("Action ("));
+                assert!(
+                    !terminal
+                        .output
+                        .contains("How would you like to save this work?")
+                );
                 assert!(!terminal.output.contains("Staged commit message"));
                 published(&repo, &remote);
             }
@@ -582,7 +608,7 @@ fn save_terminal_cancel_eof_blank_invalid_and_interrupt_leave_no_effects() {
                 let before = snapshot(repo.path());
                 let remote_before = snapshot(&remote);
                 let mut terminal = cli.terminal(repo.path(), &[]);
-                terminal.until("Action (");
+                terminal.until("How would you like to save this work?");
                 if input == b"interrupt" {
                     terminal.interrupt();
                 } else {
@@ -602,7 +628,7 @@ fn save_terminal_cancel_eof_blank_invalid_and_interrupt_leave_no_effects() {
                 dirty(&repo, true, false);
                 let before = snapshot(repo.path());
                 let mut terminal = cli.terminal(repo.path(), &[]);
-                terminal.until("Action (");
+                terminal.until("How would you like to save this work?");
                 terminal.send(b"staged\n");
                 terminal.until("Staged commit message");
                 terminal.send(input);
@@ -637,7 +663,7 @@ fn save_terminal_revalidates_context_after_both_input_waits() {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
                 let mut terminal = cli.terminal(repo.path(), &[]);
-                terminal.until("Action (");
+                terminal.until("How would you like to save this work?");
                 if mutation == "message-wait" {
                     terminal.send(b"staged\n");
                     terminal.until("Staged commit message");
@@ -951,7 +977,7 @@ fn save_capable_navigation_corrects_message_and_reports_delivery_failure_and_can
             let (repo, remote) = fixture(root);
             dirty(&repo, true, true);
             let mut terminal = terminal::Terminal::start_capable(exe, repo.path(), &["save"]);
-            terminal.until("Action (");
+            terminal.until("How would you like to save this work?");
             // The initial cursor is cancel. Move to staged using real navigation.
             terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
             terminal.until("Staged commit message");
@@ -976,7 +1002,7 @@ fn save_capable_navigation_corrects_message_and_reports_delivery_failure_and_can
             let before = snapshot(repo.path());
             let remote_before = snapshot(&remote);
             let mut terminal = terminal::Terminal::start_capable(exe, repo.path(), &["save"]);
-            terminal.until("Action (");
+            terminal.until("How would you like to save this work?");
             terminal.send(b"\x1b[A\x1b[A\x1b[A\r");
             terminal.until("Staged commit message");
             terminal.send(b"partial message\x04");
@@ -994,7 +1020,7 @@ fn save_capable_navigation_corrects_message_and_reports_delivery_failure_and_can
                 "echo capable-push-rejected >&2\nexit 1",
             );
             let mut terminal = terminal::Terminal::start_capable(exe, repo.path(), &["save"]);
-            terminal.until("Action (");
+            terminal.until("How would you like to save this work?");
             terminal.send(b"\x1b[A\x1b[A\r");
             assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
             terminal.assert_restored();

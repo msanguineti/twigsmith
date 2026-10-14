@@ -86,8 +86,9 @@ Finite menus support arrow-key navigation and Enter selection. Type a choice nam
 or its displayed number to filter the list; unmatched input remains correctable.
 Esc, Ctrl-C, Ctrl-D, or the cancellation choice stops the pending input. Menus
 highlight the configured default when one applies, otherwise cancellation when
-available. Text prompts retain literal names and messages. Resolved choices from
-flags or settings need no extra confirmation.
+available. Text prompts retain literal names and messages. Unresolved lifecycle
+questions show the work and destination context once, with consequences beside
+each choice. Resolved choices from flags or settings need no extra confirmation.
 
 Prompts use a simple numbered, line-oriented presentation with `TERM=dumb` or
 redirected stdout. Interactive approval still requires terminal stdin and stderr.
@@ -95,7 +96,8 @@ Submit a complete line containing a displayed number or name; EOF, including an
 unsubmitted partial line, cancels. This mode also supports existing scripted
 terminal answers.
 
-Success headings use green, error headings use red, and nonfatal cautions such as
+Section titles and prompt selections distinguish the stages of an interactive
+journey. Success headings use green, error headings use red, and nonfatal cautions such as
 tracking-cache attention use yellow when their output stream is a terminal.
 Warnings retain their normal exit status and confirmed delivery facts. `NO_COLOR`
 or `CLICOLOR=0` disables colour. Redirected reports stay
@@ -691,32 +693,31 @@ source, discovered files, and searched directories. Check commands are displayed
 as argument lists without execution or executable availability checks. Inspection
 is local, read-only, and intended for people.
 
-`config` guides you through remote roles, the base branch, save and finish
-policies, and optional finish checks. Use the arrow keys to select a policy and
-press Enter. Text fields accept Enter to keep a suggested default.
-Remote names and branch references provide offline hints; they assign no roles
-and do not change the built-in defaults. Valid names can be configured before
-the remote or branch exists.
+`config` groups setup into repository, saving work, finishing work, and review.
+Enter retains the displayed text default or the selected group preferences. Choose
+`edit` to adjust a group; review lets you return to an earlier group before creation.
+Review delivery omits direct integration questions; fast-forward-only omits commit
+message preferences. Advanced history editing and finish checks remain available.
 
-At the base-source prompt, Enter or the same remote name keeps the base following
-publication; a different name writes an explicit `base-remote`. Choosing review
-omits integration-specific questions and settings. Other mode choices ask those
-policies; fast-forward-only omits message policy.
+In capable terminals, remote and branch text fields offer searchable local
+suggestions. Use Tab to complete a name and arrow keys to navigate suggestions. Hints assign no roles and
+contact no remote. You can type a valid future name instead. At the source-remote
+prompt, Enter retains the displayed preference. Typing the remote receiving work
+keeps the source following publication; a different name writes an explicit
+`base-remote`.
 
-For each check, enter a display name and a JSON executable-and-argument array:
+For a finish check, enter a display name, an executable, and each literal argument
+separately. Setup records the command without running it or probing executables.
+Arguments retain spaces, punctuation, and empty values; shell behavior requires
+an explicit shell executable. Checks run in the order shown; existing entries can
+be edited or removed before creation.
 
-```text
-Finish check name [Enter to finish; default: no checks]: Tests
-Command as JSON executable-and-argument array: ["cargo", "test", "--locked"]
-Finish check name [Enter to finish]:
-```
-
-A blank name finishes the list. Setup records the literal commands without running
-them or detecting project tools. It shows the destination, proposed contents,
-ordered checks, and effective values after private overrides. Private values stay
-local. Select `yes` to create the file. Select `no` or cancel, or end input,
-to stop without creating it. The creation menu initially selects `no`. Invalid answers can be
-corrected. Changed review context stops creation; inspect it and rerun setup.
+Review shows the effective workflow, destination file, and consequential private
+overrides. Private values stay local. Choose `contents` to inspect the exact
+proposed file, or return to a settings group to correct it. Select `yes` to create
+it; the creation menu initially selects `no`. Cancellation or end-of-input creates
+no file. Invalid answers remain correctable. Changed review context stops creation;
+inspect it and rerun setup.
 
 `--yes` (also `-y`) creates built-in shared defaults without prompts. It writes
 `publish-remote = origin`, omits `base-remote` to keep the derived relationship,
@@ -848,7 +849,8 @@ Policy is selected explicitly with start; a template name is data, not code.
 
 `gof config --oneflow --yes` writes a direct OneFlow bundle. Add
 `--marker stable` to enable a marker. Guided `gof config --oneflow` reviews the
-proposed bundle. It writes editable ordinary/release/hotfix templates rather
+proposed bundle and offers structured route fields for each workstream. It writes
+editable ordinary/release/hotfix templates rather
 than a strategy selector. The top-level base remains the development branch.
 Ordinary work can publish to a fork while releases and hotfixes use the project
 remote. For example, these custom values select the same direct release behavior

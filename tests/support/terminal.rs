@@ -36,7 +36,8 @@ impl Terminal {
             .current_dir(directory)
             .args(args)
             .env("TERM", "xterm-256color")
-            .env_remove("NO_COLOR");
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR");
         Self::start_command(command)
     }
     #[allow(dead_code)]
@@ -46,13 +47,14 @@ impl Terminal {
             .current_dir(directory)
             .args(args)
             .env("TERM", "xterm-256color")
-            .env_remove("NO_COLOR");
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR");
         Self::start_command_width(command, 40)
     }
     pub fn start_command(command: Command) -> Self {
         Self::start_command_width(command, 80)
     }
-    fn start_command_width(mut command: Command, columns: u16) -> Self {
+    pub fn start_command_width(mut command: Command, columns: u16) -> Self {
         let master = openpt(OpenptFlags::RDWR | OpenptFlags::CLOEXEC).unwrap();
         grantpt(&master).unwrap();
         unlockpt(&master).unwrap();

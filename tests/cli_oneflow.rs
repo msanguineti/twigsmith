@@ -1308,6 +1308,7 @@ fn ordinary_preparation_source_is_independent_of_integration_target() {
                 "[workstreams.ordinary]\n",
                 "[workstreams.ordinary]\ncreation-source='main'\npreparation-source='staging'\nintegration-target='main'\n",
             );
+            let config = config.replace("finish-update='merge'", "finish-update='ask'");
             fs::write(private, config).unwrap();
             let staging = Repository::new(root);
             staging.success(&["fetch", fixture.project.path().to_str().unwrap(), "main"]);
@@ -1334,7 +1335,35 @@ fn ordinary_preparation_source_is_independent_of_integration_target() {
             );
             let original = commit(&fixture.local, "work", "work change\n");
             cli.success(&fixture.local, "save", &[]);
-            cli.success(&fixture.local, "finish", &["--cleanup", "keep"]);
+            #[cfg(target_os = "linux")]
+            {
+                let mut terminal = terminal::Terminal::start(
+                    cli.executable,
+                    fixture.local.path(),
+                    &["finish", "--cleanup", "keep"],
+                );
+                terminal.until("How should the work branch be updated?");
+                for expected in [
+                    "Work: work/separate-preparation",
+                    "Deliver to: project/main",
+                    "Update from: project/staging",
+                    "Merge the update source into the work branch",
+                ] {
+                    assert!(terminal.output.contains(expected), "{}", terminal.output);
+                }
+                terminal.send(b"cancel\n");
+                assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);
+                assert_eq!(oid(fixture.local.path(), "HEAD"), Some(original.clone()));
+                assert_eq!(
+                    oid(fixture.project.path(), "main"),
+                    Some(development.clone())
+                );
+            }
+            cli.success(
+                &fixture.local,
+                "finish",
+                &["--update", "merge", "--cleanup", "keep"],
+            );
             let source = oid(fixture.local.path(), "work/separate-preparation").unwrap();
             let integrated = oid(fixture.project.path(), "main").unwrap();
             fixture
@@ -1504,7 +1533,7 @@ fn interactive_version_name_and_cancellation_preserve_unresolved_release() {
             let command = if cli.aliases { "f" } else { "finish" };
             let mut cancelled =
                 terminal::Terminal::start(cli.executable, fixture.local.path(), &[command]);
-            cancelled.until("Version tag name");
+            cancelled.until("What version tag should identify this release?");
             cancelled.send(b"cancel\n");
             assert_eq!(cancelled.finish().code(), Some(1), "{}", cancelled.output);
             assert!(
@@ -1516,7 +1545,7 @@ fn interactive_version_name_and_cancellation_preserve_unresolved_release() {
             assert_eq!(refs(fixture.local.path()), local_refs);
             let mut accepted =
                 terminal::Terminal::start(cli.executable, fixture.local.path(), &[command]);
-            accepted.until("Version tag name");
+            accepted.until("What version tag should identify this release?");
             accepted.send(b"interactive-version\n");
             assert!(
                 accepted

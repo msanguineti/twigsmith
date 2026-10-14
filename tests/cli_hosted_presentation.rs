@@ -92,25 +92,25 @@ fn hosted_cancel_eof_and_context_changes_stop_before_effects() {
             for (args, prompt, response, change) in [
                 (
                     vec!["finish"],
-                    "Version tag (or cancel)",
+                    "What version tag should identify this release?",
                     b"cancel\n".as_slice(),
                     false,
                 ),
                 (
                     vec!["finish", "--tag", "v1"],
-                    "Merge-back branch (or cancel)",
+                    "Which branch should carry merge-back review work?",
                     b"\x04".as_slice(),
                     false,
                 ),
                 (
                     vec!["finish", "--tag", "v1", "--merge-back", "review/v1"],
-                    "Merge-back update (merge/none/cancel)",
+                    "How should merge-back work be updated?",
                     b"3\n".as_slice(),
                     false,
                 ),
                 (
                     vec!["finish", "--tag", "v1"],
-                    "Merge-back branch (or cancel)",
+                    "Which branch should carry merge-back review work?",
                     b"review/v1\n".as_slice(),
                     true,
                 ),
@@ -191,17 +191,29 @@ fn hosted_capable_names_stay_correctable_and_navigation_delivers_version() {
                 fixture.local.path(),
                 &["finish"],
             );
-            terminal.until("Version tag (or cancel)");
+            terminal.until("What version tag should identify this release?");
             terminal.send(b"bad..tag\r");
             terminal.until("Enter a valid Git reference name");
             terminal.send(b"v-ui\r");
-            terminal.until("Merge-back branch (or cancel)");
+            terminal.until("Which branch should carry merge-back review work?");
             terminal.send(b"main\r");
             terminal.until("Choose a merge-back branch distinct");
             terminal.send(b"review/v-ui\r");
-            terminal.until("Merge-back update (");
+            terminal.until("How should merge-back work be updated?");
             terminal.send(b"\x1b[A\r");
             assert_eq!(terminal.finish().code(), Some(0), "{}", terminal.output);
+            assert_eq!(
+                terminal.output.matches("Prepare version review").count(),
+                1,
+                "{}",
+                terminal.output
+            );
+            assert_eq!(
+                terminal.output.matches("Review into: origin/main").count(),
+                1,
+                "{}",
+                terminal.output
+            );
             terminal.assert_restored();
             assert!(
                 terminal.output.contains("Ready for manual submission"),

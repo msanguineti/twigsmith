@@ -319,7 +319,7 @@ fn publish_only_retains_local_work_cancel_then_wip_review_readiness() {
             let saved = value(&local, &["rev-parse", "HEAD"]);
             let base = value(&remote, &["rev-parse", "main"]);
             let mut term = terminal::Terminal::start(EXE, local.path(), &["finish"]);
-            term.until("Completion mode (");
+            term.until("How should this work be delivered?");
             term.send(b"cancel\n");
             assert_eq!(term.finish().code(), Some(1), "{}", term.output);
             assert!(
@@ -597,13 +597,25 @@ fn default_config_wip_switch_resume_native_reword_and_both_cleanup() {
                     "integrate",
                 ],
             );
-            term.until("Update (rebase/merge/none/cancel)");
+            term.until("How should the work branch be updated?");
             term.send(b"1\n");
-            term.until("Cleanup (keep/local/both/cancel)");
+            term.until("Which work branches should remain after delivery?");
             term.send(b"3\n");
-            term.until("Integration (ff-only/merge/squash/cancel)");
+            term.until("How should the work be integrated into the target?");
             term.send(b"1\n");
             assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(
+                term.output.matches("Integrate work").count(),
+                1,
+                "{}",
+                term.output
+            );
+            assert_eq!(
+                term.output.matches(&format!("Work: {BRANCH}")).count(),
+                1,
+                "{}",
+                term.output
+            );
             assert_delivery_and_cleanup(&term.output);
             assert_completed(&local, &remote, &original);
             assert_eq!(

@@ -395,6 +395,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             integration::assess(&directory, &integration_request, None),
         )
     });
+    let mut context_shown = false;
     if mode == FinishMode::Ask {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
             crate::presentation::error(
@@ -402,13 +403,64 @@ pub fn run(args: &[OsString]) -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
-        eprintln!(
-            "Review prepares and publishes work for manual review. Integrate delivers to the project base, then completes checkout and cleanup."
-        );
+        crate::presentation::section("Finish work");
+        if let Some((review, integrate)) = &mode_snapshot {
+            let context = integrate
+                .as_ref()
+                .ok()
+                .map(|p| {
+                    (
+                        p.source_ref
+                            .strip_prefix(b"refs/heads/")
+                            .unwrap_or(&p.source_ref),
+                        &p.settings,
+                        p.target
+                            .reference
+                            .strip_prefix(b"refs/heads/")
+                            .unwrap_or(&p.target.reference),
+                    )
+                })
+                .or_else(|| {
+                    review.as_ref().ok().map(|p| {
+                        (
+                            p.branch.as_slice(),
+                            &p.settings,
+                            p.settings
+                                .workstream
+                                .as_ref()
+                                .map_or(&p.settings.base, |policy| &policy.integration_target)
+                                .as_bytes(),
+                        )
+                    })
+                });
+            if let Some((branch, settings, target)) = context {
+                let preparation = settings
+                    .workstream
+                    .as_ref()
+                    .map_or(&settings.base, |p| &p.preparation_source);
+                crate::presentation::prose(&format!(
+                    "Work: {}\nPublish to: {}\nUpdate from: {}/{}",
+                    display(presentation, branch),
+                    text(presentation, &settings.publish_remote),
+                    text(presentation, &settings.base_remote),
+                    text(presentation, preparation)
+                ));
+                crate::presentation::prose(&format!(
+                    "Deliver to: {}/{}",
+                    text(presentation, &settings.base_remote),
+                    display(presentation, target)
+                ));
+                context_shown = true;
+            }
+        }
         let answer = match read_menu_answer(
             presentation,
-            "Completion mode (review/integrate/cancel)",
-            &["review", "integrate", "cancel"],
+            "How should this work be delivered?",
+            &[
+                ("review", "Publish work for manual review"),
+                ("integrate", "Integrate and deliver to the project target"),
+                ("cancel", "Cancel"),
+            ],
             "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
         ) {
             Ok(answer) => answer,
@@ -458,6 +510,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             &completion,
             presentation,
             skip_checks,
+            context_shown,
         );
     }
     if completion.merge_back.is_some() {
@@ -523,7 +576,13 @@ pub fn run(args: &[OsString]) -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
-        return integration_cli::run(&directory, initial, presentation, skip_checks);
+        return integration_cli::run(
+            &directory,
+            initial,
+            presentation,
+            skip_checks,
+            context_shown,
+        );
     }
     let initial = match review_initial.unwrap_or_else(|| finish::assess(&directory, &request, None))
     {
@@ -584,20 +643,23 @@ pub fn run(args: &[OsString]) -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
-        eprintln!(
-            "Finish {} at {} to {} (base {}/{}).",
-            display(presentation, &plan.branch),
-            display(presentation, &plan.commit),
-            text(presentation, &plan.settings.publish_remote),
-            text(presentation, &plan.settings.base_remote),
-            text(
-                presentation,
-                plan.settings
-                    .workstream
-                    .as_ref()
-                    .map_or(&plan.settings.base, |p| &p.preparation_source)
-            )
-        );
+        if !context_shown {
+            crate::presentation::section("Prepare for review");
+            crate::presentation::prose(&format!(
+                "Work: {} · Publish to: {}\nUpdate from: {}/{}",
+                display(presentation, &plan.branch),
+                text(presentation, &plan.settings.publish_remote),
+                text(presentation, &plan.settings.base_remote),
+                text(
+                    presentation,
+                    plan.settings
+                        .workstream
+                        .as_ref()
+                        .map_or(&plan.settings.base, |p| &p.preparation_source)
+                )
+            ));
+            context_shown = true;
+        }
         let answer = match prompt(presentation, &plan, choice) {
             Ok(answer) => answer,
             Err(error) => {
@@ -752,10 +814,6 @@ pub fn run(args: &[OsString]) -> ExitCode {
             display(presentation, &published.commit),
             text(presentation, &published.remote)
         );
-        output.push('\n');
-        role_summary(presentation, &mut output, &plan.settings);
-        preparation_effects(presentation, &mut output, &refresh);
-        preparation_effects(presentation, &mut output, &prepared);
         if let Some(error) = &published.checks.error {
             if let Some(index) = published.checks.failed {
                 let _ = writeln!(
@@ -773,6 +831,12 @@ pub fn run(args: &[OsString]) -> ExitCode {
         if let Some(error) = &published.error {
             let _ = writeln!(output, "error: {}", text(presentation, error));
         }
+        output.push_str(
+            "Resolve the reported failure, then rerun finish. Completed effects are retained.\n\n",
+        );
+        role_summary(presentation, &mut output, &plan.settings);
+        preparation_effects(presentation, &mut output, &refresh);
+        preparation_effects(presentation, &mut output, &prepared);
         for destination in &published.destinations {
             let _ = writeln!(
                 output,
@@ -787,10 +851,6 @@ pub fn run(args: &[OsString]) -> ExitCode {
         }
         tracking(presentation, &mut output, &published.tracking);
         remaining(presentation, &mut output, &published.remaining);
-        let _ = writeln!(
-            output,
-            "\nResolve the reported failure, then rerun finish. Completed effects are retained."
-        );
         crate::presentation::report(&output, false);
         ExitCode::FAILURE
     }
@@ -895,16 +955,19 @@ fn prompt(
     plan: &Plan,
     choice: RequiredInput,
 ) -> Result<String, String> {
-    let prompt = match choice {
-        RequiredInput::Update => {
-            eprintln!(
-                "Rebase replays branch commits onto the observed base. Merge incorporates that base. None publishes current history without updating."
-            );
-            "Update (rebase/merge/none/cancel)"
-        }
+    let (question, choices): (&str, &[(&str, &str)]) = match choice {
+        RequiredInput::Update => (
+            "How should the work branch be updated?",
+            &[
+                ("rebase", "Rebase work commits onto the update source"),
+                ("merge", "Merge the update source into the work branch"),
+                ("none", "Publish current history without updating"),
+                ("cancel", "Cancel"),
+            ],
+        ),
         RequiredInput::Rewrite => {
-            eprintln!(
-                "Published history may require replacement. Rebase selection supplies no replacement authorization."
+            crate::presentation::prose(
+                "Publishing the updated work may replace commits already on the remote work branch.",
             );
             for destination in &plan.destinations {
                 if matches!(
@@ -913,36 +976,43 @@ fn prompt(
                         | finish::PublicationMode::VerifiedRewrite
                 ) && let finish::RefObservation::Commit(oid) = &destination.observed
                 {
-                    eprintln!(
-                        "  {}: observed {}",
+                    crate::presentation::prose(&format!(
+                        "{}: currently at {}",
                         display(presentation, &destination.destination),
                         display(presentation, oid)
-                    );
+                    ));
                 }
             }
-            eprintln!(
-                "Allow authorizes eligible replacement for this finish; incorporation proof and exact remote leases remain required. Deny stops the required replacement."
-            );
-            "Replace published history (allow/deny/cancel)"
+            (
+                "Allow replacing published work history?",
+                &[
+                    (
+                        "allow",
+                        "Allow replacement for this finish; stop if remote history changes",
+                    ),
+                    (
+                        "deny",
+                        "Keep published history; stop if replacement is required",
+                    ),
+                    ("cancel", "Cancel"),
+                ],
+            )
         }
     };
     read_menu_answer(
         presentation,
-        prompt,
-        match choice {
-            RequiredInput::Update => &["rebase", "merge", "none", "cancel"],
-            RequiredInput::Rewrite => &["allow", "deny", "cancel"],
-        },
+        question,
+        choices,
         "Finish cancelled before branch execution; finish made no branch, index, or working-tree changes.",
     )
 }
 fn read_menu_answer(
     presentation: Presentation,
     prompt: &str,
-    choices: &[&str],
+    choices: &[(&str, &str)],
     cancellation: &str,
 ) -> Result<String, String> {
-    let answer = crate::presentation::select(prompt, choices, None)
+    let answer = crate::presentation::select_described(prompt, choices, None)
         .map_err(|e| format!("error: cannot read finish input: {}", text(presentation, e)))?
         .ok_or_else(|| cancellation.to_owned())?;
     if answer == "cancel" {
