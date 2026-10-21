@@ -43,7 +43,7 @@ fn cli_runs_outside_git_without_node_or_rust_tools() {
             }
         }
 
-        for command in ["start", "save", "finish", "status", "config"] {
+        for command in ["start", "save", "finish", "status", "config", "completion"] {
             let output = Command::new(executable)
                 .args([command, "--help"])
                 .current_dir("/")

@@ -7,6 +7,9 @@ use crate::{
 };
 
 pub fn run() -> ExitCode {
+    if crate::completion::try_complete() {
+        return ExitCode::SUCCESS;
+    }
     let _activity = crate::activity::enable();
     let args: Vec<_> = env::args_os().skip(1).collect();
 
@@ -25,6 +28,9 @@ pub fn run() -> ExitCode {
         }
         [command, rest @ ..] if command == "save" || command == "v" => {
             return save_cli::run(rest);
+        }
+        [command, rest @ ..] if command == "completion" => {
+            return crate::completion_setup::run(rest);
         }
         [command, rest @ ..] if command == "config" => {
             return config_cli::run(rest);
@@ -56,6 +62,7 @@ Commands:
   finish, f        Deliver finished work for review or integration
   status           Summarize local repository state
   config           Set up or inspect shared settings
+  completion       Enable or remove shell Tab completion
 
 Options:
   -h, --help       Show help

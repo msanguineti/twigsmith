@@ -27,9 +27,9 @@ Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 
 The Inquire/Crossterm prompt backend documents Unix and Windows terminal support,
 including ordinary Windows console use. Application Windows and macOS build/runtime
-support have not been validated. Bash completion
-is an optional script, separate from both executables; it adds no runtime dependency
-to core commands. Direct integration's message editor currently launches the
+support have not been validated. Shell completion is supplied by the executables
+and uses the same locally installed Git boundary as inspection. Direct
+integration's message editor currently launches the
 Git-selected editor through POSIX `sh` on PATH. `-m/--message` or
 `finish-message = auto` bypasses that launcher. Native interactive rebase delegates
 editor launching to Git. Configured finish checks use Unix process-group management
@@ -83,7 +83,8 @@ their exact targets with `./dev test-groups`, then select a capability:
 
 The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
 `lifecycle`, `smoke`, `completion`, `finish-planning`, `history-edit`, `oneflow`, and `hosted-oneflow`. Command groups include
-backend and CLI coverage. `completion` checks the sourceable Bash artifact and literal Readline insertion.
+backend and CLI coverage. `completion` checks candidate contexts, registration and shell insertion, including
+literal Readline insertion.
 `smoke` pairs CLI smoke checks with development
 launcher selection and completion. `finish-planning` selects review finish planning and
 eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles,
@@ -177,23 +178,21 @@ not goals; keep full validation comprehensive and focused selections useful.
 Cargo defaults to `git-oneflow`. The development launcher runs from this
 project's root. To use another checkout, run a built executable from that checkout.
 
-### Bash completion
+### Shell completion
 
-From the repository root, enable completion for both executable names in your
-current Bash session:
+Build with `./dev build` and put `target/debug` on PATH. Follow the
+[user manual](USAGE.md#shell-completion) to load or register completion for Bash,
+Zsh, Fish or PowerShell. The sourceable `completions/git-oneflow.bash` is the Bash
+adapter used by executable-generated session setup; it needs a built executable
+on PATH. Grammar and repository candidates live in Rust.
 
-```sh
-source completions/git-oneflow.bash
-export PATH="$PWD/target/debug:$PATH"
-```
-
-Build first with `./dev build`. Bash is needed to use the script and run its
-completion tests; both executables build and run independently of it. Completion
-has been exercised with Bash 5.2.37 on Linux. The script completes commands, aliases, options,
-finite option values and existing local or remote-tracking branch names. Static
-choices work outside a repository. Branch suggestions use available local refs
-and can be stale; completion does not fetch or verify remote existence. It runs
-no prompts, hooks or publication. Source the script again after changing it.
+Completion runtime coverage on Linux includes Bash 5.2.37, Zsh 5.9, Fish 4.0.2
+and PowerShell 7.5.4. PowerShell completion requires 7.3 or newer.
+Completion tests use isolated repositories and profiles. Tests requiring optional
+shell runtimes report skips when unavailable; inspect their output when validating
+shell support. Real interaction evidence and measured latency belong to the
+review evidence for a completion change. Linux runtime tests establish neither
+Windows nor macOS compatibility.
 
 For optimized executables:
 

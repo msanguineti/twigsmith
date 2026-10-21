@@ -5,7 +5,7 @@ finished work, releases, and hotfixes. Invoke it as `git-oneflow` or `gof`.
 
 The native Rust version is under development. Its documented build and validation
 environment is Linux. It currently provides `start`,
-`save`, `finish`, `status`, and `config`. Build it from this repository using the [development guide](docs/DEVELOPMENT.md).
+`save`, `finish`, `status`, `config`, and `completion`. Build it from this repository using the [development guide](docs/DEVELOPMENT.md).
 
 ## Quick start
 
@@ -58,6 +58,8 @@ Terminal menus support arrow keys and Enter; slow Git operations show activity.
 [user manual](docs/USAGE.md#start-or-resume-work) for command details.
 
 Use `gof --help` or `gof <command> --help` for a quick reference.
+Enable Tab completion for Bash, Zsh, Fish or PowerShell with the
+[shell completion guide](docs/USAGE.md#shell-completion).
 
 ## Documentation
 

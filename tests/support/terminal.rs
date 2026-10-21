@@ -137,6 +137,59 @@ impl Terminal {
             thread::sleep(Duration::from_millis(10));
         }
     }
+    fn read_with_cursor_reports(&mut self, scan: &mut usize) {
+        self.read();
+        let queries = self.output.as_bytes()[*scan..]
+            .windows(4)
+            .filter(|bytes| *bytes == b"\x1b[6n")
+            .count();
+        for _ in 0..queries {
+            self.send(b"\x1b[1;1R");
+        }
+        *scan = self.output.len().saturating_sub(3);
+    }
+    /// PowerShell's console queries cursor position before reading input. A
+    /// minimal terminal response lets PTY tests exercise its native editor.
+    #[allow(dead_code)]
+    pub fn until_with_cursor_reports(&mut self, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut scan = self.output.len().saturating_sub(3);
+        loop {
+            self.read_with_cursor_reports(&mut scan);
+            if self.output.contains(expected) {
+                return;
+            }
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "exited before {expected:?}: {}",
+                self.output
+            );
+            assert!(
+                Instant::now() < deadline,
+                "timeout awaiting {expected:?}: {}",
+                self.output
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    #[allow(dead_code)]
+    pub fn finish_with_cursor_reports(&mut self) -> ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut scan = self.output.len().saturating_sub(3);
+        loop {
+            self.read_with_cursor_reports(&mut scan);
+            if let Some(status) = self.child.try_wait().unwrap() {
+                self.read();
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY process did not finish: {}",
+                self.output
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
     pub fn send(&mut self, input: &[u8]) {
         self.master.write_all(input).unwrap();
     }

@@ -89,8 +89,8 @@ test_group() {
             group_targets='cli_smoke dev_selection bash_completion'
             ;;
         completion)
-            group_description='Bash completion contexts, local refs, and literal Readline quoting'
-            group_targets='bash_completion'
+            group_description='Repository completion, shell insertion, and user registration'
+            group_targets='bash_completion completion_engine completion_setup completion_shells'
             ;;
         history-edit)
             group_description='Ordinary interactive history preparation and native recovery'

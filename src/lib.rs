@@ -23,3 +23,7 @@ mod tracking;
 mod check_process;
 
 mod presentation;
+
+pub mod completion;
+mod completion_setup;
+mod completion_shells;

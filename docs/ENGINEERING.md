@@ -8,6 +8,7 @@ The [user manual](USAGE.md) covers commands and recovery procedures; the
 
 Read the architecture and Git boundary first, then follow the relevant workflow:
 
+- [Shell completion](#shell-completion)
 - [Repository state and the Git boundary](#repository-state-and-the-git-boundary)
 - [Configuration, remote roles, and tracking](#configuration-remote-roles-and-tracking)
 - [Start](#start-resolve-a-name-then-create-or-resume) and
@@ -27,16 +28,6 @@ interactive choices, render reports, and choose exit status. Workflow libraries
 return typed plans, effects, errors, and observations without application prompts.
 Explicit interactive preparation delegates history editing to Git.
 Help is handled before repository discovery or configuration loading.
-
-The sourceable [Bash completion artifact](../completions/git-oneflow.bash) keeps
-static CLI grammar usable outside a repository. Branch hints invert configured
-full-head fetch mappings for available non-symbolic tracking refs, respecting
-negative exclusions, and include local heads. Source and tag arguments retain
-separate contexts. Its Git calls use the inspection guards and perform no remote
-contact. Readline insertion preserves literal names through quote-context escaping;
-[completion tests](../tests/bash_completion.rs) exercise actual Tab input as well
-as prompt-free local inspection. These are local hints rather than proof that a
-remote branch exists or belongs to the configured publication role.
 
 The implementation has three main boundaries:
 
@@ -135,6 +126,106 @@ verified final checkout and work-branch cleanup. The CLI coordinates this librar
 for integrate mode, including relevant choices, message editing, delivery, and
 completion. Review plans cannot be passed to the integration executor or used as
 target publication authority.
+
+## Shell completion
+
+[`completion.rs`](../src/completion.rs) supplies a shell-neutral Clap command
+model and dynamic candidates through `clap_complete` 4.6.11's engine. Workflow
+parsers retain literal syntax, semantic validation and exit decisions; completion
+models their vocabulary without replacing execution validation. Grammar parity
+coverage checks the public option/alias surface against installed help and parser
+cases. Shell-specific grammar and Git inventories are absent from the adapters.
+
+[`completion_shells.rs`](../src/completion_shells.rs) and the sourceable
+[Bash adapter](../completions/git-oneflow.bash) transport literal words to the
+private `__complete` entry point, handled before activity and workflow dispatch.
+Bash preserves Readline word-break and quote contexts, and suppresses mid-word
+replacement because Readline retains a suffix after the cursor; Zsh uses native
+completion quoting; Fish decodes shell quoting without expanding input; PowerShell reads AST
+literal values and quotes insertion text separately. PowerShell 7.3 or newer is
+required for Standard native argument passing; the completer selects that mode
+in its local scope for backend queries without changing the caller’s preference.
+Actual command execution continues to use the shell’s selected argument mode;
+Legacy mode retains its ordinary embedded-quote conversion. See [PowerShell native parsing](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing).
+Typed input is never evaluated by completion. Static choices need no repository. Repository candidates use
+inspection guards, current local refs and configured fetch mapping inversions,
+respect negative exclusions, and omit symbolic or ambiguous cache mappings.
+Prefix filters narrow Git enumeration while retaining nested branch names and
+selected custom cache destinations. Branch and source/tag contexts remain distinct.
+Hints prove neither current remote existence nor workflow eligibility. Unavailable settings limit remote-role
+hints while keeping static completion usable; control-bearing and non-UTF-8
+names are omitted from shell suggestions.
+
+The [dynamic API](https://docs.rs/clap_complete/4.6.11/clap_complete/engine/index.html)
+and [custom value completion](https://docs.rs/clap_complete/4.6.11/clap_complete/engine/struct.ArgValueCompleter.html)
+require `unstable-dynamic`, with Clap's `unstable-ext` for argument extensions.
+The exact completion-library version is pinned because these APIs can change.
+The engine was selected for shared command-context matching and custom values.
+Static-only generators cannot supply current repository values. Upstream
+[`CompleteEnv`](https://docs.rs/clap_complete/4.6.11/clap_complete/env/index.html)
+supports the four shells, but its [4.6.11 shell integration source](https://docs.rs/clap_complete/4.6.11/src/clap_complete/env/shells.rs.html)
+shows that the PowerShell adapter evaluates reconstructed
+command text, and its Bash adapter lacks this application's established literal
+word-break handling. The application therefore owns small transport/insertion
+adapters and a private query protocol rather than adopting those integrations.
+This is an application containment choice, not a claim that the upstream engine
+provides these safeguards. Candidate alias/option expansion uses the selected
+engine's candidate IDs; parity tests guard this version-sensitive boundary.
+
+Stable PowerShell native completers fall back to filesystem suggestions when
+custom completion returns no matches, as documented by the
+[PowerShell issue](https://github.com/PowerShell/PowerShell/issues/19628) and verified
+with PowerShell 7.5.4. A scoped `TabExpansion2` wrapper filters only provider
+matches in literal tool argument contexts. Application path candidates retain
+their explicit completion type. The wrapper retains the prior delegate, static
+parameter metadata, common parameters, output types and unrelated results; a
+closure and ownership marker prevent repeated loading or subsequent user
+replacement from creating delegate cycles. AST inspection identifies the innermost
+command without evaluating input, and exact executable basenames keep similarly
+named scripts and command-position completion outside the filter. Shell redirection
+targets retain the prior delegate's filename suggestions; subsequent command
+arguments use the tool's normal completion context.
+
+Microsoft calls [overriding TabExpansion2](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/tabexpansion2)
+unsupported customization. This tested host adaptation is chosen to keep default
+file inventories out of branch/tag/message contexts on stable PowerShell, without
+changing key bindings or relying on internal completion sentinels. It is a material
+compatibility boundary, alongside the unstable Rust completion API. The standard
+console host routes completion through this function; custom hosts using the
+native engine directly retain its fallback. Arbitrary dynamic extensions to a
+user-provided host function have not been validated.
+
+[`completion_setup.rs`](../src/completion_setup.rs) prints session code or plans
+an explicit shell-specific user registration. Installation/removal reviews the
+location and exact managed block before terminal approval; `--yes` supplies
+unattended authorization. Automatic profile replacement is supported on Linux. Existing profile bytes,
+ordinary permissions and owner/group are retained. Profiles with extended attributes
+(including POSIX ACLs), or staging files inheriting such attributes, are refused
+before replacement because registration cannot preserve that metadata. Inspection
+covers attributes visible to the invoking user; privilege-hidden namespaces such as
+Linux `trusted.*` are outside this user-profile preservation boundary. Other
+platforms can load session code or add the generated registration manually; automatic
+replacement refuses without changing their profiles.
+UTF-16/UTF-32 and NUL-containing profiles require a UTF-8 startup file.
+Exact blocks make repetition idempotent and removal conservative; edited,
+duplicated or malformed markers stop automatic changes. Symlink paths and
+multiply linked profiles require an explicit regular-file location. Updates stage
+and synchronize a temporary file, revalidate the profile, then publish it. This
+protects ordinary failures and observed changes, without claiming a cross-process
+profile lock. Startup regenerates adapters from the current executable on PATH,
+avoiding persistent code tied to a previous unstable protocol. The user restarts
+existing shells after upgrades. Registration performs no shell installation or
+execution-policy changes.
+
+The shell boundaries follow the documented
+[Bash programmable completion](https://www.gnu.org/software/bash/manual/html_node/Programmable-Completion.html),
+[Zsh completion system](https://zsh.sourceforge.io/Doc/Release/Completion-System.html),
+[Fish completion](https://fishshell.com/docs/current/cmds/complete.html), and
+[PowerShell native argument completion](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/register-argumentcompleter)
+interfaces. PowerShell registration uses an explicit
+[profile path](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_profiles)
+to respect the active host's location. Tests use isolated profiles and actual
+shell completion; runtime evidence on Linux establishes no Windows compatibility.
 
 ## Repository state and the Git boundary
 
@@ -836,8 +927,8 @@ path conversion and quoting are unvalidated. `-m/--message` and automatic messag
 bypass it. Native rebase delegates its editor launching to Git itself. Git documents
 editor values as shell-interpreted commands in
 [git-var](https://git-scm.com/docs/git-var); replacing this launcher with Windows
-`cmd.exe` would change those command semantics. The optional completion script
-adds no Bash or Linux dependency to either executable.
+`cmd.exe` would change those command semantics. The optional shell completion adapters add no shell dependency to ordinary
+workflow execution.
 
 Messages are required only for new merge/squash commits. Git commit hooks,
 message cleanup, and signing remain effective.

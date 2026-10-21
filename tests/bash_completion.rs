@@ -15,7 +15,24 @@ fn artifact() -> &'static str {
     concat!(env!("CARGO_MANIFEST_DIR"), "/completions/git-oneflow.bash")
 }
 
+fn backend_path() -> std::ffi::OsString {
+    let mut paths = vec![
+        Path::new(env!("CARGO_BIN_EXE_git-oneflow"))
+            .parent()
+            .unwrap()
+            .to_path_buf(),
+    ];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    std::env::join_paths(paths).unwrap()
+}
+
 fn complete(directory: &Path, line: &str) -> Vec<String> {
+    complete_at(directory, line, line.len())
+}
+
+fn complete_at(directory: &Path, line: &str, point: usize) -> Vec<String> {
     let executable = line.split_whitespace().next().unwrap();
     let output = Command::new("bash")
         .args([
@@ -23,14 +40,16 @@ fn complete(directory: &Path, line: &str) -> Vec<String> {
             "--norc",
             "-c",
             r#"source "$1"
-COMP_LINE=$2; COMP_POINT=${#COMP_LINE}
+COMP_LINE=$2; COMP_POINT=$4
 _git_oneflow "$3"
 if ((${#COMPREPLY[@]})); then printf '%s\0' "${COMPREPLY[@]}"; fi"#,
             "completion-test",
             artifact(),
             line,
             executable,
+            &point.to_string(),
         ])
+        .env("PATH", backend_path())
         .current_dir(directory)
         .output()
         .unwrap();
@@ -56,18 +75,18 @@ fn static_completion_is_contextual_outside_a_repository() {
                     ["start", "status"]
                 );
                 for (command, option, values) in [
-                    ("s", "--policy", vec!["ordinary", "release", "hotfix"]),
-                    ("config", "--format", vec!["toml", "yaml", "json"]),
-                    ("f", "--mode", vec!["review", "integrate"]),
+                    ("s", "--policy", vec!["hotfix", "ordinary", "release"]),
+                    ("config", "--format", vec!["json", "toml", "yaml"]),
+                    ("f", "--mode", vec!["integrate", "review"]),
                     (
                         "finish",
                         "--integration",
                         vec!["ff-only", "merge", "squash"],
                     ),
                     ("f", "--checkout", vec!["target", "work"]),
-                    ("finish", "--cleanup", vec!["keep", "local", "both"]),
-                    ("f", "--update", vec!["rebase", "merge", "none"]),
-                    ("finish", "--history-edit", vec!["none", "interactive"]),
+                    ("finish", "--cleanup", vec!["both", "keep", "local"]),
+                    ("f", "--update", vec!["merge", "none", "rebase"]),
+                    ("finish", "--history-edit", vec!["interactive", "none"]),
                 ] {
                     assert_eq!(
                         complete(root, &format!("{executable} {command} {option} ")),
@@ -76,12 +95,19 @@ fn static_completion_is_contextual_outside_a_repository() {
                 }
             }
             assert_eq!(complete(root, "gof config sh"), ["show"]);
+            assert_eq!(
+                complete_at(root, "gof finish --mode int --cleanup keep", 21),
+                ["integrate"]
+            );
+            assert!(complete(root, "gof finish --mode=int").is_empty());
+            assert!(complete(root, "gof save --message $(touch SENTINEL)").is_empty());
+            assert!(!root.join("SENTINEL").exists());
             assert_eq!(complete(root, "gof v --sta"), ["--staged", "--stash"]);
             assert_eq!(complete(root, "gof start --from main --pol"), ["--policy"]);
             assert!(complete(root, "gof start --policy ordinary ").contains(&"--target".into()));
+            assert!(complete(root, "gof config show ").is_empty());
+            assert!(complete(root, "gof status --help ").is_empty());
             for line in [
-                "gof config show ",
-                "gof status --help ",
                 "gof start chosen second",
                 "gof save --message ",
                 "gof finish -m ",
@@ -124,6 +150,11 @@ fn refs(root: &Path) -> Repository {
         "refs/remotes/cache/HEAD",
         "refs/remotes/cache/remote-work",
     ]);
+    fs::write(
+        repository.path().join("git-oneflow.config.toml"),
+        "publish-remote = \"company/upstream\"\nbase-remote = \"company/upstream\"\n",
+    )
+    .unwrap();
     repository
 }
 
@@ -200,14 +231,23 @@ fn ref_inspection_is_bounded_and_static_choices_require_no_git() {
             let script = r#"source "$1"
 COMP_LINE='gof finish --mode '; COMP_POINT=${#COMP_LINE}
 _git_oneflow gof
-[[ ${COMPREPLY[*]} == 'review integrate' ]] || exit 1
+[[ ${COMPREPLY[*]} == 'integrate review' ]] || exit 1
 [[ ! -e $SPY_LOG ]] || exit 2
 COMP_LINE='gof start work'; COMP_POINT=${#COMP_LINE}
 _git_oneflow gof
 [[ ${#COMPREPLY[@]} == 0 ]]"#;
             let output = Command::new("/bin/bash")
                 .args(["--noprofile", "--norc", "-c", script, "test", artifact()])
-                .env("PATH", &bin)
+                .env(
+                    "PATH",
+                    std::env::join_paths([
+                        bin.as_path(),
+                        Path::new(env!("CARGO_BIN_EXE_git-oneflow"))
+                            .parent()
+                            .unwrap(),
+                    ])
+                    .unwrap(),
+                )
                 .env("SPY_LOG", &log)
                 .current_dir(root)
                 .output()
@@ -215,10 +255,11 @@ _git_oneflow gof
             assert!(output.status.success(), "{output:?}");
             assert!(output.stderr.is_empty(), "{output:?}");
             let calls = fs::read_to_string(log).unwrap();
-            assert_eq!(
-                calls,
-                "0\nC\n--no-optional-locks\n--no-lazy-fetch\n-c\ncore.fsmonitor=false\nconfig\n--null\n--get-regexp\n^remote\\..*\\.fetch$\n0\nC\n--no-optional-locks\n--no-lazy-fetch\n-c\ncore.fsmonitor=false\nfor-each-ref\n--format=%(refname)%09%(symref)\nrefs/heads\nrefs/remotes\nrefs/tags\n"
+            assert!(
+                calls.contains("--no-optional-locks\n--no-lazy-fetch\n-c\ncore.fsmonitor=false\n"),
+                "{calls}"
             );
+            assert!(!calls.lines().any(|line| line == "fetch"), "{calls}");
         },
     );
 }
@@ -252,11 +293,13 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                 ),
             )
             .unwrap();
-            let mut terminal = terminal::Terminal::start(
-                "bash",
-                repository.path(),
-                &["--noprofile", "--rcfile", rc.to_str().unwrap(), "-i"],
-            );
+            let mut command = Command::new("bash");
+            command
+                .args(["--noprofile", "--rcfile", rc.to_str().unwrap(), "-i"])
+                .current_dir(repository.path())
+                .env("PATH", backend_path())
+                .env("TERM", "dumb");
+            let mut terminal = terminal::Terminal::start_command(command);
             terminal.until("ONEFLOW_READY> ");
             for (index, (line, expected_arguments)) in [
                 ("gof s 中", "s\0中文工作\0"),
@@ -287,6 +330,33 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                     terminal.output
                 );
             }
+            terminal.send(b"gof s equals=wZZ tail");
+            terminal.send(b"\x01");
+            for _ in 0..14 {
+                terminal.send(b"\x1b[C");
+            }
+            terminal.send(b"\t");
+            terminal.send(b"\x05\n");
+            terminal.until("DONE:12");
+            assert_eq!(
+                fs::read(&capture).unwrap(),
+                b"s\0equals=wZZ\0tail\0",
+                "{}",
+                terminal.output
+            );
+            terminal.send(b"gof s \"equals=wZZ\" tail");
+            terminal.send(b"\x01");
+            for _ in 0..15 {
+                terminal.send(b"\x1b[C");
+            }
+            terminal.send(b"\t\x05\n");
+            terminal.until("DONE:13");
+            assert_eq!(
+                fs::read(&capture).unwrap(),
+                b"s\0equals=wZZ\0tail\0",
+                "{}",
+                terminal.output
+            );
             terminal.send(b"exit\n");
             assert!(terminal.finish().success(), "{}", terminal.output);
         },

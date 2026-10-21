@@ -23,10 +23,22 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     fs::create_dir(&config).unwrap();
     fs::write(&empty_config, "").unwrap();
 
-    let output = Command::new(env::current_exe().unwrap())
+    let mut child = Command::new(env::current_exe().unwrap());
+    child.env_clear();
+    for name in [
+        "ONEFLOW_TEST_ZSH",
+        "ONEFLOW_TEST_FISH",
+        "ONEFLOW_TEST_PWSH",
+        "ONEFLOW_TEST_ZSH_MODULE_PATH",
+        "ONEFLOW_TEST_ZSH_FUNCTION_PATH",
+    ] {
+        if let Some(value) = env::var_os(name) {
+            child.env(name, value);
+        }
+    }
+    let output = child
         .args(["--exact", name, "--nocapture"])
         .current_dir(root.path())
-        .env_clear()
         .env("ONEFLOW_ISOLATED_TEST", name)
         .env("ONEFLOW_TEST_ROOT", root.path())
         .env(
