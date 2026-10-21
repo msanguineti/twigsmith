@@ -8,3 +8,6 @@
 
 # Rust build output (Cargo.lock is intentionally tracked)
 /target/
+
+# Local agent configuration
+/.codex/
