@@ -162,6 +162,15 @@ dispatcher. Focused matrices verify both native executables and lifecycle aliase
 with real effects; repeat expensive scenarios across entry points when they
 protect a distinct failure mode.
 
+For expensive workflow matrices, combine factors when their interaction changes
+behavior. Keep preparation mode and remote-role combinations that distinguish
+base selection from publication. Check existing base/publication tracking through
+representative finish executions with each remote layout; preserve all outcome and
+configuration assertions without repeating every preparation combination.
+Retain real-Git interruption and fresh-process recovery tests where the contract
+depends on an effect committing before the application records its acknowledgement.
+Mocks of process results cannot establish that boundary.
+
 Judge the suite by the important defects it catches, its reliability and
 diagnostic value, and its total cost. Test count and raw coverage percentage are
 not goals; keep full validation comprehensive and focused selections useful.

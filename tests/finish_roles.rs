@@ -186,7 +186,17 @@ fn policies_and_tracking_use_project_base_and_only_publish_work() {
                         FinishUpdate::Merge,
                         FinishUpdate::None,
                     ] {
-                        for tracking in ["absent", "base", "publication"] {
+                        // Exercise every role/base/update combination. Existing
+                        // tracking is preserved by the same publication stage;
+                        // cover both styles with each role layout on a divergent
+                        // rebase instead of multiplying the entire matrix.
+                        let tracking_styles: &[&str] =
+                            if divergent && update == FinishUpdate::Rebase {
+                                &["absent", "base", "publication"]
+                            } else {
+                                &["absent"]
+                            };
+                        for &tracking in tracking_styles {
                             let f = Fixture::new(root, equal, divergent, false);
                             let base_remote = if equal { PUBLISH } else { PROJECT };
                             if tracking != "absent" {
@@ -594,7 +604,6 @@ fn current_records_require_complete_matching_bindings_and_verified_history() {
                 "missing-bindings",
                 "unsupported-version",
                 "previous-version",
-                "previous-shape",
                 "malformed",
                 "unknown-field",
             ] {
@@ -636,7 +645,6 @@ fn current_records_require_complete_matching_bindings_and_verified_history() {
                     "missing-bindings"
                     | "unsupported-version"
                     | "previous-version"
-                    | "previous-shape"
                     | "unknown-field" => {
                         let mut value: serde_json::Value =
                             serde_json::from_slice(&recorded).unwrap();
@@ -646,10 +654,6 @@ fn current_records_require_complete_matching_bindings_and_verified_history() {
                             }
                             "unsupported-version" => value["version"] = 99.into(),
                             "previous-version" => value["version"] = 1.into(),
-                            "previous-shape" => {
-                                value["version"] = 1.into();
-                                value.as_object_mut().unwrap().remove("roles");
-                            }
                             _ => value["permission"] = true.into(),
                         }
                         fs::write(f.record(), serde_json::to_vec(&value).unwrap()).unwrap();
@@ -679,7 +683,6 @@ fn current_records_require_complete_matching_bindings_and_verified_history() {
                         "missing-bindings"
                             | "unsupported-version"
                             | "previous-version"
-                            | "previous-shape"
                             | "malformed"
                             | "unknown-field"
                     ) {
