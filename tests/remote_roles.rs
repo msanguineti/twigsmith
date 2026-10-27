@@ -5,7 +5,7 @@ mod support;
 use git_oneflow::{
     finish, git,
     save::{self, Request, SaveError, execution, publication},
-    settings::SaveAction,
+    settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
     start::{self, Action, StartError},
 };
 use preservation::snapshot;
@@ -116,8 +116,8 @@ impl Fixture {
         save::assess(
             self.local.path(),
             &Request {
-                action: Some(SaveAction::PublishOnly),
-                message: None,
+                plan: Some(SavePlan::PublishOnly),
+                ..Request::default()
             },
         )
         .unwrap()
@@ -482,8 +482,11 @@ fn routing_changes_invalidate_start_save_and_checkpoint_approval() {
                 let save = save::assess(
                     f.local.path(),
                     &Request {
-                        action: Some(SaveAction::Wip),
-                        message: None,
+                        plan: Some(SavePlan::Operations(vec![SaveOperation {
+                            action: SaveKind::Commit,
+                            scope: SaveScope::All,
+                        }])),
+                        ..Request::default()
                     },
                 )
                 .unwrap();
@@ -662,8 +665,11 @@ fn save_revalidates_push_selection_after_checkpoints_and_before_tracking_writes(
                         let plan = save::assess(
                             f.local.path(),
                             &Request {
-                                action: Some(SaveAction::Wip),
-                                message: None,
+                                plan: Some(SavePlan::Operations(vec![SaveOperation {
+                                    action: SaveKind::Commit,
+                                    scope: SaveScope::All,
+                                }])),
+                                ..Request::default()
                             },
                         )
                         .unwrap();
@@ -793,7 +799,7 @@ fn cli_start_and_save_use_split_roles_and_report_explicit_push_conflicts() {
                     f.local
                         .success(&["remote", "set-url", PROJECT, "/missing/project-remote"]);
                     fs::write(f.local.path().join("tracked"), "checkpoint via CLI").unwrap();
-                    let saved = run(&[save_command, "--wip"]);
+                    let saved = run(&[save_command, "--commit", "staged", "--commit", "unstaged"]);
                     assert!(saved.status.success(), "{saved:?}");
                     assert_eq!(oid(&f.fork, REF), oid(f.local.path(), "HEAD"));
                     assert_eq!(
@@ -804,7 +810,10 @@ fn cli_start_and_save_use_split_roles_and_report_explicit_push_conflicts() {
                     );
                     f.local.success(&["config", "remote.pushDefault", PROJECT]);
                     let before = snapshot(root);
-                    for args in [vec![start_command, BRANCH], vec![save_command, "--wip"]] {
+                    for args in [
+                        vec![start_command, BRANCH],
+                        vec![save_command, "--commit", "staged", "--commit", "unstaged"],
+                    ] {
                         let refused = run(&args);
                         assert_eq!(refused.status.code(), Some(1), "{refused:?}");
                         assert!(

@@ -7,7 +7,9 @@ use crate::{
         self, Change, ChangeKind, Head, InspectionError, Observation, RepositoryContext,
         RepositoryKind, RepositoryState,
     },
-    settings::{self, SaveAction, SettingSource, Settings, SettingsError},
+    settings::{
+        self, SaveKind, SaveOperation, SavePlan, SaveScope, SettingSource, Settings, SettingsError,
+    },
     tracking,
 };
 use std::{
@@ -17,16 +19,15 @@ use std::{
 };
 
 pub mod execution;
+mod groups;
 pub mod publication;
-
-pub const WIP_STAGED_MESSAGE: &str = "[WIP - Staged]";
-pub const WIP_REMAINING_MESSAGE: &str = "[WIP - Unstaged]";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
     /// Explicit selection overrides the repository preference.
-    pub action: Option<SaveAction>,
+    pub plan: Option<SavePlan>,
     pub message: Option<String>,
+    pub stash_message: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeState {
@@ -59,20 +60,11 @@ impl Scope {
 pub enum RequiredInput {
     None,
     Action,
-    Message,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LocalStep {
-    CommitIndex {
-        message: String,
-    },
-    /// Commit the index using WIP_STAGED_MESSAGE, without restaging files.
-    CommitStagedWip,
-    /// Stage scoped remaining tracked/untracked work and commit using
-    /// WIP_REMAINING_MESSAGE; ignored untracked content stays excluded.
-    StageAndCommitRemainingWip,
-    /// Includes tracked and nonignored untracked work; preservation stays local.
-    StashIncludingUntracked,
+pub struct LocalStep {
+    pub operation: SaveOperation,
+    pub message: String,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Publication {
@@ -96,14 +88,13 @@ pub struct Plan {
     pub branch: Vec<u8>,
     pub commit: Vec<u8>,
     pub scope: Scope,
-    pub action: SaveAction,
+    pub plan: SavePlan,
     pub action_source: ActionSource,
     pub required_input: RequiredInput,
     /// Empty while input is unresolved. No effects are permitted then.
     pub local_steps: Vec<LocalStep>,
     /// None while input is unresolved. Only this branch may be published.
     pub publication: Option<Publication>,
-    pub applicable_actions: Vec<SaveAction>,
     request: Request,
     snapshot: ContextSnapshot,
 }
@@ -146,9 +137,9 @@ pub enum SaveError {
         name: String,
         source: InspectionError,
     },
-    NoStagedChanges,
     BlankMessage,
-    MessageNotApplicable,
+    InvalidPlan(String),
+    Inseparable,
     ContextChanged,
 }
 impl fmt::Display for SaveError {
@@ -174,9 +165,11 @@ impl fmt::Display for SaveError {
                     "configured remote {name:?} cannot be resolved from local configuration: {source}"
                 );
             }
-            Self::NoStagedChanges => "staged save requires staged changes",
-            Self::BlankMessage => "staged save requires a nonblank developer message",
-            Self::MessageNotApplicable => "a save message applies only to the staged action",
+            Self::BlankMessage => "a commit requires a nonblank message",
+            Self::InvalidPlan(message) => return write!(f, "{message}"),
+            Self::Inseparable => {
+                "the original staged and unstaged changes cannot be separated faithfully for this plan; use native Git to commit the staged prerequisite first, or preserve all work together"
+            }
             Self::ContextChanged => {
                 "save context or approved change scope changed; assess and approve again"
             }
@@ -235,7 +228,14 @@ impl From<tracking::Error> for SaveError {
 fn file_snapshot(path: &Path, recurse: bool) -> Result<FileSnapshot, SaveError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(FileSnapshot::Missing),
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(FileSnapshot::Missing);
+        }
         Err(e) => return Err(e.into()),
     };
     if metadata.file_type().is_symlink() {
@@ -353,61 +353,74 @@ fn assess_with_upstream(
         },
         other => other,
     })?;
-    let selected = request.action.unwrap_or(settings.save_action);
-    if request.message.is_some() && selected != SaveAction::Staged {
-        return Err(SaveError::MessageNotApplicable);
+    let selected = request
+        .plan
+        .clone()
+        .unwrap_or_else(|| settings.save_plan.clone());
+    selected.validate().map_err(SaveError::InvalidPlan)?;
+    for (key, value, kind) in [
+        ("--message", &request.message, SaveKind::Commit),
+        ("--stash-message", &request.stash_message, SaveKind::Stash),
+    ] {
+        if let Some(value) = value {
+            settings::validate_save_label(key, value).map_err(SaveError::InvalidPlan)?;
+            if !(selected == SavePlan::Ask && scope.tree_state() != TreeState::Clean)
+                && !matches!(&selected, SavePlan::Operations(ops) if ops.iter().any(|op| op.action == kind))
+            {
+                return Err(SaveError::InvalidPlan(format!(
+                    "{key} requires a selected {} operation",
+                    kind.as_str()
+                )));
+            }
+        }
     }
-    let action = if scope.tree_state() == TreeState::Clean {
-        SaveAction::PublishOnly
+    let plan = if scope.tree_state() == TreeState::Clean && selected == SavePlan::Ask {
+        SavePlan::PublishOnly
     } else {
         selected
     };
-    let action_source = if scope.tree_state() == TreeState::Clean {
+    let action_source = if scope.tree_state() == TreeState::Clean
+        && request.plan.is_none()
+        && settings.save_plan == SavePlan::Ask
+    {
         ActionSource::CleanTree
-    } else if request.action.is_some() {
+    } else if request.plan.is_some() {
         ActionSource::ExplicitSelection
     } else {
-        ActionSource::Setting(settings.sources.save_action.clone())
+        ActionSource::Setting(settings.sources.save_plan.clone())
     };
-    let mut applicable_actions = vec![SaveAction::PublishOnly];
-    if scope.tree_state() != TreeState::Clean {
-        if !scope.staged.is_empty() {
-            applicable_actions.push(SaveAction::Staged);
-        }
-        applicable_actions.extend([SaveAction::Wip, SaveAction::Stash]);
-    }
     let mut local_steps = vec![];
-    let required_input = match action {
-        SaveAction::Ask => RequiredInput::Action,
-        SaveAction::PublishOnly => RequiredInput::None,
-        SaveAction::Staged => {
-            if scope.staged.is_empty() {
-                return Err(SaveError::NoStagedChanges);
-            }
-            match &request.message {
-                None => RequiredInput::Message,
-                Some(message) if message.trim().is_empty() => return Err(SaveError::BlankMessage),
-                Some(message) => {
-                    local_steps.push(LocalStep::CommitIndex {
-                        message: message.clone(),
-                    });
-                    RequiredInput::None
+    let required_input = if plan == SavePlan::Ask {
+        RequiredInput::Action
+    } else {
+        if let SavePlan::Operations(operations) = &plan {
+            for operation in operations {
+                let empty = match operation.scope {
+                    SaveScope::All => scope.tree_state() == TreeState::Clean,
+                    SaveScope::Staged => scope.staged.is_empty(),
+                    SaveScope::Unstaged => !scope.has_remaining(),
+                };
+                if empty {
+                    continue;
                 }
+                let label = match operation.action {
+                    SaveKind::Commit => request.message.as_ref().unwrap_or(&settings.save_message),
+                    SaveKind::Stash => request
+                        .stash_message
+                        .as_ref()
+                        .unwrap_or(&settings.save_stash_message),
+                };
+                let message = match operation.scope {
+                    SaveScope::All => label.clone(),
+                    scope => format!("{label} [{}]", scope.as_str()),
+                };
+                local_steps.push(LocalStep {
+                    operation: *operation,
+                    message,
+                });
             }
         }
-        SaveAction::Wip => {
-            if !scope.staged.is_empty() {
-                local_steps.push(LocalStep::CommitStagedWip);
-            }
-            if scope.has_remaining() {
-                local_steps.push(LocalStep::StageAndCommitRemainingWip);
-            }
-            RequiredInput::None
-        }
-        SaveAction::Stash => {
-            local_steps.push(LocalStep::StashIncludingUntracked);
-            RequiredInput::None
-        }
+        RequiredInput::None
     };
     let publication = (required_input == RequiredInput::None).then(|| Publication {
         remote: settings.publish_remote.clone(),
@@ -467,12 +480,11 @@ fn assess_with_upstream(
         branch,
         commit,
         scope,
-        action,
+        plan,
         action_source,
         required_input,
         local_steps,
         publication,
-        applicable_actions,
         request: request.clone(),
         snapshot: ContextSnapshot {
             state: *state,

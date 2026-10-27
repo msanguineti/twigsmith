@@ -260,14 +260,14 @@ fn ordinary_lifecycle_executable_and_alias_wiring() {
             cli.success(
                 &fixture.local,
                 "save",
-                &["--staged", "--message", "Save wiring progress"],
+                &["--commit", "staged", "--message", "Save wiring progress"],
             );
             let saved = oid(fixture.local.path(), "HEAD").unwrap();
             assert_ne!(saved, source);
             assert_eq!(oid(fixture.local.path(), "HEAD^"), Some(source.clone()));
             assert_eq!(
                 value(&fixture.local, &["log", "-1", "--format=%B"]),
-                "Save wiring progress"
+                "Save wiring progress [staged]"
             );
             assert_eq!(
                 value(&fixture.local, &["show", "HEAD:work"]),

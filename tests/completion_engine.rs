@@ -41,10 +41,10 @@ fn grammar_and_values_work_without_repository_or_git() {
                     "v",
                     vec![
                         "--publish-only",
-                        "--staged",
-                        "--wip",
+                        "--commit",
                         "--stash",
                         "--message",
+                        "--stash-message",
                         "--help",
                     ],
                 ),
@@ -94,6 +94,8 @@ fn grammar_and_values_work_without_repository_or_git() {
             }
             for (command, option, values) in [
                 ("start", "--policy", vec!["hotfix", "ordinary", "release"]),
+                ("save", "--commit", vec!["all", "staged", "unstaged"]),
+                ("save", "--stash", vec!["all", "staged", "unstaged"]),
                 ("finish", "--mode", vec!["integrate", "review"]),
                 (
                     "finish",
@@ -108,6 +110,11 @@ fn grammar_and_values_work_without_repository_or_git() {
             ] {
                 assert_eq!(complete(root, &["gof", command, option, ""]), values);
             }
+            let repeated = complete(root, &["gof", "save", "--commit", "staged", "--"]);
+            assert!(repeated.contains(&"--commit".into()));
+            assert!(repeated.contains(&"--stash".into()));
+            assert!(!repeated.contains(&"--publish-only".into()));
+            assert!(complete(root, &["gof", "save", "--stash-message", ""]).is_empty());
             assert!(complete(root, &["gof", "start", "new"]).is_empty());
             assert!(complete(root, &["gof", "finish", "--mode=int"]).is_empty());
             assert!(complete(root, &["gof", "save", "--message", ""]).is_empty());
@@ -116,12 +123,10 @@ fn grammar_and_values_work_without_repository_or_git() {
                 ["powershell"]
             );
             assert!(
-                !complete(root, &["gof", "save", "--wip", "--"])
+                !complete(root, &["gof", "save", "--publish-only", "--"])
                     .iter()
-                    .any(
-                        |value| ["--staged", "--stash", "--publish-only", "--wip", "--help"]
-                            .contains(&value.as_str())
-                    )
+                    .any(|value| ["--commit", "--stash", "--publish-only", "--help"]
+                        .contains(&value.as_str()))
             );
             assert!(
                 !complete(root, &["gof", "finish", "--allow-rewrite", "--"])

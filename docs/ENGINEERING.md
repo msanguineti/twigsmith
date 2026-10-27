@@ -501,43 +501,28 @@ destination. It performs no writes or remote contact. Save protects the configur
 base and rejects conflicts, active operations, and dirty submodule contents;
 clean submodule commit-pointer changes can be preserved in the parent repository.
 
-Scope separates the current index, remaining tracked changes, and nonignored
-untracked paths. Partially staged files can occur in both the staged and remaining
-groups. A clean tree always resolves to publish-only, regardless of preference,
-and creates no empty checkpoint or message request.
+Scope separates the original index, remaining tracked changes, and nonignored
+untracked paths. A file can belong to both change groups. An ordered plan commits,
+stashes, or leaves each group, with `all` selecting both as one artifact. Empty
+selected groups produce no artifact. An unresolved dirty-tree plan exposes no
+preservation or publication effects.
 
-| Dirty-tree action | Local preservation before publication |
-| --- | --- |
-| Publish-only | Leave all uncommitted work unchanged and publish existing commits. |
-| Staged | Commit the current index with the supplied nonblank message; remaining work stays local. |
-| WIP | Commit the current index as `[WIP - Staged]`, then stage and commit remaining included work as `[WIP - Unstaged]`; omit empty groups. |
-| Stash | Use an include-untracked local stash and publish existing commits; retain the stash without applying or dropping it. |
+The local executor validates the requested plan and publication route before
+preservation. It captures original trees through a temporary index, and tests
+whether a required independent group can be applied without conflict before changing
+refs, the index, or the working tree. Dependent edits can be preserved together;
+inseparable requested groups fail before preservation. Ordinary commits use Git's
+hooks and signing; unexpected changes stop later effects. Stashes retain native Git
+object identities and remain local. Ignored untracked work is excluded.
 
-Unresolved action/message input exposes no executable local steps or publication.
-Staged selection on a dirty tree requires staged changes; a dirty staged commit
-also requires a nonblank message.
-The [local executor](../src/save/execution.rs) runs publication preflight before
-checkpoint writes, checks identity and known index-lock failures, and revalidates
-the approved scope. Staged commits use ordinary index-based Git commit semantics;
-WIP staging passes only approved root-relative literal byte paths. Ignored
-untracked work stays excluded. Normal commit cleanup, signing, and hooks apply.
-
-After each commit, execution checks the expected single parent, the tree change
-against the previous index selection, the resulting index, and preservation of
-remaining work. After staging, it checks unchanged context/content and absence
-of paths outside the approved scope. Legitimate transitions such as a staged
-deletion followed by a recreated untracked file are handled. Hook-created or
-hook-modified work stops later steps while retaining the hook's effects.
-Stash completion requires observed clearance of included work and retained stash
-history; an identical already-retained stash OID is acceptable.
-
-Each successor is freshly assessed as publish-only before the next step. Stashing
-a changed shared configuration can therefore complete preservation but stop
-publication when effective settings change. No automatic stash restoration, WIP
-cleanup, history rewrite, or rollback is performed. A retry assesses actual state:
-completed checkpoints do not repeat, while remaining staged work is treated as
-the current index rather than remembered as an earlier WIP group. Preservation
-and hook-failure cases are exercised in [save execution tests](../tests/save_execution.rs).
+Before reconciling the index and working tree, save retains the original work as a
+native-compatible stash object under a visible `refs/git-oneflow/save-recovery/` ref.
+It removes that ref after verified local preservation; failures or interruption can
+leave it for recovery. Completed commits and stashes remain independently visible.
+A fresh retry assesses current state rather than replaying the previous plan. See
+[save recovery](USAGE.md#resume-a-failed-save-or-publication) for inspection and
+reconstruction guidance. Preservation and hook-failure cases are exercised in
+[save execution tests](../tests/save_execution.rs).
 
 ### Exact save publication
 

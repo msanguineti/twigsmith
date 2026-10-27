@@ -51,15 +51,21 @@ fn optional_oid(repo: &Repository, reference: &str) -> Option<String> {
 fn clean(repo: &Repository) {
     assert!(repo.success(&["status", "--porcelain"]).stdout.is_empty());
 }
-fn generated_wip(local: &Repository, remote: &Repository) -> String {
+fn generated_checkpoint(local: &Repository, remote: &Repository) -> String {
     succeeds(run(local, &["config", "--yes"]));
     assert!(local.path().join(SHARED).is_file());
     fs::write(local.path().join("feature"), "feature contents\n").unwrap();
-    succeeds(run(local, &["save", "--wip"]));
+    succeeds(run(
+        local,
+        &["save", "--commit", "staged", "--commit", "unstaged"],
+    ));
     clean(local);
     let saved = value(local, &["rev-parse", "HEAD"]);
     assert_eq!(value(remote, &["rev-parse", WORK_REF]), saved);
-    assert!(value(local, &["log", "-1", "--format=%s"]).contains("WIP"));
+    assert_eq!(
+        value(local, &["log", "-1", "--format=%s"]),
+        "Save work [unstaged]"
+    );
     assert_eq!(
         local.success(&["show", &format!("HEAD:{SHARED}")]).stdout,
         fs::read(local.path().join(SHARED)).unwrap()
@@ -160,7 +166,7 @@ fn staged_save_retains_residual_work_then_commit_resume_and_squash_local_cleanup
             fs::write(local.path().join("notes"), "untracked notes\n").unwrap();
             let text = succeeds(run(
                 &local,
-                &["save", "--staged", "--message", "Selected change"],
+                &["save", "--commit", "staged", "--message", "Selected change"],
             ));
             assert!(text.contains("1 unstaged tracked, 1 untracked"), "{text}");
             assert_eq!(local.success(&["show", "HEAD:base"]).stdout, b"selected\n");
@@ -246,9 +252,18 @@ fn stash_switch_resume_restore_index_save_again_and_merge_both_cleanup() {
             fs::write(local.path().join("base"), "remaining\n").unwrap();
             fs::write(local.path().join("new"), "new work\n").unwrap();
             let saved = value(&local, &["rev-parse", "HEAD"]);
-            let text = succeeds(run(&local, &["save", "--stash"]));
-            assert!(text.contains("git stash apply --index"), "{text}");
+            let text = succeeds(run(&local, &["save", "--stash", "all"]));
             let stash = value(&local, &["rev-parse", "refs/stash"]);
+            assert!(
+                text.contains(&format!(
+                    "git worktree add --detach <new-directory> {stash}^1"
+                )),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("stash apply --index {stash}")),
+                "{text}"
+            );
             clean(&local);
             assert_eq!(value(&remote, &["rev-parse", WORK_REF]), saved);
             local.success(&["switch", "main"]);
@@ -257,7 +272,10 @@ fn stash_switch_resume_restore_index_save_again_and_merge_both_cleanup() {
             assert_eq!(local.success(&["show", ":base"]).stdout, b"selected\n");
             assert_eq!(fs::read(local.path().join("base")).unwrap(), b"remaining\n");
             assert_eq!(fs::read(local.path().join("new")).unwrap(), b"new work\n");
-            succeeds(run(&local, &["save", "--wip"]));
+            succeeds(run(
+                &local,
+                &["save", "--commit", "staged", "--commit", "unstaged"],
+            ));
             let source = value(&local, &["rev-parse", "HEAD"]);
             let base = value(&remote, &["rev-parse", "main"]);
             succeeds(run(
@@ -315,7 +333,10 @@ fn publish_only_retains_local_work_cancel_then_wip_review_readiness() {
             assert_eq!(fs::read(local.path().join(".git/index")).unwrap(), index);
             assert_eq!(fs::read(local.path().join("base")).unwrap(), b"remaining\n");
             assert_eq!(fs::read(local.path().join("notes")).unwrap(), b"notes\n");
-            succeeds(run(&local, &["save", "--wip"]));
+            succeeds(run(
+                &local,
+                &["save", "--commit", "staged", "--commit", "unstaged"],
+            ));
             let saved = value(&local, &["rev-parse", "HEAD"]);
             let base = value(&remote, &["rev-parse", "main"]);
             let mut term = terminal::Terminal::start(EXE, local.path(), &["finish"]);
@@ -357,7 +378,10 @@ fn wip_then_further_commit_rebase_advanced_base_merge_and_keep_work() {
         |root| {
             let (local, remote) = fixture(root);
             fs::write(local.path().join("feature"), "draft\n").unwrap();
-            succeeds(run(&local, &["save", "--wip"]));
+            succeeds(run(
+                &local,
+                &["save", "--commit", "staged", "--commit", "unstaged"],
+            ));
             let published = value(&remote, &["rev-parse", WORK_REF]);
             commit(&local, "feature", "finished\n");
             commit(&remote, "incoming", "project update\n");
@@ -408,7 +432,7 @@ fn reworded_published_config_check_failure_retries_without_reediting_or_duplicat
         true,
         |root| {
             let (local, remote) = fixture(root);
-            let original = generated_wip(&local, &remote);
+            let original = generated_checkpoint(&local, &remote);
             reword_editors(root, &local);
             fs::write(local.path().join(".git/git-oneflow.config.toml"), "[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','echo check >> .git/check-count; test -f .git/check-pass']\n").unwrap();
             let args = [
@@ -468,7 +492,7 @@ fn another_developer_publication_after_reword_preserves_both_work_versions() {
         true,
         |root| {
             let (local, remote) = fixture(root);
-            let original = generated_wip(&local, &remote);
+            let original = generated_checkpoint(&local, &remote);
             reword_editors(root, &local);
             fs::write(local.path().join(".git/git-oneflow.config.toml"), "[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','test -f .git/check-pass']\n").unwrap();
             let args = [
@@ -578,7 +602,7 @@ fn default_config_wip_switch_resume_native_reword_and_both_cleanup() {
             let (local, remote) = fixture(root);
             local.success(&["config", "branch.main.remote", "origin"]);
             local.success(&["config", "branch.main.merge", "refs/heads/main"]);
-            let original = generated_wip(&local, &remote);
+            let original = generated_checkpoint(&local, &remote);
             local.success(&["switch", "main"]);
             assert!(!local.path().join(SHARED).exists());
             succeeds(run(&local, &["start", BRANCH]));
@@ -642,7 +666,7 @@ fn published_default_config_stopped_reword_fresh_process_resolves_method_without
         true,
         |root| {
             let (local, remote) = fixture(root);
-            let original = generated_wip(&local, &remote);
+            let original = generated_checkpoint(&local, &remote);
             forbid_work_republication(&remote);
             reword_editors(root, &local);
             let base = value(&remote, &["rev-parse", "main"]);

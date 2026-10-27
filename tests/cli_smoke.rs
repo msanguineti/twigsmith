@@ -103,7 +103,7 @@ fn ordinary_errors_use_red_headings_and_preserve_plain_diagnostics_and_exit_stat
                 for (args, code) in [
                     (vec!["unknown"], 2),
                     (vec!["start", "HEAD"], 1),
-                    (vec!["save", "--wip", "--stash"], 2),
+                    (vec!["save", "--publish-only", "--commit", "all"], 2),
                     (vec!["config", "show"], 1),
                 ] {
                     let path = repo.path().join("git-oneflow.config.json");

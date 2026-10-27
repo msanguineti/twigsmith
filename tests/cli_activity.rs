@@ -313,7 +313,7 @@ fn slow_commit_activity_preserves_the_selected_and_remaining_work() {
             let output = slow
                 .cli(
                     &local,
-                    &["save", "--staged", "--message", "Selected work"],
+                    &["save", "--commit", "staged", "--message", "Selected work"],
                     "commit",
                     false,
                 )

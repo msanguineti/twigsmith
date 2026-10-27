@@ -78,13 +78,19 @@ fn command_in(directory: &Path, policy: Option<settings::WorkstreamKind>) -> Com
         .arg(branches(value("target"), Values::TargetBranches));
     let save = Command::new("save")
         .visible_alias("v")
-        .args([
-            flag("publish-only").conflicts_with_all(["staged", "wip", "stash"]),
-            flag("staged").conflicts_with_all(["publish-only", "wip", "stash"]),
-            flag("wip").conflicts_with_all(["publish-only", "staged", "stash"]),
-            flag("stash").conflicts_with_all(["publish-only", "staged", "wip"]),
-        ])
-        .arg(value("message"));
+        .arg(flag("publish-only").conflicts_with_all(["commit", "stash"]))
+        .arg(
+            fixed("commit", ["all", "staged", "unstaged"])
+                .action(ArgAction::Append)
+                .conflicts_with("publish-only"),
+        )
+        .arg(
+            fixed("stash", ["all", "staged", "unstaged"])
+                .action(ArgAction::Append)
+                .conflicts_with("publish-only"),
+        )
+        .arg(value("message"))
+        .arg(value("stash-message"));
     let finish = Command::new("finish")
         .visible_alias("f")
         .arg(fixed("mode", ["review", "integrate"]))
@@ -181,7 +187,9 @@ pub fn candidates(words: &[OsString], index: usize, directory: &Path) -> Vec<Str
             if arg.get_id().as_str() == "help" || arg.get_id().as_str() == "version" {
                 return Vec::new();
             }
-            used.insert(arg.get_id().as_str());
+            if !matches!(arg.get_action(), ArgAction::Append) {
+                used.insert(arg.get_id().as_str());
+            }
             used.extend(
                 current
                     .get_arg_conflicts_with(arg)

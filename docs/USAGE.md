@@ -120,7 +120,7 @@ Then create a branch, make changes, save progress, and publish for review:
 gof start add-user-avatars
 # Edit files, then select the changes for a commit.
 git add src/avatars.rs
-gof save --staged --message "Add user avatars"
+gof save --commit staged --message "Add user avatars"
 # Finish with a clean working tree.
 gof finish --mode review --update merge --no-rewrite
 ```
@@ -255,41 +255,45 @@ worktree block start, including an already-current target. See
 ### Save progress
 
 ```text
-gof save [ACTION] [--message <message>]
-gof v [ACTION] [--message <message>]
+gof save [--commit <scope> | --stash <scope>]... [--message <message>] [--stash-message <label>]
+gof save --publish-only
+gof v [options]
 ```
 
 A clean tree publishes existing commits directly. With uncommitted work, the
-default `save-action = ask` lets you choose what to preserve.
+built-in `save-plan = ["ask"]` lets you choose what to preserve. Configure an
+ordered plan to save without choosing each time, for example:
 
-| Option | Action | Work retained locally |
-| --- | --- | --- |
-| `--publish-only` | Publish existing commits | All uncommitted changes |
-| `--staged` | Commit the index selection with your message, then publish | Unstaged changes and untracked files |
-| `--wip` | Commit staged and remaining work separately, then publish | Ignored untracked files |
-| `--stash` | Stash tracked and nonignored untracked work, then publish existing commits | The stash and ignored untracked files |
-| `--message <message>` | Supply the staged commit message | Applies only to the staged action |
+```toml
+save-plan = ["commit:staged", "stash:unstaged"]
+save-message = "Save work"
+save-stash-message = "Saved work"
+```
 
-Choose one action flag; it overrides `save-action`. `--message` also works with
-a configured staged preference. It supplies a message without selecting an action;
-use `gof save --staged --message "Selected changes"` to select both. Quote the
-message as one argument. Staged message entry preserves literal text, including
-`cancel`; use Esc, Ctrl-C or Ctrl-D to cancel a keyboard text prompt. Save does not
-accept `-m`. A clean tree needs no checkpoint message.
+`--commit` and `--stash` select `all`, `staged`, or `unstaged`. `all` combines
+both groups into one artifact; selecting groups separately creates separate
+artifacts in the supplied order. Leave a group unselected to keep it local.
+`--publish-only` leaves all work local. An explicit action selection replaces the
+configured plan, while label-only options retain it. Private configuration replaces
+the shared plan as a whole. Duplicate or overlapping selections are errors.
+Empty groups are skipped and branch commits are still published.
 
 ```sh
 gof save
 gof v --publish-only
-gof save --staged --message "selected parser changes"
-gof save --wip
-gof save --stash
+gof save --commit staged --message "selected parser changes"
+gof save --commit staged --stash unstaged
+gof save --stash all
 ```
 
-Staged save respects partial staging, including selected portions of one file.
-Git's normal message cleanup, hooks, and signing settings apply. WIP creates
-`[WIP - Staged]` and `[WIP - Unstaged]` commits for the groups containing changes;
-the second group includes nonignored untracked files. A stash stays local and
-is left stashed. Save reports its object ID for [recovery](#restore-a-retained-stash).
+The staged group is the index relative to HEAD; the unstaged group includes
+remaining tracked changes and nonignored untracked files. A file can contribute
+to both. Ignored untracked files stay local. Save refuses when restoring a tracked path
+would replace ignored work; move the obstruction aside before retrying. Separate artifacts append ` [staged]`
+or ` [unstaged]` to the relevant label; `all` uses the label unchanged. One
+label override applies to each artifact of its type. Git's normal message cleanup,
+hooks, and signing settings apply. Stashes remain local and save reports their
+object IDs for [recovery](#restore-a-retained-stash).
 
 Save publishes the current branch to its exact name at the publication remote's
 push destinations. It creates or fast-forwards the branch; an unchanged remote
@@ -301,7 +305,9 @@ rewrite workflow.
 The branch must have an existing commit and differ from the configured base.
 Conflicts, active Git operations, detached HEAD, and dirty submodule contents
 block save. Preserve dirty submodule work within its own repository. Clean
-submodule commit-pointer changes can be saved in the parent repository.
+submodule commit-pointer changes can be committed in the parent repository. A
+selected stash containing a changed submodule pointer is refused before preservation;
+handle that change in the child repository or commit the pointer first.
 
 ### Finish work
 
@@ -335,7 +341,7 @@ The default mode `ask` prompts before remote refresh. Review requires a clean
 index, working tree, and submodules, an attached branch with an existing commit,
 and no conflicts or active Git operation. The branch must differ from the
 configured base. Commit or preserve uncommitted work first. Clean branches with
-WIP commits are eligible.
+Save commits are eligible.
 
 Finish observes the base and the exact working branch at every publication push
 destination, then fetches the observed objects. Read access to each push destination
@@ -861,7 +867,9 @@ an empty TOML document or empty YAML/JSON mapping (`{}`) inherits all keys.
 | `publish-remote` | Named Git remote receiving working branches | `origin` |
 | `base-remote` | Named Git remote supplying the base branch | Follows publication |
 | `base` | Project base branch name | `main` |
-| `save-action` | `ask`, `publish-only`, `staged`, `wip`, `stash` | `ask` |
+| `save-plan` | Ordered `commit:all`, `commit:staged`, `commit:unstaged`, `stash:all`, `stash:staged`, `stash:unstaged`; or `["ask"]`, `["publish-only"]` | `["ask"]` |
+| `save-message` | Nonblank commit label | `Save work` |
+| `save-stash-message` | Nonblank stash label | `Saved work` |
 | `finish-mode` | `ask`, `review`, `integrate` | `ask` |
 | `finish-update` | `ask`, `rebase`, `merge`, `none` | `ask` |
 | `finish-history-edit` | `none`, `interactive`; ordinary work only | `none` |
@@ -1180,8 +1188,8 @@ report. Inspect actual Git state when a command ends without a report.
 Use explicit flags or repository settings to resolve required choices:
 
 ```sh
-gof save --staged --message "selected changes"
-gof save --wip
+gof save --commit staged --message "selected changes"
+gof save --commit staged --commit unstaged
 gof finish --mode review --update rebase --allow-rewrite
 gof finish --mode review --update merge --no-rewrite
 gof finish --mode integrate --integration squash --message "Fix parser" --cleanup local
@@ -1287,9 +1295,23 @@ produce multiple files, which the loader will report.
 
 Completed commits, stashes, and remote updates remain available. Repair the
 reported hook, transport, or configuration problem and retry from the actual
-state. A clean retry publishes without making empty WIP checkpoints. If the
-second WIP commit failed after staging, inspect the index: the remaining work
-may now be staged, and a fresh WIP save uses that current selection.
+state. A clean retry publishes without making empty checkpoints. Inspect the index and
+working tree before retrying: the new invocation selects their current changes.
+
+If save reports a retained recovery ref, or ends without a report during local
+preservation, inspect the refs under `refs/git-oneflow/save-recovery/`. To reconstruct
+the original work without overwriting the current working tree, use the reported
+object ID (or the ref value) in a separate directory:
+
+```sh
+git for-each-ref refs/git-oneflow/save-recovery/
+git worktree add --detach <new-directory> <recovery-oid>^1
+cd <new-directory>
+git stash apply --index <recovery-oid>
+```
+
+Inspect both worktrees and retained commits or stashes before deciding what to keep.
+Remove a recovery ref only after preserving the work it contains.
 
 An uncertain push requires remote inspection. Already published tips can succeed
 as unchanged on retry. New or divergent remote work needs incorporation with Git;
@@ -1313,16 +1335,39 @@ not silently replace an invalid existing upstream.
 
 ### Restore a retained stash
 
-Use the stash object ID reported by save:
+Use the stable stash object IDs reported by save. Inspect each artifact and its
+label with `git stash show <reported-id>` and `git stash list`. To reconstruct one
+artifact while preserving the current checkout, create a separate worktree at
+that stash's first parent, then apply it there:
 
 ```sh
-git stash list
-git stash show <reported-id>
-git stash apply --index <reported-id>
+git worktree add --detach <new-directory> <reported-id>^1
+git -C <new-directory> stash apply --index <reported-id>
 ```
 
-Resolve any conflicts reported by Git. Successful application retains the stash
-entry; remove it separately with Git when you no longer need it.
+A staged stash restores its selected changes to both the index and working tree.
+An unstaged stash restores its changes relative to its recorded original index;
+that index is the recovery worktree's starting commit. These commands recover the
+artifact's own group with its required base contents.
+
+For separate staged and unstaged stashes from one save, recover both in the same
+new worktree, applying the staged group first regardless of creation order:
+
+```sh
+git worktree add --detach <new-directory> <staged-id>^1
+git -C <new-directory> stash apply --index <staged-id>
+git -C <new-directory> stash apply --index <unstaged-id>
+```
+
+This reconstructs the original staged/index and unstaged/working-tree changes,
+including eligible new files. The unstaged artifact uses the original index as
+its base. Applying a staged stash over remaining unstaged edits in the current
+checkout can conflict. The separate worktree keeps
+those current contents intact. When the current checkout is a suitable clean base,
+you can instead apply a single stash there with `git stash apply --index <reported-id>`.
+
+Inspect the restored work before continuing. Successful application retains each
+stash entry; remove entries separately with Git when you no longer need them.
 
 ### Recover review preparation or checks
 

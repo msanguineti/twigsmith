@@ -384,8 +384,9 @@ pub fn assess(
     let local = save::assess(
         directory,
         &save::Request {
-            action: Some(crate::settings::SaveAction::PublishOnly),
+            plan: Some(crate::settings::SavePlan::PublishOnly),
             message: None,
+            stash_message: None,
         },
     )?;
     if local.scope.tree_state() != TreeState::Clean {

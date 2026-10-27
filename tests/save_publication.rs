@@ -11,7 +11,7 @@ use git_oneflow::{
             TrackingWrite,
         },
     },
-    settings::SaveAction,
+    settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
 };
 use preservation::snapshot;
 use std::{
@@ -74,8 +74,8 @@ fn plan(repo: &Repository) -> Plan {
     save::assess(
         repo.path(),
         &Request {
-            action: Some(SaveAction::PublishOnly),
-            message: None,
+            plan: Some(SavePlan::PublishOnly),
+            ..Request::default()
         },
     )
     .unwrap()
@@ -364,10 +364,19 @@ fn unresolved_input_and_pending_checkpoints_cannot_be_published() {
         true,
         |root| {
             for action in [
-                SaveAction::Ask,
-                SaveAction::Staged,
-                SaveAction::Wip,
-                SaveAction::Stash,
+                SavePlan::Ask,
+                SavePlan::Operations(vec![SaveOperation {
+                    action: SaveKind::Commit,
+                    scope: SaveScope::Staged,
+                }]),
+                SavePlan::Operations(vec![SaveOperation {
+                    action: SaveKind::Commit,
+                    scope: SaveScope::All,
+                }]),
+                SavePlan::Operations(vec![SaveOperation {
+                    action: SaveKind::Stash,
+                    scope: SaveScope::All,
+                }]),
             ] {
                 let (repo, _) = fixture(root);
                 fs::write(repo.path().join("tracked"), "staged").unwrap();
@@ -375,8 +384,8 @@ fn unresolved_input_and_pending_checkpoints_cannot_be_published() {
                 let approved = save::assess(
                     repo.path(),
                     &Request {
-                        action: Some(action),
-                        message: None,
+                        plan: Some(action),
+                        ..Request::default()
                     },
                 )
                 .unwrap();

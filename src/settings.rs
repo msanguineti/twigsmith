@@ -13,13 +13,117 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SaveAction {
+/// Ordered preservation of the invocation's original change groups.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SavePlan {
     Ask,
     PublishOnly,
-    Staged,
-    Wip,
+    Operations(Vec<SaveOperation>),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SaveKind {
+    Commit,
     Stash,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SaveScope {
+    All,
+    Staged,
+    Unstaged,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveOperation {
+    pub action: SaveKind,
+    pub scope: SaveScope,
+}
+impl SaveKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Commit => "commit",
+            Self::Stash => "stash",
+        }
+    }
+}
+impl SaveScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Staged => "staged",
+            Self::Unstaged => "unstaged",
+        }
+    }
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "all" => Ok(Self::All),
+            "staged" => Ok(Self::Staged),
+            "unstaged" => Ok(Self::Unstaged),
+            _ => Err("scope must be all, staged, or unstaged".into()),
+        }
+    }
+}
+impl SaveOperation {
+    pub fn token(self) -> String {
+        format!("{}:{}", self.action.as_str(), self.scope.as_str())
+    }
+}
+impl SavePlan {
+    pub fn tokens(&self) -> Vec<String> {
+        match self {
+            Self::Ask => vec!["ask".into()],
+            Self::PublishOnly => vec!["publish-only".into()],
+            Self::Operations(values) => values.iter().map(|value| value.token()).collect(),
+        }
+    }
+    pub fn summary(&self) -> String {
+        let tokens = self.tokens();
+        if tokens.is_empty() {
+            "[] (publish commits)".into()
+        } else {
+            tokens.join(", ")
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        let Self::Operations(values) = self else {
+            return Ok(());
+        };
+        let mut staged = false;
+        let mut unstaged = false;
+        for value in values {
+            let selects_staged = value.scope != SaveScope::Unstaged;
+            let selects_unstaged = value.scope != SaveScope::Staged;
+            if (selects_staged && staged) || (selects_unstaged && unstaged) {
+                return Err(format!(
+                    "save-plan repeats or overlaps a change group at {}; select each original group once",
+                    value.token()
+                ));
+            }
+            staged |= selects_staged;
+            unstaged |= selects_unstaged;
+        }
+        Ok(())
+    }
+    pub fn parse(values: &[String]) -> Result<Self, String> {
+        if values == ["ask"] {
+            return Ok(Self::Ask);
+        }
+        if values == ["publish-only"] {
+            return Ok(Self::PublishOnly);
+        }
+        let operations = values.iter().map(|value| {
+            let Some((action, scope)) = value.split_once(':') else { return Err(format!("save-plan entry {value:?} must be commit:all|staged|unstaged or stash:all|staged|unstaged; ask and publish-only must stand alone")); };
+            let action = match action { "commit" => SaveKind::Commit, "stash" => SaveKind::Stash, _ => return Err(format!("unknown save-plan action {action:?}; use commit or stash")) };
+            Ok(SaveOperation { action, scope: SaveScope::parse(scope)? })
+        }).collect::<Result<Vec<_>, String>>()?;
+        let plan = Self::Operations(operations);
+        plan.validate()?;
+        Ok(plan)
+    }
+}
+pub(crate) fn validate_save_label(key: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.contains('\0') {
+        return Err(format!("{key} must be nonblank text without NUL"));
+    }
+    Ok(())
 }
 
 /// Update policy is independent of permission to replace published history.
@@ -782,7 +886,9 @@ pub struct SettingSources {
     /// None means the effective base remote follows publication.
     pub base_remote: Option<SettingSource>,
     pub base: SettingSource,
-    pub save_action: SettingSource,
+    pub save_plan: SettingSource,
+    pub save_message: SettingSource,
+    pub save_stash_message: SettingSource,
     pub finish_mode: SettingSource,
     pub finish_integration: SettingSource,
     pub finish_message: SettingSource,
@@ -801,7 +907,9 @@ impl Default for SettingSources {
             publish_remote: SettingSource::BuiltIn,
             base_remote: None,
             base: SettingSource::BuiltIn,
-            save_action: SettingSource::BuiltIn,
+            save_plan: SettingSource::BuiltIn,
+            save_message: SettingSource::BuiltIn,
+            save_stash_message: SettingSource::BuiltIn,
             finish_mode: SettingSource::BuiltIn,
             finish_integration: SettingSource::BuiltIn,
             finish_message: SettingSource::BuiltIn,
@@ -821,7 +929,9 @@ pub struct Settings {
     pub publish_remote: String,
     pub base_remote: String,
     pub base: String,
-    pub save_action: SaveAction,
+    pub save_plan: SavePlan,
+    pub save_message: String,
+    pub save_stash_message: String,
     pub finish_mode: FinishMode,
     pub finish_integration: FinishIntegration,
     pub finish_message: FinishMessage,
@@ -844,7 +954,9 @@ impl Default for Settings {
             publish_remote: "origin".into(),
             base_remote: "origin".into(),
             base: "main".into(),
-            save_action: SaveAction::Ask,
+            save_plan: SavePlan::Ask,
+            save_message: "Save work".into(),
+            save_stash_message: "Saved work".into(),
             finish_mode: FinishMode::Ask,
             finish_integration: FinishIntegration::Ask,
             finish_message: FinishMessage::Ask,
@@ -867,7 +979,9 @@ struct Layer {
     publish_remote: Option<String>,
     base_remote: Option<String>,
     base: Option<String>,
-    save_action: Option<String>,
+    save_plan: Option<Vec<String>>,
+    save_message: Option<String>,
+    save_stash_message: Option<String>,
     finish_mode: Option<String>,
     finish_integration: Option<String>,
     finish_message: Option<String>,
@@ -886,7 +1000,9 @@ impl Layer {
             "publish-remote" => Ok(&mut self.publish_remote),
             "base-remote" => Ok(&mut self.base_remote),
             "base" => Ok(&mut self.base),
-            "save-action" => Ok(&mut self.save_action),
+            "save-message" => Ok(&mut self.save_message),
+            "save-stash-message" => Ok(&mut self.save_stash_message),
+            "save-action" => Err("save-action is retired; use save-plan = [\"commit:staged\", \"stash:unstaged\"] (or [\"ask\"] / [\"publish-only\"])".into()),
             "finish-mode" => Ok(&mut self.finish_mode),
             "finish-integration" => Ok(&mut self.finish_integration),
             "finish-message" => Ok(&mut self.finish_message),
@@ -896,7 +1012,7 @@ impl Layer {
             "finish-history-edit" => Ok(&mut self.finish_history_edit),
             "finish-rewrite" => Ok(&mut self.finish_rewrite),
             _ => Err(format!(
-                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-action, finish-mode, finish-integration, finish-message, finish-checkout, finish-cleanup, finish-update, finish-history-edit, finish-rewrite, finish-checks; local-only: redact-credentials)"
+                "unknown key {key:?} (supported keys: publish-remote, base-remote, base, save-plan, save-message, save-stash-message, finish-mode, finish-integration, finish-message, finish-checkout, finish-cleanup, finish-update, finish-history-edit, finish-rewrite, finish-checks; local-only: redact-credentials)"
             )),
         }
     }
@@ -927,8 +1043,16 @@ impl Layer {
         {
             return Err(invalid(path, format!("invalid base branch name: {base:?}")));
         }
-        if let Some(action) = &self.save_action {
-            parse_action(action).map_err(|e| invalid(path, e))?;
+        if let Some(plan) = &self.save_plan {
+            SavePlan::parse(plan).map_err(|e| invalid(path, e))?;
+        }
+        for (key, value) in [
+            ("save-message", &self.save_message),
+            ("save-stash-message", &self.save_stash_message),
+        ] {
+            if let Some(value) = value {
+                validate_save_label(key, value).map_err(|e| invalid(path, e))?;
+            }
         }
         if let Some(value) = &self.finish_mode {
             parse_mode(value).map_err(|e| invalid(path, e))?;
@@ -1005,9 +1129,17 @@ impl Layer {
             settings.base = base;
             settings.sources.base = source.clone();
         }
-        if let Some(action) = self.save_action {
-            settings.save_action = parse_action(&action).expect("validated layer");
-            settings.sources.save_action = source.clone();
+        if let Some(plan) = self.save_plan {
+            settings.save_plan = SavePlan::parse(&plan).expect("validated layer");
+            settings.sources.save_plan = source.clone();
+        }
+        if let Some(value) = self.save_message {
+            settings.save_message = value;
+            settings.sources.save_message = source.clone();
+        }
+        if let Some(value) = self.save_stash_message {
+            settings.save_stash_message = value;
+            settings.sources.save_stash_message = source.clone();
         }
         if let Some(value) = self.finish_mode {
             settings.finish_mode = parse_mode(&value).expect("validated layer");
@@ -1051,29 +1183,6 @@ impl Layer {
         }
     }
 }
-impl SaveAction {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Ask => "ask",
-            Self::PublishOnly => "publish-only",
-            Self::Staged => "staged",
-            Self::Wip => "wip",
-            Self::Stash => "stash",
-        }
-    }
-}
-
-pub(crate) fn parse_action(value: &str) -> Result<SaveAction, String> {
-    match value {
-        "ask" => Ok(SaveAction::Ask),
-        "publish-only" => Ok(SaveAction::PublishOnly),
-        "staged" => Ok(SaveAction::Staged),
-        "wip" => Ok(SaveAction::Wip),
-        "stash" => Ok(SaveAction::Stash),
-        _ => Err("save-action must be ask, publish-only, staged, wip, or stash".into()),
-    }
-}
-
 // deserialize_any preserves scalar types, including YAML's inferred types.
 // String deserialization alone permits scalar coercion in some YAML parsers.
 struct Text(String);
@@ -1139,6 +1248,19 @@ impl<'de> Deserialize<'de> for Layer {
                             }
                         }
                         layer.workstreams = Some(map.next_value::<Policies>()?.0);
+                        continue;
+                    }
+                    if key == "save-plan" {
+                        if layer.save_plan.is_some() {
+                            return Err(de::Error::custom("duplicate key save-plan"));
+                        }
+                        layer.save_plan = Some(
+                            map.next_value::<List<Text>>()?
+                                .0
+                                .into_iter()
+                                .map(|value| value.0)
+                                .collect(),
+                        );
                         continue;
                     }
                     if key == "finish-checks" {

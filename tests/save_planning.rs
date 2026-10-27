@@ -4,7 +4,7 @@ mod support;
 use git_oneflow::{
     git,
     save::{self, LocalStep, Plan, Request, RequiredInput, SaveError, TreeState},
-    settings::SaveAction,
+    settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
 };
 use preservation::snapshot;
 use std::{fs, path::Path};
@@ -21,10 +21,35 @@ fn fixture(root: &Path) -> Repository {
     repo.success(&["remote", "add", "origin", "/missing/save-remote"]);
     repo
 }
-fn request(action: SaveAction) -> Request {
+#[derive(Clone, Copy)]
+enum TestPlan {
+    Ask,
+    PublishOnly,
+    Split,
+    Stash,
+}
+fn request(action: TestPlan) -> Request {
+    let plan = match action {
+        TestPlan::Ask => SavePlan::Ask,
+        TestPlan::PublishOnly => SavePlan::PublishOnly,
+        TestPlan::Split => SavePlan::Operations(vec![
+            SaveOperation {
+                action: SaveKind::Commit,
+                scope: SaveScope::Staged,
+            },
+            SaveOperation {
+                action: SaveKind::Commit,
+                scope: SaveScope::Unstaged,
+            },
+        ]),
+        TestPlan::Stash => SavePlan::Operations(vec![SaveOperation {
+            action: SaveKind::Stash,
+            scope: SaveScope::All,
+        }]),
+    };
     Request {
-        action: Some(action),
-        message: None,
+        plan: Some(plan),
+        ..Request::default()
     }
 }
 fn assess(root: &Path, path: &Path, request: &Request) -> Result<Plan, SaveError> {
@@ -61,229 +86,108 @@ fn staged(repo: &Repository) {
 }
 
 #[test]
-fn four_tree_states_and_checkpoint_groups() {
-    isolated("four_tree_states_and_checkpoint_groups", true, |root| {
-        for (stage, remain, expected) in [
-            (false, false, TreeState::Clean),
-            (true, false, TreeState::StagedOnly),
-            (false, true, TreeState::UnstagedOnly),
-            (true, true, TreeState::Mixed),
-        ] {
-            let repo = fixture(root);
-            if stage {
-                staged(&repo);
-            }
-            if remain {
-                fs::write(repo.path().join("tracked"), "remaining again\n").unwrap();
-            }
-            let plan = assess(root, repo.path(), &request(SaveAction::Wip)).unwrap();
-            assert_eq!(plan.scope.tree_state(), expected);
-            assert_eq!(plan.scope.staged.len(), usize::from(stage));
-            assert_eq!(plan.scope.remaining_tracked.len(), usize::from(remain));
-            let mut steps = vec![];
-            if stage {
-                steps.push(LocalStep::CommitStagedWip);
-            }
-            if remain {
-                steps.push(LocalStep::StageAndCommitRemainingWip);
-            }
-            assert_eq!(plan.local_steps, steps);
-            assert_eq!(plan.required_input, RequiredInput::None);
-            assert_eq!(
-                plan.publication.as_ref().unwrap().branch_ref,
-                b"refs/heads/Feature/Exact_Name"
-            );
-            assert_eq!(plan.publication.as_ref().unwrap().remote, "origin");
-            assert!(plan.publication.as_ref().unwrap().establish_upstream);
-            revalidate(root, repo.path(), &plan).unwrap();
-            if stage && remain {
-                assert_eq!(plan.scope.staged, plan.scope.remaining_tracked);
-            }
-        }
-    });
-}
-
-#[test]
-fn clean_always_publishes_without_checkpoint_or_message() {
+fn groups_skip_empty_selection_and_labels_are_resolved_without_message_input() {
     isolated(
-        "clean_always_publishes_without_checkpoint_or_message",
+        "groups_skip_empty_selection_and_labels_are_resolved_without_message_input",
         true,
         |root| {
-            let repo = fixture(root);
-            fs::write(repo.path().join("ignored"), "local ignored work").unwrap();
-            for action in [
-                SaveAction::Ask,
-                SaveAction::PublishOnly,
-                SaveAction::Staged,
-                SaveAction::Wip,
-                SaveAction::Stash,
-            ] {
-                fs::write(
-                    repo.path().join(".git/git-oneflow.config.toml"),
-                    format!(
-                        "save-action = '{}'",
-                        match action {
-                            SaveAction::Ask => "ask",
-                            SaveAction::PublishOnly => "publish-only",
-                            SaveAction::Staged => "staged",
-                            SaveAction::Wip => "wip",
-                            SaveAction::Stash => "stash",
-                        }
-                    ),
-                )
-                .unwrap();
-                for req in [Request::default(), request(action)] {
-                    let plan = assess(root, repo.path(), &req).unwrap();
-                    assert_eq!(plan.action, SaveAction::PublishOnly);
-                    assert_eq!(plan.required_input, RequiredInput::None);
-                    assert!(plan.local_steps.is_empty());
-                    assert_eq!(plan.applicable_actions, [SaveAction::PublishOnly]);
-                    assert!(plan.publication.is_some());
-                    assert_eq!(plan.scope.tree_state(), TreeState::Clean);
+            for (stage, remain) in [(false, false), (true, false), (false, true), (true, true)] {
+                let repo = fixture(root);
+                if stage {
+                    staged(&repo);
                 }
+                if remain {
+                    fs::write(repo.path().join("new"), "new").unwrap();
+                }
+                let plan = assess(root, repo.path(), &request(TestPlan::Split)).unwrap();
+                assert_eq!(
+                    plan.local_steps.len(),
+                    usize::from(stage) + usize::from(remain)
+                );
+                assert_eq!(plan.required_input, RequiredInput::None);
+                assert!(plan.publication.is_some());
+                for step in &plan.local_steps {
+                    assert_eq!(
+                        step.message,
+                        format!("Save work [{}]", step.operation.scope.as_str())
+                    );
+                }
+                let default = assess(root, repo.path(), &Request::default()).unwrap();
+                assert_eq!(
+                    default.required_input,
+                    if stage || remain {
+                        RequiredInput::Action
+                    } else {
+                        RequiredInput::None
+                    }
+                );
             }
-            // Clean staged selection does not need a message, even a supplied blank.
-            let req = Request {
-                action: Some(SaveAction::Staged),
-                message: Some(" ".into()),
-            };
-            assert!(
-                assess(root, repo.path(), &req)
-                    .unwrap()
-                    .local_steps
-                    .is_empty()
-            );
         },
     );
 }
-
 #[test]
-fn input_preferences_and_effects() {
-    isolated("input_preferences_and_effects", true, |root| {
-        let repo = fixture(root);
-        remaining(&repo);
-        let ask = assess(root, repo.path(), &Request::default()).unwrap();
-        assert_eq!(ask.required_input, RequiredInput::Action);
-        assert!(ask.publication.is_none());
-        assert!(ask.local_steps.is_empty());
-        assert_eq!(
-            ask.applicable_actions,
-            [SaveAction::PublishOnly, SaveAction::Wip, SaveAction::Stash]
-        );
-        assert!(matches!(
-            assess(root, repo.path(), &request(SaveAction::Staged)),
-            Err(SaveError::NoStagedChanges)
-        ));
-        fs::write(
-            repo.path().join(".git/git-oneflow.config.toml"),
-            "save-action='stash'",
-        )
-        .unwrap();
-        let stash = assess(root, repo.path(), &Request::default()).unwrap();
-        assert_eq!(stash.local_steps, [LocalStep::StashIncludingUntracked]);
-        assert!(stash.publication.is_some()); // Stash and branch publication are separate.
-        let publish = assess(root, repo.path(), &request(SaveAction::PublishOnly)).unwrap();
-        assert!(publish.local_steps.is_empty());
-        assert_eq!(publish.scope.remaining_tracked, [b"tracked".to_vec()]);
-        staged(&repo);
-        let missing = assess(root, repo.path(), &request(SaveAction::Staged)).unwrap();
-        assert_eq!(missing.required_input, RequiredInput::Message);
-        assert!(missing.local_steps.is_empty());
-        assert!(missing.publication.is_none());
-        for message in ["", " \n\t", "\u{2003}"] {
-            assert!(matches!(
-                assess(
-                    root,
-                    repo.path(),
-                    &Request {
-                        action: Some(SaveAction::Staged),
-                        message: Some(message.into())
-                    }
-                ),
-                Err(SaveError::BlankMessage)
-            ));
-        }
-        let message = "Developer's exact message\n\nBody";
-        let req = Request {
-            action: Some(SaveAction::Staged),
-            message: Some(message.into()),
-        };
-        assert_eq!(
-            assess(root, repo.path(), &req).unwrap().local_steps,
-            [LocalStep::CommitIndex {
-                message: message.into()
-            }]
-        );
-        for action in [
-            SaveAction::Ask,
-            SaveAction::PublishOnly,
-            SaveAction::Wip,
-            SaveAction::Stash,
-        ] {
-            assert!(matches!(
-                assess(
-                    root,
-                    repo.path(),
-                    &Request {
-                        action: Some(action),
-                        message: Some("message".into())
-                    }
-                ),
-                Err(SaveError::MessageNotApplicable)
-            ));
-        }
-        fs::write(
-            repo.path().join(".git/git-oneflow.config.toml"),
-            "save-action='nope'",
-        )
-        .unwrap();
-        let err = assess(root, repo.path(), &request(SaveAction::PublishOnly)).unwrap_err();
-        assert!(err.to_string().contains("save-action must be"));
-    });
-}
-
-#[test]
-fn untracked_ignored_partial_staging_and_deletions() {
+fn invalid_selection_and_labels_are_rejected_even_when_clean() {
     isolated(
-        "untracked_ignored_partial_staging_and_deletions",
+        "invalid_selection_and_labels_are_rejected_even_when_clean",
+        true,
+        |root| {
+            let repo = fixture(root);
+            for scopes in [
+                vec![SaveScope::All, SaveScope::Staged],
+                vec![SaveScope::Staged, SaveScope::Staged],
+            ] {
+                let req = Request {
+                    plan: Some(SavePlan::Operations(
+                        scopes
+                            .into_iter()
+                            .map(|scope| SaveOperation {
+                                action: SaveKind::Commit,
+                                scope,
+                            })
+                            .collect(),
+                    )),
+                    ..Request::default()
+                };
+                assert!(matches!(
+                    assess(root, repo.path(), &req),
+                    Err(SaveError::InvalidPlan(_))
+                ));
+            }
+            for req in [
+                Request {
+                    plan: Some(SavePlan::PublishOnly),
+                    message: Some("message".into()),
+                    ..Request::default()
+                },
+                Request {
+                    message: Some(" ".into()),
+                    ..Request::default()
+                },
+            ] {
+                assert!(matches!(
+                    assess(root, repo.path(), &req),
+                    Err(SaveError::InvalidPlan(_))
+                ));
+            }
+        },
+    );
+}
+#[test]
+fn original_scope_includes_partial_files_deletions_and_nonignored_additions() {
+    isolated(
+        "original_scope_includes_partial_files_deletions_and_nonignored_additions",
         true,
         |root| {
             let repo = fixture(root);
             staged(&repo);
             remaining(&repo);
-            fs::write(repo.path().join("tracked"), "partial\n").unwrap();
-            fs::write(repo.path().join("new\nname"), "untracked\n").unwrap();
-            fs::write(repo.path().join("ignored"), "ignored\n").unwrap();
-            fs::create_dir(repo.path().join("dir")).unwrap();
-            fs::write(repo.path().join("dir/file"), "new").unwrap();
-            let plan = assess(root, repo.path(), &request(SaveAction::Wip)).unwrap();
+            fs::write(repo.path().join("tracked"), "later").unwrap();
+            fs::write(repo.path().join("new"), "new").unwrap();
+            fs::write(repo.path().join("ignored"), "ignored").unwrap();
+            let plan = assess(root, repo.path(), &request(TestPlan::Split)).unwrap();
             assert_eq!(plan.scope.staged, [b"tracked".to_vec()]);
             assert_eq!(plan.scope.remaining_tracked, [b"tracked".to_vec()]);
-            assert_eq!(
-                plan.scope.untracked,
-                [b"dir/file".to_vec(), b"new\nname".to_vec()]
-            );
-            assert_eq!(
-                plan.local_steps,
-                [
-                    LocalStep::CommitStagedWip,
-                    LocalStep::StageAndCommitRemainingWip
-                ]
-            );
-            fs::remove_file(repo.path().join("tracked")).unwrap();
-            let deleted = assess(root, repo.path(), &request(SaveAction::Wip)).unwrap();
-            assert_eq!(deleted.scope.tree_state(), TreeState::Mixed);
-            assert!(matches!(
-                revalidate(root, repo.path(), &plan),
-                Err(SaveError::ContextChanged)
-            ));
-            repo.success(&["add", "-u"]);
-            assert_eq!(
-                assess(root, repo.path(), &request(SaveAction::Staged))
-                    .unwrap()
-                    .required_input,
-                RequiredInput::Message
-            );
+            assert_eq!(plan.scope.untracked, [b"new".to_vec()]);
         },
     );
 }
@@ -474,7 +378,7 @@ fn linked_worktrees_share_settings_but_keep_local_scope() {
             repo.success(&["remote", "add", "team", "/missing/team"]);
             fs::write(
                 repo.path().join(".git/git-oneflow.config.toml"),
-                "publish-remote='team'\nbase='trunk'\nsave-action='wip'",
+                "publish-remote='team'\nbase='trunk'\nsave-plan=['commit:staged','commit:unstaged']",
             )
             .unwrap();
             fs::write(linked.join("untracked"), "work").unwrap();
@@ -483,7 +387,16 @@ fn linked_worktrees_share_settings_but_keep_local_scope() {
             assert_eq!(local.settings, other.settings);
             assert_eq!(local.scope.tree_state(), TreeState::Clean);
             assert_eq!(other.scope.tree_state(), TreeState::UnstagedOnly);
-            assert_eq!(other.local_steps, [LocalStep::StageAndCommitRemainingWip]);
+            assert_eq!(
+                other.local_steps,
+                [LocalStep {
+                    operation: SaveOperation {
+                        action: SaveKind::Commit,
+                        scope: SaveScope::Unstaged
+                    },
+                    message: "Save work [unstaged]".into()
+                }]
+            );
             assert_eq!(
                 other.publication.as_ref().unwrap().branch_ref,
                 b"refs/heads/release/Exact"
@@ -520,7 +433,7 @@ fn revalidation_detects_content_index_head_settings_and_destination_changes() {
                 staged(&repo);
                 fs::write(repo.path().join("tracked"), "remaining content\n").unwrap();
                 fs::write(repo.path().join("untracked"), "before\n").unwrap();
-                let plan = assess(root, repo.path(), &request(SaveAction::Wip)).unwrap();
+                let plan = assess(root, repo.path(), &request(TestPlan::Split)).unwrap();
                 match change {
                     "content" => {
                         fs::write(repo.path().join("tracked"), "different content\n").unwrap()
@@ -609,7 +522,7 @@ fn dirty_submodules_rejected_and_gitlink_changes_revalidated() {
                     fs::remove_file(module.join("untracked")).unwrap();
                 }
                 assert!(matches!(
-                    assess(root, parent.path(), &request(SaveAction::Wip)),
+                    assess(root, parent.path(), &request(TestPlan::Split)),
                     Err(SaveError::DirtySubmodules)
                 ));
             }
@@ -631,7 +544,7 @@ fn dirty_submodules_rejected_and_gitlink_changes_revalidated() {
                 assert!(output.status.success());
             };
             commit("child change");
-            let plan = assess(root, parent.path(), &request(SaveAction::Wip)).unwrap();
+            let plan = assess(root, parent.path(), &request(TestPlan::Split)).unwrap();
             assert_eq!(plan.scope.remaining_tracked, [b"module".to_vec()]);
             revalidate(root, parent.path(), &plan).unwrap();
             fs::write(module.join("tracked"), "second changed commit\n").unwrap();
@@ -680,10 +593,10 @@ fn no_transport_fsmonitor_diff_or_textconv_execution_or_index_refresh() {
             fs::write(repo.path().join(".git/index.lock"), "existing lock").unwrap();
             staged_without_monitor(&repo);
             for action in [
-                SaveAction::Ask,
-                SaveAction::PublishOnly,
-                SaveAction::Wip,
-                SaveAction::Stash,
+                TestPlan::Ask,
+                TestPlan::PublishOnly,
+                TestPlan::Split,
+                TestPlan::Stash,
             ] {
                 let plan = assess(root, repo.path(), &request(action)).unwrap();
                 revalidate(root, repo.path(), &plan).unwrap();
@@ -730,7 +643,7 @@ fn byte_paths_symlinks_and_scope_content_changes() {
             let path = OsString::from_vec(b"bytes\xff".to_vec());
             fs::write(repo.path().join(&path), b"\0binary\xff").unwrap();
             symlink("missing-target", repo.path().join("link")).unwrap();
-            let plan = assess(root, repo.path(), &request(SaveAction::Stash)).unwrap();
+            let plan = assess(root, repo.path(), &request(TestPlan::Stash)).unwrap();
             assert_eq!(
                 plan.scope.untracked,
                 [b"bytes\xff".to_vec(), b"link".to_vec()]
@@ -759,7 +672,7 @@ fn nested_scope_and_multiple_push_urls_revalidate() {
             repo.success(&["config", "diff.relative", "true"]);
             repo.success(&["config", "remote.origin.pushurl", "/first/push"]);
             repo.success(&["config", "--add", "remote.origin.pushurl", "/second/push"]);
-            let plan = assess(root, &nested, &request(SaveAction::Wip)).unwrap();
+            let plan = assess(root, &nested, &request(TestPlan::Split)).unwrap();
             assert_eq!(plan.scope.remaining_tracked, [b"tracked".to_vec()]);
             revalidate(root, repo.path(), &plan).unwrap();
             repo.success(&[

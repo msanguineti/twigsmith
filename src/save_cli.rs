@@ -15,7 +15,7 @@ use crate::{
         execution::{self, Effect, ExecutionError, LocalObservation, Operation, Report},
         publication::{DestinationState, PublicationState, PublishError, TrackingState},
     },
-    settings::SaveAction,
+    settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
     status::display,
 };
 
@@ -23,45 +23,94 @@ fn text(value: impl std::fmt::Display) -> String {
     display(value.to_string().as_bytes())
 }
 
-fn parse(args: &[OsString]) -> Result<Request, &'static str> {
+fn parse(args: &[OsString]) -> Result<Request, String> {
     let mut request = Request::default();
+    let mut operations = Vec::new();
+    let mut publish_only = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        let action = match arg.to_str() {
-            Some("--publish-only") => SaveAction::PublishOnly,
-            Some("--staged") => SaveAction::Staged,
-            Some("--wip") => SaveAction::Wip,
-            Some("--stash") => SaveAction::Stash,
-            Some("--message") => {
-                if request.message.is_some() {
-                    return Err("duplicate --message");
+        match arg.to_str() {
+            Some("--publish-only") => {
+                if publish_only {
+                    return Err("duplicate --publish-only".into());
+                }
+                publish_only = true;
+            }
+            Some("--commit" | "--stash") => {
+                let action = if arg == "--commit" {
+                    SaveKind::Commit
+                } else {
+                    SaveKind::Stash
+                };
+                let scope = match args.next().and_then(|value| value.to_str()) {
+                    Some("all") => SaveScope::All,
+                    Some("staged") => SaveScope::Staged,
+                    Some("unstaged") => SaveScope::Unstaged,
+                    _ => {
+                        return Err(format!(
+                            "{} requires all, staged, or unstaged",
+                            arg.to_string_lossy()
+                        ));
+                    }
+                };
+                operations.push(SaveOperation { action, scope });
+            }
+            Some("--message" | "--stash-message") => {
+                let label = if arg == "--message" {
+                    &mut request.message
+                } else {
+                    &mut request.stash_message
+                };
+                if label.is_some() {
+                    return Err(format!("duplicate {}", arg.to_string_lossy()));
                 }
                 let message = args
                     .next()
-                    .and_then(|arg| arg.to_str())
-                    .ok_or("--message requires a literal UTF-8 value")?;
-                if message.contains('\0') {
-                    return Err("--message cannot contain NUL");
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| {
+                        format!("{} requires a literal UTF-8 value", arg.to_string_lossy())
+                    })?;
+                if message.contains('\0') || message.trim().is_empty() {
+                    return Err(format!(
+                        "{} requires a nonblank value without NUL",
+                        arg.to_string_lossy()
+                    ));
                 }
-                request.message = Some(message.to_owned());
-                continue;
+                *label = Some(message.to_owned());
             }
-            _ => return Err("unknown or malformed save argument"),
-        };
-        if request.action.replace(action).is_some() {
-            return Err("save action flags must appear once and are mutually exclusive");
+            Some("--staged" | "--wip") => {
+                return Err(
+                    "retired save action; use --commit staged or --commit staged --commit unstaged"
+                        .into(),
+                );
+            }
+            _ => return Err("unknown or malformed save argument".into()),
         }
     }
-    if request.message.is_some()
-        && request
-            .action
-            .is_some_and(|action| action != SaveAction::Staged)
-    {
-        return Err(
-            "--message requires the staged action; use gof save --staged --message \"Your commit message\"",
-        );
+    if publish_only && !operations.is_empty() {
+        return Err("--publish-only cannot be combined with --commit or --stash".into());
+    }
+    request.plan = if publish_only {
+        Some(SavePlan::PublishOnly)
+    } else if operations.is_empty() {
+        None
+    } else {
+        Some(SavePlan::Operations(operations))
+    };
+    if let Some(plan) = &request.plan {
+        plan.validate()?;
+        if request.message.is_some() && !uses(plan, SaveKind::Commit) {
+            return Err("--message requires a plan containing a commit action".into());
+        }
+        if request.stash_message.is_some() && !uses(plan, SaveKind::Stash) {
+            return Err("--stash-message requires a plan containing a stash action".into());
+        }
     }
     Ok(request)
+}
+
+fn uses(plan: &SavePlan, action: SaveKind) -> bool {
+    matches!(plan, SavePlan::Operations(operations) if operations.iter().any(|operation| operation.action == action))
 }
 
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -71,7 +120,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
     }
     let mut request = match parse(args) {
         Ok(request) => request,
-        Err(error) => return syntax_error(error),
+        Err(error) => return syntax_error(&error),
     };
     let directory = match env::current_dir() {
         Ok(directory) => directory,
@@ -89,63 +138,19 @@ pub fn run(args: &[OsString]) -> ExitCode {
     };
     if plan.required_input != RequiredInput::None {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-            crate::presentation::error(format!(
-                "error: save requires {}; no interactive terminal is available",
-                if plan.required_input == RequiredInput::Action {
-                    "an action"
-                } else {
-                    "a staged commit message"
-                }
-            ));
+            crate::presentation::error(
+                "error: save requires an action; no interactive terminal is available",
+            );
             eprintln!(
-                "select --publish-only, --staged --message <message>, --wip, or --stash; or configure save-action in git-oneflow.config.toml"
+                "select --commit <scope>, --stash <scope>, or --publish-only; or configure save-plan in git-oneflow.config.toml"
             );
             return ExitCode::FAILURE;
         }
         scope_summary(&plan);
         let approved = plan.clone();
         let input = (|| -> Result<(), InputError> {
-            if plan.required_input == RequiredInput::Action {
-                let choices = plan
-                    .applicable_actions
-                    .iter()
-                    .map(|action| (action_name(*action), choice(*action)))
-                    .chain(std::iter::once(("cancel", "Cancel")))
-                    .collect::<Vec<_>>();
-                let action = crate::presentation::select_described(
-                    "How would you like to save this work?",
-                    &choices,
-                    None,
-                )
-                .map_err(InputError::Io)?
-                .ok_or(InputError::Cancelled)?;
-                if action.trim() == "cancel" {
-                    return Err(InputError::Cancelled);
-                }
-                request.action = Some(
-                    plan.applicable_actions
-                        .iter()
-                        .copied()
-                        .find(|candidate| action_name(*candidate) == action.trim())
-                        .ok_or(InputError::InvalidChoice)?,
-                );
-                plan = resolve(&directory, &approved, &request)?;
-            }
-            if plan.required_input == RequiredInput::Message {
-                loop {
-                    request.message = Some(read_input("Staged commit message")?);
-                    match resolve(&directory, &approved, &request) {
-                        Ok(resolved) => {
-                            plan = resolved;
-                            break;
-                        }
-                        Err(SaveError::BlankMessage) => {
-                            eprintln!("Enter a nonblank staged commit message.");
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            }
+            request.plan = Some(select_plan()?);
+            plan = resolve(&directory, &approved, &request)?;
             Ok(())
         })();
         if let Err(error) = input {
@@ -185,10 +190,89 @@ impl From<SaveError> for InputError {
         Self::Save(error)
     }
 }
-fn read_input(prompt: &str) -> Result<String, InputError> {
-    crate::presentation::input(prompt)
+fn select(prompt: &str, choices: &[(&str, &str)]) -> Result<String, InputError> {
+    let value = crate::presentation::select_described(prompt, choices, None)
         .map_err(InputError::Io)?
-        .ok_or(InputError::Cancelled)
+        .ok_or(InputError::Cancelled)?;
+    if value == "cancel" {
+        return Err(InputError::Cancelled);
+    }
+    Ok(value)
+}
+fn select_plan() -> Result<SavePlan, InputError> {
+    let choice = select(
+        "How would you like to save this work?",
+        &[
+            ("commit-all", "Commit staged and unstaged work together"),
+            (
+                "stash-all",
+                "Stash staged and unstaged work together locally",
+            ),
+            ("staged-first", "Choose each group separately, staged first"),
+            (
+                "unstaged-first",
+                "Choose each group separately, unstaged first",
+            ),
+            (
+                "publish-only",
+                "Publish existing commits; keep uncommitted work local",
+            ),
+            ("cancel", "Cancel"),
+        ],
+    )?;
+    let together = |action| {
+        SavePlan::Operations(vec![SaveOperation {
+            action,
+            scope: SaveScope::All,
+        }])
+    };
+    match choice.as_str() {
+        "commit-all" => Ok(together(SaveKind::Commit)),
+        "stash-all" => Ok(together(SaveKind::Stash)),
+        "publish-only" => Ok(SavePlan::PublishOnly),
+        "staged-first" | "unstaged-first" => {
+            let scopes = if choice == "staged-first" {
+                [SaveScope::Staged, SaveScope::Unstaged]
+            } else {
+                [SaveScope::Unstaged, SaveScope::Staged]
+            };
+            let mut operations = Vec::new();
+            for scope in scopes {
+                let prompt = if scope == SaveScope::Staged {
+                    "How should staged changes be preserved?"
+                } else {
+                    "How should unstaged changes be preserved?"
+                };
+                let action = select(
+                    prompt,
+                    &[
+                        ("commit", "Commit this group, then publish branch commits"),
+                        ("stash", "Stash this group locally"),
+                        ("leave", "Leave this group local"),
+                        ("cancel", "Cancel the whole save"),
+                    ],
+                )?;
+                match action.as_str() {
+                    "commit" => operations.push(SaveOperation {
+                        action: SaveKind::Commit,
+                        scope,
+                    }),
+                    "stash" => operations.push(SaveOperation {
+                        action: SaveKind::Stash,
+                        scope,
+                    }),
+                    "leave" => {}
+                    _ => return Err(InputError::InvalidChoice),
+                }
+            }
+            if operations.is_empty() {
+                Ok(SavePlan::PublishOnly)
+            } else {
+                Ok(SavePlan::Operations(operations))
+            }
+        }
+        _ => Err(InputError::InvalidChoice),
+    }
 }
 
 fn resolve(directory: &Path, approved: &Plan, request: &Request) -> Result<Plan, SaveError> {
@@ -197,24 +281,6 @@ fn resolve(directory: &Path, approved: &Plan, request: &Request) -> Result<Plan,
     let resolved = save::assess(directory, request)?;
     save::revalidate(directory, approved)?;
     Ok(resolved)
-}
-fn action_name(action: SaveAction) -> &'static str {
-    match action {
-        SaveAction::Ask => "ask",
-        SaveAction::PublishOnly => "publish-only",
-        SaveAction::Staged => "staged",
-        SaveAction::Wip => "wip",
-        SaveAction::Stash => "stash",
-    }
-}
-fn choice(action: SaveAction) -> &'static str {
-    match action {
-        SaveAction::PublishOnly => "Publish existing commits; keep uncommitted work local",
-        SaveAction::Staged => "Commit staged work and publish; keep other work local",
-        SaveAction::Wip => "Checkpoint staged and remaining work separately, then publish",
-        SaveAction::Stash => "Stash tracked/untracked work locally; publish existing commits",
-        SaveAction::Ask => unreachable!("ask is not an applicable execution action"),
-    }
 }
 fn scope_summary(plan: &Plan) {
     crate::presentation::section("Save work");
@@ -226,18 +292,13 @@ fn scope_summary(plan: &Plan) {
         plan.scope.remaining_tracked.len(),
         plan.scope.untracked.len()
     ));
-    crate::presentation::prose("Ignored files stay local.");
+    crate::presentation::prose("Ignored untracked files stay local.");
 }
 fn syntax_error(error: &str) -> ExitCode {
     crate::presentation::error(format!("error: {error}; use save --help (alias: v)"));
     ExitCode::from(2)
 }
 fn assessment_error(error: &SaveError) -> ExitCode {
-    if matches!(error, SaveError::MessageNotApplicable) {
-        return syntax_error(
-            "--message requires the staged action; use gof save --staged --message \"Your commit message\"",
-        );
-    }
     crate::presentation::error(format!("error: {}", text(error)));
     match error {
         SaveError::Inspection(error) | SaveError::InvalidRemote { source: error, .. } => {
@@ -246,12 +307,6 @@ fn assessment_error(error: &SaveError) -> ExitCode {
         SaveError::Settings(_) => eprintln!(
             "check the reported configuration file; run gof config show to inspect settings and their sources"
         ),
-        SaveError::NoStagedChanges => eprintln!(
-            "stage the intended selection yourself, or select --publish-only, --wip, or --stash"
-        ),
-        SaveError::BlankMessage => {
-            eprintln!("supply a nonblank --message for staged work; no editor is launched")
-        }
         SaveError::ContextChanged => eprintln!(
             "inspect the changed branch/settings/index/work and rerun save to approve its current scope"
         ),
@@ -417,27 +472,44 @@ fn render(plan: &Plan, report: &Report) -> String {
                     text(message)
                 );
             }
-            Effect::StagedRemaining { scope } => {
+            Effect::LocalStash { commit, message } => {
                 let _ = writeln!(
                     out,
-                    "Staged remaining work: {} tracked and {} untracked paths.",
-                    scope.remaining_tracked.len(),
-                    scope.untracked.len()
-                );
-            }
-            Effect::LocalStash { commit } => {
-                let _ = writeln!(
-                    out,
-                    "Retained local stash: {} (contents not remotely published).",
-                    display(commit)
+                    "Retained local stash: {} (label: {}; contents not remotely published).",
+                    display(commit),
+                    text(message)
                 );
                 let _ = writeln!(
                     out,
-                    "Recover when ready with git stash apply --index {} after inspecting git stash list/show; save does not restore or drop it.",
+                    "Inspect git stash show {}. Restore this artifact in a separate directory with git worktree add --detach <new-directory> {}^1, then git -C <new-directory> stash apply --index {}.",
+                    display(commit),
+                    display(commit),
                     display(commit)
                 );
             }
         }
+    }
+    if report
+        .effects
+        .iter()
+        .filter(|effect| matches!(effect, Effect::LocalStash { .. }))
+        .count()
+        > 1
+    {
+        let _ = writeln!(
+            out,
+            "To recover both groups together, create one worktree at the staged stash's first parent; apply the staged stash first, then the unstaged stash, both with --index, regardless of their creation order."
+        );
+    }
+    if report
+        .effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::LocalStash { .. }))
+    {
+        let _ = writeln!(
+            out,
+            "Applying a staged stash over remaining unstaged edits can conflict. Separate-worktree recovery preserves the current checkout; save keeps the stash entries until you remove them."
+        );
     }
     out.push('\n');
     match &report.publication {
@@ -539,11 +611,29 @@ fn render(plan: &Plan, report: &Report) -> String {
         for command in &report.commands {
             let label = match &command.operation {
                 Operation::CommitIndex { .. } => "Local commit process",
-                Operation::StageRemaining { .. } => "Local staging process",
                 Operation::Stash { .. } => "Local stash process",
+                Operation::PrepareIndex { .. } => "Group preparation process",
+                Operation::Reconcile { .. } => "Remaining work reconciliation process",
             };
             diagnostics(&mut out, label, &command.result);
         }
+    }
+    if let Some(recovery) = &report.recovery
+        && recovery.retained
+    {
+        let _ = writeln!(
+            out,
+            "\nRetained save recovery: {} at {}.",
+            display(&recovery.commit),
+            text(&recovery.reference)
+        );
+        let _ = writeln!(
+            out,
+            "This snapshot preserves the original staged/unstaged work. Inspect git stash show {}. Reconstruct the original work in a separate directory with git worktree add --detach <new-directory> {}^1, then git -C <new-directory> stash apply --index {}. Recovery references are listed by git for-each-ref refs/git-oneflow/save-recovery/; remove one only after recovery is verified.",
+            display(&recovery.commit),
+            display(&recovery.commit),
+            display(&recovery.commit)
+        );
     }
     out.push('\n');
     local_state(&mut out, &report.after, report, &plan.branch);
@@ -558,49 +648,57 @@ fn render(plan: &Plan, report: &Report) -> String {
 
 fn help() {
     println!(
-        r#"Preserve progress and publish the current branch. Alias: v.
+        r#"Preserve selected work and publish the current branch. Alias: v.
 
-Usage: git-oneflow save [ACTION] [--message <message>]
+Usage: git-oneflow save [ACTION ...] [LABELS]
 
 Options:
-  --publish-only       Publish existing commits; keep uncommitted work local
-  --staged             Commit the index selection, then publish
-  --wip                Checkpoint staged and remaining work separately, then publish
-  --stash              Stash tracked/untracked work locally; publish existing commits
-  --message <message>  Supply the staged commit message
-  -h, --help           Show help
+  --commit <scope>         Commit all, staged, or unstaged changes
+  --stash <scope>          Stash all, staged, or unstaged changes locally
+  --publish-only          Publish existing commits; keep uncommitted work local
+  --message <message>     Override the commit message
+  --stash-message <label> Override the local stash label
+  -h, --help              Show help
 
 Examples:
   gof save
-  gof v --wip
-  gof save --staged --message "Fix parser selection"
-  gof save --stash
+  gof v --commit all
+  gof save --commit staged --stash unstaged
+  gof save --stash staged --commit unstaged --message "Preserve progress"
+  gof save --stash staged --stash unstaged
 
 Notes:
-  Choose one action flag to override save-action. Clean trees publish directly;
-  dirty trees default to ask. Use arrow keys and Enter for finite choices, or type
-  a displayed number or action name. Invalid choices and blank messages stay correctable.
-  Prompts require terminal input and stderr. Esc, Ctrl-C/Ctrl-D or end-of-input stops
-  the prompt; cancel stops action selection. A staged message can contain literal cancel.
-  --message requires the staged action; it does not select that action.
-  Staged work needs a nonblank message; supply one or enter it at a terminal.
-  WIP keeps staged and remaining work in separate commits. Stashes remain local.
-  Ignored files stay outside checkpoints. Unselected local work remains available.
+  Repeat --commit or --stash to select separate staged and unstaged artifacts.
+  Operations run in the supplied order. all selects both groups in one artifact;
+  all overlaps either separate group. Duplicate and overlapping selections fail.
+  --publish-only is exclusive. Action flags replace the configured plan as a whole.
+  Label-only options retain the configured plan; each requires its action type.
+  A label applies to every artifact of that type. Separate groups append
+  " [staged]" or " [unstaged]"; all uses the label unchanged. Git's normal
+  commit-message cleanup, hooks, and signing remain active. Stash labels stay literal.
+  Empty selected groups are skipped; remaining branch commits are still published.
+  Dirty trees default to ask; clean trees publish without asking. Resolved plans
+  use useful default labels and need no confirmation or message-entry prompt.
+  Use arrow keys and Enter, or type a displayed name or number. Invalid choices
+  stay correctable. Esc, Ctrl-C/Ctrl-D, end-of-input, or cancel stops unresolved
+  selection without save effects. Prompts require terminal input and stderr.
+  Changes refer to the original index and working tree. Unselected work and ignored
+  untracked files remain local. Inseparable changes fail before preservation.
+  Stashes remain local; reports give object identities for native Git recovery.
   Publication creates or fast-forwards the same branch on publish-remote without
-  fetching the project base. Existing publication-branch or project-base tracking
-  is preserved; absent tracking is set after confirmed publication.
-  Save needs an attached work branch with a commit, distinct from the base.
-  Conflicts, active Git operations, dirty submodules and conflicting routing block save.
-  Failures retain completed effects; inspect the report before retrying.
+  fetching the project base. Existing valid tracking is preserved; absent tracking
+  is set after confirmed publication. Conflicts, active Git operations, dirty
+  submodules and conflicting routing block save. Failures retain completed effects.
 
 Settings:
-  save-action: ask (default), publish-only, staged, wip, stash.
+  save-plan: ["ask"] (default), ["publish-only"], or ordered action:scope entries,
+    for example ["commit:staged", "stash:unstaged"].
+  save-message and save-stash-message: nonblank literal default labels.
   publish-remote: origin; base-remote follows publication; base: main (defaults).
-  Scripts must resolve the action and any required message with flags or settings.
   Run gof config for setup or gof config show to inspect effective settings.
 
 Exit status:
-  0  Selected action completed, including unchanged publication
+  0  Selected plan completed, including unchanged publication
   1  Failure, unresolved input, cancellation, or incomplete execution
   2  Invalid syntax"#
     );

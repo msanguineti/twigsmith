@@ -298,21 +298,45 @@ const SAVE_CHOICES: &[(&str, &str)] = &[
     ("ask", "Choose when saving uncommitted work"),
     (
         "publish-only",
-        "Publish existing commits; leave uncommitted work local",
+        "Publish commits; leave uncommitted work local",
+    ),
+    ("commit:all", "Commit all changes together, then publish"),
+    (
+        "commit:staged,commit:unstaged",
+        "Commit staged and unstaged changes separately",
     ),
     (
-        "staged",
-        "Commit staged changes with your message, then publish",
+        "stash:all",
+        "Stash all local changes together, then publish commits",
     ),
     (
-        "wip",
-        "Checkpoint staged and remaining work separately, then publish",
+        "stash:staged,stash:unstaged",
+        "Stash staged and unstaged changes separately",
     ),
     (
-        "stash",
-        "Keep a local stash including untracked work; publish existing commits",
+        "commit:staged,stash:unstaged",
+        "Commit staged changes, stash unstaged changes",
+    ),
+    (
+        "stash:staged,commit:unstaged",
+        "Stash staged changes, commit unstaged changes",
+    ),
+    (
+        "custom",
+        "Enter an ordered plan selecting either or both groups",
     ),
 ];
+fn parse_save_input(value: &str) -> Result<settings::SavePlan, String> {
+    if value.trim().is_empty() {
+        return Ok(settings::SavePlan::Operations(vec![]));
+    }
+    settings::SavePlan::parse(
+        &value
+            .split(',')
+            .map(|entry| entry.trim().to_owned())
+            .collect::<Vec<_>>(),
+    )
+}
 const MODE_CHOICES: &[(&str, &str)] = &[
     ("ask", "Choose review or direct delivery when finishing"),
     ("review", "Prepare and publish work for manual review"),
@@ -380,23 +404,73 @@ const HISTORY_CHOICES: &[(&str, &str)] = &[
 fn save_group(plan: &mut config::GenerationPlan) -> Result<bool, ConfigError> {
     crate::presentation::section("Saving work");
     crate::presentation::prose(&format!(
-        "Uncommitted work: {}. Clean work publishes existing commits directly.",
-        description(SAVE_CHOICES, plan.proposed.save_action.as_str())
+        "Plan: {}. Clean work publishes existing commits directly.",
+        text(plan.proposed.save_plan.summary())
     ));
     let Some(edit) = edit_group("Saving preferences: ")? else {
         return Ok(false);
     };
-    if edit {
-        let Some(value) = choose(
-            "When saving uncommitted work: ",
-            plan.proposed.save_action.as_str(),
-            SAVE_CHOICES,
-            settings::parse_action,
-        )?
+    if !edit {
+        return Ok(true);
+    }
+    loop {
+        let current = plan.proposed.save_plan.tokens().join(",");
+        let default = if SAVE_CHOICES.iter().any(|(key, _)| *key == current) {
+            current.as_str()
+        } else {
+            "custom"
+        };
+        let Some(mut answer) = described("When saving uncommitted work: ", SAVE_CHOICES, default)?
         else {
             return Ok(false);
         };
-        plan.proposed.save_action = value;
+        if answer == "custom" {
+            crate::presentation::prose(
+                "Enter ordered commit:all|staged|unstaged or stash:all|staged|unstaged entries separated by commas. Select each group once; all consumes both.",
+            );
+            let Some(value) = input(&format!("Save plan [{}]: ", text(&current)))? else {
+                return Ok(false);
+            };
+            answer = if value.is_empty() { current } else { value };
+        }
+        match parse_save_input(&answer) {
+            Ok(value) => {
+                plan.proposed.save_plan = value;
+                break;
+            }
+            Err(reason) => crate::presentation::prose(&reason),
+        }
+    }
+    for stash in [false, true] {
+        loop {
+            let (key, value) = if stash {
+                ("save-stash-message", &mut plan.proposed.save_stash_message)
+            } else {
+                ("save-message", &mut plan.proposed.save_message)
+            };
+            let Some(answer) = input(&format!(
+                "{} [{}]: ",
+                if stash {
+                    "Stash label"
+                } else {
+                    "Commit message"
+                },
+                text(&*value)
+            ))?
+            else {
+                return Ok(false);
+            };
+            if answer.is_empty() {
+                break;
+            }
+            match settings::validate_save_label(key, &answer) {
+                Ok(()) => {
+                    *value = answer;
+                    break;
+                }
+                Err(reason) => crate::presentation::prose(&reason),
+            }
+        }
     }
     Ok(true)
 }
@@ -717,16 +791,14 @@ fn finish_summary(value: &settings::Settings) {
 fn workflow_summary(value: &settings::Settings) {
     use settings::{
         FinishCheckout, FinishCleanup, FinishIntegration, FinishMessage, FinishMode, FinishRewrite,
-        FinishUpdate, SaveAction,
+        FinishUpdate,
     };
-    let saving = match value.save_action {
-        SaveAction::Ask => "choose how to preserve uncommitted work",
-        SaveAction::PublishOnly => "publish commits; leave uncommitted work local",
-        SaveAction::Staged => "commit staged work, then publish",
-        SaveAction::Wip => "checkpoint staged and remaining work, then publish",
-        SaveAction::Stash => "stash local work; publish existing commits",
-    };
-    crate::presentation::prose(&format!("Save: {saving}."));
+    crate::presentation::prose(&format!(
+        "Save: {}. Commit message: {}; stash label: {}.",
+        text(value.save_plan.summary()),
+        text(&value.save_message),
+        text(&value.save_stash_message)
+    ));
     let delivery = match value.finish_mode {
         FinishMode::Ask => "choose review or direct delivery",
         FinishMode::Review => "prepare and publish for manual review",
@@ -993,10 +1065,16 @@ fn private_summary(
     );
     changed!(base_remote, "project remote", text(&effective.base_remote));
     changed!(base, "project base", text(&effective.base));
+    changed!(save_plan, "saving", text(effective.save_plan.summary()));
     changed!(
-        save_action,
-        "saving",
-        description(SAVE_CHOICES, effective.save_action.as_str())
+        save_message,
+        "commit message",
+        text(&effective.save_message)
+    );
+    changed!(
+        save_stash_message,
+        "stash label",
+        text(&effective.save_stash_message)
     );
     changed!(
         finish_mode,
@@ -1503,10 +1581,24 @@ fn show(inspection: &config::Inspection) {
         source(&settings.sources.base)
     );
     println!(
-        "  save-action: {} ({})",
-        settings.save_action.as_str(),
-        source(&settings.sources.save_action)
+        "  save-plan: {} ({})",
+        text(settings.save_plan.summary()),
+        source(&settings.sources.save_plan)
     );
+    for (key, value, origin) in [
+        (
+            "save-message",
+            &settings.save_message,
+            &settings.sources.save_message,
+        ),
+        (
+            "save-stash-message",
+            &settings.save_stash_message,
+            &settings.sources.save_stash_message,
+        ),
+    ] {
+        println!("  {key}: {} ({})", text(value), source(origin));
+    }
     for (key, value, origin) in [
         (
             "finish-update",
@@ -1709,7 +1801,8 @@ Notes:
 
 Defaults:
   publish-remote: origin; base-remote follows publication; base: main.
-  save-action, finish-mode, finish-update, finish-rewrite: ask.
+  save-plan: ["ask"]. save-message: Save work. save-stash-message: Saved work.
+  finish-mode, finish-update, finish-rewrite: ask.
   finish-integration, finish-message, finish-cleanup: ask; finish-checkout: target.
   finish-history-edit: none; finish-checks: [].
 

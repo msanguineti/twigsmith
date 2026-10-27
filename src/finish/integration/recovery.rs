@@ -100,7 +100,9 @@ impl Record {
         [
             &sources.publish_remote,
             &sources.base,
-            &sources.save_action,
+            &sources.save_plan,
+            &sources.save_message,
+            &sources.save_stash_message,
             &sources.finish_mode,
             &sources.finish_integration,
             &sources.finish_message,

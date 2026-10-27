@@ -6,7 +6,7 @@ use git_oneflow::{
     git, repository,
     save::{self, ActionSource, Request, SaveError, execution},
     settings::{
-        self, CONFIG_FILES, FinishRewrite, FinishUpdate, HistoryEdit, SaveAction, SettingSource,
+        self, CONFIG_FILES, FinishRewrite, FinishUpdate, HistoryEdit, SavePlan, SettingSource,
         Settings, SettingsError,
     },
     start,
@@ -15,6 +15,9 @@ use preservation::snapshot;
 use std::{fs, path::Path};
 use support::{Repository, isolated};
 
+fn save_plan(value: &str) -> SavePlan {
+    SavePlan::parse(&value.split(',').map(str::to_owned).collect::<Vec<_>>()).unwrap()
+}
 fn load(directory: &Path) -> Result<Settings, SettingsError> {
     settings::load(
         directory,
@@ -29,10 +32,17 @@ fn load_all(directory: &Path) -> settings::LoadedSettings {
     .unwrap()
 }
 fn config(format: usize, pairs: &[(&str, &str)]) -> String {
+    fn value(key: &str, value: &str) -> String {
+        if key == "save-plan" {
+            serde_json::to_string(&value.split(',').collect::<Vec<_>>()).unwrap()
+        } else {
+            serde_json::to_string(value).unwrap()
+        }
+    }
     match format {
         0 => pairs
             .iter()
-            .map(|(k, v)| format!("{k} = {}\n", serde_json::to_string(v).unwrap()))
+            .map(|(k, v)| format!("{k} = {}\n", value(k, v)))
             .collect(),
         1 | 2 => {
             if pairs.is_empty() {
@@ -40,7 +50,7 @@ fn config(format: usize, pairs: &[(&str, &str)]) -> String {
             } else {
                 pairs
                     .iter()
-                    .map(|(k, v)| format!("{k}: {}\n", serde_json::to_string(v).unwrap()))
+                    .map(|(k, v)| format!("{k}: {}\n", value(k, v)))
                     .collect()
             }
         }
@@ -48,7 +58,7 @@ fn config(format: usize, pairs: &[(&str, &str)]) -> String {
             "{{{}}}",
             pairs
                 .iter()
-                .map(|(k, v)| format!("{k:?}: {}", serde_json::to_string(v).unwrap()))
+                .map(|(k, v)| format!("{k:?}: {}", value(k, v)))
                 .collect::<Vec<_>>()
                 .join(",")
         ),
@@ -80,7 +90,7 @@ fn formats_share_sparse_resolution_defaults_and_sources() {
                     &[
                         ("publish-remote", "team/upstream"),
                         ("base", "Feature/École"),
-                        ("save-action", "stash"),
+                        ("save-plan", "stash:all"),
                     ],
                 );
                 for (local, local_file) in CONFIG_FILES.iter().enumerate() {
@@ -88,22 +98,26 @@ fn formats_share_sparse_resolution_defaults_and_sources() {
                     write(
                         &common,
                         local,
-                        &[("publish-remote", "private"), ("save-action", "wip")],
+                        &[
+                            ("publish-remote", "private"),
+                            ("save-plan", "commit:staged,commit:unstaged"),
+                        ],
                     );
                     let before = snapshot(root);
                     let resolved = load(repo.path()).unwrap();
                     assert_eq!(snapshot(root), before);
                     assert_eq!(resolved.publish_remote, "private");
                     assert_eq!(resolved.base, "Feature/École");
-                    assert_eq!(resolved.save_action, SaveAction::Wip);
+                    assert_eq!(
+                        resolved.save_plan,
+                        SavePlan::parse(&["commit:staged".into(), "commit:unstaged".into()])
+                            .unwrap()
+                    );
                     assert_eq!(
                         resolved.sources.publish_remote,
                         SettingSource::Local(common.join(local_file))
                     );
-                    assert_eq!(
-                        resolved.sources.save_action,
-                        resolved.sources.publish_remote
-                    );
+                    assert_eq!(resolved.sources.save_plan, resolved.sources.publish_remote);
                     assert_eq!(
                         resolved.sources.base,
                         SettingSource::Shared(repo.path().join(shared_file))
@@ -114,9 +128,9 @@ fn formats_share_sparse_resolution_defaults_and_sources() {
                 write(repo.path(), shared, &[("base", "trunk")]);
                 let resolved = load(repo.path()).unwrap();
                 assert_eq!(resolved.publish_remote, "origin");
-                assert_eq!(resolved.save_action, SaveAction::Ask);
+                assert_eq!(resolved.save_plan, SavePlan::Ask);
                 assert_eq!(resolved.sources.publish_remote, SettingSource::BuiltIn);
-                assert_eq!(resolved.sources.save_action, SettingSource::BuiltIn);
+                assert_eq!(resolved.sources.save_plan, SettingSource::BuiltIn);
                 fs::remove_file(repo.path().join(shared_file)).unwrap();
             }
         },
@@ -136,7 +150,7 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
                 &[
                     ("publish-remote", "origin"),
                     ("base", "main"),
-                    ("save-action", "wip"),
+                    ("save-plan", "commit:staged,commit:unstaged"),
                 ],
             );
             let invalid = [
@@ -145,10 +159,10 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
                     "other = 'x'",
                     "base='a'\nbase='a'",
                     "publish-remote='a'\npublish-remote='b'",
-                    "save-action='wip'\nsave-action='wip'",
+                    "save-plan=['commit:all']\nsave-plan=['commit:all']",
                     "publish-remote=42",
                     "base=true",
-                    "save-action=[]",
+                    "save-plan=42",
                     "base={nested='x'}",
                     "base=2026-10-08",
                     "[nested]\nbase='main'",
@@ -158,10 +172,10 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
                     "other: x",
                     "base: a\nbase: a",
                     "publish-remote: a\npublish-remote: b",
-                    "save-action: wip\nsave-action: wip",
+                    "save-plan: [commit:all]\nsave-plan: [commit:all]",
                     "publish-remote: 42",
                     "base: true",
-                    "save-action: []",
+                    "save-plan: 42",
                     "base: {nested: x}",
                     "base: null",
                     "base: \n",
@@ -178,10 +192,10 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
                     "other: x",
                     "base: a\nbase: a",
                     "publish-remote: a\npublish-remote: b",
-                    "save-action: wip\nsave-action: wip",
+                    "save-plan: [commit:all]\nsave-plan: [commit:all]",
                     "publish-remote: 42",
                     "base: true",
-                    "save-action: []",
+                    "save-plan: 42",
                     "base: {nested: x}",
                     "base: null",
                 ],
@@ -190,10 +204,10 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
                     "{\"other\":\"x\"}",
                     "{\"base\":\"a\",\"base\":\"a\"}",
                     "{\"publish-remote\":\"a\",\"publish-remote\":\"b\"}",
-                    "{\"save-action\":\"wip\",\"save-action\":\"wip\"}",
+                    "{\"save-plan\":[\"commit:all\"],\"save-plan\":[\"commit:all\"]}",
                     "{\"publish-remote\":42}",
                     "{\"base\":true}",
-                    "{\"save-action\":[]}",
+                    "{\"save-plan\":42}",
                     "{\"base\":{\"nested\":\"x\"}}",
                     "{\"base\":null}",
                     "[]",
@@ -223,15 +237,21 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
                     ("base", "a..b"),
                     ("base", "-branch"),
                     ("base", "bad\0name"),
-                    ("save-action", ""),
-                    ("save-action", "WIP"),
-                    ("save-action", "commit"),
+                    ("save-plan", ""),
+                    ("save-plan", "WIP"),
+                    ("save-plan", "commit"),
                 ] {
                     write(repo.path(), format, &[(key, value)]);
                     assert!(load(repo.path()).is_err(), "{format} {key} {value:?}");
                 }
-                for action in ["ask", "publish-only", "staged", "wip", "stash"] {
-                    write(repo.path(), format, &[("save-action", action)]);
+                for action in [
+                    "ask",
+                    "publish-only",
+                    "commit:staged",
+                    "commit:staged,commit:unstaged",
+                    "stash:all",
+                ] {
+                    write(repo.path(), format, &[("save-plan", action)]);
                     assert!(load(repo.path()).is_ok());
                 }
                 fs::remove_file(path).unwrap();
@@ -239,7 +259,7 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
             // YAML 1.2 boolean spelling leaves these valid Git names as strings.
             fs::write(
                 repo.path().join(CONFIG_FILES[1]),
-                "publish-remote: on\nbase: yes\nsave-action: ask\n",
+                "publish-remote: on\nbase: yes\nsave-plan: [ask]\n",
             )
             .unwrap();
             let shared = load(repo.path()).unwrap();
@@ -257,15 +277,16 @@ fn strict_formats_reject_bad_data_even_when_overridden() {
             repo.success(&["switch", "-c", "work"]);
             fs::write(
                 repo.path().join(".git").join(CONFIG_FILES[3]),
-                "{\"save-action\":null}",
+                "{\"save-plan\":null}",
             )
             .unwrap();
             assert!(matches!(
                 save::assess(
                     repo.path(),
                     &Request {
-                        action: Some(SaveAction::PublishOnly),
-                        message: None
+                        plan: Some(SavePlan::PublishOnly),
+                        message: None,
+                        stash_message: None,
                     }
                 ),
                 Err(SaveError::Settings(_))
@@ -466,7 +487,7 @@ fn start_and_save_consume_each_format_and_existing_action_overrides() {
                     &[
                         ("publish-remote", "team"),
                         ("base", "trunk"),
-                        ("save-action", "stash"),
+                        ("save-plan", "stash:all"),
                     ],
                 );
                 fs::write(remote.path().join("tracked"), "base").unwrap();
@@ -492,33 +513,39 @@ fn start_and_save_consume_each_format_and_existing_action_overrides() {
                 write(
                     &local.path().join(".git"),
                     (format + 1) % 4,
-                    &[("save-action", "wip")],
+                    &[("save-plan", "commit:staged,commit:unstaged")],
                 );
                 fs::write(local.path().join("tracked"), "progress").unwrap();
                 let configured = save::assess(local.path(), &Request::default()).unwrap();
-                assert_eq!(configured.action, SaveAction::Wip);
+                assert_eq!(configured.plan, save_plan("commit:staged,commit:unstaged"));
                 assert_eq!(
                     configured.action_source,
-                    ActionSource::Setting(configured.settings.sources.save_action.clone())
+                    ActionSource::Setting(configured.settings.sources.save_plan.clone())
                 );
-                for flag in [SaveAction::PublishOnly, SaveAction::Stash, SaveAction::Wip] {
+                for flag in [
+                    SavePlan::PublishOnly,
+                    save_plan("stash:all"),
+                    save_plan("commit:staged,commit:unstaged"),
+                ] {
                     let explicit = save::assess(
                         local.path(),
                         &Request {
-                            action: Some(flag),
+                            plan: Some(flag.clone()),
                             message: None,
+                            stash_message: None,
                         },
                     )
                     .unwrap();
-                    assert_eq!(explicit.action, flag);
+                    assert_eq!(explicit.plan, flag);
                     assert_eq!(explicit.action_source, ActionSource::ExplicitSelection);
                 }
                 local.success(&["add", "tracked"]);
                 let staged = save::assess(
                     local.path(),
                     &Request {
-                        action: Some(SaveAction::Staged),
+                        plan: Some(save_plan("commit:staged")),
                         message: Some("exact".into()),
+                        stash_message: None,
                     },
                 )
                 .unwrap();
@@ -532,13 +559,13 @@ fn start_and_save_consume_each_format_and_existing_action_overrides() {
                 );
                 assert_eq!(
                     local.success(&["log", "-1", "--format=%s"]).stdout,
-                    b"[WIP - Staged]\n"
+                    b"Save work [staged]\n"
                 );
                 assert_eq!(
                     save::assess(local.path(), &Request::default())
                         .unwrap()
                         .action_source,
-                    ActionSource::CleanTree
+                    ActionSource::Setting(load(local.path()).unwrap().sources.save_plan)
                 );
             }
         },
@@ -552,7 +579,11 @@ fn layered_settings_changes_are_revalidated_before_effects() {
         true,
         |root| {
             let repo = Repository::new(root);
-            write(repo.path(), 0, &[("save-action", "wip")]);
+            write(
+                repo.path(),
+                0,
+                &[("save-plan", "commit:staged,commit:unstaged")],
+            );
             fs::write(repo.path().join("tracked"), "base").unwrap();
             commit(&repo);
             repo.success(&["switch", "-c", "work"]);
@@ -577,7 +608,7 @@ fn layered_settings_changes_are_revalidated_before_effects() {
                 for (key, value) in [
                     ("publish-remote", "missing"),
                     ("base", "work"),
-                    ("save-action", "stash"),
+                    ("save-plan", "stash:all"),
                 ] {
                     let plan = save::assess(repo.path(), &Request::default()).unwrap();
                     let layer = if local {
@@ -599,7 +630,11 @@ fn layered_settings_changes_are_revalidated_before_effects() {
                     if local {
                         fs::remove_file(layer.join(CONFIG_FILES[format])).unwrap();
                     } else {
-                        write(repo.path(), 0, &[("save-action", "wip")]);
+                        write(
+                            repo.path(),
+                            0,
+                            &[("save-plan", "commit:staged,commit:unstaged")],
+                        );
                     }
                 }
             }
@@ -620,7 +655,7 @@ fn stashing_changed_shared_settings_stops_before_publication() {
         true,
         |root| {
             let repo = Repository::new(root);
-            write(repo.path(), 0, &[("save-action", "ask")]);
+            write(repo.path(), 0, &[("save-plan", "ask")]);
             fs::write(repo.path().join("tracked"), "base").unwrap();
             commit(&repo);
             repo.success(&["switch", "-c", "work"]);
@@ -640,19 +675,40 @@ fn stashing_changed_shared_settings_stops_before_publication() {
                 "origin".as_ref(),
                 remote.as_os_str(),
             ]);
-            write(repo.path(), 0, &[("save-action", "stash")]);
+            write(repo.path(), 0, &[("save-plan", "stash:all")]);
             fs::write(repo.path().join("tracked"), "progress").unwrap();
             let plan = save::assess(repo.path(), &Request::default()).unwrap();
-            assert_eq!(plan.action, SaveAction::Stash);
+            assert_eq!(plan.plan, save_plan("stash:all"));
             let report = execution::execute(repo.path(), &plan);
             assert!(report.error.is_some(), "{report:?}");
             assert!(report.publication.is_none());
-            assert_eq!(report.commands.len(), 1);
-            assert!(report.commands[0].result.as_ref().unwrap().status.success());
-            // The context guard stops verification of the whole stash step;
-            // the successful command and independent observations retain its OID.
-            assert!(report.after.stash.as_ref().unwrap().is_some());
-            assert_eq!(load(repo.path()).unwrap().save_action, SaveAction::Ask);
+            assert!(
+                report.commands.iter().all(|command| command
+                    .result
+                    .as_ref()
+                    .unwrap()
+                    .status
+                    .success())
+            );
+            // Applying the saved result restores the earlier shared settings.
+            // The context guard stops publication and retains both the requested
+            // stash identity and a recovery artifact for any incomplete reconcile.
+            let stash = report
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    execution::Effect::LocalStash { commit, .. } => Some(commit),
+                    _ => None,
+                })
+                .expect("verified saved stash");
+            assert_eq!(report.after.stash.as_ref().unwrap().as_ref(), Some(stash));
+            assert!(
+                report
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|recovery| recovery.retained)
+            );
+            assert_eq!(load(repo.path()).unwrap().save_plan, SavePlan::Ask);
             assert_eq!(fs::read(repo.path().join("tracked")).unwrap(), b"base");
             repo.success(&["rev-parse", "--verify", "refs/stash"]);
             assert!(
@@ -1067,8 +1123,9 @@ fn remote_role_changes_revalidate_workflow_apis() {
             let save_plan = save::assess(
                 repo.path(),
                 &Request {
-                    action: Some(SaveAction::PublishOnly),
+                    plan: Some(SavePlan::PublishOnly),
                     message: None,
+                    stash_message: None,
                 },
             )
             .unwrap();
@@ -1928,4 +1985,93 @@ fn invalid_policy_correction_quotes_literal_git_configuration_key() {
             assert!(settings::load_for_branch(repo.path(), &repository, branch.as_bytes()).is_ok());
         },
     );
+}
+
+#[test]
+fn composable_save_settings_are_strict_equivalent_and_replace_whole_plans() {
+    isolated("composable_save_settings", true, |root| {
+        let repo = Repository::new(root);
+        let shared =
+            settings::SavePlan::parse(&["commit:staged".into(), "stash:unstaged".into()]).unwrap();
+        for (format, filename) in CONFIG_FILES.iter().enumerate() {
+            write(
+                repo.path(),
+                format,
+                &[
+                    ("save-plan", "commit:staged,stash:unstaged"),
+                    ("save-message", "literal $x `text`"),
+                    ("save-stash-message", "local label"),
+                ],
+            );
+            let loaded = load(repo.path()).unwrap();
+            assert_eq!(loaded.save_plan, shared);
+            assert_eq!(loaded.save_message, "literal $x `text`");
+            assert_eq!(loaded.save_stash_message, "local label");
+            assert_eq!(
+                loaded.sources.save_plan,
+                SettingSource::Shared(repo.path().join(filename))
+            );
+            let local = repo.path().join(".git");
+            write(
+                &local,
+                0,
+                &[
+                    ("save-plan", "stash:staged"),
+                    ("save-stash-message", "private label"),
+                ],
+            );
+            let loaded = load(repo.path()).unwrap();
+            assert_eq!(
+                loaded.save_plan,
+                settings::SavePlan::parse(&["stash:staged".into()]).unwrap()
+            );
+            assert_eq!(loaded.save_message, "literal $x `text`");
+            assert_eq!(loaded.save_stash_message, "private label");
+            for invalid in [
+                "commit:staged,commit:staged",
+                "commit:all,stash:unstaged",
+                "stash:all,stash:staged",
+                "ask,commit:staged",
+                "publish-only,stash:all",
+                "commit:unknown",
+                "unknown:all",
+            ] {
+                write(repo.path(), format, &[("save-plan", invalid)]);
+                assert!(
+                    load(repo.path()).is_err(),
+                    "overridden invalid layer accepted: {invalid}"
+                );
+            }
+            fs::remove_file(local.join(CONFIG_FILES[0])).unwrap();
+            for key in ["save-message", "save-stash-message"] {
+                for label in ["", "  \t", "bad\0label"] {
+                    write(repo.path(), format, &[(key, label)]);
+                    assert!(load(repo.path()).is_err(), "{key}: {label:?}");
+                }
+            }
+            fs::remove_file(repo.path().join(filename)).unwrap();
+        }
+        for (filename, malformed) in [
+            (CONFIG_FILES[0], "save-plan='commit:all'"),
+            (CONFIG_FILES[0], "save-plan=[42]"),
+            (CONFIG_FILES[0], "save-plan=['ask']\nsave-plan=['ask']"),
+            (CONFIG_FILES[1], "save-plan: null"),
+            (CONFIG_FILES[1], "save-plan: [true]"),
+            (CONFIG_FILES[3], "{\"save-plan\":null}"),
+            (
+                CONFIG_FILES[3],
+                "{\"save-plan\":[\"ask\"],\"save-plan\":[\"ask\"]}",
+            ),
+        ] {
+            let path = repo.path().join(filename);
+            fs::write(&path, malformed).unwrap();
+            assert!(load(repo.path()).is_err(), "{malformed}");
+            fs::remove_file(path).unwrap();
+        }
+        fs::write(repo.path().join(CONFIG_FILES[0]), "save-plan=[]").unwrap();
+        assert_eq!(
+            load(repo.path()).unwrap().save_plan,
+            settings::SavePlan::Operations(vec![])
+        );
+    });
 }

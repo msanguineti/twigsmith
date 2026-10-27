@@ -77,6 +77,8 @@ fn static_completion_is_contextual_outside_a_repository() {
                 for (command, option, values) in [
                     ("s", "--policy", vec!["hotfix", "ordinary", "release"]),
                     ("config", "--format", vec!["json", "toml", "yaml"]),
+                    ("v", "--commit", vec!["all", "staged", "unstaged"]),
+                    ("save", "--stash", vec!["all", "staged", "unstaged"]),
                     ("f", "--mode", vec!["integrate", "review"]),
                     (
                         "finish",
@@ -102,7 +104,10 @@ fn static_completion_is_contextual_outside_a_repository() {
             assert!(complete(root, "gof finish --mode=int").is_empty());
             assert!(complete(root, "gof save --message $(touch SENTINEL)").is_empty());
             assert!(!root.join("SENTINEL").exists());
-            assert_eq!(complete(root, "gof v --sta"), ["--staged", "--stash"]);
+            assert_eq!(
+                complete(root, "gof v --sta"),
+                ["--stash", "--stash-message"]
+            );
             assert_eq!(complete(root, "gof start --from main --pol"), ["--policy"]);
             assert!(complete(root, "gof start --policy ordinary ").contains(&"--target".into()));
             assert!(complete(root, "gof config show ").is_empty());

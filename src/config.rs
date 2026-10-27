@@ -44,7 +44,9 @@ fn render_document(format: Format, proposed: &settings::Settings, guided: bool) 
         #[serde(skip_serializing_if = "Option::is_none")]
         base_remote: Option<&'a str>,
         base: &'a str,
-        save_action: &'a str,
+        save_plan: Vec<String>,
+        save_message: &'a str,
+        save_stash_message: &'a str,
         finish_mode: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         finish_integration: Option<&'a str>,
@@ -68,7 +70,9 @@ fn render_document(format: Format, proposed: &settings::Settings, guided: bool) 
             || proposed.base_remote != proposed.publish_remote)
             .then_some(proposed.base_remote.as_str()),
         base: &proposed.base,
-        save_action: proposed.save_action.as_str(),
+        save_plan: proposed.save_plan.tokens(),
+        save_message: &proposed.save_message,
+        save_stash_message: &proposed.save_stash_message,
         finish_mode: proposed.finish_mode.as_str(),
         finish_integration: (!guided || proposed.finish_mode != settings::FinishMode::Review)
             .then_some(proposed.finish_integration.as_str()),
@@ -398,7 +402,9 @@ pub(crate) fn effective_settings(
     }
     field!(publish_remote, true);
     field!(base, true);
-    field!(save_action, true);
+    field!(save_plan, true);
+    field!(save_message, true);
+    field!(save_stash_message, true);
     field!(finish_mode, true);
     field!(finish_update, true);
     field!(history_edit, true);
@@ -522,6 +528,14 @@ fn validate(directory: &Path, proposed: &settings::Settings) -> Result<(), Confi
         let mut effective = proposed.clone();
         settings::resolve_workstream(&mut effective, *kind, None)?;
     }
+    proposed
+        .save_plan
+        .validate()
+        .map_err(SettingsError::InvalidSettings)?;
+    settings::validate_save_label("save-message", &proposed.save_message)
+        .map_err(SettingsError::InvalidSettings)?;
+    settings::validate_save_label("save-stash-message", &proposed.save_stash_message)
+        .map_err(SettingsError::InvalidSettings)?;
     settings::validate_finish_checks(&proposed.finish_checks)
         .map_err(SettingsError::InvalidSettings)?;
     Ok(())

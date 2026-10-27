@@ -1,6 +1,9 @@
 //! Public CLI lifecycle with real project and publication repositories.
 #[path = "cli_lifecycle/ordinary.rs"]
 mod ordinary;
+#[cfg(target_os = "linux")]
+#[path = "cli_lifecycle/save_configured.rs"]
+mod save_configured;
 mod support;
 use std::{
     fs,

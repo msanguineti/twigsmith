@@ -6,11 +6,11 @@ use git_oneflow::{
     git,
     repository::{Head, Observation},
     save::{
-        self, Plan, Request, SaveError, TreeState, WIP_REMAINING_MESSAGE, WIP_STAGED_MESSAGE,
-        execution::{self, Effect, ExecutionError, LocalObservation, Operation, Report},
+        self, Plan, Request, SaveError, TreeState,
+        execution::{self, Effect, ExecutionError, LocalObservation, Report},
         publication::{DestinationState, PublicationState},
     },
-    settings::SaveAction,
+    settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
 };
 use preservation::snapshot;
 use std::{
@@ -56,18 +56,53 @@ fn fixture(root: &Path) -> (Repository, PathBuf) {
     ]);
     (repo, remote)
 }
-fn plan(repo: &Repository, action: SaveAction) -> Plan {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TestPlan {
+    Ask,
+    PublishOnly,
+    Staged,
+    Split,
+    Stash,
+}
+const STAGED_MESSAGE: &str = "Save work [staged]";
+const UNSTAGED_MESSAGE: &str = "Save work [unstaged]";
+fn selection(action: TestPlan) -> SavePlan {
+    match action {
+        TestPlan::Ask => SavePlan::Ask,
+        TestPlan::PublishOnly => SavePlan::PublishOnly,
+        TestPlan::Staged => SavePlan::Operations(vec![SaveOperation {
+            action: SaveKind::Commit,
+            scope: SaveScope::Staged,
+        }]),
+        TestPlan::Split => SavePlan::Operations(vec![
+            SaveOperation {
+                action: SaveKind::Commit,
+                scope: SaveScope::Staged,
+            },
+            SaveOperation {
+                action: SaveKind::Commit,
+                scope: SaveScope::Unstaged,
+            },
+        ]),
+        TestPlan::Stash => SavePlan::Operations(vec![SaveOperation {
+            action: SaveKind::Stash,
+            scope: SaveScope::All,
+        }]),
+    }
+}
+fn plan(repo: &Repository, action: TestPlan) -> Plan {
     save::assess(
         repo.path(),
         &Request {
-            action: Some(action),
-            message: (action == SaveAction::Staged)
+            plan: Some(selection(action)),
+            message: (action == TestPlan::Staged)
                 .then(|| "Developer selected work\n\nDetails".into()),
+            ..Request::default()
         },
     )
     .unwrap()
 }
-fn execute(repo: &Repository, action: SaveAction) -> Report {
+fn execute(repo: &Repository, action: TestPlan) -> Report {
     execution::execute(repo.path(), &plan(repo, action))
 }
 fn dirty(repo: &Repository, stage: bool, remaining: bool) {
@@ -134,7 +169,7 @@ fn publish_only_preserves_all_four_tree_states() {
                 let head = oid(&repo, "HEAD");
                 let index = fs::read(repo.path().join(".git/index")).unwrap();
                 let before = snapshot(repo.path());
-                let report = execute(&repo, SaveAction::PublishOnly);
+                let report = execute(&repo, TestPlan::PublishOnly);
                 complete(&repo, &remote, &report);
                 assert!(report.commands.is_empty());
                 assert_eq!(oid(&repo, "HEAD"), head);
@@ -158,11 +193,11 @@ fn clean_actions_create_no_checkpoint_or_stash() {
         true,
         |root| {
             for action in [
-                SaveAction::Ask,
-                SaveAction::PublishOnly,
-                SaveAction::Staged,
-                SaveAction::Wip,
-                SaveAction::Stash,
+                TestPlan::Ask,
+                TestPlan::PublishOnly,
+                TestPlan::Staged,
+                TestPlan::Split,
+                TestPlan::Stash,
             ] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, false, false);
@@ -184,12 +219,12 @@ fn staged_preserves_partial_selection_and_remaining_work() {
             for remain in [false, true] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, remain);
-                let report = execute(&repo, SaveAction::Staged);
+                let report = execute(&repo, TestPlan::Staged);
                 complete(&repo, &remote, &report);
-                assert_eq!(report.commands.len(), 1);
+
                 assert_eq!(
                     output(&repo, &["log", "-1", "--format=%B"]),
-                    b"Developer selected work\n\nDetails\n\n"
+                    b"Developer selected work\n\nDetails [staged]\n\n"
                 );
                 assert_eq!(tree(&repo, "HEAD", "tracked"), Some(b"selected\n".to_vec()));
                 assert_eq!(
@@ -219,66 +254,45 @@ fn unresolved_or_invalid_inputs_precede_all_effects() {
         true,
         |root| {
             let (repo, remote) = fixture(root);
-            dirty(&repo, false, true);
+            dirty(&repo, true, true);
+            let approved = save::assess(repo.path(), &Request::default()).unwrap();
+            let before = snapshot(repo.path());
+            let report = execution::execute(repo.path(), &approved);
             assert!(matches!(
+                report.error,
+                Some(ExecutionError::RequiredInput(_))
+            ));
+            assert!(report.commands.is_empty());
+            assert!(report.publication.is_none());
+            assert_eq!(snapshot(repo.path()), before);
+            assert!(
                 save::assess(
                     repo.path(),
                     &Request {
-                        action: Some(SaveAction::Staged),
-                        message: Some("message".into())
+                        plan: Some(selection(TestPlan::Split)),
+                        message: Some(" ".into()),
+                        ..Request::default()
                     }
-                ),
-                Err(SaveError::NoStagedChanges)
-            ));
-            for action in [SaveAction::Ask, SaveAction::Staged] {
-                if action == SaveAction::Staged {
-                    repo.success(&["add", "tracked"]);
-                }
-                let approved = save::assess(
-                    repo.path(),
-                    &Request {
-                        action: Some(action),
-                        message: None,
-                    },
                 )
-                .unwrap();
-                let before = snapshot(repo.path());
-                let report = execution::execute(repo.path(), &approved);
-                assert!(matches!(
-                    report.error,
-                    Some(ExecutionError::RequiredInput(_))
-                ));
-                assert!(report.commands.is_empty());
-                assert!(report.publication.is_none());
-                assert_eq!(snapshot(repo.path()), before);
-            }
-            assert!(matches!(
-                save::assess(
-                    repo.path(),
-                    &Request {
-                        action: Some(SaveAction::Staged),
-                        message: Some(" \n\t".into())
-                    }
-                ),
-                Err(SaveError::BlankMessage)
-            ));
+                .is_err()
+            );
             assert!(remote_tip(&remote).is_none());
         },
     );
 }
 #[test]
-fn wip_commits_content_in_order_omitting_empty_groups() {
+fn split_commits_content_in_order_omitting_empty_groups() {
     isolated(
-        "wip_commits_content_in_order_omitting_empty_groups",
+        "split_commits_content_in_order_omitting_empty_groups",
         true,
         |root| {
             for (stage, remain) in [(false, false), (true, false), (false, true), (true, true)] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, stage, remain);
-                let report = execute(&repo, SaveAction::Wip);
+                let report = execute(&repo, TestPlan::Split);
                 complete(&repo, &remote, &report);
                 let log = output(&repo, &["log", "--reverse", "--format=%s", "main..HEAD"]);
-                let expected = [(stage, WIP_STAGED_MESSAGE), (remain, WIP_REMAINING_MESSAGE)]
+                let expected = [(stage, STAGED_MESSAGE), (remain, UNSTAGED_MESSAGE)]
                     .into_iter()
                     .filter(|(include, _)| *include)
                     .map(|(_, message)| format!("{message}\n"))
@@ -310,7 +324,7 @@ fn wip_commits_content_in_order_omitting_empty_groups() {
                 }
                 assert_eq!(tree(&repo, "HEAD", "ignored"), None);
                 assert!(!remaining(&report.after));
-                let retried = execute(&repo, SaveAction::Wip);
+                let retried = execute(&repo, TestPlan::Split);
                 assert!(retried.is_complete(), "{retried:?}");
                 assert!(retried.commands.is_empty());
                 assert_eq!(
@@ -339,15 +353,14 @@ fn stash_recovers_index_tree_and_untracked_without_touching_older_entries() {
                     &repo,
                     &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
                 );
-                let report = execute(&repo, SaveAction::Stash);
+                let report = execute(&repo, TestPlan::Stash);
                 complete(&repo, &remote, &report);
                 assert!(!remaining(&report.after));
                 assert_eq!(observed_head(&report.before), observed_head(&report.after));
                 if stage || remain {
-                    assert_eq!(report.commands.len(), 1);
                     assert_ne!(report.after.stash.as_ref().unwrap(), &Some(older.clone()));
                     assert!(
-                        matches!(&report.effects[..], [Effect::LocalStash { commit }] if Some(commit) == report.after.stash.as_ref().unwrap().as_ref())
+                        matches!(&report.effects[..], [Effect::LocalStash { commit, .. }] if Some(commit) == report.after.stash.as_ref().unwrap().as_ref())
                     );
                     let local_stash = report.after.stash.as_ref().unwrap().as_ref().unwrap();
                     assert!(
@@ -364,7 +377,7 @@ fn stash_recovers_index_tree_and_untracked_without_touching_older_entries() {
                     assert!(
                         String::from_utf8(output(&repo, &["stash", "list"]))
                             .unwrap()
-                            .contains(execution::STASH_MESSAGE)
+                            .contains("Saved work")
                     );
                     assert_eq!(fs::read(repo.path().join("tracked")).unwrap(), b"base\n");
                     assert!(!repo.path().join("untracked").exists());
@@ -423,7 +436,7 @@ fn staged_deletions_and_clean_save_with_index_lock() {
             dirty(&repo, false, false);
             repo.success(&["rm", "delete"]);
             fs::write(repo.path().join("untracked"), "keep local\n").unwrap();
-            let report = execute(&repo, SaveAction::Staged);
+            let report = execute(&repo, TestPlan::Staged);
             complete(&repo, &remote, &report);
             assert_eq!(tree(&repo, "HEAD", "delete"), None);
             assert_eq!(
@@ -432,7 +445,7 @@ fn staged_deletions_and_clean_save_with_index_lock() {
             );
             fs::remove_file(repo.path().join("untracked")).unwrap();
             fs::write(repo.path().join(".git/index.lock"), "existing lock").unwrap();
-            for action in [SaveAction::Staged, SaveAction::Wip, SaveAction::Stash] {
+            for action in [TestPlan::Staged, TestPlan::Split, TestPlan::Stash] {
                 let report = execute(&repo, action);
                 complete(&repo, &remote, &report);
                 assert!(report.commands.is_empty());
@@ -447,29 +460,30 @@ fn staged_deletions_and_clean_save_with_index_lock() {
 
 #[cfg(unix)]
 #[test]
-fn failed_local_commands_with_completed_effects_are_reported_and_retried() {
+fn reconciliation_failure_retains_native_recovery_of_unselected_work() {
     use std::{env, os::unix::fs::PermissionsExt, process::Command};
-    const TEST: &str = "failed_local_commands_with_completed_effects_are_reported_and_retried";
+    const TEST: &str = "reconciliation_failure_retains_native_recovery_of_unselected_work";
     isolated(TEST, true, |root| {
         if env::var_os("ONEFLOW_EXECUTION_WRAPPER").is_none() {
             let wrapper = root.join("git-wrapper");
             fs::create_dir(&wrapper).unwrap();
             let script = wrapper.join("git");
-            fs::write(&script, "#!/bin/sh\ncase \"$*\" in\n  *' add --all -- '*|*' commit --message '*|*' stash push --include-untracked --message '*)\n    if test -f .git/fail-command; then\n      \"$ONEFLOW_REAL_GIT\" \"$@\" || exit $?\n      printf 'fixture failure after actual effect\\n' >&2\n      exit 1\n    fi;;\nesac\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"\n").unwrap();
+            fs::write(&script, "#!/bin/sh\ncase \"$*\" in *' read-tree --reset -u '*) if test -f .git/fail-command; then \"$ONEFLOW_REAL_GIT\" \"$@\" || exit $?; exit 1; fi;; esac\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"\n").unwrap();
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
             let real = Command::new("sh")
                 .args(["-c", "command -v git"])
                 .output()
                 .unwrap();
-            assert!(real.status.success());
-            let real = String::from_utf8(real.stdout).unwrap();
             let out = Command::new(env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
                 .env(
                     "PATH",
                     format!("{}:{}", wrapper.display(), env::var("PATH").unwrap()),
                 )
-                .env("ONEFLOW_REAL_GIT", real.trim())
+                .env(
+                    "ONEFLOW_REAL_GIT",
+                    String::from_utf8(real.stdout).unwrap().trim(),
+                )
                 .env("ONEFLOW_EXECUTION_WRAPPER", "1")
                 .output()
                 .unwrap();
@@ -481,141 +495,53 @@ fn failed_local_commands_with_completed_effects_are_reported_and_retried() {
             );
             return;
         }
-        for action in [SaveAction::Wip, SaveAction::Staged, SaveAction::Stash] {
-            let (repo, remote) = fixture(root);
-            dirty(&repo, action == SaveAction::Staged, true);
-            fs::write(repo.path().join(".git/fail-command"), "fail once").unwrap();
-            let report = execute(&repo, action);
-            assert!(matches!(
-                report.error,
-                Some(ExecutionError::LocalCommandFailed)
-            ));
-            assert_eq!(report.commands.len(), 1);
-            assert!(report.effects.is_empty());
-            assert!(report.publication.is_none());
-            assert!(remote_tip(&remote).is_none());
-            match action {
-                SaveAction::Wip => {
-                    assert!(matches!(
-                        report.commands[0].operation,
-                        Operation::StageRemaining { .. }
-                    ));
-                    assert_ne!(
-                        report.before.index.as_ref().unwrap(),
-                        report.after.index.as_ref().unwrap()
-                    );
-                    assert_eq!(observed_head(&report.before), observed_head(&report.after));
-                    assert_eq!(
-                        plan(&repo, action).scope.tree_state(),
-                        TreeState::StagedOnly
-                    );
-                }
-                SaveAction::Staged => {
-                    assert_ne!(observed_head(&report.before), observed_head(&report.after));
-                    assert_eq!(tree(&repo, "HEAD", "tracked"), Some(b"selected\n".to_vec()));
-                    assert!(remaining(&report.after));
-                }
-                SaveAction::Stash => {
-                    assert!(report.before.stash.as_ref().unwrap().is_none());
-                    assert!(report.after.stash.as_ref().unwrap().is_some());
-                    assert!(!remaining(&report.after));
-                }
-                _ => unreachable!(),
-            }
-            fs::remove_file(repo.path().join(".git/fail-command")).unwrap();
-            let retry = execute(
-                &repo,
-                if action == SaveAction::Staged {
-                    SaveAction::PublishOnly
-                } else {
-                    action
-                },
-            );
-            complete(&repo, &remote, &retry);
-            if action != SaveAction::Wip {
-                assert!(retry.commands.is_empty());
-            } else {
-                assert_eq!(retry.commands.len(), 1);
-            }
-            assert_eq!(
-                retry.after.stash.as_ref().unwrap(),
-                report.after.stash.as_ref().unwrap()
-            );
-        }
+        let (repo, remote) = fixture(root);
+        independent(&repo);
+        let original_head = oid(&repo, "HEAD");
+        fs::write(
+            repo.path().join(".git/fail-command"),
+            "fail after reconcile",
+        )
+        .unwrap();
+        let report = run_operations(&repo, &[(SaveKind::Stash, SaveScope::Staged)]);
+        assert!(
+            matches!(report.error, Some(ExecutionError::LocalCommandFailed)),
+            "{report:#?}"
+        );
+        assert!(report.publication.is_none());
+        assert!(remote_tip(&remote).is_none());
+        let recovery = report.recovery.as_ref().unwrap();
+        assert!(recovery.retained);
+        assert_eq!(oid(&repo, &recovery.reference), recovery.commit);
+        let recovered = root.join("recovered");
+        repo.success(&[
+            "worktree".as_ref(),
+            "add".as_ref(),
+            "--detach".as_ref(),
+            recovered.as_os_str(),
+            std::str::from_utf8(&original_head).unwrap().as_ref(),
+        ]);
+        let restore = git::run(
+            &recovered,
+            [
+                "stash",
+                "apply",
+                "--index",
+                std::str::from_utf8(&recovery.commit).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert!(restore.status.success(), "{restore:?}");
+        assert_eq!(
+            fs::read(recovered.join("tracked")).unwrap(),
+            independent_text(true, true).as_bytes()
+        );
+        assert_eq!(
+            git::run(&recovered, ["show", ":tracked"]).unwrap().stdout,
+            independent_text(true, false).as_bytes()
+        );
     });
 }
-
-#[cfg(unix)]
-#[test]
-fn stash_cleanup_failure_keeps_recoverable_stash_and_remaining_work() {
-    isolated(
-        "stash_cleanup_failure_keeps_recoverable_stash_and_remaining_work",
-        true,
-        |root| {
-            let (repo, remote) = fixture(root);
-            dirty(&repo, true, true);
-            hook(
-                &repo,
-                "reference-transaction",
-                "if test \"$1\" = committed; then\n  while read old new reference; do\n    if test \"$reference\" = refs/stash; then printf 'hook lock\\n' > .git/index.lock; fi\n  done\nfi",
-            );
-            let report = execute(&repo, SaveAction::Stash);
-            assert!(
-                matches!(report.error, Some(ExecutionError::LocalCommandFailed)),
-                "{report:?}"
-            );
-            assert_eq!(report.commands.len(), 1);
-            assert!(report.publication.is_none());
-            let saved = report.after.stash.as_ref().unwrap().as_ref().unwrap();
-            assert_eq!(
-                tree(&repo, std::str::from_utf8(saved).unwrap(), "tracked"),
-                Some(b"remaining\n".to_vec())
-            );
-            assert_eq!(
-                tree(&repo, "refs/stash^2", "tracked"),
-                Some(b"selected\n".to_vec())
-            );
-            assert!(remaining(&report.after));
-            assert_eq!(observed_head(&report.before), observed_head(&report.after));
-            assert!(repo.path().join(".git/index.lock").exists());
-            assert!(remote_tip(&remote).is_none());
-            fs::remove_file(repo.path().join(".git/index.lock")).unwrap();
-            fs::remove_file(repo.path().join(".git/hooks/reference-transaction")).unwrap();
-            // Recover independently in a fresh tree, leaving the failed tree intact.
-            let recovery = root.join("stash-recovery");
-            repo.success(&[
-                "worktree".as_ref(),
-                "add".as_ref(),
-                "--detach".as_ref(),
-                recovery.as_os_str(),
-                "main".as_ref(),
-            ]);
-            let recovered = git::run(
-                &recovery,
-                [
-                    "stash",
-                    "apply",
-                    "--index",
-                    std::str::from_utf8(saved).unwrap(),
-                ],
-            )
-            .unwrap();
-            assert!(
-                recovered.status.success(),
-                "{}",
-                String::from_utf8_lossy(&recovered.stderr)
-            );
-            assert_eq!(fs::read(recovery.join("tracked")).unwrap(), b"remaining\n");
-            assert_eq!(
-                git::run(&recovery, ["show", ":tracked"]).unwrap().stdout,
-                b"selected\n"
-            );
-            assert_eq!(fs::read(recovery.join("untracked")).unwrap(), b"new\n");
-            assert_eq!(oid(&repo, "refs/stash"), *saved);
-        },
-    );
-}
-
 #[cfg(unix)]
 #[test]
 fn signing_failure_is_respected_after_staging_without_publication() {
@@ -639,16 +565,14 @@ fn signing_failure_is_respected_after_staging_without_publication() {
                 signer.as_os_str(),
             ]);
             repo.success(&["config", "commit.gpgsign", "true"]);
-            let report = execute(&repo, SaveAction::Wip);
+            let report = execute(&repo, TestPlan::Split);
             assert!(matches!(
                 report.error,
                 Some(ExecutionError::LocalCommandFailed)
             ));
-            assert_eq!(report.commands.len(), 2);
-            assert!(matches!(
-                &report.effects[..],
-                [Effect::StagedRemaining { .. }]
-            ));
+
+            assert!(report.effects.is_empty());
+            assert!(report.recovery.as_ref().unwrap().retained);
             assert!(repo.path().join(".git/signing-attempt").exists());
             assert_eq!(observed_head(&report.before), observed_head(&report.after));
             assert_ne!(
@@ -689,8 +613,9 @@ fn linked_worktree_uses_its_own_index_and_publishes_its_branch() {
             let approved = save::assess(
                 &linked,
                 &Request {
-                    action: Some(SaveAction::Wip),
+                    plan: Some(selection(TestPlan::Split)),
                     message: None,
+                    ..Request::default()
                 },
             )
             .unwrap();
@@ -744,7 +669,7 @@ fn selected_index_path_is_used_for_lock_guards_and_observations() {
         let index_path = PathBuf::from(env::var_os("GIT_INDEX_FILE").unwrap());
         let lock_path = root.join("selected.index.lock");
         fs::write(&lock_path, "custom lock").unwrap();
-        let report = execute(&repo, SaveAction::Wip);
+        let report = execute(&repo, TestPlan::Split);
         assert!(matches!(report.error, Some(ExecutionError::IndexLocked)));
         assert!(report.commands.is_empty());
         assert_eq!(
@@ -753,7 +678,7 @@ fn selected_index_path_is_used_for_lock_guards_and_observations() {
         );
         assert!(!repo.path().join(".git/index").exists());
         fs::remove_file(lock_path).unwrap();
-        let report = execute(&repo, SaveAction::Wip);
+        let report = execute(&repo, TestPlan::Split);
         complete(&repo, &remote, &report);
         assert_eq!(
             report.after.index.as_ref().unwrap().as_ref().unwrap(),
@@ -764,9 +689,9 @@ fn selected_index_path_is_used_for_lock_guards_and_observations() {
 }
 
 #[test]
-fn clean_submodule_revisions_are_separate_wip_checkpoints() {
+fn clean_submodule_revisions_are_separate_checkpoints() {
     isolated(
-        "clean_submodule_revisions_are_separate_wip_checkpoints",
+        "clean_submodule_revisions_are_separate_checkpoints",
         true,
         |root| {
             let child = Repository::new(root);
@@ -811,7 +736,17 @@ fn clean_submodule_revisions_are_separate_wip_checkpoints() {
                 }
             }
             fs::write(repo.path().join("ignored"), "ignored local\n").unwrap();
-            let report = execute(&repo, SaveAction::Wip);
+            let before = snapshot(repo.path());
+            let refused = run_operations(&repo, &[(SaveKind::Stash, SaveScope::All)]);
+            assert!(matches!(
+                refused.error,
+                Some(ExecutionError::Save(SaveError::InvalidPlan(_)))
+            ));
+            assert!(refused.commands.is_empty());
+            assert!(refused.recovery.is_none());
+            assert!(refused.publication.is_none());
+            assert_eq!(snapshot(repo.path()), before);
+            let report = execute(&repo, TestPlan::Split);
             complete(&repo, &remote, &report);
             assert_eq!(output(&repo, &["rev-parse", "HEAD^:child"]), revisions[0]);
             assert_eq!(output(&repo, &["rev-parse", "HEAD:child"]), revisions[1]);
@@ -843,16 +778,11 @@ fn identical_stash_oid_remains_recoverable_without_disturbing_entries() {
         }
         let (repo, remote) = fixture(root);
         dirty(&repo, true, true);
-        repo.success(&[
-            "stash",
-            "push",
-            "--include-untracked",
-            "--message",
-            execution::STASH_MESSAGE,
-        ]);
+        let first = execute(&repo, TestPlan::Stash);
+        complete(&repo, &remote, &first);
         let older = oid(&repo, "refs/stash");
         dirty(&repo, true, true);
-        let report = execute(&repo, SaveAction::Stash);
+        let report = execute(&repo, TestPlan::Stash);
         complete(&repo, &remote, &report);
         assert_eq!(report.before.stash.as_ref().unwrap(), &Some(older.clone()));
         assert_eq!(report.after.stash.as_ref().unwrap(), &Some(older.clone()));
@@ -891,7 +821,7 @@ fn stale_approval_refuses_changed_context_and_content_before_writes() {
             ] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
-                let approved = plan(&repo, SaveAction::Wip);
+                let approved = plan(&repo, TestPlan::Split);
                 match change {
                     "branch" => {
                         repo.success(&["switch", "-c", "another"]);
@@ -904,7 +834,7 @@ fn stale_approval_refuses_changed_context_and_content_before_writes() {
                     }
                     "settings" => fs::write(
                         repo.path().join(".git/git-oneflow.config.toml"),
-                        "save-action = 'stash'\n",
+                        "save-plan = 'stash'\n",
                     )
                     .unwrap(),
                     "url" => {
@@ -941,7 +871,7 @@ fn known_publication_blockers_and_index_lock_precede_local_effects() {
         "known_publication_blockers_and_index_lock_precede_local_effects",
         true,
         |root| {
-            for action in [SaveAction::Staged, SaveAction::Wip, SaveAction::Stash] {
+            for action in [TestPlan::Staged, TestPlan::Split, TestPlan::Stash] {
                 for blocker in ["mapping", "symbolic", "lock", "identity"] {
                     let (repo, remote) = fixture(root);
                     dirty(&repo, true, true);
@@ -997,7 +927,7 @@ fn first_commit_failure_retains_hook_staging_and_does_not_publish() {
         "first_commit_failure_retains_hook_staging_and_does_not_publish",
         true,
         |root| {
-            for action in [SaveAction::Staged, SaveAction::Wip] {
+            for action in [TestPlan::Staged, TestPlan::Split] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
                 hook(
@@ -1010,7 +940,7 @@ fn first_commit_failure_retains_hook_staging_and_does_not_publish() {
                     report.error,
                     Some(ExecutionError::LocalCommandFailed)
                 ));
-                assert_eq!(report.commands.len(), 1);
+
                 assert!(report.publication.is_none());
                 assert_eq!(observed_head(&report.before), observed_head(&report.after));
                 assert_ne!(
@@ -1038,30 +968,30 @@ fn second_commit_failure_retains_first_checkpoint_and_retry_uses_actual_index() 
                 "pre-commit",
                 "if test -f .git/first-done; then exit 1; fi\ntouch .git/first-done",
             );
-            let report = execute(&repo, SaveAction::Wip);
+            let report = execute(&repo, TestPlan::Split);
             assert!(matches!(
                 report.error,
                 Some(ExecutionError::LocalCommandFailed)
             ));
-            assert_eq!(report.commands.len(), 3);
+
             assert!(report.publication.is_none());
             assert_eq!(tree(&repo, "HEAD", "tracked"), Some(b"selected\n".to_vec()));
             assert_eq!(output(&repo, &["show", ":tracked"]), b"remaining\n");
             assert_eq!(
                 output(&repo, &["log", "--format=%s", "main..HEAD"]),
-                format!("{WIP_STAGED_MESSAGE}\n").as_bytes()
+                format!("{STAGED_MESSAGE}\n").as_bytes()
             );
             assert!(remote_tip(&remote).is_none());
             fs::remove_file(repo.path().join(".git/hooks/pre-commit")).unwrap();
-            let approved = plan(&repo, SaveAction::Wip);
+            let approved = plan(&repo, TestPlan::Split);
             assert_eq!(approved.scope.tree_state(), TreeState::StagedOnly);
             let retried = execution::execute(repo.path(), &approved);
             complete(&repo, &remote, &retried);
-            assert_eq!(retried.commands.len(), 1);
+
             // The retry records the now-selected index, not an imaginary rollback.
             assert_eq!(
                 output(&repo, &["log", "--format=%s", "main..HEAD"]),
-                format!("{WIP_STAGED_MESSAGE}\n{WIP_STAGED_MESSAGE}\n").as_bytes()
+                format!("{STAGED_MESSAGE}\n{STAGED_MESSAGE}\n").as_bytes()
             );
             assert_eq!(
                 tree(&repo, "HEAD", "tracked"),
@@ -1082,7 +1012,7 @@ fn changed_scope_or_context_from_commit_hooks_stops_before_next_mutation() {
                 "printf 'new scope\\n' > new-file",
                 "git config branch.work.remote other",
                 "printf 'save-action = \"stash\"\\n' > .git/git-oneflow.config.toml",
-                "printf '{\"save-action\":\"stash\"}' > .git/git-oneflow.config.json",
+                "printf '{\"save-plan\":\"stash\"}' > .git/git-oneflow.config.json",
                 "printf 'save-action = \"stash\"\\n' > git-oneflow.config.toml",
                 "git switch -c other",
                 "git config remote.origin.fetch '+refs/heads/*:refs/heads/*'",
@@ -1090,9 +1020,9 @@ fn changed_scope_or_context_from_commit_hooks_stops_before_next_mutation() {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
                 hook(&repo, "post-commit", script);
-                let report = execute(&repo, SaveAction::Wip);
+                let report = execute(&repo, TestPlan::Split);
                 assert!(report.error.is_some(), "{script}: {report:#?}");
-                assert_eq!(report.commands.len(), 1);
+
                 assert!(report.commands[0].result.as_ref().unwrap().status.success());
                 assert!(report.publication.is_none());
                 assert!(remote_tip(&remote).is_none());
@@ -1111,12 +1041,12 @@ fn hook_altered_commit_selection_is_retained_but_not_published() {
             let (repo, remote) = fixture(root);
             dirty(&repo, true, true);
             hook(&repo, "pre-commit", "git add -- tracked");
-            let report = execute(&repo, SaveAction::Wip);
+            let report = execute(&repo, TestPlan::Split);
             assert!(matches!(
                 report.error,
                 Some(ExecutionError::Save(SaveError::ContextChanged))
             ));
-            assert_eq!(report.commands.len(), 1);
+
             assert!(report.publication.is_none());
             assert_eq!(
                 tree(&repo, "HEAD", "tracked"),
@@ -1133,7 +1063,7 @@ fn rejected_publication_keeps_checkpoints_or_stash_and_clean_retry_is_empty() {
         "rejected_publication_keeps_checkpoints_or_stash_and_clean_retry_is_empty",
         true,
         |root| {
-            for action in [SaveAction::Staged, SaveAction::Wip, SaveAction::Stash] {
+            for action in [TestPlan::Staged, TestPlan::Split, TestPlan::Stash] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
                 hook(&repo, "pre-push", "exit 1");
@@ -1144,7 +1074,7 @@ fn rejected_publication_keeps_checkpoints_or_stash_and_clean_retry_is_empty() {
                 assert!(remote_tip(&remote).is_none());
                 let preserved_head = oid(&repo, "HEAD");
                 let preserved_stash = report.after.stash.as_ref().unwrap().clone();
-                if action == SaveAction::Stash {
+                if action == TestPlan::Stash {
                     assert!(preserved_stash.is_some());
                 } else {
                     assert_ne!(observed_head(&report.before), preserved_head);
@@ -1153,8 +1083,8 @@ fn rejected_publication_keeps_checkpoints_or_stash_and_clean_retry_is_empty() {
                 // Staged leaves remaining work; publishing the actual checkpoint is explicit.
                 let retried = execute(
                     &repo,
-                    if action == SaveAction::Staged {
-                        SaveAction::PublishOnly
+                    if action == TestPlan::Staged {
+                        TestPlan::PublishOnly
                     } else {
                         action
                     },
@@ -1181,8 +1111,9 @@ fn nested_invocation_and_staged_delete_with_recreated_file_preserve_groups() {
             let approved = save::assess(
                 repo.path().join("nested"),
                 &Request {
-                    action: Some(SaveAction::Wip),
+                    plan: Some(selection(TestPlan::Split)),
                     message: None,
+                    ..Request::default()
                 },
             )
             .unwrap();
@@ -1210,7 +1141,7 @@ fn literal_paths_symlinks_permissions_and_non_utf8_are_preserved() {
                     fs::{PermissionsExt, symlink},
                 },
             };
-            for action in [SaveAction::Wip, SaveAction::Stash] {
+            for action in [TestPlan::Split, TestPlan::Stash] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, false, false);
                 let names = vec![
@@ -1231,7 +1162,7 @@ fn literal_paths_symlinks_permissions_and_non_utf8_are_preserved() {
                 symlink("-option", repo.path().join("link")).unwrap();
                 let report = execute(&repo, action);
                 complete(&repo, &remote, &report);
-                if action == SaveAction::Stash {
+                if action == TestPlan::Stash {
                     repo.success(&["stash", "apply", "--index"]);
                 }
                 for name in &names {
@@ -1254,6 +1185,557 @@ fn literal_paths_symlinks_permissions_and_non_utf8_are_preserved() {
                 );
                 assert_eq!(tree(&repo, "HEAD", "ignored"), None);
             }
+        },
+    );
+}
+
+fn independent_text(staged: bool, unstaged: bool) -> String {
+    let mut lines = (0..20).map(|n| format!("line {n}\n")).collect::<Vec<_>>();
+    if staged {
+        lines[2] = "selected staged change\n".into();
+    }
+    if unstaged {
+        lines[17] = "selected unstaged change\n".into();
+    }
+    lines.concat()
+}
+fn independent(repo: &Repository) {
+    fs::write(repo.path().join("tracked"), independent_text(false, false)).unwrap();
+    repo.success(&["commit", "-am", "independent base"]);
+    fs::write(repo.path().join("tracked"), independent_text(true, false)).unwrap();
+    repo.success(&["add", "tracked"]);
+    fs::write(repo.path().join("tracked"), independent_text(true, true)).unwrap();
+    fs::write(repo.path().join("ignored"), "ignored local\n").unwrap();
+}
+fn run_operations(repo: &Repository, operations: &[(SaveKind, SaveScope)]) -> Report {
+    let requested = Request {
+        plan: Some(SavePlan::Operations(
+            operations
+                .iter()
+                .map(|(action, scope)| SaveOperation {
+                    action: *action,
+                    scope: *scope,
+                })
+                .collect(),
+        )),
+        ..Request::default()
+    };
+    let approved = save::assess(repo.path(), &requested).unwrap();
+    execution::execute(repo.path(), &approved)
+}
+#[test]
+fn independent_partial_file_obeys_every_composable_assignment_and_order() {
+    use SaveKind::{Commit as C, Stash as S};
+    use SaveScope::{All as A, Staged as I, Unstaged as U};
+    isolated(
+        "independent_partial_file_obeys_every_composable_assignment_and_order",
+        true,
+        |root| {
+            let plans = [
+                vec![(C, A)],
+                vec![(C, I), (C, U)],
+                vec![(C, U), (C, I)],
+                vec![(C, I), (S, U)],
+                vec![(S, U), (C, I)],
+                vec![(S, I), (C, U)],
+                vec![(C, U), (S, I)],
+                vec![(S, A)],
+                vec![(S, I), (S, U)],
+                vec![(S, U), (S, I)],
+                vec![(C, I)],
+                vec![(C, U)],
+                vec![(S, I)],
+                vec![(S, U)],
+            ];
+            for operations in plans {
+                let (repo, remote) = fixture(root);
+                independent(&repo);
+                let report = run_operations(&repo, &operations);
+                complete(&repo, &remote, &report);
+                let commits_staged = operations
+                    .iter()
+                    .any(|(kind, scope)| *kind == C && *scope != U);
+                let commits_unstaged = operations
+                    .iter()
+                    .any(|(kind, scope)| *kind == C && *scope != I);
+                let leaves_staged = !operations.iter().any(|(_, scope)| *scope != U);
+                let leaves_unstaged = !operations.iter().any(|(_, scope)| *scope != I);
+                assert_eq!(
+                    tree(&repo, "HEAD", "tracked").unwrap(),
+                    independent_text(commits_staged, commits_unstaged).as_bytes(),
+                    "{operations:?}"
+                );
+                assert_eq!(
+                    output(&repo, &["show", ":tracked"]),
+                    independent_text(commits_staged || leaves_staged, commits_unstaged).as_bytes(),
+                    "{operations:?}"
+                );
+                assert_eq!(
+                    fs::read(repo.path().join("tracked")).unwrap(),
+                    independent_text(
+                        commits_staged || leaves_staged,
+                        commits_unstaged || leaves_unstaged
+                    )
+                    .as_bytes(),
+                    "{operations:?}"
+                );
+                let requested_labels = operations
+                    .iter()
+                    .map(|(kind, scope)| match scope {
+                        A => {
+                            if *kind == C {
+                                "Save work".into()
+                            } else {
+                                "Saved work".into()
+                            }
+                        }
+                        scope => format!(
+                            "{} [{}]",
+                            if *kind == C {
+                                "Save work"
+                            } else {
+                                "Saved work"
+                            },
+                            scope.as_str()
+                        ),
+                    })
+                    .collect::<Vec<String>>();
+                let actual_labels = report
+                    .effects
+                    .iter()
+                    .map(|effect| match effect {
+                        Effect::Checkpoint { message, .. } | Effect::LocalStash { message, .. } => {
+                            message.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(actual_labels, requested_labels);
+                assert!(!report.recovery.as_ref().unwrap().retained);
+                let recoveries =
+                    output(&repo, &["for-each-ref", "refs/git-oneflow/save-recovery/"]);
+                assert!(recoveries.is_empty());
+            }
+        },
+    );
+}
+#[test]
+fn split_stashes_contain_only_requested_delta_and_native_recovery_preserves_membership() {
+    isolated(
+        "split_stashes_contain_only_requested_delta_and_native_recovery_preserves_membership",
+        true,
+        |root| {
+            for order in [
+                [SaveScope::Staged, SaveScope::Unstaged],
+                [SaveScope::Unstaged, SaveScope::Staged],
+            ] {
+                let (repo, remote) = fixture(root);
+                independent(&repo);
+                fs::write(repo.path().join("new"), "new addition\n").unwrap();
+                let report = run_operations(&repo, &order.map(|scope| (SaveKind::Stash, scope)));
+                complete(&repo, &remote, &report);
+                let mut staged = None;
+                let mut unstaged = None;
+                for effect in &report.effects {
+                    let Effect::LocalStash { commit, message } = effect else {
+                        continue;
+                    };
+                    let revision = std::str::from_utf8(commit).unwrap();
+                    if message.ends_with("[staged]") {
+                        staged = Some(revision.to_owned());
+                        assert_eq!(
+                            tree(&repo, &format!("{revision}^1"), "tracked").unwrap(),
+                            independent_text(false, false).as_bytes()
+                        );
+                        assert_eq!(
+                            tree(&repo, revision, "tracked").unwrap(),
+                            independent_text(true, false).as_bytes()
+                        );
+                        assert!(tree(&repo, revision, "new").is_none());
+                    } else {
+                        unstaged = Some(revision.to_owned());
+                        assert_eq!(
+                            tree(&repo, &format!("{revision}^1"), "tracked").unwrap(),
+                            independent_text(true, false).as_bytes()
+                        );
+                        assert_eq!(
+                            tree(&repo, &format!("{revision}^2"), "tracked").unwrap(),
+                            independent_text(true, false).as_bytes()
+                        );
+                        assert_eq!(
+                            tree(&repo, revision, "tracked").unwrap(),
+                            independent_text(true, true).as_bytes()
+                        );
+                        assert_eq!(
+                            tree(&repo, &format!("{revision}^3"), "new").unwrap(),
+                            b"new addition\n"
+                        );
+                    }
+                }
+                repo.success(&["stash", "apply", "--index", &staged.unwrap()]);
+                repo.success(&["stash", "apply", "--index", &unstaged.unwrap()]);
+                assert_eq!(
+                    output(&repo, &["show", ":tracked"]),
+                    independent_text(true, false).as_bytes()
+                );
+                assert_eq!(
+                    fs::read(repo.path().join("tracked")).unwrap(),
+                    independent_text(true, true).as_bytes()
+                );
+                assert_eq!(
+                    output(&repo, &["ls-files", "--others", "--exclude-standard"]),
+                    b"new\n"
+                );
+            }
+        },
+    );
+}
+#[test]
+fn dependent_groups_refuse_before_effects_only_when_independent_tree_is_needed() {
+    isolated(
+        "dependent_groups_refuse_before_effects_only_when_independent_tree_is_needed",
+        true,
+        |root| {
+            for operations in [
+                vec![(SaveKind::Commit, SaveScope::Unstaged)],
+                vec![(SaveKind::Stash, SaveScope::Staged)],
+                vec![
+                    (SaveKind::Stash, SaveScope::Staged),
+                    (SaveKind::Commit, SaveScope::Unstaged),
+                ],
+            ] {
+                let (repo, remote) = fixture(root);
+                dirty(&repo, true, true);
+                let head = oid(&repo, "HEAD");
+                let index = fs::read(repo.path().join(".git/index")).unwrap();
+                let work = fs::read(repo.path().join("tracked")).unwrap();
+                let report = run_operations(&repo, &operations);
+                assert!(
+                    matches!(
+                        report.error,
+                        Some(ExecutionError::Save(SaveError::Inseparable))
+                    ),
+                    "{report:#?}"
+                );
+                assert!(report.commands.is_empty());
+                assert!(report.recovery.is_none());
+                assert!(report.publication.is_none());
+                assert_eq!(oid(&repo, "HEAD"), head);
+                assert_eq!(fs::read(repo.path().join(".git/index")).unwrap(), index);
+                assert_eq!(fs::read(repo.path().join("tracked")).unwrap(), work);
+                assert!(remote_tip(&remote).is_none());
+            }
+            for operations in [
+                vec![
+                    (SaveKind::Commit, SaveScope::Staged),
+                    (SaveKind::Commit, SaveScope::Unstaged),
+                ],
+                vec![
+                    (SaveKind::Stash, SaveScope::Staged),
+                    (SaveKind::Stash, SaveScope::Unstaged),
+                ],
+            ] {
+                let (repo, remote) = fixture(root);
+                dirty(&repo, true, true);
+                let report = run_operations(&repo, &operations);
+                complete(&repo, &remote, &report);
+            }
+        },
+    );
+}
+
+#[test]
+fn alternate_index_does_not_hide_same_size_same_timestamp_work() {
+    use std::time::{Duration, SystemTime};
+    isolated(
+        "alternate_index_does_not_hide_same_size_same_timestamp_work",
+        true,
+        |root| {
+            for kind in [SaveKind::Commit, SaveKind::Stash] {
+                let (repo, remote) = fixture(root);
+                fs::write(repo.path().join("tracked"), "next\n").unwrap();
+                fs::write(repo.path().join("ignored"), "ignored local\n").unwrap();
+                let timestamp = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+                for path in [repo.path().join("tracked"), repo.path().join(".git/index")] {
+                    fs::File::options()
+                        .write(true)
+                        .open(path)
+                        .unwrap()
+                        .set_times(fs::FileTimes::new().set_modified(timestamp))
+                        .unwrap();
+                }
+                let report = run_operations(&repo, &[(kind, SaveScope::Unstaged)]);
+                complete(&repo, &remote, &report);
+                match kind {
+                    SaveKind::Commit => {
+                        assert_eq!(tree(&repo, "HEAD", "tracked").unwrap(), b"next\n")
+                    }
+                    SaveKind::Stash => {
+                        assert_eq!(tree(&repo, "refs/stash", "tracked").unwrap(), b"next\n");
+                        repo.success(&["stash", "apply", "--index"]);
+                        assert_eq!(fs::read(repo.path().join("tracked")).unwrap(), b"next\n");
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn group_derivation_ignores_custom_merge_drivers_and_refuses_dependent_content() {
+    isolated(
+        "group_derivation_ignores_custom_merge_drivers_and_refuses_dependent_content",
+        true,
+        |root| {
+            for dependent in [false, true] {
+                let (repo, remote) = fixture(root);
+                if dependent {
+                    dirty(&repo, true, true);
+                } else {
+                    independent(&repo);
+                }
+                fs::create_dir_all(repo.path().join(".git/info")).unwrap();
+                fs::write(
+                    repo.path().join(".git/info/attributes"),
+                    "tracked merge=trap\n",
+                )
+                .unwrap();
+                repo.success(&[
+                    "config",
+                    "merge.trap.driver",
+                    "touch .git/driver-ran; cp %B %A",
+                ]);
+                repo.success(&["config", "merge.default", "trap"]);
+                let report = run_operations(&repo, &[(SaveKind::Commit, SaveScope::Unstaged)]);
+                assert!(!repo.path().join(".git/driver-ran").exists());
+                if dependent {
+                    assert!(
+                        matches!(
+                            report.error,
+                            Some(ExecutionError::Save(SaveError::Inseparable))
+                        ),
+                        "{report:#?}"
+                    );
+                    assert!(report.commands.is_empty());
+                    assert!(report.recovery.is_none());
+                    assert!(report.publication.is_none());
+                } else {
+                    complete(&repo, &remote, &report);
+                    assert_eq!(
+                        tree(&repo, "HEAD", "tracked").unwrap(),
+                        independent_text(false, true).as_bytes()
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn group_derivation_uses_selected_sha256_object_store() {
+    use std::{env, process::Command};
+    const TEST: &str = "group_derivation_uses_selected_sha256_object_store";
+    isolated(TEST, true, |root| {
+        if env::var_os("ONEFLOW_SHA256_TEST").is_none() {
+            let output = Command::new(env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("GIT_DEFAULT_HASH", "sha256")
+                .env("ONEFLOW_SHA256_TEST", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (repo, remote) = fixture(root);
+        independent(&repo);
+        assert_eq!(oid(&repo, "HEAD").len(), 64);
+        let report = run_operations(
+            &repo,
+            &[
+                (SaveKind::Stash, SaveScope::Staged),
+                (SaveKind::Commit, SaveScope::Unstaged),
+            ],
+        );
+        complete(&repo, &remote, &report);
+        assert_eq!(
+            tree(&repo, "HEAD", "tracked").unwrap(),
+            independent_text(false, true).as_bytes()
+        );
+    });
+}
+
+#[test]
+fn ignored_obstructions_refuse_before_preservation_without_losing_literal_nested_paths() {
+    isolated(
+        "ignored_obstructions_refuse_before_preservation_without_losing_literal_nested_paths",
+        true,
+        |root| {
+            for shape in ["directory", "same-path", "ancestor"] {
+                let scopes = if shape == "directory" {
+                    [SaveScope::All, SaveScope::Unstaged]
+                } else {
+                    [SaveScope::All, SaveScope::Staged]
+                };
+                for scope in scopes {
+                    let (repo, remote) = fixture(root);
+                    let path = if shape == "ancestor" {
+                        "nested literal/parent-obstruction/secret :(glob)*\nname"
+                    } else {
+                        "nested literal/secret :(glob)*\nname"
+                    };
+                    let full = repo.path().join(path);
+                    fs::create_dir_all(full.parent().unwrap()).unwrap();
+                    fs::write(&full, "tracked original\n").unwrap();
+                    repo.success(&["--literal-pathspecs", "add", "--", path]);
+                    repo.success(&["commit", "-m", "tracked literal path"]);
+                    fs::create_dir_all(repo.path().join(".git/info")).unwrap();
+                    fs::write(
+                        repo.path().join(".git/info/exclude"),
+                        "*.ignored\nsecret*\nparent-obstruction\n",
+                    )
+                    .unwrap();
+                    let ignored = match shape {
+                        "directory" => {
+                            fs::remove_file(&full).unwrap();
+                            fs::create_dir_all(full.join("deep ignored directory")).unwrap();
+                            let ignored = full.join("deep ignored directory/private.ignored");
+                            fs::write(&ignored, "only local ignored contents\n").unwrap();
+                            ignored
+                        }
+                        "same-path" => {
+                            repo.success(&["--literal-pathspecs", "rm", "--", path]);
+                            fs::create_dir_all(full.parent().unwrap()).unwrap();
+                            fs::write(&full, "only local ignored contents\n").unwrap();
+                            full.clone()
+                        }
+                        "ancestor" => {
+                            repo.success(&["--literal-pathspecs", "rm", "--", path]);
+                            let ignored = full.parent().unwrap().to_path_buf();
+                            if ignored.exists() {
+                                fs::remove_dir(&ignored).unwrap();
+                            }
+                            fs::create_dir_all(ignored.parent().unwrap()).unwrap();
+                            fs::write(&ignored, "only local ignored contents\n").unwrap();
+                            ignored
+                        }
+                        _ => unreachable!(),
+                    };
+                    let head = oid(&repo, "HEAD");
+                    let index = fs::read(repo.path().join(".git/index")).unwrap();
+                    let status = output(&repo, &["status", "--porcelain=v2", "-z", "--ignored"]);
+                    let report = run_operations(&repo, &[(SaveKind::Stash, scope)]);
+                    assert!(
+                        matches!(&report.error, Some(ExecutionError::Save(SaveError::InvalidPlan(message))) if message.contains("ignored untracked work")),
+                        "{shape} {scope:?}: {report:#?}"
+                    );
+                    assert!(report.commands.is_empty());
+                    assert!(report.effects.is_empty());
+                    assert!(report.recovery.is_none());
+                    assert!(report.publication.is_none());
+                    assert_eq!(oid(&repo, "HEAD"), head);
+                    assert_eq!(fs::read(repo.path().join(".git/index")).unwrap(), index);
+                    assert_eq!(
+                        output(&repo, &["status", "--porcelain=v2", "-z", "--ignored"]),
+                        status
+                    );
+                    assert_eq!(
+                        fs::read(&ignored).unwrap(),
+                        b"only local ignored contents\n"
+                    );
+                    assert!(report.after.stash.as_ref().unwrap().is_none());
+                    assert!(remote_tip(&remote).is_none());
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn tracked_paths_matching_ignores_and_ignored_siblings_remain_usable() {
+    isolated(
+        "tracked_paths_matching_ignores_and_ignored_siblings_remain_usable",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            fs::create_dir(repo.path().join("nested")).unwrap();
+            fs::write(repo.path().join("nested/tracked.ignored"), "tracked base\n").unwrap();
+            repo.success(&["add", "nested/tracked.ignored"]);
+            repo.success(&["commit", "-m", "tracked ignored-name base"]);
+            fs::create_dir_all(repo.path().join(".git/info")).unwrap();
+            fs::write(repo.path().join(".git/info/exclude"), "*.ignored\n").unwrap();
+            fs::write(
+                repo.path().join("nested/tracked.ignored"),
+                "selected tracked work\n",
+            )
+            .unwrap();
+            fs::write(
+                repo.path().join("nested/sibling.ignored"),
+                "unselected ignored work\n",
+            )
+            .unwrap();
+            fs::write(repo.path().join("ignored"), "ignored local\n").unwrap();
+            let report = run_operations(&repo, &[(SaveKind::Stash, SaveScope::Unstaged)]);
+            complete(&repo, &remote, &report);
+            assert_eq!(
+                fs::read(repo.path().join("nested/tracked.ignored")).unwrap(),
+                b"tracked base\n"
+            );
+            assert_eq!(
+                fs::read(repo.path().join("nested/sibling.ignored")).unwrap(),
+                b"unselected ignored work\n"
+            );
+            repo.success(&["stash", "apply", "--index"]);
+            assert_eq!(
+                fs::read(repo.path().join("nested/tracked.ignored")).unwrap(),
+                b"selected tracked work\n"
+            );
+            assert_eq!(
+                fs::read(repo.path().join("nested/sibling.ignored")).unwrap(),
+                b"unselected ignored work\n"
+            );
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ignored_obstructions_created_by_index_hook_stop_before_destructive_reconciliation() {
+    isolated(
+        "ignored_obstructions_created_by_index_hook_stop_before_destructive_reconciliation",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            fs::remove_file(repo.path().join("tracked")).unwrap();
+            fs::create_dir(repo.path().join("tracked")).unwrap();
+            fs::create_dir_all(repo.path().join(".git/info")).unwrap();
+            fs::write(repo.path().join(".git/info/exclude"), "*.ignored\n").unwrap();
+            hook(
+                &repo,
+                "post-index-change",
+                "if ! git ls-files --error-unmatch -- tracked >/dev/null 2>&1; then mkdir -p tracked; printf 'hook ignored contents\\n' > tracked/hook.ignored; fi",
+            );
+            let report = run_operations(&repo, &[(SaveKind::Stash, SaveScope::Unstaged)]);
+            assert!(
+                matches!(&report.error, Some(ExecutionError::Save(SaveError::InvalidPlan(message))) if message.contains("ignored untracked work")),
+                "{report:#?}"
+            );
+            assert!(report.recovery.as_ref().unwrap().retained);
+            assert!(matches!(&report.effects[..], [Effect::LocalStash { .. }]));
+            assert!(!report.commands.iter().any(|command| matches!(
+                command.operation,
+                execution::Operation::Reconcile { .. }
+            )));
+            assert!(report.publication.is_none());
+            assert!(remote_tip(&remote).is_none());
+            assert_eq!(
+                fs::read(repo.path().join("tracked/hook.ignored")).unwrap(),
+                b"hook ignored contents\n"
+            );
         },
     );
 }

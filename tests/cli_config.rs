@@ -9,7 +9,7 @@ use git_oneflow::{
     config::{self, ConfigError, Format},
     git, repository,
     settings::{
-        self, CONFIG_FILES, FinishRewrite, FinishUpdate, SaveAction, SettingSource, Settings,
+        self, CONFIG_FILES, FinishRewrite, FinishUpdate, SavePlan, SettingSource, Settings,
     },
 };
 use preservation::snapshot;
@@ -72,7 +72,7 @@ fn assert_defaults(directory: &Path, filename: &str) {
     let contents = fs::read_to_string(directory.join(filename)).unwrap();
     assert!(!contents.contains("base-remote"));
     assert_eq!(loaded.base, defaults.base);
-    assert_eq!(loaded.save_action, defaults.save_action);
+    assert_eq!(loaded.save_plan, defaults.save_plan);
     assert_eq!(loaded.finish_update, defaults.finish_update);
     assert_eq!(loaded.history_edit, defaults.history_edit);
     assert_eq!(loaded.finish_rewrite, defaults.finish_rewrite);
@@ -110,7 +110,7 @@ fn assert_defaults(directory: &Path, filename: &str) {
     let source = SettingSource::Shared(directory.join(filename));
     assert_eq!(loaded.sources.publish_remote, source);
     assert_eq!(loaded.sources.base, source);
-    assert_eq!(loaded.sources.save_action, source);
+    assert_eq!(loaded.sources.save_plan, source);
     assert_eq!(loaded.sources.finish_update, source);
     assert_eq!(loaded.sources.history_edit, source);
     assert_eq!(loaded.sources.finish_rewrite, source);
@@ -205,7 +205,7 @@ fn unattended_formats_generate_defaults_from_nested_unborn_worktrees() {
                     &[
                         "publish-remote: origin",
                         "base: main",
-                        "save-action: ask",
+                        "save-plan: ask",
                         "shared:",
                         filename,
                     ],
@@ -231,7 +231,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                 &[
                     "publish-remote: origin (built-in default)",
                     "base: main (built-in default)",
-                    "save-action: ask (built-in default)",
+                    "save-plan: ask (built-in default)",
                     "finish-update: ask (built-in default)",
                     "finish-history-edit: none (built-in default)",
                     "finish-rewrite: ask (built-in default)",
@@ -257,7 +257,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                 &[
                     "publish-remote: private (local:",
                     "base: trunk (shared:",
-                    "save-action: ask (built-in default)",
+                    "save-plan: ask (built-in default)",
                     "finish-update: ask (built-in default)",
                     "finish-history-edit: none (built-in default)",
                     "finish-rewrite: ask (built-in default)",
@@ -267,11 +267,11 @@ fn inspection_reports_sources_and_locations_read_only() {
             );
             check(run(exe, &nested, &["config"]), 1, &["config --yes"]);
             assert_eq!(snapshot(repo.path()), before);
-            fs::write(&local, "save-action = 'invalid'\n").unwrap();
+            fs::write(&local, "save-plan = 'invalid'\n").unwrap();
             check(
                 run(exe, &nested, &["config", "show"]),
                 1,
-                &["invalid settings", "git-oneflow.config.toml", "save-action"],
+                &["invalid settings", "git-oneflow.config.toml", "save-plan"],
             );
             fs::remove_file(&local).unwrap();
             fs::write(repo.path().join(CONFIG_FILES[0]), "").unwrap();
@@ -447,11 +447,11 @@ fn private_overrides_allow_generation_without_copying_values() {
             for (filename, content) in [
                 (
                     CONFIG_FILES[0],
-                    "publish-remote='private'\nsave-action='stash'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check']\n",
+                    "publish-remote='private'\nsave-plan=['stash:all']\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check']\n",
                 ),
                 (
                     CONFIG_FILES[1],
-                    "publish-remote: private\nsave-action: stash\nfinish-update: none\nfinish-rewrite: deny\n",
+                    "publish-remote: private\nsave-plan: [stash:all]\nfinish-update: none\nfinish-rewrite: deny\n",
                 ),
                 (CONFIG_FILES[3], "invalid JSON"),
             ] {
@@ -485,7 +485,10 @@ fn private_overrides_allow_generation_without_copying_values() {
                 );
                 if filename != CONFIG_FILES[3] {
                     assert_eq!(load(repo.path()).publish_remote, "private");
-                    assert_eq!(load(repo.path()).save_action, SaveAction::Stash);
+                    assert_eq!(
+                        load(repo.path()).save_plan,
+                        SavePlan::parse(&["stash:all".into()]).unwrap()
+                    );
                     assert_eq!(load(repo.path()).base, "main");
                 }
             }
@@ -1550,7 +1553,7 @@ fn guided_group_defaults_formats_exact_contents_and_private_isolation() {
         ] {
             let repo = Repository::new(root);
             let private = repo.path().join(".git/git-oneflow.config.toml");
-            fs::write(&private, "publish-remote='private'\nsave-action='stash'\nfinish-update='none'\nfinish-rewrite='deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
+            fs::write(&private, "publish-remote='private'\nsave-plan=['stash:all']\nfinish-update='none'\nfinish-rewrite='deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
             let before = snapshot(&repo.path().join(".git"));
             let mut term =
                 terminal::Terminal::start(exe, repo.path(), &["config", "--format", format]);
@@ -1581,7 +1584,10 @@ fn guided_group_defaults_formats_exact_contents_and_private_isolation() {
             assert_eq!(snapshot(&repo.path().join(".git")), before);
             let effective = load(repo.path());
             assert_eq!(effective.publish_remote, "private");
-            assert_eq!(effective.save_action, SaveAction::Stash);
+            assert_eq!(
+                effective.save_plan,
+                SavePlan::parse(&["stash:all".into()]).unwrap()
+            );
             assert_eq!(effective.finish_update, FinishUpdate::None);
             assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
             fs::remove_file(private).unwrap();
@@ -1597,7 +1603,7 @@ fn guided_custom_direct_preferences_and_earlier_correction() {
         let repo = Repository::new(root);
         let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
         term.until("Remote receiving work");
-        term.send("future-remote\nupstream\nfeature/β\nedit\nwip\nedit\nintegrate\nrebase\nallow\nsquash\nauto\nwork\nboth\nedit\ninteractive\nkeep\n".as_bytes());
+        term.send("future-remote\nupstream\nfeature/β\nedit\ncommit:staged,commit:unstaged\n\n\nedit\nintegrate\nrebase\nallow\nsquash\nauto\nwork\nboth\nedit\ninteractive\nkeep\n".as_bytes());
         term.until("Create this file?");
         term.send(b"repository\n\nfuture-project\nfuture/base\nyes\n");
         assert!(term.finish().success(), "{}", term.output);
@@ -1605,7 +1611,10 @@ fn guided_custom_direct_preferences_and_earlier_correction() {
         assert_eq!(value.publish_remote, "future-remote");
         assert_eq!(value.base_remote, "future-project");
         assert_eq!(value.base, "future/base");
-        assert_eq!(value.save_action, SaveAction::Wip);
+        assert_eq!(
+            value.save_plan,
+            SavePlan::parse(&["commit:staged".into(), "commit:unstaged".into()]).unwrap()
+        );
         assert_eq!(value.finish_mode, settings::FinishMode::Integrate);
         assert_eq!(value.finish_update, FinishUpdate::Rebase);
         assert_eq!(value.finish_rewrite, FinishRewrite::Allow);
@@ -1830,7 +1839,7 @@ fn guided_bundle_structured_edit_and_relationship_correction() {
 fn guided_private_only_policy_audit_and_changed_override_review() {
     cases("guided_private_only_policy_audit", true, |root, exe| {
         let repo = Repository::new(root);
-        fs::write(repo.path().join(".git/git-oneflow.config.toml"), "save-action='stash'\n[workstreams.release]\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nrelease-marker='stable'\n").unwrap();
+        fs::write(repo.path().join(".git/git-oneflow.config.toml"), "save-plan=['stash:all']\n[workstreams.release]\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nrelease-marker='stable'\n").unwrap();
         let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
         term.until("Remote receiving work");
         term.send(b"\n\nstable\nkeep\nkeep\nkeep\n");
@@ -1844,7 +1853,10 @@ fn guided_private_only_policy_audit_and_changed_override_review() {
         let generated = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
         assert!(generated.contains("future/base"));
         assert!(!generated.contains("version-tagging"));
-        assert_eq!(load(repo.path()).save_action, SaveAction::Stash);
+        assert_eq!(
+            load(repo.path()).save_plan,
+            SavePlan::parse(&["stash:all".into()]).unwrap()
+        );
     });
 }
 
@@ -1956,5 +1968,64 @@ fn guided_remote_roles_keep_literal_names_and_sparse_follow_relationship() {
                 if follows { "work" } else { project }
             );
         }
+    });
+}
+
+#[test]
+fn generation_audits_composable_plans_and_labels_in_all_formats() {
+    isolated("generation_audits_composable_plans", true, |root| {
+        let repo = Repository::new(root);
+        for format in [Format::Toml, Format::Yaml, Format::Json] {
+            let mut plan = config::prepare(repo.path(), format).unwrap();
+            plan.proposed.save_plan =
+                SavePlan::parse(&["stash:staged".into(), "commit:unstaged".into()]).unwrap();
+            plan.proposed.save_message = "Literal $message `text`".into();
+            plan.proposed.save_stash_message = "Local work".into();
+            config::generate(repo.path(), &plan).unwrap();
+            let loaded = load(repo.path());
+            assert_eq!(loaded.save_plan, plan.proposed.save_plan);
+            assert_eq!(loaded.save_message, plan.proposed.save_message);
+            assert_eq!(loaded.save_stash_message, plan.proposed.save_stash_message);
+            fs::remove_file(repo.path().join(format.filename())).unwrap();
+            let step = settings::SaveOperation {
+                action: settings::SaveKind::Commit,
+                scope: settings::SaveScope::Staged,
+            };
+            plan.proposed.save_plan = SavePlan::Operations(vec![step, step]);
+            assert!(config::generate(repo.path(), &plan).is_err());
+            assert!(!plan.destination().exists());
+            plan.proposed.save_plan = SavePlan::Ask;
+            plan.proposed.save_message = " \t".into();
+            assert!(config::generate(repo.path(), &plan).is_err());
+            assert!(!plan.destination().exists());
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_save_plan_and_literal_labels_remain_correctable() {
+    cases("guided_save_plan_and_literal_labels", true, |root, exe| {
+        let repo = Repository::new(root);
+        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+        term.until("Remote receiving work");
+        term.send(b"\n\n\nedit\ncustom\ncommit:all,stash:staged\ncustom\nstash:staged,commit:unstaged\n \nLiteral $message `text`\nLocal $label\nkeep\nkeep\n");
+        term.until("Create this file?");
+        assert!(
+            term.output.contains("repeats or overlaps"),
+            "{}",
+            term.output
+        );
+        assert!(term.output.contains("must be nonblank"), "{}", term.output);
+        assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+        term.send(b"yes\n");
+        assert!(term.finish().success(), "{}", term.output);
+        let loaded = load(repo.path());
+        assert_eq!(
+            loaded.save_plan,
+            SavePlan::parse(&["stash:staged".into(), "commit:unstaged".into()]).unwrap()
+        );
+        assert_eq!(loaded.save_message, "Literal $message `text`");
+        assert_eq!(loaded.save_stash_message, "Local $label");
     });
 }
