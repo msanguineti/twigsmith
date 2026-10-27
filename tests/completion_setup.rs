@@ -787,11 +787,9 @@ fn native_cases(output: &Output, powershell: bool) {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "requires fish; run explicitly on a provisioned machine"]
 fn fresh_fish_reads_persistent_registration_and_live_refs() {
-    let Some(shell) = runtime("fish") else {
-        eprintln!("SKIP fresh Fish registration: fish runtime unavailable");
-        return;
-    };
+    let shell = runtime("fish").expect("required fish runtime is unavailable");
     support::isolated(
         "fresh_fish_reads_persistent_registration_and_live_refs",
         true,
@@ -832,11 +830,9 @@ complete -C 'gof s feat/sec'
 }
 
 #[test]
+#[ignore = "requires pwsh; run explicitly on a provisioned machine"]
 fn fresh_powershell_reads_selected_profile_and_live_refs() {
-    let Some(shell) = runtime("pwsh") else {
-        eprintln!("SKIP fresh PowerShell registration: pwsh runtime unavailable");
-        return;
-    };
+    let shell = runtime("pwsh").expect("required pwsh runtime is unavailable");
     support::isolated(
         "fresh_powershell_reads_selected_profile_and_live_refs",
         true,
@@ -898,11 +894,9 @@ $line = 'gof s feat/sec'
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires zsh; run explicitly on a provisioned machine"]
 fn fresh_zsh_reads_persistent_registration_and_live_refs() {
-    let Some(shell) = runtime("zsh") else {
-        eprintln!("SKIP fresh Zsh registration: zsh runtime unavailable");
-        return;
-    };
+    let shell = runtime("zsh").expect("required zsh runtime is unavailable");
     support::isolated(
         "fresh_zsh_reads_persistent_registration_and_live_refs",
         true,

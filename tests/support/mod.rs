@@ -26,6 +26,7 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     let mut child = Command::new(env::current_exe().unwrap());
     child.env_clear();
     for name in [
+        "ONEFLOW_TEST_BASH",
         "ONEFLOW_TEST_ZSH",
         "ONEFLOW_TEST_FISH",
         "ONEFLOW_TEST_PWSH",
@@ -36,8 +37,14 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
             child.env(name, value);
         }
     }
+    #[cfg(windows)]
+    for name in ["SystemRoot", "WINDIR", "TEMP", "TMP", "PATHEXT"] {
+        if let Some(value) = env::var_os(name) {
+            child.env(name, value);
+        }
+    }
     let output = child
-        .args(["--exact", name, "--nocapture"])
+        .args(["--exact", name, "--include-ignored", "--nocapture"])
         .current_dir(root.path())
         .env("ONEFLOW_ISOLATED_TEST", name)
         .env("ONEFLOW_TEST_ROOT", root.path())

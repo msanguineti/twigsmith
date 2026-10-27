@@ -72,11 +72,9 @@ fn quote(value: &str) -> String {
 }
 
 #[test]
+#[ignore = "requires fish; run explicitly on a provisioned machine"]
 fn fish_native_completion_preserves_literals_and_context() {
-    let Some(shell) = shell("fish") else {
-        eprintln!("fish runtime unavailable");
-        return;
-    };
+    let shell = shell("fish").expect("required fish runtime is unavailable");
     isolated(
         "fish_native_completion_preserves_literals_and_context",
         true,
@@ -119,11 +117,9 @@ complete -C 'gof save --message (touch SENTINEL)' >/dev/null
 }
 
 #[test]
+#[ignore = "requires pwsh; run explicitly on a provisioned machine"]
 fn powershell_native_completion_uses_literal_ast_values_and_cursor() {
-    let Some(shell) = shell("pwsh") else {
-        eprintln!("PowerShell runtime unavailable");
-        return;
-    };
+    let shell = shell("pwsh").expect("required pwsh runtime is unavailable");
     isolated(
         "powershell_native_completion_uses_literal_ast_values_and_cursor",
         true,
@@ -212,11 +208,9 @@ foreach ($line in @('gof save --message irr', 'gof start irr', 'git-oneflow star
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires zsh; run explicitly on a provisioned machine"]
 fn zsh_tab_preserves_literal_names_with_native_completion() {
-    let Some(shell) = shell("zsh") else {
-        eprintln!("Zsh runtime unavailable");
-        return;
-    };
+    let shell = shell("zsh").expect("required zsh runtime is unavailable");
     isolated(
         "zsh_tab_preserves_literal_names_with_native_completion",
         true,
@@ -326,11 +320,9 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires fish; run explicitly on a provisioned machine"]
 fn fish_tab_inserts_literal_names() {
-    let Some(shell) = shell("fish") else {
-        eprintln!("Fish runtime unavailable");
-        return;
-    };
+    let shell = shell("fish").expect("required fish runtime is unavailable");
     isolated("fish_tab_inserts_literal_names", true, |root| {
         let repository = fixture(root);
         let script = artifact(root, "fish");
@@ -436,11 +428,9 @@ fn fish_tab_inserts_literal_names() {
 }
 
 #[test]
+#[ignore = "requires pwsh; run explicitly on a provisioned machine"]
 fn powershell_host_filter_preserves_custom_delegation_and_registration() {
-    let Some(shell) = shell("pwsh") else {
-        eprintln!("PowerShell runtime unavailable");
-        return;
-    };
+    let shell = shell("pwsh").expect("required pwsh runtime is unavailable");
     isolated(
         "powershell_host_filter_preserves_custom_delegation_and_registration",
         true,
@@ -580,11 +570,9 @@ if ($result.CompletionMatches.Count -ne 0 -or $global:__TestReplacementCalls -ne
 
 #[cfg(target_os = "linux")]
 #[test]
+#[ignore = "requires pwsh; run explicitly on a provisioned machine"]
 fn powershell_console_tab_preserves_native_arguments_and_empty_results() {
-    let Some(shell) = shell("pwsh") else {
-        eprintln!("PowerShell runtime unavailable");
-        return;
-    };
+    let shell = shell("pwsh").expect("required pwsh runtime is unavailable");
     isolated(
         "powershell_console_tab_preserves_native_arguments_and_empty_results",
         true,

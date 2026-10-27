@@ -40,6 +40,8 @@ Usage: ./dev COMMAND [ARGS]
   bootstrap       Install the pinned Rust toolchain, rustfmt, and Clippy locally
   build [ARGS]    Build both native executables (pass --release for optimization)
   test [ARGS]     Run the Rust tests and CLI smoke checks
+  test-shells [--require-all]
+                  Run native shell tests available on this host
   test-groups     List focused test groups and their Cargo targets
   test-group NAME [ARGS]
                   Run a focused group, forwarding ARGS to Cargo test
@@ -115,6 +117,57 @@ test_group() {
     esac
 }
 
+# Ordinary tests show external-runtime cases as ignored. Select those cases only
+# after checking the host and executable; missing local runtimes are unavailable,
+# never successful test executions. CI requires its provisioned runtime set.
+test_shells() {
+    shell_requirement=${1:-available}
+    case "$(uname -s)" in
+        Linux) shell_targets='completion_shells completion_setup'; shell_names='fish zsh pwsh' ;;
+        Darwin) shell_targets='native_completion'; shell_names='bash fish zsh' ;;
+        *) echo 'Native shell tests unavailable through this Unix launcher on this host.' >&2; return 0 ;;
+    esac
+    missing_shells=''
+    for shell_name in $shell_names; do
+        case "$shell_name" in
+            bash) shell_path=${ONEFLOW_TEST_BASH:-$(command -v bash || true)} ;;
+            fish) shell_path=${ONEFLOW_TEST_FISH:-$(command -v fish || true)} ;;
+            zsh) shell_path=${ONEFLOW_TEST_ZSH:-$(command -v zsh || true)} ;;
+            pwsh) shell_path=${ONEFLOW_TEST_PWSH:-$(command -v pwsh || true)} ;;
+        esac
+        shell_ready=false
+        if [ -x "$shell_path" ]; then
+            if [ "$shell_name" = pwsh ]; then
+                if "$shell_path" -NoLogo -NoProfile -NonInteractive -Command 'if ($PSVersionTable.PSVersion -ge [version]"7.3") { exit 0 } else { exit 1 }' >/dev/null 2>&1; then
+                    shell_ready=true
+                fi
+            elif "$shell_path" --version >/dev/null 2>&1; then
+                shell_ready=true
+            fi
+        fi
+        if [ "$shell_ready" = false ]; then
+            missing_shells="$missing_shells $shell_name"
+        fi
+    done
+    if [ "$shell_requirement" = required ] && [ -n "$missing_shells" ]; then
+        echo "error: native test environment is incomplete; unavailable or unsupported:$missing_shells (tests not started)" >&2
+        return 1
+    fi
+    for shell_name in $shell_names; do
+        case " $missing_shells " in
+            *" $shell_name "*) echo "SKIPPED native $shell_name tests: runtime unavailable or unsupported" >&2; continue ;;
+        esac
+        shell_filter=$shell_name
+        [ "$shell_name" != pwsh ] || shell_filter=powershell
+        set -- test --locked
+        for shell_target in $shell_targets; do
+            set -- "$@" --test "$shell_target"
+        done
+        "$cargo" "$@" "$shell_filter" -- --ignored --nocapture || return "$?"
+    done
+}
+
+run_shells_after_test=false
 command=${1:-help}
 if [ "$#" -gt 0 ]; then shift; fi
 case "$command" in
@@ -136,6 +189,7 @@ case "$command" in
             echo 'error: usage: ./dev test-group NAME [CARGO_TEST_ARGS]; use ./dev test-groups to list groups' >&2
             exit 2
         fi
+        if [ "$1" = completion ] && [ "$#" -eq 1 ]; then run_shells_after_test=true; fi
         test_group "$1"
         shift
         # Split only our fixed target list. Preserve every caller argument,
@@ -145,6 +199,13 @@ case "$command" in
         done
         set -- --lib --bins "$@"
         command=test
+        ;;
+    test-shells)
+        case "$*" in
+            '') shell_requirement=available ;;
+            --require-all) shell_requirement=required ;;
+            *) echo 'error: usage: ./dev test-shells [--require-all]' >&2; exit 2 ;;
+        esac
         ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
     *) usage >&2; exit 2 ;;
@@ -185,14 +246,20 @@ fi
 
 case "$command" in
     build) exec "$cargo" build --locked "$@" ;;
-    test) exec "$cargo" test --locked "$@" ;;
+    test)
+        if [ "$#" -gt 0 ] && [ "$run_shells_after_test" = false ]; then exec "$cargo" test --locked "$@"; fi
+        "$cargo" test --locked "$@"
+        test_shells
+        ;;
+    test-shells) test_shells "$shell_requirement" ;;
     fmt) exec "$cargo" fmt --all "$@" ;;
     lint) exec "$cargo" clippy --locked --all-targets "$@" -- -D warnings ;;
     check)
         "$cargo" fmt --all --check
         "$cargo" build --locked
         "$cargo" clippy --locked --all-targets -- -D warnings
-        exec "$cargo" test --locked
+        "$cargo" test --locked
+        test_shells
         ;;
     cargo) exec "$cargo" "$@" ;;
     rustc) exec "$CARGO_HOME/bin/rustc" "$@" ;;

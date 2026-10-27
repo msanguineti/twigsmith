@@ -27,6 +27,9 @@ fn run(root: &tempfile::TempDir, args: &[&str]) -> std::process::Output {
     Command::new("sh")
         .arg(root.path().join("dev"))
         .args(args)
+        .env("ONEFLOW_TEST_FISH", root.path().join("missing-fish"))
+        .env("ONEFLOW_TEST_ZSH", root.path().join("missing-zsh"))
+        .env("ONEFLOW_TEST_PWSH", root.path().join("missing-pwsh"))
         .output()
         .unwrap()
 }
@@ -172,4 +175,70 @@ fn complete_runs_use_cargo_discovery_without_group_selectors() {
             "--locked"
         ]
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_runtime_selection_distinguishes_unavailable_setup_from_execution() {
+    let root = launcher();
+    let skipped = run(&root, &["test-shells"]);
+    assert!(skipped.status.success(), "{skipped:?}");
+    assert!(skipped.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&skipped.stderr).contains("SKIPPED"));
+    let required = run(&root, &["test-shells", "--require-all"]);
+    assert!(!required.status.success());
+    assert!(required.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&required.stderr).contains("tests not started"));
+
+    let runtime = root.path().join("fake-fish");
+    fs::write(&runtime, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new("sh")
+        .arg(root.path().join("dev"))
+        .arg("test-shells")
+        .env("ONEFLOW_TEST_FISH", runtime)
+        .env("ONEFLOW_TEST_ZSH", root.path().join("missing-zsh"))
+        .env("ONEFLOW_TEST_PWSH", root.path().join("missing-pwsh"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        cargo_args(&output),
+        [
+            "test",
+            "--locked",
+            "--test",
+            "completion_shells",
+            "--test",
+            "completion_setup",
+            "fish",
+            "--",
+            "--ignored",
+            "--nocapture"
+        ]
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unsupported_shell_is_unavailable_before_native_tests_start() {
+    let root = launcher();
+    let runtime = root.path().join("old-pwsh");
+    fs::write(&runtime, "#!/bin/sh\nprintf '7.2.0\\n'\nexit 1\n").unwrap();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+    for required in [false, true] {
+        let mut command = Command::new("sh");
+        command.arg(root.path().join("dev")).arg("test-shells");
+        if required {
+            command.arg("--require-all");
+        }
+        let output = command
+            .env("ONEFLOW_TEST_FISH", root.path().join("missing-fish"))
+            .env("ONEFLOW_TEST_ZSH", root.path().join("missing-zsh"))
+            .env("ONEFLOW_TEST_PWSH", &runtime)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.success(), !required, "{output:?}");
+        assert!(output.stdout.is_empty(), "Cargo must not start: {output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported"));
+    }
 }

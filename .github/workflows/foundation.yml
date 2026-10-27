@@ -10,7 +10,6 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -20,3 +19,70 @@ jobs:
         run: ./dev bootstrap
       - name: Check foundation
         run: ./dev check
+
+  native-completion:
+    name: Native completion (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Provision Linux shells
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes fish zsh
+          command -v bash fish zsh pwsh
+          bash --version
+          fish --version
+          zsh --version
+          pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion; if ($PSVersionTable.PSVersion -lt [version]"7.3") { exit 1 }'
+      - name: Provision macOS shells
+        if: runner.os == 'macOS'
+        run: |
+          brew install bash fish git
+          echo "ONEFLOW_TEST_BASH=$(brew --prefix bash)/bin/bash" >> "$GITHUB_ENV"
+          command -v bash fish zsh git
+          fish --version
+          zsh --version
+          git --version
+      - name: Bootstrap repository-local Rust
+        if: runner.os != 'Windows'
+        run: ./dev bootstrap
+      - name: Test Linux shell interactions and registration
+        if: runner.os == 'Linux'
+        run: ./dev test-shells --require-all
+      - name: Test macOS native completion and installation boundary
+        if: runner.os == 'macOS'
+        run: |
+          ./dev test --test native_completion
+          ./dev test-shells --require-all
+      - name: Test Windows native completion and installation boundary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:ONEFLOW_TEST_PWSH = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          if ($PSVersionTable.PSVersion -lt [version]'7.3') { throw 'PowerShell 7.3 or newer is required for this environment' }
+          $PSVersionTable.PSVersion
+          git --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git --no-lazy-fetch --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $toolchain = [regex]::Match((Get-Content rust-toolchain.toml -Raw), 'channel = "([^"]+)"').Groups[1].Value
+          if (-not $toolchain) { throw 'Missing Rust toolchain pin' }
+          $env:RUSTUP_HOME = Join-Path $PWD '.dev/rustup'
+          $env:CARGO_HOME = Join-Path $PWD '.dev/cargo'
+          $env:CARGO_TARGET_DIR = Join-Path $PWD 'target'
+          $env:RUSTUP_TOOLCHAIN = $toolchain
+          rustup toolchain install $toolchain --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --test native_completion
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --test native_completion powershell -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -41,8 +41,9 @@ of these paths.
 For implementation, dependency, configuration, or tooling changes, run
 one complete `./dev check` against the final result. Repeat it after subsequent
 changes, failures, or unresolved concerns that warrant fresh validation. This is
-also the CI entry point: it checks formatting, builds both executables, runs
-Clippy with warnings treated as errors, and runs all tests.
+also the Linux foundation CI entry point: it checks formatting, builds both
+executables, runs Clippy with warnings treated as errors, runs the regular suite,
+and then selects external-shell tests whose runtimes are available locally.
 
 For documentation-only changes, check links and anchors, examples and command
 syntax, technical claims against source and existing tests, and whitespace with
@@ -53,6 +54,8 @@ unnecessary when executable behaviour and tooling are unchanged.
 | --- | --- |
 | `./dev build` | Build both debug executables |
 | `./dev test` | Run tests |
+| `./dev test-shells` | Run native shell tests available on this host |
+| `./dev test-shells --require-all` | Require the host’s complete native shell environment before testing |
 | `./dev test-groups` | List focused groups with their included Cargo targets |
 | `./dev test-group NAME [args]` | Run a focused group with additional Cargo test arguments |
 | `./dev fmt` | Format Rust source |
@@ -198,10 +201,30 @@ on PATH. Grammar and repository candidates live in Rust.
 Completion runtime coverage on Linux includes Bash 5.2.37, Zsh 5.9, Fish 4.0.2
 and PowerShell 7.5.4. PowerShell completion requires 7.3 or newer.
 Completion tests use isolated repositories and profiles. Tests requiring optional
-shell runtimes report skips when unavailable; inspect their output when validating
-shell support. Real interaction evidence and measured latency belong to the
-review evidence for a completion change. Linux runtime tests establish neither
-Windows nor macOS compatibility.
+shell runtimes are marked ignored in the regular Cargo suite. Complete
+`./dev test`, `./dev check`, and an unfiltered `./dev test-group completion`
+then check executable availability and supported runtime versions and execute their ignored cases in separate test
+processes. Missing local runtimes are reported as skipped; they count as neither
+passes nor failures. `./dev test-shells` runs this environment-aware selection on
+its own. Filtered Cargo invocations preserve their arguments; use `-- --ignored`
+to select external-runtime cases explicitly after provisioning that runtime.
+
+Native completion CI provisions Linux, macOS, and Windows runners. Linux executes
+Fish, Zsh and PowerShell interaction and profile-registration tests; Bash coverage
+also runs in the foundation suite. macOS tests Bash, Fish and Zsh session adapters;
+Windows tests PowerShell session completion. Both non-Linux jobs verify that
+persistent profile installation refuses changes, matching the current Linux-only
+metadata-safety contract. macOS Zsh adapter checks do not establish interactive
+Tab behavior; Linux retains the terminal interaction tests.
+
+CI checks its required runtime environment before selecting tests. A missing
+required runtime is a setup error with tests not started, rather than a failed
+native behavior assertion. The workflow has no explicit job timeout; GitHub
+Actions applies its platform limits. Windows uses the pinned Rust toolchain
+with native Cargo; the Unix jobs use `./dev`. Real interaction evidence and
+measured latency belong to the review evidence for a completion change. Native
+completion checks establish their tested shell contracts, rather than
+whole-application platform compatibility.
 
 For optimized executables:
 
