@@ -46,8 +46,16 @@ executables, runs Clippy with warnings treated as errors, runs the regular suite
 and then selects external-shell tests whose runtimes are available locally.
 Formatting, build, and lint failures stop the check before tests start. Once
 running tests, complete `./dev test` and `./dev check` use Cargo's
-`--no-fail-fast`: all test targets run despite test failures, followed by every
-available external-shell runtime. `./dev test-shells` and an unfiltered
+`--no-fail-fast`: test failures do not stop later suites. Full runs execute
+CLI smoke/activity, configuration, shared foundations/status/completion, start,
+save, finish/history, and finally end-to-end lifecycle/direct/hosted suites.
+Library and binary unit tests run with the shared foundations; doctests and every
+available external-shell runtime follow the regular integration suites.
+Suites run sequentially while each suite retains Rust's normal internal test
+parallelism. New auto-discovered suites in `tests/*.rs` or `tests/*/main.rs` append
+after the preferred sequence until assigned a position in `dev`. Explicit Cargo
+manifest test targets using other paths require updating that discovery. Cargo
+compiles its ordinary targets, including examples, before the ordered run. `./dev test-shells` and an unfiltered
 `./dev test-group completion` also collect failures across their test stages.
 Cargo reports failed targets and individual tests; the launcher ends with a
 failed-stage/runtime summary and exits unsuccessfully if any stage failed.
@@ -114,7 +122,7 @@ includes expensive lifecycle coverage. Prefer the narrower groups during fast
 iteration, then run full validation before submitting changes. Every group also runs
 library and binary unit tests (`--lib --bins`). Targets overlap where they
 exercise shared behaviour. Overlap selects shared tests for relevant development
-work; a full run uses Cargo discovery rather than executing each group.
+work; a full run executes the ordered suites once rather than executing each group.
 
 The `finish` group does not include `cli_oneflow`, `cli_direct_sequence`, `cli_hosted_oneflow`, or
 `cli_hosted_recovery`, or `cli_hosted_presentation`. For tagged release/hotfix
@@ -148,10 +156,10 @@ before forwarding the remaining arguments. Additional selectors can expand the
 selection. An unknown or missing group fails with usage guidance.
 
 Focused tests support iteration. The full commands, `./dev test` without
-arguments and `./dev check`, run every Cargo-discovered test target, including
-CLI smoke and end-to-end tests. New tests participate in full runs regardless
-of group membership; update the group
-definitions in `dev` when a target is useful for focused iteration.
+arguments and `./dev check`, run the ordered sequence described above, including
+CLI smoke and end-to-end tests. New conventional integration suites participate
+regardless of group membership; update the sequence and group definitions in `dev`
+when assigning a suite its logical position and focused selections.
 
 ## Test quality
 

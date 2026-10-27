@@ -154,11 +154,24 @@ fn invalid_group_requests_fail_before_invoking_cargo() {
 }
 
 #[test]
-fn complete_runs_use_cargo_discovery_without_group_selectors() {
+fn complete_runs_compile_all_targets_and_include_units_and_doctests() {
     let root = launcher();
     assert_eq!(
         cargo_args(&run(&root, &["test"])),
-        ["test", "--locked", "--no-fail-fast"]
+        [
+            "test",
+            "--locked",
+            "--no-run",
+            "test",
+            "--locked",
+            "--no-fail-fast",
+            "--lib",
+            "--bins",
+            "test",
+            "--locked",
+            "--no-fail-fast",
+            "--doc"
+        ]
     );
     assert_eq!(
         cargo_args(&run(&root, &["check"])),
@@ -176,7 +189,16 @@ fn complete_runs_use_cargo_discovery_without_group_selectors() {
             "warnings",
             "test",
             "--locked",
-            "--no-fail-fast"
+            "--no-run",
+            "test",
+            "--locked",
+            "--no-fail-fast",
+            "--lib",
+            "--bins",
+            "test",
+            "--locked",
+            "--no-fail-fast",
+            "--doc"
         ]
     );
 }

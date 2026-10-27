@@ -55,7 +55,7 @@ EOF
 }
 
 # Keep discovery and execution on the same target definitions. Groups are
-# conveniences; Cargo's normal discovery remains authoritative for full runs.
+# conveniences; full runs use the separate ordered sequence below.
 test_group() {
     case "$1" in
         start)
@@ -136,6 +136,51 @@ finish_tests() {
         printf '\nFAILED test stages:%s\n' "$failed_tests" >&2
         return 1
     fi
+}
+
+# Cargo sorts selected targets itself, so invoke suites separately to establish
+# lifecycle order. Keep new conventional auto-discovered suites in the full run
+# even before they receive a position in this preferred sequence.
+full_tests() {
+    # Match Cargo's ordinary compilation coverage, including examples, before
+    # starting tests. A compilation failure prevents meaningful test execution.
+    "$cargo" test --locked --no-run
+    ordered_targets='
+        cli_smoke cli_activity
+        settings cli_config
+        @units dev_selection git_execution repository_state remote_roles cli_status
+        bash_completion completion_engine completion_setup completion_shells native_completion
+        start_resolution start_workflow cli_start
+        save_planning save_execution save_publication cli_save
+        finish_planning finish_checks finish_roles finish_preparation
+        finish_integration finish_publication cli_finish cli_history cli_history_presentation
+        cli_lifecycle cli_oneflow cli_direct_sequence
+        cli_hosted_oneflow cli_hosted_presentation cli_hosted_recovery'
+    executed_targets=' '
+    for full_target in $ordered_targets; do
+        if [ "$full_target" = @units ]; then
+            run_test 'library and binary unit tests' "$cargo" test --locked --no-fail-fast --lib --bins
+        elif [ -f "tests/$full_target.rs" ] || [ -f "tests/$full_target/main.rs" ]; then
+            run_test "$full_target" "$cargo" test --locked --no-fail-fast --test "$full_target"
+            executed_targets="$executed_targets$full_target "
+        fi
+    done
+    # Cargo's conventional integration layouts. Explicit manifest targets with
+    # other paths need to be added to this discovery when introduced.
+    for full_path in tests/*.rs tests/*/main.rs; do
+        [ -f "$full_path" ] || continue
+        full_target=${full_path#tests/}
+        full_target=${full_target%/main.rs}
+        full_target=${full_target%.rs}
+        case "$executed_targets" in
+            *" $full_target "*) continue ;;
+        esac
+        run_test "$full_target" "$cargo" test --locked --no-fail-fast --test "$full_target"
+        executed_targets="$executed_targets$full_target "
+    done
+    run_test doctests "$cargo" test --locked --no-fail-fast --doc
+    test_shells
+    finish_tests
 }
 
 # Ordinary tests show external-runtime cases as ignored. Select those cases only
@@ -269,9 +314,13 @@ case "$command" in
     build) exec "$cargo" build --locked "$@" ;;
     test)
         if [ "$#" -gt 0 ] && [ "$run_shells_after_test" = false ]; then exec "$cargo" test --locked "$@"; fi
-        run_test "regular suite" "$cargo" test --locked --no-fail-fast "$@"
-        test_shells
-        finish_tests
+        if [ "$#" -eq 0 ]; then
+            full_tests
+        else
+            run_test "regular suite" "$cargo" test --locked --no-fail-fast "$@"
+            test_shells
+            finish_tests
+        fi
         ;;
     test-shells)
         test_shells "$shell_requirement"
@@ -283,9 +332,7 @@ case "$command" in
         "$cargo" fmt --all --check
         "$cargo" build --locked
         "$cargo" clippy --locked --all-targets -- -D warnings
-        run_test "regular suite" "$cargo" test --locked --no-fail-fast
-        test_shells
-        finish_tests
+        full_tests
         ;;
     cargo) exec "$cargo" "$@" ;;
     rustc) exec "$CARGO_HOME/bin/rustc" "$@" ;;
