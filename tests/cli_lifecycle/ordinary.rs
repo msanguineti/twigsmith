@@ -715,3 +715,118 @@ fn published_default_config_stopped_reword_fresh_process_resolves_method_without
         },
     );
 }
+
+#[test]
+fn unpublished_local_work_finishes_directly_without_publishing_source() {
+    isolated(
+        "ordinary::unpublished_local_work_finishes_directly_without_publishing_source",
+        true,
+        |root| {
+            let (local, remote) = fixture(root);
+            commit(&local, "feature", "local only\n");
+            let source = value(&local, &["rev-parse", "HEAD"]);
+            assert_eq!(optional_oid(&remote, WORK_REF), None);
+            let text = succeeds(run(
+                &local,
+                &[
+                    "finish",
+                    "--mode",
+                    "integrate",
+                    "--update",
+                    "none",
+                    "--integration",
+                    "ff-only",
+                    "--cleanup",
+                    "local",
+                ],
+            ));
+            assert!(text.contains("delivery confirmed"), "{text}");
+            assert_eq!(value(&remote, &["rev-parse", "main"]), source);
+            assert_eq!(optional_oid(&remote, WORK_REF), None);
+            assert_eq!(optional_oid(&local, WORK_REF), None);
+            clean(&local);
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn targeted_review_resumes_and_saves_after_publication() {
+    isolated(
+        "ordinary::targeted_review_resumes_and_saves_after_publication",
+        true,
+        |root| {
+            let (local, remote) = fixture(root);
+            local.success(&["switch", "main"]);
+            remote.success(&["branch", "release/train"]);
+            succeeds(run(
+                &local,
+                &[
+                    "start",
+                    "work/release-fix",
+                    "--policy",
+                    "ordinary",
+                    "--target",
+                    "release/train",
+                ],
+            ));
+            commit(&local, "fix", "first fix\n");
+            succeeds(run(&local, &["save"]));
+            let first = value(&local, &["rev-parse", "HEAD"]);
+            let output = succeeds(run(
+                &local,
+                &[
+                    "finish",
+                    "--mode",
+                    "review",
+                    "--update",
+                    "none",
+                    "--no-rewrite",
+                ],
+            ));
+            assert!(output.contains("release/train"), "{output}");
+            local.success(&["switch", "main"]);
+            succeeds(run(&local, &["start", "work/release-fix"]));
+            assert_eq!(value(&local, &["rev-parse", "HEAD"]), first);
+            commit(&local, "fix", "follow-up fix\n");
+            succeeds(run(&local, &["save"]));
+            let second = value(&local, &["rev-parse", "HEAD"]);
+            assert_ne!(first, second);
+            assert_eq!(
+                value(&remote, &["rev-parse", "refs/heads/work/release-fix"]),
+                second
+            );
+            // Another developer advances the selected release target. The next
+            // review update edits published history and explicitly authorizes its
+            // protected replacement after incorporating that target.
+            commit(&remote, "release-update", "new release base\n");
+            remote.success(&["branch", "-f", "release/train", "main"]);
+            let advanced = value(&remote, &["rev-parse", "release/train"]);
+            reword_editors(root, &local);
+            let output = succeeds(run(
+                &local,
+                &[
+                    "finish",
+                    "--mode",
+                    "review",
+                    "--update",
+                    "rebase",
+                    "--history-edit",
+                    "interactive",
+                    "--allow-rewrite",
+                ],
+            ));
+            assert!(output.contains("release/train"), "{output}");
+            let rewritten = value(&local, &["rev-parse", "HEAD"]);
+            assert_ne!(rewritten, second);
+            assert_eq!(
+                value(&remote, &["rev-parse", "refs/heads/work/release-fix"]),
+                rewritten
+            );
+            local.success(&["merge-base", "--is-ancestor", &advanced, &rewritten]);
+            assert_eq!(value(&remote, &["rev-parse", "release/train"]), advanced);
+            assert!(value(&local, &["tag", "--list"]).is_empty());
+            clean(&local);
+        },
+    );
+}

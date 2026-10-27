@@ -1766,6 +1766,7 @@ pub(crate) fn load_for_branch_from_shared_tree(
     repository: &RepositoryContext,
     branch: &[u8],
     commit: &[u8],
+    reconstruct_absent: bool,
 ) -> Result<Option<LoadedSettings>, SettingsError> {
     let mut arguments = vec![
         "--no-replace-objects".into(),
@@ -1818,6 +1819,12 @@ pub(crate) fn load_for_branch_from_shared_tree(
     } else {
         None
     };
+    // An absent committed layer is authoritative only when the caller can
+    // corroborate that absence. Otherwise resolve the live layer before applying
+    // the branch policy; an untracked shared file may define that policy.
+    if shared.is_none() && !reconstruct_absent {
+        return Ok(None);
+    }
     let mut loaded = load_layers(directory, repository, shared)?;
     apply_branch_policy(directory, branch, &mut loaded.settings)?;
     Ok(Some(loaded))

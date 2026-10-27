@@ -198,8 +198,47 @@ fn hosted_release_project_fork_and_exact_version_history() {
         "hosted_release_project_fork_and_exact_version_history",
         |root, cli| {
             let f = Fixture::new(root);
-            configure(&f, "personal", "none");
+            cli.success(
+                &f.local,
+                "config",
+                &["--oneflow-hosted", "--yes", "--marker", "released"],
+            );
+            let config_path = f.local.path().join("git-oneflow.config.toml");
+            let generated = fs::read_to_string(&config_path).unwrap();
+            let configured = generated
+                .replace("origin", "project")
+                .replacen(
+                    "publish-remote = \"project\"",
+                    "publish-remote = \"personal\"\nbase-remote = \"project\"",
+                    1,
+                )
+                .replace(
+                    "review-remote = \"project\"",
+                    "review-remote = \"personal\"",
+                );
+            fs::write(&config_path, configured).unwrap();
+            fs::create_dir_all(f.local.path().join(".git/info")).unwrap();
+            fs::write(
+                f.local.path().join(".git/info/exclude"),
+                "git-oneflow.config.toml\n",
+            )
+            .unwrap();
+            let settings = cli.success(&f.local, "config", &["show"]);
+            assert!(
+                settings.contains("workstreams.release.review-remote: personal"),
+                "{settings}"
+            );
+            assert!(
+                settings.contains("workstreams.release.release-marker: released"),
+                "{settings}"
+            );
+            f.local.success(&[
+                "push",
+                "project",
+                &format!("{}:refs/heads/released", f.base),
+            ]);
             let source = release(cli, &f);
+            cli.success(&f.local, "save", &[]);
             let target = f.advance_development(root, "new-development", "newer\n");
             let output = cli.success(
                 &f.local,
@@ -241,17 +280,60 @@ fn hosted_release_project_fork_and_exact_version_history() {
                 value(&f.local, &["show", "-s", "--format=%P", &candidate]),
                 format!("{source} {target}")
             );
-            assert_eq!(oid(f.project.path(), "refs/heads/main"), Some(target));
+            assert_eq!(
+                oid(f.project.path(), "refs/heads/main"),
+                Some(target.clone())
+            );
             assert_eq!(oid(f.project.path(), "refs/heads/review/v1"), None);
             assert_eq!(oid(f.local.path(), "refs/remotes/project/review/v1"), None);
             assert_eq!(oid(f.personal.path(), "refs/tags/v1"), None);
-            assert_eq!(oid(f.project.path(), "refs/heads/released"), None);
+            assert_eq!(
+                oid(f.project.path(), "refs/heads/released"),
+                Some(f.base.clone())
+            );
             assert_eq!(value(&f.local, &["branch", "--show-current"]), "review/v1");
             cli.success(&f.local, "finish", &[]);
             assert_eq!(
                 oid(f.personal.path(), "refs/heads/review/v1"),
-                Some(candidate)
+                Some(candidate.clone())
             );
+
+            // Simulate the provider's no-ff merge and the later manual marker step
+            // in a separate project checkout. Neither action is owned by finish.
+            let maintainer = Repository::new(root);
+            maintainer.success(&[
+                "fetch",
+                f.project.path().to_str().unwrap(),
+                "refs/tags/v1:refs/tags/v1",
+            ]);
+            maintainer.success(&["fetch", f.project.path().to_str().unwrap(), "main"]);
+            maintainer.success(&["reset", "--hard", "FETCH_HEAD"]);
+            maintainer.success(&["fetch", f.personal.path().to_str().unwrap(), "review/v1"]);
+            maintainer.success(&["merge", "--no-ff", "-m", "Integrate release", "FETCH_HEAD"]);
+            let merged = value(&maintainer, &["rev-parse", "HEAD"]);
+            assert_eq!(
+                value(&maintainer, &["show", "-s", "--format=%P", &merged]),
+                format!("{target} {candidate}")
+            );
+            maintainer.success(&[
+                "push",
+                f.project.path().to_str().unwrap(),
+                "HEAD:refs/heads/main",
+            ]);
+            maintainer.success(&["fetch", f.project.path().to_str().unwrap(), "released"]);
+            maintainer.success(&["checkout", "-b", "released", "FETCH_HEAD"]);
+            maintainer.success(&["merge", "--ff-only", "v1"]);
+            maintainer.success(&[
+                "push",
+                f.project.path().to_str().unwrap(),
+                "HEAD:refs/heads/released",
+            ]);
+            assert_eq!(oid(f.project.path(), "refs/heads/main"), Some(merged));
+            assert_eq!(
+                oid(f.project.path(), "refs/heads/released"),
+                Some(source.clone())
+            );
+            assert_eq!(oid(f.project.path(), "refs/tags/v1^{}"), Some(source));
         },
     );
 }
@@ -369,39 +451,36 @@ fn hosted_conflict_continue_and_abort_preserve_original_version() {
     );
 }
 #[test]
-fn ordinary_contribution_into_release_has_no_tagged_effects() {
+fn ordinary_contribution_into_release_or_hotfix_has_no_tagged_effects() {
     cases(
-        "ordinary_contribution_into_release_has_no_tagged_effects",
+        "ordinary_contribution_into_release_or_hotfix_has_no_tagged_effects",
         |root, cli| {
-            let f = Fixture::new(root);
-            configure(&f, "personal", "none");
-            f.local.success(&[
-                "push",
-                "project",
-                &format!("{}:refs/heads/release/active", f.base),
-            ]);
-            cli.success(
-                &f.local,
-                "start",
-                &[
-                    "contribution",
-                    "--policy",
-                    "ordinary",
-                    "--target",
-                    "release/active",
-                ],
-            );
-            let source = commit(&f.local, "contribution", "change\n");
-            cli.success(&f.local, "finish", &[]);
-            assert_eq!(
-                oid(f.personal.path(), "refs/heads/contribution"),
-                Some(source)
-            );
-            assert_eq!(
-                oid(f.project.path(), "refs/heads/release/active"),
-                Some(f.base)
-            );
-            assert!(value(&f.local, &["tag", "--list"]).is_empty());
+            for target in ["release/active", "hotfix/active"] {
+                let f = Fixture::new(root);
+                configure(&f, "personal", "none");
+                f.local.success(&[
+                    "push",
+                    "project",
+                    &format!("{}:refs/heads/{target}", f.base),
+                ]);
+                cli.success(
+                    &f.local,
+                    "start",
+                    &["contribution", "--policy", "ordinary", "--target", target],
+                );
+                let source = commit(&f.local, "contribution", "change\n");
+                let output = cli.success(&f.local, "finish", &[]);
+                assert!(output.contains(target), "{output}");
+                assert_eq!(
+                    oid(f.personal.path(), "refs/heads/contribution"),
+                    Some(source)
+                );
+                assert_eq!(
+                    oid(f.project.path(), &format!("refs/heads/{target}")),
+                    Some(f.base)
+                );
+                assert!(value(&f.local, &["tag", "--list"]).is_empty());
+            }
         },
     );
 }

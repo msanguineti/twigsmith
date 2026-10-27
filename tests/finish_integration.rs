@@ -1505,6 +1505,69 @@ fn ordinary_integration_keeps_ignored_shared_configuration_masked_by_private_set
         },
     );
 }
+#[test]
+fn tagged_integration_binds_ignored_shared_configuration_across_recovery() {
+    isolated(
+        "tagged_integration_binds_ignored_shared_configuration_across_recovery",
+        true,
+        |root| {
+            let f = fixture(root);
+            fs::remove_file(f.repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+            fs::create_dir_all(f.repo.path().join(".git/info")).unwrap();
+            fs::write(
+                f.repo.path().join(".git/info/exclude"),
+                "git-oneflow.config.toml\n",
+            )
+            .unwrap();
+            let path = f.repo.path().join("git-oneflow.config.toml");
+            let config = "base-remote='project'\npublish-remote='fork'\nfinish-message='auto'\nfinish-mode='integrate'\n[workstreams.release]\ncreation-source='main'\nintegration-target='main'\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\n";
+            fs::write(&path, config).unwrap();
+            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+                .current_dir(f.repo.path())
+                .args(["start", "A", "--policy", "release"])
+                .output()
+                .unwrap();
+            assert!(started.status.success(), "{started:?}");
+            let req = Request {
+                release: integration::release::Request {
+                    tag: Some("v-ignored".into()),
+                    ..Default::default()
+                },
+                ..request(FinishIntegration::Merge)
+            };
+            let prepared = prepare_local(&f, &req);
+            assert!(prepared.is_prepared(), "{prepared:#?}");
+            let retry = integration::assess(f.repo.path(), &Request::default(), None).unwrap();
+            assert!(
+                !retry
+                    .blockers
+                    .contains(&Blocker::Recovery(Problem::ChangedBinding)),
+                "{retry:#?}"
+            );
+            fs::write(&path, format!("{config}\nfinish-cleanup='both'\n")).unwrap();
+            let changed = integration::assess(f.repo.path(), &Request::default(), None).unwrap();
+            assert!(
+                changed
+                    .blockers
+                    .contains(&Blocker::Recovery(Problem::ChangedBinding)),
+                "{changed:#?}"
+            );
+            assert!(changed.permitted_effects().is_empty());
+            fs::write(&path, config).unwrap();
+            let recovered = integration::assess(f.repo.path(), &Request::default(), None).unwrap();
+            assert!(
+                !recovered
+                    .blockers
+                    .contains(&Blocker::Recovery(Problem::ChangedBinding)),
+                "{recovered:#?}"
+            );
+            let delivered =
+                integration::publication::publish(f.repo.path(), prepared.plan.as_ref().unwrap());
+            assert!(delivered.is_complete(), "{delivered:#?}");
+        },
+    );
+}
+
 fn hook(f: &Fixture, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let hooks = f.repo.success(&["config", "core.hooksPath"]);

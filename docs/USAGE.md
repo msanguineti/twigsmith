@@ -714,6 +714,10 @@ merge-back guidance, `finish-checkout = "work"`, `finish-cleanup = "keep"`, and
 later review work. Ordinary contributions can still review into a release or
 hotfix with `--policy ordinary --target <branch>`; they adopt no version-tag or
 marker effects and retain their own integration preferences.
+After submission, the provider may integrate ordinary work by rebase, squash,
+or a non-fast-forward merge according to the project's review policy. Submission
+and integration are external actions. The no-ff guidance below applies to the
+versioned merge-back branch.
 
 Successful output names the version tag and commit, original source, published
 merge-back source, review repository, and target. Submit that merge-back branch

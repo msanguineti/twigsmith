@@ -392,24 +392,20 @@ pub fn assess(
             // A regular committed shared layer stays bound to the attempt's
             // original tree. Target checkout and native preparation may import
             // another tree's settings, but cannot approve different effects.
+            let reconstruct_absent = !record.has_shared_settings()
+                && (pending_tree
+                    || configuration_files
+                        .shared_matches_tree(&repository, "HEAD")
+                        .map_err(SaveError::from)?);
             settings::load_for_branch_from_shared_tree(
                 directory,
                 &repository,
                 branch,
                 record.original(),
+                reconstruct_absent,
             )
             .map_err(SaveError::from)?
-            .map(|loaded| -> Result<_, FinishError> {
-                let reconstruct = loaded.shared.is_some()
-                    || (!record.has_shared_settings()
-                        && (pending_tree
-                            || configuration_files
-                                .shared_matches_tree(&repository, "HEAD")
-                                .map_err(SaveError::from)?));
-                Ok(reconstruct.then_some(loaded.settings))
-            })
-            .transpose()?
-            .flatten()
+            .map(|loaded| loaded.settings)
         } else {
             None
         };

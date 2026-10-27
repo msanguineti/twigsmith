@@ -345,6 +345,79 @@ fn ordinary_lifecycle_executable_and_alias_wiring() {
 }
 
 #[test]
+fn configured_direct_release_uses_selected_cutoff_and_publishes_version() {
+    cases(
+        "configured_direct_release_uses_selected_cutoff_and_publishes_version",
+        |root, cli| {
+            let fixture = Fixture::new(root);
+            cli.success(
+                &fixture.local,
+                "config",
+                &["--oneflow", "--yes", "--marker", "released"],
+            );
+            let config = fixture.local.path().join("git-oneflow.config.toml");
+            let generated = fs::read_to_string(&config).unwrap();
+            assert!(generated.contains("origin"));
+            fs::write(&config, generated.replace("origin", "project")).unwrap();
+            fixture.local.success(&["add", "git-oneflow.config.toml"]);
+            fixture
+                .local
+                .success(&["commit", "-m", "Configure direct workflow"]);
+            let cutoff = value(&fixture.local, &["rev-parse", "HEAD"]);
+            fixture.local.success(&["push", "project", "main"]);
+            let settings = cli.success(&fixture.local, "config", &["show"]);
+            assert!(
+                settings.contains("workstreams.release.version-tagging: required"),
+                "{settings}"
+            );
+            assert!(
+                settings.contains("workstreams.release.release-marker: released"),
+                "{settings}"
+            );
+            assert!(
+                settings.contains("workstreams.release.publish-remote: project"),
+                "{settings}"
+            );
+
+            let newer = fixture.advance_development(root, "later", "later development\n");
+            cli.success(
+                &fixture.local,
+                "start",
+                &["release/chosen", "--policy", "release", "--from", &cutoff],
+            );
+            assert_eq!(oid(fixture.local.path(), "HEAD"), Some(cutoff));
+            let released = commit(&fixture.local, "release-work", "release stabilization\n");
+            cli.success(&fixture.local, "save", &[]);
+            assert_eq!(
+                oid(fixture.project.path(), "refs/heads/release/chosen"),
+                Some(released.clone())
+            );
+            cli.success(&fixture.local, "finish", &["--tag", "chosen"]);
+            assert_eq!(
+                oid(fixture.project.path(), "refs/tags/chosen^{}"),
+                Some(released.clone())
+            );
+            assert_eq!(
+                oid(fixture.project.path(), "refs/heads/released"),
+                Some(released.clone())
+            );
+            let delivered = oid(fixture.project.path(), "refs/heads/main").unwrap();
+            fixture
+                .local
+                .success(&["merge-base", "--is-ancestor", &newer, &delivered]);
+            fixture
+                .local
+                .success(&["merge-base", "--is-ancestor", &released, &delivered]);
+            assert_eq!(
+                oid(fixture.project.path(), "refs/heads/release/chosen"),
+                None
+            );
+            assert_eq!(oid(fixture.local.path(), "refs/heads/release/chosen"), None);
+        },
+    );
+}
+
+#[test]
 fn earlier_release_preserves_version_marker_messages_and_unrelated_refs() {
     cases(
         "earlier_release_preserves_version_marker_messages_and_unrelated_refs",
