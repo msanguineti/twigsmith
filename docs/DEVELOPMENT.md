@@ -44,6 +44,17 @@ changes, failures, or unresolved concerns that warrant fresh validation. This is
 also the Linux foundation CI entry point: it checks formatting, builds both
 executables, runs Clippy with warnings treated as errors, runs the regular suite,
 and then selects external-shell tests whose runtimes are available locally.
+Formatting, build, and lint failures stop the check before tests start. Once
+running tests, complete `./dev test` and `./dev check` use Cargo's
+`--no-fail-fast`: all test targets run despite test failures, followed by every
+available external-shell runtime. `./dev test-shells` and an unfiltered
+`./dev test-group completion` also collect failures across their test stages.
+Cargo reports failed targets and individual tests; the launcher ends with a
+failed-stage/runtime summary and exits unsuccessfully if any stage failed.
+Focused test invocations preserve Cargo's default failure behavior and forward
+caller arguments unchanged; pass `--no-fail-fast` when collecting all failures
+in a focused selection. Compilation errors can still prevent Cargo from starting
+its tests.
 
 For documentation-only changes, check links and anchors, examples and command
 syntax, technical claims against source and existing tests, and whitespace with

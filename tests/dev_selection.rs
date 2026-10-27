@@ -156,7 +156,10 @@ fn invalid_group_requests_fail_before_invoking_cargo() {
 #[test]
 fn complete_runs_use_cargo_discovery_without_group_selectors() {
     let root = launcher();
-    assert_eq!(cargo_args(&run(&root, &["test"])), ["test", "--locked"]);
+    assert_eq!(
+        cargo_args(&run(&root, &["test"])),
+        ["test", "--locked", "--no-fail-fast"]
+    );
     assert_eq!(
         cargo_args(&run(&root, &["check"])),
         [
@@ -172,7 +175,8 @@ fn complete_runs_use_cargo_discovery_without_group_selectors() {
             "-D",
             "warnings",
             "test",
-            "--locked"
+            "--locked",
+            "--no-fail-fast"
         ]
     );
 }
@@ -206,6 +210,7 @@ fn native_runtime_selection_distinguishes_unavailable_setup_from_execution() {
         [
             "test",
             "--locked",
+            "--no-fail-fast",
             "--test",
             "completion_shells",
             "--test",

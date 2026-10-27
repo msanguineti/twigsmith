@@ -117,6 +117,27 @@ test_group() {
     esac
 }
 
+# Record failures without hiding command output or stopping later test stages.
+failed_tests=''
+run_test() {
+    test_label=$1
+    shift
+    if "$@"; then
+        :
+    else
+        test_status=$?
+        failed_tests="${failed_tests}
+  $test_label (exit $test_status)"
+    fi
+}
+
+finish_tests() {
+    if [ -n "$failed_tests" ]; then
+        printf '\nFAILED test stages:%s\n' "$failed_tests" >&2
+        return 1
+    fi
+}
+
 # Ordinary tests show external-runtime cases as ignored. Select those cases only
 # after checking the host and executable; missing local runtimes are unavailable,
 # never successful test executions. CI requires its provisioned runtime set.
@@ -159,11 +180,11 @@ test_shells() {
         esac
         shell_filter=$shell_name
         [ "$shell_name" != pwsh ] || shell_filter=powershell
-        set -- test --locked
+        set -- test --locked --no-fail-fast
         for shell_target in $shell_targets; do
             set -- "$@" --test "$shell_target"
         done
-        "$cargo" "$@" "$shell_filter" -- --ignored --nocapture || return "$?"
+        run_test "native $shell_name" "$cargo" "$@" "$shell_filter" -- --ignored --nocapture
     done
 }
 
@@ -248,18 +269,23 @@ case "$command" in
     build) exec "$cargo" build --locked "$@" ;;
     test)
         if [ "$#" -gt 0 ] && [ "$run_shells_after_test" = false ]; then exec "$cargo" test --locked "$@"; fi
-        "$cargo" test --locked "$@"
+        run_test "regular suite" "$cargo" test --locked --no-fail-fast "$@"
         test_shells
+        finish_tests
         ;;
-    test-shells) test_shells "$shell_requirement" ;;
+    test-shells)
+        test_shells "$shell_requirement"
+        finish_tests
+        ;;
     fmt) exec "$cargo" fmt --all "$@" ;;
     lint) exec "$cargo" clippy --locked --all-targets "$@" -- -D warnings ;;
     check)
         "$cargo" fmt --all --check
         "$cargo" build --locked
         "$cargo" clippy --locked --all-targets -- -D warnings
-        "$cargo" test --locked
+        run_test "regular suite" "$cargo" test --locked --no-fail-fast
         test_shells
+        finish_tests
         ;;
     cargo) exec "$cargo" "$@" ;;
     rustc) exec "$CARGO_HOME/bin/rustc" "$@" ;;
