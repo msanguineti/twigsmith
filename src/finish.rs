@@ -178,6 +178,7 @@ pub enum FinishError {
     DirtyTree,
     InvalidEvidence(&'static str),
     ContextChanged,
+    RecoveryVersion(u64),
 }
 impl fmt::Display for FinishError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -207,6 +208,12 @@ impl fmt::Display for FinishError {
                 return write!(
                     f,
                     "remote evidence does not match finish context: {reason}; observe the intended refs and destinations again"
+                );
+            }
+            Self::RecoveryVersion(version) => {
+                return write!(
+                    f,
+                    "finish recovery record version {version} requires the Twigsmith binary that created this unfinished work; use that prior binary to finish or abandon the attempt before retrying with this version, and retain its recovery records and refs"
                 );
             }
             Self::ContextChanged => {
@@ -441,8 +448,9 @@ pub fn assess(
         base: hint(directory, tracking_base.as_bytes())?,
         branch: hint(directory, &tracking_branch)?,
     };
-    // Effective Git configuration can alter updates, mapping and transports.
-    // Snapshot all of it conservatively, including includes and URL rewrites.
+    // Resolve command-scoped transports from the effective configuration.
+    // Stage guards bind selected routing/transport entries; Git applies its
+    // ordinary operation preferences without whole-configuration equality.
     let git_config = read(directory, &["config", "--null", "--list"])?;
     let shallow = metadata(directory, "shallow")?;
     let grafts = metadata(directory, "info/grafts")?;
@@ -518,6 +526,7 @@ pub fn assess(
             plan.constraints.push(Constraint::HistoryEdit(reason));
         }
     }
+    recovery::check_version(&plan)?;
     let Some(evidence) = evidence else {
         plan.constraints
             .push(Constraint::FreshRemoteEvidenceRequired);
@@ -699,27 +708,96 @@ pub fn assess(
     Ok(plan)
 }
 
-/// Reobserve locally and compare both context and caller-supplied remote evidence.
-/// No remote is contacted. The caller must reacquire evidence when freshness is
-/// required; reusing an observation cannot detect a remote-only change.
+// Keep only configuration that selects these exact routes or configures their
+// transports. Other Git preferences remain Git's responsibility; a changed
+// unrelated value cannot substitute a different checked commit or destination.
+fn route_config(config: &[u8], remotes: &[&str], branch: &[u8]) -> Vec<Vec<u8>> {
+    let prefixes: Vec<_> = remotes
+        .iter()
+        .map(|name| format!("remote.{name}.").into_bytes())
+        .collect();
+    let branch_prefix = [b"branch.".as_slice(), branch, b"."].concat();
+    config
+        .split(|b| *b == 0)
+        .filter(|entry| {
+            let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
+            key.starts_with(b"url.")
+                || key.starts_with(&branch_prefix)
+                || prefixes.iter().any(|prefix| key.starts_with(prefix))
+        })
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
+/// Validate the next review-stage effects without rebuilding history assessments.
+/// Clean attached work, selected policy/routes and retained rewrite ownership are
+/// workflow conditions: a pinned push alone cannot enforce them. Checks, editors
+/// and hooks can change them, so execution refreshes them at those boundaries.
 pub fn revalidate(
     directory: impl AsRef<Path>,
     approved: &Plan,
     evidence: Option<&RemoteEvidence>,
 ) -> Result<(), FinishError> {
-    if assess(directory, &approved.request, evidence)? != *approved {
+    let directory = directory.as_ref();
+    recovery::check_version(approved)?;
+    let repo = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
+    if repo != approved.repository || evidence != approved.evidence.as_ref() {
         return Err(FinishError::ContextChanged);
+    }
+    let repository::Observation::Repository(state) =
+        repository::inspect_context_without_upstream(directory, repo.clone())?
+    else {
+        return Err(FinishError::ContextChanged);
+    };
+    if state.head
+        != (repository::Head::Attached {
+            branch: approved.branch.clone(),
+            commit: approved.commit.clone(),
+        })
+        || state.operations.is_active()
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    if state
+        .working_tree
+        .as_ref()
+        .is_none_or(|tree| tree.is_dirty())
+    {
+        return Err(FinishError::DirtyTree);
+    }
+    if crate::settings::load_for_branch(directory, &repo, &approved.branch)
+        .map_err(SaveError::from)?
+        != approved.settings
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    let config = read(directory, &["config", "--null", "--list"])?;
+    let roles = [
+        approved.settings.base_remote.as_str(),
+        approved.settings.publish_remote.as_str(),
+    ];
+    if route_config(&config, &roles, &approved.branch)
+        != route_config(&approved.git_config, &roles, &approved.branch)
+        || metadata(directory, "shallow")? != approved.shallow
+        || metadata(directory, "info/grafts")? != approved.grafts
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    if approved.history_edit == HistoryEdit::Interactive
+        && history::shared_refs(directory, &approved.settings)? != approved.shared_history
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    if approved.recovery != Recovery::Absent {
+        let mut proof = approved.clone();
+        recovery::apply(directory, &mut proof)?;
+        if proof.recovery != approved.recovery {
+            return Err(FinishError::ContextChanged);
+        }
     }
     Ok(())
 }
 
-// Pushes and background fetches may advance caches. They cannot renew the
-// literal observations in the plan, so only non-authoritative hints may differ.
 fn revalidate_prepared(directory: &Path, plan: &Plan) -> Result<(), FinishError> {
-    let mut fresh = assess(directory, &plan.request, plan.evidence.as_ref())?;
-    fresh.tracking_hints = plan.tracking_hints.clone();
-    if fresh != *plan {
-        return Err(FinishError::ContextChanged);
-    }
-    Ok(())
+    revalidate(directory, plan, plan.evidence.as_ref())
 }

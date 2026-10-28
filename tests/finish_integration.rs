@@ -368,9 +368,9 @@ fn no_op_and_meaningful_choices() {
 }
 
 #[test]
-fn guarded_choice_resolution_rejects_changes_during_input() {
+fn choice_resolution_distinguishes_unrelated_config_from_route_changes() {
     isolated(
-        "guarded_choice_resolution_rejects_changes_during_input",
+        "choice_resolution_distinguishes_unrelated_config_from_route_changes",
         true,
         |root| {
             for changed in [false, true] {
@@ -378,8 +378,10 @@ fn guarded_choice_resolution_rejects_changes_during_input() {
                 let req = Request::default();
                 let p = assess(root, &f, &req, Some(&evidence(&f, &req)));
                 assert!(p.required_input.contains(&RequiredInput::Integration));
+                f.repo.success(&["config", "oneflow.concurrent", "changed"]);
                 if changed {
-                    f.repo.success(&["config", "oneflow.concurrent", "changed"]);
+                    f.repo
+                        .success(&["config", "remote.project.pushurl", "/changed"]);
                 }
                 let resolved =
                     integration::resolve(f.repo.path(), &p, &request(FinishIntegration::FfOnly));
@@ -860,6 +862,35 @@ fn recovery_rejects_missing_stale_malformed_and_inconsistent_proof() {
         },
     );
 }
+#[test]
+fn prior_integration_binding_requires_prior_binary_recovery() {
+    isolated(
+        "prior_integration_binding_requires_prior_binary_recovery",
+        true,
+        |root| {
+            let f = fixture(root);
+            let req = request(FinishIntegration::Merge);
+            let plan = assess(root, &f, &req, Some(&evidence(&f, &req)));
+            let (record, path) = record(&f, &plan);
+            let mut prior = serde_json::to_value(&record).unwrap();
+            prior["version"] = 3.into();
+            fs::write(path, serde_json::to_vec(&prior).unwrap()).unwrap();
+            let before = preservation::snapshot(root);
+            let error =
+                integration::assess(f.repo.path(), &req, plan.evidence.as_ref()).unwrap_err();
+            assert!(
+                error.to_string().contains("prior Twigsmith binary"),
+                "{error}"
+            );
+            assert!(
+                error.to_string().contains("preserve its evidence"),
+                "{error}"
+            );
+            assert_eq!(preservation::snapshot(root), before);
+        },
+    );
+}
+
 #[test]
 fn incomplete_merge_and_squash_are_observed_without_mutation() {
     isolated(
@@ -1939,6 +1970,51 @@ fn configure_checks(f: &Fixture, commands: &[&str]) {
     }
 }
 #[test]
+fn direct_stage_paths_preserve_a_relocated_index_with_arbitrary_path_bytes() {
+    const NAME: &str = "direct_stage_paths_preserve_a_relocated_index_with_arbitrary_path_bytes";
+    isolated(NAME, true, |root| {
+        if let Some(path) = std::env::var_os("TWIGSMITH_RELOCATED_INDEX_REPOSITORY") {
+            let path = Path::new(&path);
+            let req = request(FinishIntegration::Squash);
+            let initial = integration::assess(path, &req, None).unwrap();
+            let refreshed = target_remote::refresh(path, &initial);
+            assert!(refreshed.error.is_none(), "{refreshed:#?}");
+            let prepared = execution::prepare(path, refreshed.plan.as_ref().unwrap());
+            assert!(prepared.is_prepared(), "{prepared:#?}");
+            let checked = execution::check(path, prepared.plan.as_ref().unwrap(), false, |_| {});
+            assert!(
+                checked.checks.error.is_some(),
+                "a check changed the selected alternate index: {checked:#?}"
+            );
+            return;
+        }
+        let f = fixture(root);
+        configure_checks(&f, &["git update-index --assume-unchanged work"]);
+        let ordinary = fs::read(f.repo.path().join(".git/index")).unwrap();
+        let mut name = std::ffi::OsString::from("selected index\nwith newline");
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            name.push(std::ffi::OsString::from_vec(vec![b'-', 0xff]));
+        }
+        let alternate = root.join(name);
+        fs::write(&alternate, &ordinary).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture"])
+            .env("TWIGSMITH_RELOCATED_INDEX_REPOSITORY", f.repo.path())
+            .env("GIT_INDEX_FILE", &alternate)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            fs::read(f.repo.path().join(".git/index")).unwrap(),
+            ordinary,
+            "the ordinary index was not the selected workflow index"
+        );
+    });
+}
+
+#[test]
 fn candidate_checks_inspect_the_result_and_retain_it_on_failure() {
     isolated(
         "candidate_checks_inspect_the_result_and_retain_it_on_failure",
@@ -1949,7 +2025,7 @@ fn candidate_checks_inspect_the_result_and_retain_it_on_failure() {
                 "exit 9",
                 "git switch A",
                 "echo changed >> work",
-                "git config finish.changed true",
+                "git config remote.project.pushurl /changed",
                 "git update-index --assume-unchanged work",
                 "git commit --allow-empty -m unexpected",
                 "git update-ref refs/heads/A HEAD",
@@ -1963,7 +2039,19 @@ fn candidate_checks_inspect_the_result_and_retain_it_on_failure() {
                 let p = report.plan.unwrap();
                 let result = p.result.clone().unwrap();
                 let remote_before = preservation::snapshot(f.project.path());
-                let checks = execution::check(f.repo.path(), &p, false, |_| {}).checks;
+                let checked = execution::check(f.repo.path(), &p, false, |_| {});
+                if script.starts_with("echo changed") {
+                    let Ok(twigsmith::repository::Observation::Repository(state)) =
+                        &checked.remaining
+                    else {
+                        panic!("check report must observe the changed working tree: {checked:#?}");
+                    };
+                    assert!(
+                        state.working_tree.as_ref().unwrap().is_dirty(),
+                        "{checked:#?}"
+                    );
+                }
+                let checks = checked.checks;
                 if script.starts_with("test ") {
                     assert_eq!(checks.completed, 2, "{checks:#?}");
                     assert!(checks.error.is_none());
@@ -2148,9 +2236,9 @@ fn local_executor_interruption_before_history_and_changed_evidence_stop_safely()
     );
 }
 #[test]
-fn local_executor_revalidates_remote_and_unrelated_local_target_history() {
+fn local_executor_pins_remote_selection_and_rejects_changed_local_target() {
     isolated(
-        "local_executor_revalidates_remote_and_unrelated_local_target_history",
+        "local_executor_pins_remote_selection_and_rejects_changed_local_target",
         true,
         |root| {
             for remote_change in [false, true] {
@@ -2167,10 +2255,18 @@ fn local_executor_revalidates_remote_and_unrelated_local_target_history() {
                 }
                 let target = oid(&f.repo, "main");
                 let stopped = execution::prepare(f.repo.path(), &p);
-                assert!(stopped.error.is_some());
-                assert!(stopped.effects.is_empty());
-                assert_eq!(oid(&f.repo, "main"), target);
-                assert!(!p.recovery_path.unwrap().exists());
+                if remote_change {
+                    assert!(stopped.is_prepared(), "{stopped:#?}");
+                    let prepared = stopped.plan.unwrap();
+                    let published = target_publication::publish(f.repo.path(), &prepared);
+                    assert!(!published.is_complete(), "{published:#?}");
+                    assert_eq!(observed(f.project.path(), b"refs/heads/main"), p.source);
+                } else {
+                    assert!(stopped.error.is_some());
+                    assert!(stopped.effects.is_empty());
+                    assert_eq!(oid(&f.repo, "main"), target);
+                    assert!(!p.recovery_path.unwrap().exists());
+                }
             }
         },
     );
@@ -2235,6 +2331,101 @@ fn preparation_can_resolve_final_message_after_git_recovery() {
             req.message = Some("Resolved final message".into());
             let done = prepare_local(&f, &req);
             assert!(done.is_prepared(), "{done:#?}");
+        },
+    );
+}
+
+#[test]
+fn retention_hook_cannot_prepare_an_unapproved_source_commit() {
+    isolated(
+        "retention_hook_cannot_prepare_an_unapproved_source_commit",
+        true,
+        |root| {
+            for update in [FinishUpdate::Rebase, FinishUpdate::Merge] {
+                let f = fixture(root);
+                diverge(&f, false);
+                let mut req = request(FinishIntegration::Merge);
+                req.update = Some(update);
+                let plan = refreshed(&f, &req);
+                assert!(plan.is_ready(), "{plan:#?}");
+                assert_eq!(plan.integration, Integration::AfterPreparation);
+                let target_before = oid(&f.repo, "main");
+                let changed_oid = f.repo.path().join(".git/hook-source-oid");
+                hook(
+                    &f,
+                    "reference-transaction",
+                    &format!(
+                        "refs=$(cat)\nif test \"$1\" = committed && printf '%s' \"$refs\" | grep -q '/original$'; then\n  printf 'hook work\\n' > hook-work\n  git add hook-work && git -c core.hooksPath=/dev/null commit -m 'unapproved hook work' >&2 || exit 1\n  git rev-parse HEAD > {}\nfi",
+                        shell_quote(changed_oid.to_str().unwrap())
+                    ),
+                );
+                let report = execution::prepare(f.repo.path(), &plan);
+                assert!(report.error.is_some(), "{update:?}: {report:#?}");
+                let changed = fs::read(&changed_oid).expect("retention hook must run");
+                let changed = changed.strip_suffix(b"\n").unwrap();
+                assert_ne!(changed, commit_of(&plan.source));
+                assert!(
+                    !report.commands.iter().any(|command| {
+                        command
+                            .arguments
+                            .iter()
+                            .any(|argument| argument == "rebase" || argument == "merge")
+                    }),
+                    "changed source must be rejected before history mutation: {update:?}"
+                );
+                assert_eq!(oid(&f.repo, "A"), changed);
+                assert_eq!(oid(&f.repo, "HEAD"), changed);
+                assert_eq!(oid(&f.repo, "main"), target_before);
+                assert_eq!(f.repo.success(&["branch", "--show-current"]).stdout, b"A\n");
+                assert_eq!(
+                    fs::read(f.repo.path().join("hook-work")).unwrap(),
+                    b"hook work\n"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn retention_hook_cannot_advance_a_target_checked_out_in_a_new_worktree() {
+    isolated(
+        "retention_hook_cannot_advance_a_target_checked_out_in_a_new_worktree",
+        true,
+        |root| {
+            let f = fixture(root);
+            advance_project(root, &f);
+            let req = request(FinishIntegration::Merge);
+            let plan = refreshed(&f, &req);
+            assert!(plan.is_ready(), "{plan:#?}");
+            let before = oid(&f.repo, "main");
+            let linked = root.join("hook-linked-target");
+            hook(
+                &f,
+                "reference-transaction",
+                &format!(
+                    "refs=$(cat)\nif test \"$1\" = committed && printf '%s' \"$refs\" | grep -q '/original$'; then git -c core.hooksPath=/dev/null worktree add {} main >&2; fi",
+                    shell_quote(linked.to_str().unwrap())
+                ),
+            );
+            let report = execution::prepare(f.repo.path(), &plan);
+            assert!(report.error.is_some(), "{report:#?}");
+            assert!(
+                linked.exists(),
+                "retention hook must establish the occupancy boundary"
+            );
+            assert_eq!(
+                oid(&f.repo, "main"),
+                before,
+                "plumbing must preserve the occupied target"
+            );
+            assert!(
+                git::run(&linked, ["status", "--porcelain"])
+                    .unwrap()
+                    .stdout
+                    .is_empty()
+            );
+            assert_eq!(oid(&f.repo, "A"), commit_of(&plan.source));
+            assert_eq!(f.repo.success(&["branch", "--show-current"]).stdout, b"A\n");
         },
     );
 }
@@ -2628,6 +2819,66 @@ fn remote_refresh_missing_and_disagreeing_targets_and_cleanup_evidence() {
     );
 }
 #[test]
+fn target_checks_detect_work_hidden_by_preexisting_assume_unchanged() {
+    isolated(
+        "target_checks_detect_work_hidden_by_preexisting_assume_unchanged",
+        true,
+        |root| {
+            for changes_content in [false, true] {
+                let f = fixture(root);
+                hook(&f, "post-merge", "git update-index --assume-unchanged work");
+                configure_checks(
+                    &f,
+                    &[
+                        if changes_content {
+                            "printf hidden > work"
+                        } else {
+                            "test -f work"
+                        },
+                        "touch .git/later-hidden-check",
+                    ],
+                );
+                let plan = remote_candidate(&f, &request(FinishIntegration::FfOnly));
+                let before_remote = observed(f.project.path(), b"refs/heads/main");
+                let before_index = fs::read(f.repo.path().join(".git/index")).unwrap();
+                let flags = f.repo.success(&["ls-files", "-v", "--", "work"]).stdout;
+                assert_eq!(
+                    flags, b"h work\n",
+                    "the hook must establish the preexisting flag"
+                );
+                let report = target_publication::publish(f.repo.path(), &plan);
+                assert_eq!(report.is_complete(), !changes_content, "{report:#?}");
+                assert_eq!(
+                    f.repo.path().join(".git/later-hidden-check").exists(),
+                    !changes_content
+                );
+                assert_eq!(
+                    f.repo.success(&["ls-files", "-v", "--", "work"]).stdout,
+                    flags,
+                    "candidate checks preserve preexisting index flags"
+                );
+                assert_eq!(
+                    fs::read(f.repo.path().join(".git/index")).unwrap(),
+                    before_index
+                );
+                if changes_content {
+                    assert!(
+                        matches!(report.error, Some(target_publication::Error::ChecksFailed)),
+                        "{report:#?}"
+                    );
+                    assert_eq!(report.checks.completed, 0);
+                    assert_eq!(pushes(&report), 0);
+                    assert_eq!(
+                        observed(f.project.path(), b"refs/heads/main"),
+                        before_remote
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
 fn target_publication_checks_fail_mutate_cancel_and_skip() {
     isolated(
         "target_publication_checks_fail_mutate_cancel_and_skip",
@@ -2636,7 +2887,7 @@ fn target_publication_checks_fail_mutate_cancel_and_skip() {
             for script in [
                 "exit 9",
                 "echo dirty > work",
-                "git config oneflow.changed true",
+                "git config remote.project.pushurl /changed",
                 "kill -TERM $PPID; sleep 10",
             ] {
                 let f = fixture(root);
@@ -2660,6 +2911,31 @@ fn target_publication_checks_fail_mutate_cancel_and_skip() {
         },
     );
 }
+#[test]
+fn target_publication_empty_checks_require_the_actual_candidate_checkout() {
+    isolated(
+        "target_publication_empty_checks_require_the_actual_candidate_checkout",
+        true,
+        |root| {
+            let f = fixture(root);
+            let req = request(FinishIntegration::Squash);
+            let prepared = remote_candidate(&f, &req);
+            f.repo.success(&["switch", "A"]);
+            let pending = refreshed(&f, &req);
+            assert_eq!(pending.result, prepared.result);
+            assert!(pending.needs_candidate_checkout());
+            let before = observed(f.project.path(), b"refs/heads/main");
+            let report = target_publication::publish(f.repo.path(), &pending);
+            assert!(matches!(
+                report.error,
+                Some(target_publication::Error::ChecksFailed)
+            ));
+            assert_eq!(pushes(&report), 0);
+            assert_eq!(observed(f.project.path(), b"refs/heads/main"), before);
+        },
+    );
+}
+
 #[test]
 fn target_publication_partial_rejection_and_retry_do_not_repeat_results() {
     isolated(
@@ -2860,7 +3136,8 @@ fn remote_refresh_refuses_unavailable_objects_and_detects_observation_fetch_race
         "remote_refresh_refuses_unavailable_objects_and_detects_observation_fetch_races",
         true,
         |root| {
-            for body in ["exit 1", "exit 0"] {
+            {
+                let body = "exit 1";
                 let f = fixture(root);
                 advance_project(root, &f);
                 let refs = f.repo.success(&["show-ref"]).stdout;
@@ -2868,11 +3145,7 @@ fn remote_refresh_refuses_unavailable_objects_and_detects_observation_fetch_race
                 assert_eq!(r["evidence"], false, "{r}");
                 assert_eq!(r["ready"], false);
                 assert!(
-                    r["error"].as_str().unwrap().contains(if body == "exit 0" {
-                        "ObjectUnavailable"
-                    } else {
-                        "CommandFailed"
-                    }),
+                    r["error"].as_str().unwrap().contains("CommandFailed"),
                     "{r}"
                 );
                 assert_eq!(refs, f.repo.success(&["show-ref"]).stdout);
@@ -2898,8 +3171,8 @@ fn remote_refresh_refuses_unavailable_objects_and_detects_observation_fetch_race
             assert_eq!(r["error"], "None", "{r}");
             assert_eq!(r["evidence"], true);
             assert_eq!(
-                r["ready"], false,
-                "fetch must not substitute the moved target"
+                r["ready"], true,
+                "the pinned selected target remains usable; publication owns its lease"
             );
             assert_eq!(oid(&f.repo, "main"), old);
         },
@@ -3063,6 +3336,8 @@ fn target_publication_stops_between_effects_when_hook_invalidates_context() {
             for script in [
                 "git commit --allow-empty -m hook-change",
                 "rm .git/twigsmith-integration/branches/A/attempt.json",
+                "git config --replace-all remote.project.pushurl /changed",
+                "printf '\n[[finish-checks]]\nname=\"new-policy\"\ncommand=[\"sh\",\"-c\",\"exit 1\"]\n' >> .git/twigsmith.config.toml",
             ] {
                 let f = fixture(root);
                 let second = second_target(root, &f);
@@ -3556,7 +3831,8 @@ fn completion_rejects_stale_delivery_and_context_without_effects() {
                         fs::write(f.repo.path().join(".git/MERGE_HEAD"), oid(&f.repo, "A")).unwrap()
                     }
                     "config" => {
-                        f.repo.success(&["config", "oneflow.unrelated", "changed"]);
+                        f.repo
+                            .success(&["config", "remote.project.pushurl", "/changed"]);
                     }
                     "symbolic" => {
                         f.repo
@@ -3818,7 +4094,7 @@ fn completion_conditional_local_delete_rejects_races_and_transaction_hooks() {
                     "prepared-change" => Some(hook(
                         &f,
                         "reference-transaction",
-                        "if [ \"$1\" = prepared ]; then git config oneflow.race changed; fi",
+                        "if [ \"$1\" = prepared ]; then git config remote.fork.pushurl /changed; fi",
                     )),
                     "prepared-reject" => Some(hook(
                         &f,
@@ -4168,7 +4444,11 @@ fn completion_target_checkout_stops_cleanup_on_hook_failure_or_changed_binding()
                 let p = refreshed(&f, &req);
                 let h = match mode {
                     "failure" => Some(hook(&f, "post-checkout", "exit 1")),
-                    "config" => Some(hook(&f, "post-checkout", "git config oneflow.hook changed")),
+                    "config" => Some(hook(
+                        &f,
+                        "post-checkout",
+                        "git config remote.fork.pushurl /changed",
+                    )),
                     _ => None,
                 };
                 let r = completion::complete(f.repo.path(), &p);
@@ -4188,7 +4468,8 @@ fn completion_target_checkout_stops_cleanup_on_hook_failure_or_changed_binding()
                     assert_eq!(completion_pushes(&r), 0);
                     fs::remove_file(h.unwrap()).unwrap();
                     if mode == "config" {
-                        f.repo.success(&["config", "--unset", "oneflow.hook"]);
+                        f.repo
+                            .success(&["config", "--unset", "remote.fork.pushurl"]);
                     }
                     let retry = completion::complete(f.repo.path(), &refreshed(&f, &req));
                     assert!(retry.is_complete(), "{retry:#?}");
@@ -4198,6 +4479,157 @@ fn completion_target_checkout_stops_cleanup_on_hook_failure_or_changed_binding()
                             .iter()
                             .any(|e| matches!(e, completion::Effect::CheckedOut { .. }))
                     );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn tagged_delivery_stops_after_push_hooks_change_bound_context() {
+    isolated(
+        "tagged_delivery_stops_after_push_hooks_change_bound_context",
+        true,
+        |root| {
+            for (boundary, change) in [
+                ("tag", "route"),
+                ("tag", "candidate"),
+                ("marker", "attempt"),
+            ] {
+                let f = fixture(root);
+                let second = second_target(root, &f);
+                let path = f.repo.path().join(".git/twigsmith.config.toml");
+                let mut config = fs::read_to_string(&path).unwrap();
+                config.push_str("\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-target='main'\nversion-tagging='required'\nrelease-marker='stable'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='both'\nfinish-message='auto'\n");
+                fs::write(&path, config).unwrap();
+                let started = Command::new(env!("CARGO_BIN_EXE_tgi"))
+                    .current_dir(f.repo.path())
+                    .args(["start", "A", "--policy", "release"])
+                    .output()
+                    .unwrap();
+                assert!(started.status.success(), "{started:?}");
+                let req = Request {
+                    cleanup: Some(FinishCleanup::Both),
+                    release: integration::release::Request {
+                        tag: Some("version-hook".into()),
+                        ..Default::default()
+                    },
+                    ..request(FinishIntegration::Merge)
+                };
+                let prepared = remote_candidate(&f, &req);
+                let published = target_publication::publish(f.repo.path(), &prepared);
+                assert!(published.is_complete(), "{published:?}");
+                let delivered = published.plan.unwrap();
+                let tag = oid(&f.repo, "version-hook");
+                let source = oid(&f.repo, "A");
+                let record_path = delivered.recovery_path.as_ref().unwrap();
+                let original_record = fs::read(record_path).unwrap();
+                let selected = if boundary == "tag" {
+                    "refs/tags/version-hook"
+                } else {
+                    "refs/heads/stable"
+                };
+                let mutation = match change {
+                    "route" => {
+                        "git config --replace-all remote.project.pushurl /changed".to_string()
+                    }
+                    "candidate" => "git update-ref refs/heads/main refs/heads/A".to_string(),
+                    "attempt" => format!(
+                        "printf invalid > {}",
+                        shell_quote(record_path.to_str().unwrap())
+                    ),
+                    _ => unreachable!(),
+                };
+                let script = format!(
+                    "while read local_ref local_oid remote_ref remote_oid; do if [ \"$remote_ref\" = {selected} ]; then {mutation}; fi; done"
+                );
+                let hook_path = hook(&f, "pre-push", &script);
+                let mut commands = vec![];
+                let result =
+                    integration::release::deliver(f.repo.path(), &delivered, false, &mut commands);
+                assert!(result.is_err(), "{boundary}/{change}: {result:?}");
+                let status = integration::release::delivery_observations(&delivered, &commands);
+                assert_eq!(
+                    observed(f.project.path(), b"refs/tags/version-hook"),
+                    RefObservation::Commit(tag.clone())
+                );
+                if boundary == "tag" {
+                    assert_eq!(
+                        observed(second.path(), b"refs/tags/version-hook"),
+                        RefObservation::Absent,
+                        "{change}: later tag push crossed the changed hook boundary"
+                    );
+                    assert_eq!(status[0].tag, RefObservation::Commit(tag.clone()));
+                    assert_eq!(
+                        observed(f.project.path(), b"refs/heads/stable"),
+                        RefObservation::Absent
+                    );
+                } else {
+                    assert_eq!(
+                        observed(second.path(), b"refs/tags/version-hook"),
+                        RefObservation::Commit(tag)
+                    );
+                    assert_eq!(
+                        observed(f.project.path(), b"refs/heads/stable"),
+                        RefObservation::Commit(source.clone())
+                    );
+                    assert_eq!(
+                        status[0].marker,
+                        Some(RefObservation::Commit(source.clone()))
+                    );
+                }
+                assert_eq!(
+                    observed(second.path(), b"refs/heads/stable"),
+                    RefObservation::Absent
+                );
+                assert_eq!(
+                    observed(f.repo.path(), b"refs/heads/stable"),
+                    RefObservation::Absent
+                );
+                assert_eq!(
+                    observed(f.repo.path(), b"refs/heads/A"),
+                    RefObservation::Commit(source)
+                );
+                assert_eq!(
+                    commands
+                        .iter()
+                        .filter(|c| c.arguments.iter().any(|a| a == "push"))
+                        .count(),
+                    if boundary == "tag" { 1 } else { 3 }
+                );
+                fs::remove_file(hook_path).unwrap();
+                if change == "route" {
+                    f.repo
+                        .success(&["config", "--unset-all", "remote.project.pushurl"]);
+                    f.repo.success(&[
+                        "config",
+                        "--add",
+                        "remote.project.pushurl",
+                        f.project.path().to_str().unwrap(),
+                    ]);
+                    f.repo.success(&[
+                        "config",
+                        "--add",
+                        "remote.project.pushurl",
+                        second.path().to_str().unwrap(),
+                    ]);
+                    let mut retry_commands = vec![];
+                    let retried = integration::release::deliver(
+                        f.repo.path(),
+                        &delivered,
+                        false,
+                        &mut retry_commands,
+                    );
+                    assert!(retried.is_ok(), "{retried:?}");
+                    assert_eq!(
+                        retry_commands
+                            .iter()
+                            .filter(|c| c.arguments.iter().any(|a| a == "push"))
+                            .count(),
+                        3
+                    );
+                } else if change == "attempt" {
+                    fs::write(record_path, original_record).unwrap();
                 }
             }
         },

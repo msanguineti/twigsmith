@@ -619,6 +619,10 @@ fn linked_worktree_uses_its_own_index_and_publishes_its_branch() {
                 },
             )
             .unwrap();
+            // Cached metadata paths must stay private to the linked worktree;
+            // an operation introduced in the primary checkout is independent.
+            let primary_merge = oid(&repo, "HEAD");
+            fs::write(repo.path().join(".git/MERGE_HEAD"), &primary_merge).unwrap();
             let report = execution::execute(&linked, &approved);
             assert!(report.is_complete(), "{report:?}");
             assert_eq!(
@@ -640,6 +644,10 @@ fn linked_worktree_uses_its_own_index_and_publishes_its_branch() {
                 git::run(&linked, ["rev-parse", "HEAD"]).unwrap().stdout
             );
             assert!(remote_tip(&remote).is_none());
+            assert_eq!(
+                fs::read(repo.path().join(".git/MERGE_HEAD")).unwrap(),
+                primary_merge
+            );
         },
     );
 }
@@ -866,26 +874,16 @@ fn stale_approval_refuses_changed_context_and_content_before_writes() {
     );
 }
 #[test]
-fn known_publication_blockers_and_index_lock_precede_local_effects() {
+fn identity_and_index_lock_precede_local_effects() {
     isolated(
-        "known_publication_blockers_and_index_lock_precede_local_effects",
+        "identity_and_index_lock_precede_local_effects",
         true,
         |root| {
             for action in [TestPlan::Staged, TestPlan::Split, TestPlan::Stash] {
-                for blocker in ["mapping", "symbolic", "lock", "identity"] {
+                for blocker in ["lock", "identity"] {
                     let (repo, remote) = fixture(root);
                     dirty(&repo, true, true);
                     match blocker {
-                        "mapping" => {
-                            repo.success(&[
-                                "config",
-                                "remote.origin.fetch",
-                                "+refs/heads/*:refs/heads/*",
-                            ]);
-                        }
-                        "symbolic" => {
-                            repo.success(&["symbolic-ref", "refs/remotes/origin/work", BRANCH_REF]);
-                        }
                         "lock" => fs::write(repo.path().join(".git/index.lock"), "lock").unwrap(),
                         "identity" => {
                             repo.success(&["config", "user.name", ""]);
@@ -948,7 +946,7 @@ fn first_commit_failure_retains_hook_staging_and_does_not_publish() {
                     report.after.index.as_ref().unwrap()
                 );
                 assert_eq!(output(&repo, &["show", ":hook-file"]), b"hook work\n");
-                assert!(remaining(&report.commands[0].after));
+                assert!(remaining(&report.after));
                 assert!(remote_tip(&remote).is_none());
             }
         },
@@ -1015,7 +1013,6 @@ fn changed_scope_or_context_from_commit_hooks_stops_before_next_mutation() {
                 "printf '{\"save-plan\":\"stash\"}' > .git/twigsmith.config.json",
                 "printf 'save-action = \"stash\"\\n' > twigsmith.config.toml",
                 "git switch -c other",
-                "git config remote.origin.fetch '+refs/heads/*:refs/heads/*'",
             ] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
@@ -1028,6 +1025,121 @@ fn changed_scope_or_context_from_commit_hooks_stops_before_next_mutation() {
                 assert!(remote_tip(&remote).is_none());
                 assert_ne!(observed_head(&report.before), observed_head(&report.after));
             }
+        },
+    );
+}
+#[cfg(unix)]
+#[test]
+fn reference_hooks_staging_unique_content_keep_it_before_index_replacement() {
+    isolated(
+        "reference_hooks_staging_unique_content_keep_it_before_index_replacement",
+        true,
+        |root| {
+            for (reference, action) in [
+                ("refs/twigsmith/save-recovery/", TestPlan::Split),
+                ("refs/twigsmith/save-recovery/", TestPlan::Stash),
+                ("refs/stash", TestPlan::Stash),
+            ] {
+                let (repo, remote) = fixture(root);
+                dirty(&repo, true, true);
+                let original_head = oid(&repo, "HEAD");
+                let original_work = fs::read(repo.path().join("tracked")).unwrap();
+                hook(
+                    &repo,
+                    "reference-transaction",
+                    &format!(
+                        "refs=$(cat)\nif test \"$1\" = committed && printf '%s' \"$refs\" | grep -q '{reference}' && ! test -f .git/hook-staged; then\n touch .git/hook-staged\n cp tracked .git/hook-original-work\n printf 'unique hook staging\\n' > tracked\n git add -- tracked\n git rev-parse :tracked > .git/hook-staged\n cp .git/hook-original-work tracked\nfi"
+                    ),
+                );
+                let report = execute(&repo, action);
+                assert!(
+                    matches!(
+                        report.error,
+                        Some(ExecutionError::Save(SaveError::ContextChanged))
+                    ),
+                    "{reference} {action:?}: {report:#?}"
+                );
+                assert!(report.publication.is_none());
+                assert!(report.recovery.as_ref().unwrap().retained);
+                assert_eq!(oid(&repo, "HEAD"), original_head);
+                assert_eq!(
+                    output(&repo, &["show", ":tracked"]),
+                    b"unique hook staging\n"
+                );
+                assert_eq!(
+                    output(&repo, &["rev-parse", ":tracked"]),
+                    fs::read(repo.path().join(".git/hook-staged")).unwrap()
+                );
+                assert_eq!(
+                    fs::read(repo.path().join("tracked")).unwrap(),
+                    original_work
+                );
+                assert!(remote_tip(&remote).is_none());
+            }
+        },
+    );
+}
+#[cfg(unix)]
+#[test]
+fn configuration_outside_publication_route_from_commit_hook_allows_remaining_save() {
+    isolated(
+        "configuration_outside_publication_route_from_commit_hook_allows_remaining_save",
+        true,
+        |root| {
+            for script in [
+                "git config advice.detachedHead false",
+                "git config remote.origin.fetch '+refs/heads/*:refs/heads/*'",
+            ] {
+                let (repo, remote) = fixture(root);
+                dirty(&repo, true, true);
+                let base = oid(&repo, "refs/heads/main");
+                hook(&repo, "post-commit", script);
+                let report = execute(&repo, TestPlan::Split);
+                complete(&repo, &remote, &report);
+                assert_eq!(report.effects.len(), 2);
+                assert_eq!(oid(&repo, "refs/heads/main"), base);
+            }
+        },
+    );
+}
+#[cfg(unix)]
+#[test]
+fn reconciliation_hook_staging_unique_content_keeps_it_before_final_index_replacement() {
+    isolated(
+        "reconciliation_hook_staging_unique_content_keeps_it_before_final_index_replacement",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            independent(&repo);
+            fs::write(
+                repo.path().join(".git/reconciled-work"),
+                independent_text(false, true),
+            )
+            .unwrap();
+            hook(
+                &repo,
+                "post-index-change",
+                "if ! test -f .git/hook-staged && cmp -s tracked .git/reconciled-work; then\n touch .git/hook-staged\n printf 'unique reconciliation hook staging\\n' > tracked\n git add -- tracked\n cp .git/reconciled-work tracked\nfi",
+            );
+            let report = run_operations(&repo, &[(SaveKind::Stash, SaveScope::Staged)]);
+            assert!(
+                matches!(
+                    report.error,
+                    Some(ExecutionError::Save(SaveError::ContextChanged))
+                ),
+                "{report:#?}"
+            );
+            assert!(report.publication.is_none());
+            assert!(report.recovery.as_ref().unwrap().retained);
+            assert_eq!(
+                output(&repo, &["show", ":tracked"]),
+                b"unique reconciliation hook staging\n"
+            );
+            assert_eq!(
+                fs::read(repo.path().join("tracked")).unwrap(),
+                independent_text(false, true).as_bytes()
+            );
+            assert!(remote_tip(&remote).is_none());
         },
     );
 }
@@ -1737,4 +1849,168 @@ fn ignored_obstructions_created_by_index_hook_stop_before_destructive_reconcilia
             );
         },
     );
+}
+
+#[test]
+fn metadata_paths_reread_operations_introduced_after_approval() {
+    isolated(
+        "metadata_paths_reread_operations_introduced_after_approval",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            dirty(&repo, true, true);
+            let approved = plan(&repo, TestPlan::Split);
+            fs::write(repo.path().join(".git/MERGE_HEAD"), oid(&repo, "HEAD")).unwrap();
+            let before = snapshot(root);
+            assert!(save::revalidate(repo.path(), &approved).is_err());
+            let report = execution::execute(repo.path(), &approved);
+            assert!(report.error.is_some());
+            assert!(report.commands.is_empty());
+            assert!(report.publication.is_none());
+            for observation in [&report.before, &report.after] {
+                let Observation::Repository(state) = observation.repository.as_ref().unwrap()
+                else {
+                    panic!()
+                };
+                assert!(state.operations.merge);
+            }
+            assert_eq!(snapshot(root), before);
+            assert!(remote_tip(&remote).is_none());
+        },
+    );
+}
+
+#[test]
+fn changed_git_directory_refuses_stale_plan_and_reports_selected_repository() {
+    isolated(
+        "changed_git_directory_refuses_stale_plan_and_reports_selected_repository",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            dirty(&repo, true, true);
+            let approved = plan(&repo, TestPlan::Split);
+            let (other, _) = fixture(root);
+            fs::rename(repo.path().join(".git"), repo.path().join(".original-git")).unwrap();
+            fs::write(
+                repo.path().join(".git"),
+                format!("gitdir: {}\n", other.path().join(".git").display()),
+            )
+            .unwrap();
+            let selected = twigsmith::repository::discover(repo.path())
+                .unwrap()
+                .unwrap();
+            assert_ne!(selected, approved.repository);
+            let selected_index = fs::read(other.path().join(".git/index")).unwrap();
+            let before = snapshot(root);
+            assert!(save::revalidate(repo.path(), &approved).is_err());
+            let report = execution::execute(repo.path(), &approved);
+            assert!(report.error.is_some());
+            assert!(report.commands.is_empty());
+            assert!(report.publication.is_none());
+            for observation in [&report.before, &report.after] {
+                let Observation::Repository(state) = observation.repository.as_ref().unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(state.git_dir, selected.git_dir);
+                assert_eq!(state.common_dir, selected.common_dir);
+                assert_eq!(
+                    observation.index.as_ref().unwrap().as_ref().unwrap(),
+                    &selected_index
+                );
+            }
+            assert_eq!(snapshot(root), before);
+            assert!(remote_tip(&remote).is_none());
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn changed_git_index_selection_reports_the_actual_index() {
+    use std::{env, os::unix::fs::PermissionsExt, process::Command};
+    const TEST: &str = "changed_git_index_selection_reports_the_actual_index";
+    isolated(TEST, true, |root| {
+        if env::var_os("TWIGSMITH_INDEX_WRAPPER").is_none() {
+            // Change only the Git subprocess selection after approval, without
+            // mutating the test runner's environment or relying on relative cwd.
+            let wrapper = root.join("git-index-wrapper");
+            fs::create_dir(&wrapper).unwrap();
+            let script = wrapper.join("git");
+            fs::write(&script, "#!/bin/sh\nif test -f .git/select-other-index; then GIT_INDEX_FILE=\"$TWIGSMITH_SELECTED_INDEX\"; export GIT_INDEX_FILE; fi\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"\n").unwrap();
+            fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+            let real = Command::new("sh")
+                .args(["-c", "command -v git"])
+                .output()
+                .unwrap();
+            let output = Command::new(env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(
+                    "PATH",
+                    format!("{}:{}", wrapper.display(), env::var("PATH").unwrap()),
+                )
+                .env(
+                    "TWIGSMITH_REAL_GIT",
+                    String::from_utf8(real.stdout).unwrap().trim(),
+                )
+                .env("TWIGSMITH_SELECTED_INDEX", root.join("selected.index"))
+                .env("TWIGSMITH_INDEX_WRAPPER", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (repo, remote) = fixture(root);
+        dirty(&repo, true, true);
+        let approved = plan(&repo, TestPlan::Split);
+        let planned_path = output(
+            &repo,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        );
+        let planned = fs::read(repo.path().join(".git/index")).unwrap();
+        let selected_index = PathBuf::from(env::var_os("TWIGSMITH_SELECTED_INDEX").unwrap());
+        fs::copy(repo.path().join(".git/index"), &selected_index).unwrap();
+        fs::write(repo.path().join("tracked"), "other index selection\n").unwrap();
+        assert!(
+            Command::new(env::var_os("TWIGSMITH_REAL_GIT").unwrap())
+                .current_dir(repo.path())
+                .env("GIT_INDEX_FILE", &selected_index)
+                .args(["add", "--", "tracked"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(repo.path().join("tracked"), "remaining\n").unwrap();
+        fs::write(repo.path().join(".git/select-other-index"), "selected\n").unwrap();
+        let selected_path = output(
+            &repo,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        );
+        assert_ne!(planned_path, selected_path);
+        assert_eq!(
+            selected_path.strip_suffix(b"\n").unwrap(),
+            selected_index.as_os_str().as_encoded_bytes()
+        );
+        let actual = fs::read(&selected_index).unwrap();
+        assert_ne!(actual, planned);
+        let before = snapshot(root);
+        let report = execution::execute(repo.path(), &approved);
+        assert!(report.error.is_some(), "{report:#?}");
+        assert!(report.commands.is_empty());
+        assert!(report.publication.is_none());
+        for observation in [&report.before, &report.after] {
+            assert_eq!(
+                observation.index.as_ref().unwrap().as_ref().unwrap(),
+                &actual
+            );
+        }
+        assert_eq!(fs::read(repo.path().join(".git/index")).unwrap(), planned);
+        assert_eq!(snapshot(root), before);
+        assert!(remote_tip(&remote).is_none());
+    });
 }

@@ -15,6 +15,19 @@ fn invalid(reason: &'static str) -> FinishError {
     FinishError::InvalidEvidence(reason)
 }
 
+pub(super) fn resolve_logs(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
+    let references: Vec<_> = plan.record.as_ref().map_or_else(Vec::new, |record| {
+        record
+            .completed
+            .iter()
+            .flat_map(|done| [done.target.reference.clone(), done.pin.as_bytes().to_vec()])
+            .collect()
+    });
+    plan.resolve_logs(
+        root,
+        &references.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+    )
+}
 pub(super) fn assess_completed(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
     let Some(record) = &plan.record else {
         return Ok(());
@@ -28,7 +41,7 @@ pub(super) fn assess_completed(root: &Path, plan: &mut Plan) -> Result<(), Finis
         return Ok(());
     }
     for (index, done) in record.completed.iter().enumerate() {
-        let pin_log = log(root, done.pin.as_bytes())?;
+        let pin_log = plan.log(done.pin.as_bytes())?;
         let entries: Vec<_> = pin_log
             .as_deref()
             .unwrap_or_default()
@@ -48,7 +61,7 @@ pub(super) fn assess_completed(root: &Path, plan: &mut Plan) -> Result<(), Finis
             || done.target.push_destinations != plan.target.push_destinations
             || symbolic(root, &done.target.reference)?
             || hint(root, &done.target.reference)? != RefObservation::Commit(done.result.clone())
-            || recovery::LogVersion::of(log(root, &done.target.reference)?.as_deref()) != done.log
+            || recovery::LogVersion::of(plan.log(&done.target.reference)?.as_deref()) != done.log
             || symbolic(root, done.pin.as_bytes())?
             || hint(root, done.pin.as_bytes())? != RefObservation::Commit(done.result.clone())
             || entries.len() != 1
@@ -77,7 +90,6 @@ pub(super) fn verify_completed_delivery(
     let Some(record) = plan.record.as_ref().filter(|r| !r.completed.is_empty()) else {
         return Ok(());
     };
-    revalidate(root, plan, plan.evidence.as_ref())?;
     if !plan.is_ready() {
         return Err(invalid("ordered integration plan is unresolved"));
     }
@@ -95,7 +107,6 @@ pub(super) fn verify_completed_delivery(
                 commands,
             )
             .map_err(|_| invalid("completed destination observation unavailable"))?;
-            revalidate(root, plan, plan.evidence.as_ref())?;
             if value != RefObservation::Commit(done.result.clone()) {
                 return Err(invalid(
                     "a previously completed integration destination changed; retain work and inspect delivery",
@@ -199,7 +210,6 @@ pub fn advance(
     })();
     commands.extend(report.commands);
     let evidence = acquired?;
-    revalidate(root, plan, plan.evidence.as_ref())?;
     record.completed.push(Completed {
         target: plan.target.clone(),
         result: result.clone(),
@@ -211,13 +221,16 @@ pub fn advance(
         .ok_or(invalid("next integration target is missing"))?
         .to_vec();
     record.local_before = hint(root, &reference)?;
-    record.target_version = recovery::LogVersion::of(log(root, &reference)?.as_deref());
+    let mut next = plan.clone();
+    let next_pin = record.result_ref();
+    next.resolve_logs(root, &[&reference, next_pin.as_bytes()])?;
+    let target_log = next.log(&reference)?;
+    record.target_version = recovery::LogVersion::of(target_log.as_deref());
     record.result = None;
     release::next_destination(&mut record);
-    let mut next = plan.clone();
     next.target = record.target.clone();
     next.local_target = record.local_before.clone();
-    next.snapshot.target_log = log(root, &reference)?;
+    next.snapshot.target_log = target_log;
     next.record = Some(record.clone());
     next.evidence = Some(evidence.clone());
     next.result = None;
@@ -243,7 +256,6 @@ pub fn advance(
     }
     // Input may be needed on the next graph; binding that destination is not
     // authority to integrate until the normal planner resolves those choices.
-    revalidate(root, plan, plan.evidence.as_ref())?;
     recovery::write(
         &plan.repository.git_dir,
         plan.recovery_path
@@ -252,5 +264,11 @@ pub fn advance(
         &record,
         true,
     )?;
-    assess(root, &plan.request, Some(&evidence))
+    *next
+        .snapshot
+        .records
+        .last_mut()
+        .ok_or(invalid("attempt snapshot missing"))? =
+        Some(serde_json::to_vec(&record).map_err(std::io::Error::other)?);
+    refresh_local(root, &next, false)
 }

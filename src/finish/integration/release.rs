@@ -73,9 +73,6 @@ pub(super) fn snapshot(
     let Some(tag) = &request.tag else {
         return Ok(None);
     };
-    if !checked_name(root, tag, "refs/tags/")? || tag.starts_with('-') {
-        return Err(invalid("invalid version tag name"));
-    }
     let reference = [b"refs/tags/", tag.as_bytes()].concat();
     Ok(Some(Snapshot {
         tag: hint(root, &reference)?,
@@ -84,6 +81,71 @@ pub(super) fn snapshot(
             .and_then(|r| r.release.as_ref())
             .and_then(|r| r.marker.as_ref())
             .map(|m| Ok::<_, FinishError>((hint(root, &m.reference)?, log(root, &m.reference)?)))
+            .transpose()?,
+    }))
+}
+/// Refresh only mutable release refs through metadata paths resolved when the
+/// command selected its request and marker. Git path selection is an input fact;
+/// reading the resolved reflog does not require rediscovering that path.
+pub(super) fn snapshot_from_plan(
+    root: &Path,
+    plan: &Plan,
+) -> Result<Option<Snapshot>, FinishError> {
+    let Some(tag) = &plan.request.release.tag else {
+        return Ok(None);
+    };
+    let reference = [b"refs/tags/", tag.as_bytes()].concat();
+    Ok(Some(Snapshot {
+        tag: hint(root, &reference)?,
+        tag_log: plan.log(&reference)?,
+        marker: plan
+            .record
+            .as_ref()
+            .and_then(|r| r.release.as_ref())
+            .and_then(|r| r.marker.as_ref())
+            .map(|marker| {
+                Ok::<_, FinishError>((hint(root, &marker.reference)?, plan.log(&marker.reference)?))
+            })
+            .transpose()?,
+    }))
+}
+pub(super) fn binding_refs(plan: &Plan) -> Vec<Vec<u8>> {
+    let mut references = vec![];
+    if let Some(tag) = &plan.request.release.tag {
+        references.push([b"refs/tags/", tag.as_bytes()].concat());
+    }
+    if let Some(marker) = plan
+        .record
+        .as_ref()
+        .and_then(|record| record.release.as_ref())
+        .and_then(|release| release.marker.as_ref())
+    {
+        references.push(marker.reference.clone());
+    }
+    references
+}
+pub(super) fn snapshot_with_refs(
+    plan: &Plan,
+    references: &std::collections::BTreeMap<Vec<u8>, RefObservation>,
+) -> Result<Option<Snapshot>, FinishError> {
+    let Some(tag) = &plan.request.release.tag else {
+        return Ok(None);
+    };
+    let reference = [b"refs/tags/", tag.as_bytes()].concat();
+    Ok(Some(Snapshot {
+        tag: stage_ref(references, &reference),
+        tag_log: plan.log(&reference)?,
+        marker: plan
+            .record
+            .as_ref()
+            .and_then(|record| record.release.as_ref())
+            .and_then(|release| release.marker.as_ref())
+            .map(|marker| {
+                Ok::<_, FinishError>((
+                    stage_ref(references, &marker.reference),
+                    plan.log(&marker.reference)?,
+                ))
+            })
             .transpose()?,
     }))
 }
@@ -154,7 +216,26 @@ fn checked_name(root: &Path, name: &str, prefix: &str) -> Result<bool, FinishErr
     .status
     .success())
 }
+/// Validate a new effective request before constructing its metadata operands.
+/// The private plan retains this request; local stage refresh never changes it.
+pub(super) fn validate_request(root: &Path, request: &Request) -> Result<(), FinishError> {
+    if let Some(tag) = &request.tag
+        && (!checked_name(root, tag, "refs/tags/")? || tag.starts_with('-'))
+    {
+        return Err(invalid("invalid version tag name"));
+    }
+    Ok(())
+}
 pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
+    assess_binding(root, plan, true)
+}
+/// Stage refresh keeps the private request and selected policy unchanged. Git's
+/// syntax result belongs to those immutable inputs, while tag/marker identity,
+/// replacement refs and occupancy can change across hooks and must be refreshed.
+pub(super) fn reassess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
+    assess_binding(root, plan, false)
+}
+fn assess_binding(root: &Path, plan: &mut Plan, validate_inputs: bool) -> Result<(), FinishError> {
     if !enabled(plan) {
         if !plan.request.release.is_empty()
             || plan.record.as_ref().is_some_and(|r| r.release.is_some())
@@ -205,12 +286,7 @@ pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
             "tag annotation must be nonblank literal text without NUL".into(),
         ));
     }
-    if let Some(tag) = &plan.request.release.tag {
-        if !checked_name(root, tag, "refs/tags/")? || tag.starts_with('-') {
-            plan.blockers
-                .push(Blocker::Release("invalid version tag name".into()));
-        }
-    } else {
+    if plan.request.release.tag.is_none() {
         plan.required_input.push(RequiredInput::TagName);
     }
     if let Some(marker) = plan
@@ -222,7 +298,7 @@ pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
         let reference = branch_ref(marker.as_bytes());
         if reference == plan.source_ref
             || destination_refs(&plan.settings).contains(&reference)
-            || !checked_name(root, marker, "refs/heads/")?
+            || (validate_inputs && !checked_name(root, marker, "refs/heads/")?)
         {
             plan.blockers.push(Blocker::Release("release marker must be a distinct valid branch, separate from work and integration target".into()));
         }
@@ -310,7 +386,7 @@ pub(super) fn assess(root: &Path, plan: &mut Plan) -> Result<(), FinishError> {
                     "release marker changed since this attempt".into(),
                 ));
             }
-            let bytes = log(root, &marker.reference)?;
+            let bytes = plan.log(&marker.reference)?;
             let unchanged = now == marker.local_before && bytes == marker.local_log;
             let before = marker.local_log.as_deref().unwrap_or_default();
             let after = bytes.as_deref().unwrap_or_default();
@@ -382,7 +458,7 @@ pub(super) fn for_plan(plan: &Plan, token: &str) -> Result<Option<Record>, Finis
                 let reference = branch_ref(name.as_bytes());
                 Ok::<_, FinishError>(Marker {
                     local_before: hint(root, &reference)?,
-                    local_log: log(root, &reference)?,
+                    local_log: plan.log(&reference)?,
                     reference,
                     destinations: None,
                 })
@@ -454,14 +530,13 @@ fn verify_tag(
     Ok(Some(oid.to_vec()))
 }
 fn guard(root: &Path, plan: &Plan) -> Result<(), FinishError> {
-    revalidate(root, plan, plan.evidence.as_ref())?;
+    revalidate_stage(root, plan, plan.evidence.as_ref())?;
     if !plan.is_ready() {
         return Err(invalid("release plan is unresolved"));
     }
     Ok(())
 }
-fn store(root: &Path, plan: &Plan, release: Record) -> Result<Plan, FinishError> {
-    guard(root, plan)?;
+fn store(plan: &Plan, release: Record) -> Result<Plan, FinishError> {
     let mut record = plan
         .record
         .clone()
@@ -478,12 +553,18 @@ fn store(root: &Path, plan: &Plan, release: Record) -> Result<Plan, FinishError>
         &record,
         true,
     )?;
-    let next = assess_after(root, plan)?;
-    guard(root, &next)?;
+    let mut next = plan.clone();
+    *next
+        .snapshot
+        .records
+        .last_mut()
+        .ok_or(invalid("release record snapshot missing"))? =
+        Some(serde_json::to_vec(&record).map_err(std::io::Error::other)?);
+    next.record = Some(record);
     Ok(next)
 }
 fn assess_after(root: &Path, previous: &Plan) -> Result<Plan, FinishError> {
-    let next = super::assess(root, &previous.request, previous.evidence.as_ref())?;
+    let next = refresh_local(root, previous, false)?;
     if next.repository != previous.repository
         || next.settings != previous.settings
         || next.source_ref != previous.source_ref
@@ -510,7 +591,6 @@ fn observe(
     reference: &[u8],
     commands: &mut Vec<CommandReport>,
 ) -> Result<RefObservation, FinishError> {
-    guard(root, plan)?;
     let (mut args, name) = remote::endpoint(root, plan, &plan.target.remote, destination, commands)
         .map_err(|_| invalid("release endpoint unavailable or changed"))?;
     args.extend([
@@ -522,7 +602,6 @@ fn observe(
     ]);
     let bytes = remote::command(root, args, commands)
         .map_err(|_| invalid("release ref observation failed"))?;
-    guard(root, plan)?;
     crate::finish::preparation::parse_advertisement(
         &bytes,
         reference,
@@ -561,7 +640,7 @@ fn acquire(
     args.extend([name.into(), repository::os(oid)?]);
     remote::command(root, args, commands)
         .map_err(|_| invalid("cannot obtain exact marker history"))?;
-    guard(root, plan)
+    Ok(())
 }
 /// Run source checks on the exact release tree, create its tag, and retain its
 /// object identity before target checkout. Recovered receipts bind unchanged
@@ -577,10 +656,23 @@ pub(super) fn prepare(
     let Some(mut r) = plan.record.as_ref().and_then(|r| r.release.clone()) else {
         return Ok(plan);
     };
-    guard(root, &plan)?;
     if plan.integration == Integration::AfterPreparation {
         return Ok(plan);
     }
+    // The exact retained tag/check receipt survives integration of another
+    // destination. Collision/marker routes are checked by pending delivery;
+    // preparing the same immutable source needs no additional remote round.
+    if source_checked(&plan, skip)
+        && r.marker
+            .as_ref()
+            .is_none_or(|marker| marker.destinations.is_some())
+    {
+        return Ok(plan);
+    }
+    // Only this source-preparation stage needs new authority. Repeated private
+    // calls with its exact receipt perform no effects; the enclosing execution
+    // stage already validates entry and every Git/hook transition.
+    guard(root, &plan)?;
     if integrated_identity(&plan) && plan.source != RefObservation::Absent {
         let work = commit(&plan.source)
             .ok_or(invalid("completed work source missing"))?
@@ -596,7 +688,9 @@ pub(super) fn prepare(
                 skip,
                 &mut *event,
                 || {
-                    guard(root, &plan)?;
+                    if !plan.settings.finish_checks.is_empty() && !skip {
+                        guard(root, &plan)?;
+                    }
                     if current_ref(&plan.snapshot.state).as_ref() != Some(&plan.source_ref)
                         || commit(&plan.source) != Some(work.as_slice())
                     {
@@ -612,7 +706,7 @@ pub(super) fn prepare(
             }
             r.work_check = Some(work);
             r.work_bypassed = skip;
-            plan = store(root, &plan, r.clone())?;
+            plan = store(&plan, r.clone())?;
             if let Some(reference) = original_head
                 && current_ref(&plan.snapshot.state).as_ref() != Some(&reference)
             {
@@ -633,7 +727,7 @@ pub(super) fn prepare(
             return Ok(plan);
         };
         r.source = selected;
-        plan = store(root, &plan, r.clone())?;
+        plan = store(&plan, r.clone())?;
     }
     let known = verify_tag(root, &plan, &r, false)?;
     let mut tag_endpoints = vec![plan.target.fetch_destination.clone()];
@@ -686,7 +780,7 @@ pub(super) fn prepare(
         }
         if marker.destinations.is_none() {
             marker.destinations = Some(values);
-            plan = store(root, &plan, r.clone())?;
+            plan = store(&plan, r.clone())?;
         }
     }
     let original_head = current_ref(&plan.snapshot.state);
@@ -713,7 +807,9 @@ pub(super) fn prepare(
                 skip,
                 &mut *event,
                 || {
-                    guard(root, &plan)?;
+                    if !plan.settings.finish_checks.is_empty() && !skip {
+                        guard(root, &plan)?;
+                    }
                     let head = match &plan.snapshot.state.head {
                         repository::Head::Attached { commit, .. } => commit,
                         _ => return Err(checks::Error::Unprepared),
@@ -734,7 +830,7 @@ pub(super) fn prepare(
         }
         r.source_check = Some(r.source.clone());
         r.source_bypassed = !reuse_work && skip;
-        plan = store(root, &plan, r.clone())?;
+        plan = store(&plan, r.clone())?;
     }
     if known.is_none() {
         guard(root, &plan)?;
@@ -777,7 +873,6 @@ pub(super) fn prepare(
         commands.push(CommandReport {
             arguments: args,
             result,
-            after: repository::inspect(root),
         });
         if !success {
             return Err(invalid(
@@ -785,10 +880,9 @@ pub(super) fn prepare(
             ));
         }
         plan = assess_after(root, &plan)?;
-        guard(root, &plan)?;
     }
     r.tag_object = verify_tag(root, &plan, &r, true)?;
-    plan = store(root, &plan, r)?;
+    plan = store(&plan, r)?;
     if let Some(reference) = original_head
         && current_ref(&plan.snapshot.state).as_ref() != Some(&reference)
     {
@@ -827,7 +921,7 @@ pub(crate) fn candidate_checked(plan: &Plan, skip: bool) -> bool {
                     && (!r.source_bypassed || skip))
         })
 }
-pub(super) fn record_candidate(root: &Path, plan: &Plan, skip: bool) -> Result<Plan, FinishError> {
+pub(super) fn record_candidate(plan: &Plan, skip: bool) -> Result<Plan, FinishError> {
     if candidate_checked(plan, false) {
         return Ok(plan.clone());
     }
@@ -836,7 +930,7 @@ pub(super) fn record_candidate(root: &Path, plan: &Plan, skip: bool) -> Result<P
     };
     r.candidate_check = plan.result.clone();
     r.candidate_bypassed = skip;
-    store(root, plan, r)
+    store(plan, r)
 }
 fn checkout(
     root: &Path,
@@ -866,23 +960,22 @@ fn checkout(
         )?,
     ];
     remote::command(root, args, commands).map_err(|_| invalid("release check checkout failed"))?;
-    let next = super::assess(root, &plan.request, plan.evidence.as_ref())?;
+    let next = refresh_local(root, plan, false)?;
     if next.repository != plan.repository
         || next.settings != plan.settings
         || next.source != plan.source
         || next.local_target != plan.local_target
         || next.snapshot.config != plan.snapshot.config
-        || !plan
-            .snapshot
-            .configuration_files
-            .matches_checkout(root, &next.repository, "HEAD")
-            .map_err(SaveError::from)?
         || next.record != plan.record
         || current_ref(&next.snapshot.state).as_deref() != Some(reference)
     {
         return Err(FinishError::ContextChanged);
     }
-    guard(root, &next)?;
+    if !next.is_ready() {
+        return Err(invalid(
+            "release check checkout changed the prepared context",
+        ));
+    }
     Ok(next)
 }
 fn push(
@@ -894,7 +987,6 @@ fn push(
     oid: &[u8],
     commands: &mut Vec<CommandReport>,
 ) -> Result<(), FinishError> {
-    pending_routes(root, plan, commands)?;
     let current = observe(root, plan, endpoint, reference, commands)?;
     if current == RefObservation::Commit(oid.to_vec()) {
         return Ok(());
@@ -929,13 +1021,36 @@ fn push(
         name.into(),
         repository::os(&[oid, b":", reference].concat())?,
     ]);
-    guard(root, plan)?;
-    remote::command(root, args, commands)
-        .map_err(|_| invalid("release ref push failed; retain partial effects and retry"))?;
-    if observe(root, plan, endpoint, reference, commands)? != RefObservation::Commit(oid.to_vec()) {
+    let status = remote::command(root, args, commands);
+    let acknowledged = commands
+        .last()
+        .and_then(|command| command.result.as_ref().ok())
+        .is_some_and(|output| {
+            let (responses, valid) = crate::publication::responses(&output.stdout, oid, reference);
+            valid
+                && responses.len() == 1
+                && matches!(
+                    responses[0].state,
+                    crate::publication::Status::Created
+                        | crate::publication::Status::Advanced
+                        | crate::publication::Status::Unchanged
+                )
+        });
+    // An exact porcelain response is sufficient. Reconcile only the uncertain
+    // endpoint, preserving a failed command even when its effect was delivered.
+    if !acknowledged
+        && observe(root, plan, endpoint, reference, commands)?
+            != RefObservation::Commit(oid.to_vec())
+    {
         return Err(invalid("release delivery is unconfirmed"));
     }
-    Ok(())
+    status.map_err(|_| invalid("release ref push failed; retain partial effects and retry"))?;
+    // Native push hooks can change the selected routes, retained attempt or
+    // checked candidate. The pinned push protects this completed effect, but
+    // cannot authorize another tag/marker effect using the pre-hook binding.
+    // Keep its acknowledgement and stop before the next effect if that binding
+    // changed; no remote readback is needed to prove the successful push.
+    guard(root, plan)
 }
 /// Recheck release-specific destinations before each pending target push. A
 /// conflicting version or marker must not inherit earlier target authority.
@@ -947,7 +1062,6 @@ pub(super) fn pending_routes(
     let Some(record) = plan.record.as_ref().and_then(|r| r.release.as_ref()) else {
         return Ok(());
     };
-    guard(root, plan)?;
     let tag = verify_tag(root, plan, record, true)?.ok_or(invalid("version tag missing"))?;
     let mut endpoints = vec![plan.target.fetch_destination.clone()];
     for endpoint in &plan.target.push_destinations {
@@ -1001,6 +1115,7 @@ pub fn deliver_with_caches(
     commands: &mut Vec<CommandReport>,
     caches: &mut Vec<crate::save::publication::CacheReport>,
 ) -> Result<Plan, FinishError> {
+    validate_repository(root, initial)?;
     let record = initial.record.as_ref().and_then(|r| r.release.as_ref());
     let prepared = record.map(|record| {
         let tag = crate::tracking::cache::Prepared::new(
@@ -1027,7 +1142,7 @@ pub fn deliver_with_caches(
             .map(|d| (d.destination.clone(), None))
             .collect::<Vec<_>>();
         if !tags.is_empty() {
-            caches.push(tag.refresh(root, &tags, desired_tag))
+            caches.push(tag.refresh_acknowledged(root, &tags, desired_tag))
         }
         if let Some(cache) = marker
             && let Some(marker) = &record.marker
@@ -1047,14 +1162,14 @@ pub fn deliver_with_caches(
                 })
                 .collect::<Vec<_>>();
             if !markers.is_empty() {
-                caches.push(cache.refresh(root, &markers, Some(&record.source)))
+                caches.push(cache.refresh_acknowledged(root, &markers, Some(&record.source)))
             }
         }
     }
     if let Ok(plan) = &result {
         // Cache hooks must preserve the returned plan. Release readiness is
         // checked by delivery itself; ordinary plans can retain cleanup blockers.
-        revalidate(root, plan, plan.evidence.as_ref())?
+        revalidate_stage(root, plan, plan.evidence.as_ref())?
     }
     result
 }
@@ -1139,10 +1254,8 @@ fn deliver_inner(
             remote::command(root, args, commands)
                 .map_err(|_| invalid("local marker update failed"))?;
             plan = assess_after(root, &plan)?;
-            guard(root, &plan)?;
         }
     }
-    verify_delivery(root, &plan, commands)?;
     Ok(plan)
 }
 pub(super) fn verify_delivery(
@@ -1247,7 +1360,26 @@ pub fn delivery_observations(plan: &Plan, commands: &[CommandReport]) -> Vec<Des
                             })
                             .unwrap_or(RefObservation::Unavailable)
                     } else {
-                        RefObservation::Unavailable
+                        let source = reference.strip_suffix([b":", selected].concat().as_slice());
+                        command
+                            .result
+                            .as_ref()
+                            .ok()
+                            .and_then(|output| {
+                                let oid = source?;
+                                let (responses, valid) =
+                                    crate::publication::responses(&output.stdout, oid, selected);
+                                (valid
+                                    && responses.len() == 1
+                                    && matches!(
+                                        responses[0].state,
+                                        crate::publication::Status::Created
+                                            | crate::publication::Status::Advanced
+                                            | crate::publication::Status::Unchanged
+                                    ))
+                                .then(|| RefObservation::Commit(oid.to_vec()))
+                            })
+                            .unwrap_or(RefObservation::Unavailable)
                     };
                 }
             }

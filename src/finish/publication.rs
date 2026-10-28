@@ -129,7 +129,6 @@ fn command(
     outcome.commands.push(CommandReport {
         arguments: args,
         result,
-        after: repository::inspect(directory),
     });
     if success {
         Ok(bytes)
@@ -142,7 +141,6 @@ fn publish_destination(
     plan: &Plan,
     outcome: &mut DestinationOutcome,
 ) -> Result<(), PublicationError> {
-    guard(directory, plan)?;
     let (prefix, name) = super::transport::endpoint(
         &plan.git_config,
         &plan.settings.publish_remote,
@@ -158,7 +156,6 @@ fn publish_destination(
             .map(OsString::from),
     );
     let bytes = command(directory, args, outcome)?;
-    guard(directory, plan)?;
     // Both url and explicit pushurl undergo the same insteadOf expansion;
     // explicit pushurl disables pushInsteadOf. One read checks both endpoints.
     if bytes.strip_suffix(b"\n") != Some(outcome.destination.as_slice()) {
@@ -174,7 +171,6 @@ fn publish_destination(
         repository::os(&plan.publication.branch_ref)?,
     ]);
     let bytes = command(directory, args, outcome)?;
-    guard(directory, plan)?;
     let observed =
         preparation::parse_advertisement(&bytes, &plan.publication.branch_ref, plan.commit.len())?;
     outcome.observed = Some(observed.clone());
@@ -333,7 +329,6 @@ pub fn publish_with_checks(
     };
     report.error = (|| {
         guard(directory, plan)?;
-        guard(root, plan)?;
         if !plan.is_ready()
             || plan.update != FinishUpdate::None
             || report.destinations.is_empty()
@@ -350,11 +345,13 @@ pub fn publish_with_checks(
             &plan.settings.publish_remote,
             &plan.publication.branch_ref,
         );
-        for destination in &mut report.destinations {
+        for (index, destination) in report.destinations.iter_mut().enumerate() {
             // Local context changes stop subsequent destinations. A transport or
             // remote-only failure stops that destination; independent ones retain
             // their original safeguards and may still complete.
-            guard(root, plan)?;
+            if index > 0 {
+                guard(root, plan)?;
+            }
             destination.error = publish_destination(root, plan, destination).err();
         }
         let confirmed = report

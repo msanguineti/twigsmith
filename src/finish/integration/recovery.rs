@@ -209,7 +209,7 @@ impl Record {
         // Capture cleanup destinations before integration; a later destination
         // or branch version can never inherit deletion authority.
         Ok(Self {
-            version: 3,
+            version: 4,
             git_dir: plan.repository.git_dir.clone(),
             common_dir: plan.repository.common_dir.clone(),
             root: plan.repository.working_tree_root.clone().expect("worktree"),
@@ -254,11 +254,14 @@ impl Record {
         })
     }
     pub fn marker(&self) -> String {
+        self.marker_before(&self.target_before)
+    }
+    fn marker_before(&self, before: &[u8]) -> String {
         format!(
             "twigsmith-integrate:{}:{}:{}:{}",
             self.token,
             String::from_utf8_lossy(&self.source),
-            String::from_utf8_lossy(&self.target_before),
+            String::from_utf8_lossy(before),
             self.method.as_str()
         )
     }
@@ -301,6 +304,183 @@ pub fn record_path(repository: &repository::RepositoryContext, source_branch: &s
 }
 pub fn selection_path(repository: &repository::RepositoryContext) -> PathBuf {
     repository.git_dir.join("twigsmith-integration/active.json")
+}
+/// Classify an unresolved assessment before implicit CLI mode dispatch. Unsupported
+/// records supply no execution authority; their source/target names only prevent
+/// a recovery error from silently turning into publication of another branch.
+/// A selector for another workstream does not intercept a fresh local branch.
+pub(crate) fn unresolved_selection_is_relevant(
+    directory: &Path,
+    repository: &repository::RepositoryContext,
+    branch: Option<&[u8]>,
+    assessed: Option<&Plan>,
+) -> Result<bool, FinishError> {
+    if assessed.is_some_and(|plan| plan.record.is_some()) {
+        return Ok(false);
+    }
+    let Some(branch) = branch else {
+        return Ok(false);
+    };
+    let current = branch_ref(branch);
+    let own_path = repository
+        .git_dir
+        .join("twigsmith-integration/branches")
+        .join(repository::os(branch)?)
+        .join("attempt.json");
+    if fs::symlink_metadata(&own_path).is_ok() {
+        return Ok(true);
+    }
+    let mut unresolved_selector = false;
+    for namespace in ["twigsmith-integration", "oneflow-integration"] {
+        let selector = repository.git_dir.join(namespace).join("active.json");
+        let bytes = match private_read(&repository.git_dir, &selector) {
+            Ok(None) => continue,
+            Ok(Some(bytes)) => bytes,
+            Err(_) => {
+                unresolved_selector = true;
+                continue;
+            }
+        };
+        let Ok(selection) = serde_json::from_slice::<Selection>(&bytes) else {
+            unresolved_selector = true;
+            continue;
+        };
+        if selection.source_ref == current {
+            return Ok(true);
+        }
+        let Some(source) = selection.source_ref.strip_prefix(b"refs/heads/") else {
+            unresolved_selector = true;
+            continue;
+        };
+        let record_path = repository
+            .git_dir
+            .join(namespace)
+            .join("branches")
+            .join(repository::os(source)?)
+            .join("attempt.json");
+        let record = private_read(&repository.git_dir, &record_path)
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok());
+        if let Some(record) = record {
+            if record.target.reference == current
+                || record
+                    .completed
+                    .iter()
+                    .any(|item| item.target.reference == current)
+            {
+                return Ok(true);
+            }
+            continue;
+        }
+        // Retained-target identity comes from the operation, not the latest
+        // checkout: developers may visit other branches before returning. Bind
+        // this branch's final native transition to the source/attempt at the
+        // surviving selector anchor and the same transition in HEAD history.
+        // A fresh B has a creation action in its own log, even at the same OID.
+        let head = metadata(directory, "logs/HEAD")?;
+        if selection.head.prefix(head.as_deref()) {
+            let name = std::str::from_utf8(&current)
+                .map_err(|_| FinishError::InvalidEvidence("non-UTF-8 recovery reference"))?;
+            let log = metadata(directory, &format!("logs/{name}"))?;
+            let tip = hint(directory, &current)?;
+            if entries(log.as_deref()).last().is_some_and(|entry| {
+                let Some(marker) = entry.message.strip_prefix(b"twigsmith-integrate:") else {
+                    return false;
+                };
+                let mut fields = marker.split(|byte| *byte == b':');
+                let (Some(token), Some(source_oid), Some(before)) =
+                    (fields.next(), fields.next(), fields.next())
+                else {
+                    return false;
+                };
+                let prefix = [b"twigsmith-integrate:", token, b":", source_oid, b":"].concat();
+                let source_bound =
+                    entries(Some(&selection.head.last))
+                        .last()
+                        .is_some_and(|anchor| {
+                            anchor.new == source_oid || anchor.message.starts_with(&prefix)
+                        });
+                // An ordered selector can anchor on an already completed target;
+                // that exact operation is also evidence of attempt membership.
+                let operation_observed = entries(head.as_deref())
+                    .into_iter()
+                    .skip(selection.head.count.saturating_sub(1))
+                    .any(|observed| {
+                        observed.old == entry.old
+                            && observed.new == entry.new
+                            && observed.message == entry.message
+                    });
+                source_bound
+                    && before == entry.old
+                    && commit(&tip) == Some(entry.new)
+                    && operation_observed
+            }) {
+                return Ok(true);
+            }
+        }
+    }
+    if unresolved_selector {
+        // Recover identity for refusal from an exact source-to-target checkout,
+        // that source's record, and this target's final operation marker. Later
+        // visits to independent branches do not erase the owned target. A new
+        // branch at the same OID does not carry the target's branch reflog.
+        let head = metadata(directory, "logs/HEAD")?;
+        let history = entries(head.as_deref());
+        let suffix = [b" to ".as_slice(), branch].concat();
+        let name = std::str::from_utf8(&current)
+            .map_err(|_| FinishError::InvalidEvidence("non-UTF-8 recovery reference"))?;
+        let log = metadata(directory, &format!("logs/{name}"))?;
+        let tip = hint(directory, &current)?;
+        let target_operation = entries(log.as_deref());
+        for checkout in history.iter().rev() {
+            let Some(source) = checkout
+                .message
+                .strip_prefix(b"checkout: moving from ")
+                .and_then(|message| message.strip_suffix(suffix.as_slice()))
+            else {
+                continue;
+            };
+            for namespace in ["twigsmith-integration", "oneflow-integration"] {
+                let path = repository
+                    .git_dir
+                    .join(namespace)
+                    .join("branches")
+                    .join(repository::os(source)?)
+                    .join("attempt.json");
+                let record = private_read(&repository.git_dir, &path)
+                    .ok()
+                    .flatten()
+                    .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok());
+                if let Some(record) = record
+                    && record.source_ref == branch_ref(source)
+                    && target_operation.last().is_some_and(|entry| {
+                        // Earlier ordered destinations retain their exact result,
+                        // while target_before now belongs to the next destination.
+                        let owned_target = (record.target.reference == current
+                            && record.target_before == entry.old)
+                            || record.completed.iter().any(|item| {
+                                item.target.reference == current && item.result == entry.new
+                            });
+                        let marker = record.marker_before(entry.old);
+                        let marked = entry.message == marker.as_bytes()
+                            || entry.message.starts_with(format!("{marker}: ").as_bytes());
+                        owned_target
+                            && marked
+                            && commit(&tip) == Some(entry.new)
+                            && history.iter().any(|observed| {
+                                observed.old == entry.old
+                                    && observed.new == entry.new
+                                    && observed.message == entry.message
+                            })
+                    })
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 /// Explicit policy start establishes new workstream intent on a named branch.
 /// Retain all attempt records; retire only a different source's active selector.
@@ -355,6 +535,48 @@ fn private_read(root: &Path, path: &Path) -> Result<Option<Vec<u8>>, Problem> {
     }
     fs::read(path).map(Some).map_err(|_| Problem::UnsafeRecord)
 }
+/// The selected attempt was parsed at entry. Stage guards compare its exact
+/// private bytes rather than reparsing and revalidating the same literal refs.
+/// A changed/missing record requires a new public recovery assessment.
+pub(super) fn verify_records(plan: &Plan) -> Result<(), FinishError> {
+    if plan.recovery_path != plan.snapshot.record_path {
+        return Err(FinishError::ContextChanged);
+    }
+    let Some(path) = &plan.snapshot.record_path else {
+        return if plan.snapshot.records.is_empty() {
+            Ok(())
+        } else {
+            Err(FinishError::ContextChanged)
+        };
+    };
+    let mut actual = vec![];
+    if plan.snapshot.records.len() == 2 {
+        actual.push(
+            private_read(&plan.repository.git_dir, &selection_path(&plan.repository))
+                .map_err(|_| FinishError::ContextChanged)?,
+        );
+    }
+    actual.push(
+        private_read(&plan.repository.git_dir, path).map_err(|_| FinishError::ContextChanged)?,
+    );
+    if actual != plan.snapshot.records {
+        return Err(FinishError::ContextChanged);
+    }
+    Ok(())
+}
+pub(super) fn bind_selection(plan: &mut Plan) -> Result<(), FinishError> {
+    let selected = private_read(&plan.repository.git_dir, &selection_path(&plan.repository))
+        .map_err(|_| FinishError::ContextChanged)?;
+    let branch = plan
+        .snapshot
+        .records
+        .last()
+        .cloned()
+        .ok_or(FinishError::ContextChanged)?;
+    plan.snapshot.records = vec![selected, branch];
+    Ok(())
+}
+
 pub(super) struct Selected {
     pub source_ref: Option<Vec<u8>>,
     pub path: Option<PathBuf>,
@@ -502,8 +724,13 @@ pub(super) fn select(
         selected.problem = Some(Problem::MalformedRecord);
         return Ok(selected);
     };
+    if record.version == 3 {
+        return Err(FinishError::InvalidEvidence(
+            "unfinished integration uses prior configuration binding; finish or recover it with the prior Twigsmith binary and preserve its evidence before using this version",
+        ));
+    }
     if !valid_ref(directory, &record.target.reference)?
-        || record.version != 3
+        || record.version != 4
         || record.source_ref != *reference
         || record.source_ref == record.target.reference
     {
@@ -716,7 +943,7 @@ pub(super) fn assess(
             continue;
         }
         let pin = hint(directory, reference.as_bytes())?;
-        let bytes = log(directory, reference.as_bytes())?;
+        let bytes = plan.log(reference.as_bytes())?;
         let entries = entries(bytes.as_deref());
         if symbolic(directory, reference.as_bytes())?
             || pin != RefObservation::Commit(expected.to_vec())
@@ -788,7 +1015,7 @@ pub(super) fn assess(
                     .working_tree
                     .as_ref()
                     .is_some_and(|t| t.is_dirty())
-                || metadata(directory, "SQUASH_MSG")?.is_some()
+                || plan.metadata("SQUASH_MSG")?.is_some()
             {
                 plan.state = State::IncompleteOperation;
                 if !plan.blockers.contains(&Blocker::GitOperation) {
@@ -817,6 +1044,18 @@ pub(super) fn assess(
         fail(plan, Problem::InvalidResult);
         return Ok(());
     }
+    assess_delivery(directory, plan, record, result)
+}
+
+/// Delivery acknowledgements change endpoint progress, not the already retained
+/// integration graph. Reuse its verified candidate when deriving the next effects.
+pub(super) fn assess_delivery(
+    directory: &Path,
+    plan: &mut Plan,
+    record: &Record,
+    result: Vec<u8>,
+) -> Result<(), FinishError> {
+    let source_absent = plan.source == RefObservation::Absent;
     plan.result = Some(result.clone());
     plan.state = State::PreparedResult;
     if !validate_evidence(plan) {

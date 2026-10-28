@@ -309,7 +309,6 @@ fn changed_local_context_stops_before_publication() {
                 "settings",
                 "upstream",
                 "destinations",
-                "config",
                 "recovery",
             ] {
                 let (local, remote) = fixture(root);
@@ -334,9 +333,6 @@ fn changed_local_context_stops_before_publication() {
                     "destinations" => {
                         destinations(&local, &[&Repository::new(root)]);
                     }
-                    "config" => {
-                        local.success(&["config", "push.followTags", "true"]);
-                    }
                     "recovery" => {
                         fs::write(
                             local
@@ -353,6 +349,24 @@ fn changed_local_context_stops_before_publication() {
                 assert!(r.error.is_some(), "{change}");
                 assert_ne!(oid(&remote, REF), p.commit);
             }
+        },
+    );
+}
+
+#[test]
+fn unrelated_configuration_changes_do_not_invalidate_pinned_publication() {
+    isolated(
+        "unrelated_configuration_changes_do_not_invalidate_pinned_publication",
+        true,
+        |root| {
+            let (local, remote) = fixture(root);
+            let p = rewrite(&local, &remote);
+            local.success(&["config", "finish.example", "changed"]);
+            // Push explicitly disables tag following, so this preference is immaterial.
+            local.success(&["config", "push.followTags", "true"]);
+            let report = publication::publish(local.path(), &p);
+            assert!(report.is_complete(), "{report:#?}");
+            assert_eq!(oid(&remote, REF), p.commit);
         },
     );
 }

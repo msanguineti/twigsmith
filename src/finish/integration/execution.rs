@@ -139,7 +139,6 @@ fn command(
     report.commands.push(CommandReport {
         arguments: args,
         result,
-        after: repository::inspect(root),
     });
     if success {
         Ok(bytes)
@@ -151,7 +150,7 @@ fn args(values: &[&str]) -> Vec<OsString> {
     values.iter().map(OsString::from).collect()
 }
 fn guard(root: &Path, plan: &Plan) -> Result<(), Error> {
-    revalidate(root, plan, plan.evidence.as_ref())?;
+    revalidate_stage(root, plan, plan.evidence.as_ref())?;
     if !plan.is_ready() {
         return Err(Error::UnresolvedPlan);
     }
@@ -161,40 +160,44 @@ fn fresh(root: &Path, previous: &Plan) -> Result<Plan, Error> {
     fresh_after(root, previous, false)
 }
 fn fresh_after(root: &Path, previous: &Plan, staged_squash: bool) -> Result<Plan, Error> {
-    let next = assess(root, &previous.request, previous.evidence.as_ref())?;
-    // Recovery corroborates each graph transition. Only that transition's
-    // tracked shared files may change; private/untracked configuration and the
-    // accepted effective settings stay bound throughout the attempt.
-    let configuration_matches = if staged_squash {
-        previous
-            .snapshot
-            .configuration_files
-            .matches_index(&next.repository)
-    } else {
-        previous
-            .snapshot
-            .configuration_files
-            .matches_checkout(root, &next.repository, "HEAD")
+    Ok(refresh_local(root, previous, staged_squash)?)
+}
+// Private writes acknowledge facts already established by this stage. They do
+// not change Git's graph, selected policy, or the checked-out candidate.
+fn recorded(root: &Path, plan: &mut Plan, record: &recovery::Record) -> Result<(), Error> {
+    let bytes = serde_json::to_vec(record)
+        .map_err(std::io::Error::other)
+        .map_err(FinishError::from)?;
+    *plan
+        .snapshot
+        .records
+        .last_mut()
+        .ok_or(Error::UnverifiedResult)? = Some(bytes);
+    plan.resolve_logs(
+        root,
+        &[
+            record.original_ref().as_bytes(),
+            record.result_ref().as_bytes(),
+        ],
+    )?;
+    let prior_release_refs = release::binding_refs(plan);
+    plan.record = Some(record.clone());
+    if release::binding_refs(plan) != prior_release_refs {
+        plan.snapshot.release = release::snapshot_from_plan(root, plan)?;
     }
-    .map_err(|e| FinishError::from(SaveError::from(e)))?;
-    if next.repository != previous.repository
-        || next.settings != previous.settings
-        || next.snapshot.config != previous.snapshot.config
-        || next.snapshot.shallow != previous.snapshot.shallow
-        || next.snapshot.grafts != previous.snapshot.grafts
-        || !configuration_matches
-    {
-        return Err(FinishError::ContextChanged.into());
-    }
-    Ok(next)
+    Ok(())
+}
+fn selection_written(_root: &Path, plan: &mut Plan) -> Result<(), Error> {
+    recovery::bind_selection(plan)?;
+    Ok(())
 }
 fn observe(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
+    guard(root, plan)?;
     sequence::verify_completed_delivery(root, plan, &mut report.commands)?;
     let e = plan.evidence.as_ref().ok_or(Error::UnresolvedPlan)?;
     for (url, expected) in std::iter::once((&plan.target.fetch_destination, &e.fetched))
         .chain(e.targets.iter().map(|d| (&d.destination, &d.branch)))
     {
-        guard(root, plan)?;
         let mut a = args(&["ls-remote", "--get-url", "--"]);
         a.push(repository::os(url)?);
         if command(root, a, None, report)?.strip_suffix(b"\n") != Some(url.as_slice()) {
@@ -214,10 +217,8 @@ fn observe(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
         if &value != expected {
             return Err(Error::RemoteChanged);
         }
-        guard(root, plan)?;
     }
     if let Some(prep) = &e.preparation {
-        guard(root, plan)?;
         let (prefix, name) = remote::endpoint(
             root,
             plan,
@@ -238,14 +239,12 @@ fn observe(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
         if value != prep.branch {
             return Err(Error::RemoteChanged);
         }
-        guard(root, plan)?;
     }
     if release::enabled(plan)
         && plan.integration == Integration::AfterPreparation
         && plan.update == FinishUpdate::Rebase
     {
         for work in &e.work {
-            guard(root, plan)?;
             let (prefix, name) = remote::endpoint(
                 root,
                 plan,
@@ -291,7 +290,8 @@ fn retain(root: &Path, reference: &str, oid: &[u8], report: &mut Report) -> Resu
         repository::os(&vec![b'0'; oid.len()])?,
     ]);
     let outcome = command(root, a, None, report);
-    if hint(root, reference.as_bytes())? == RefObservation::Commit(oid.to_vec()) {
+    if outcome.is_ok() || hint(root, reference.as_bytes())? == RefObservation::Commit(oid.to_vec())
+    {
         report.effects.push(Effect::Retained {
             reference: reference.into(),
             commit: oid.to_vec(),
@@ -307,8 +307,9 @@ fn execute(
     skip: bool,
     event: &mut impl FnMut(checks::Event<'_>),
 ) -> Result<(), Error> {
-    guard(root, approved)?;
-    observe(root, approved, report)?;
+    if !approved.is_ready() {
+        return Err(Error::UnresolvedPlan);
+    }
     let mut plan = approved.clone();
     let mut record = if let Some(record) = &plan.record {
         record.clone()
@@ -325,18 +326,24 @@ fn execute(
             .to_string_lossy()
             .replace('.', "-");
         let record = recovery::Record::for_plan(&plan, &token)?;
-        guard(root, &plan)?;
         let path = plan.recovery_path.as_ref().ok_or(Error::UnresolvedPlan)?;
         recovery::write(&plan.repository.git_dir, path, &record, false)?;
         report.effects.push(Effect::Recorded(path.clone()));
-        plan = fresh(root, &plan)?;
+        recorded(root, &mut plan, &record)?;
         record
     };
-    guard(root, &plan)?;
     retain(root, &record.original_ref(), record.original(), report)?;
-    plan = fresh(root, &plan)?;
+    plan.snapshot.pins = vec![
+        (
+            RefObservation::Commit(record.original().to_vec()),
+            plan.log(record.original_ref().as_bytes())?,
+        ),
+        (
+            hint(root, record.result_ref().as_bytes())?,
+            plan.log(record.result_ref().as_bytes())?,
+        ),
+    ];
     if !record.retained {
-        guard(root, &plan)?;
         record.retained = true;
         recovery::write(
             &plan.repository.git_dir,
@@ -344,14 +351,13 @@ fn execute(
             &record,
             true,
         )?;
-        plan = fresh(root, &plan)?;
+        recorded(root, &mut plan, &record)?;
     }
     plan = release::prepare(root, &plan, skip, event, &mut report.commands)?;
     record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
     if plan.result.is_some() && plan.state != State::Fresh {
         return finish_result(root, plan, report, skip, event);
     }
-    guard(root, &plan)?;
     let selection = recovery::Selection::observe(
         root,
         std::str::from_utf8(&plan.source_ref[b"refs/heads/".len()..])
@@ -363,9 +369,8 @@ fn execute(
         &selection,
         true,
     )?;
-    plan = fresh(root, &plan)?;
+    selection_written(root, &mut plan)?;
     if plan.integration == Integration::AfterPreparation {
-        guard(root, &plan)?;
         if plan.history_edit == HistoryEdit::Interactive {
             crate::finish::history::editor_ready(root)?;
         }
@@ -406,27 +411,35 @@ fn execute(
             a.push("--interactive".into());
         }
         a.push(repository::os(record.preparation_base())?);
+        // Retaining /original invokes reference-transaction hooks. Rebase and
+        // merge act on the current checkout, so a pinned base does not protect
+        // the approved source, routes or attempt from changes made by that hook.
+        // Validate those bindings before the first history mutation.
+        guard(root, &plan)?;
         command(root, a, Some(&record.prepare_marker()), report)?;
         plan = fresh(root, &plan)?;
         report.plan = Some(plan.clone());
-        guard(root, &plan)?;
+        if !plan.is_ready() {
+            return Err(Error::UnresolvedPlan);
+        }
         if plan.history_edit == HistoryEdit::Interactive {
             observe(root, &plan, report)?;
         }
     }
     plan = release::prepare(root, &plan, skip, event, &mut report.commands)?;
     record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
+    if !plan.is_ready() {
+        return Err(Error::UnresolvedPlan);
+    }
     // Persist the corroborated prepared source and resolved message before target effects.
     record.bind_choices(&plan);
-    guard(root, &plan)?;
     recovery::write(
         &plan.repository.git_dir,
         plan.recovery_path.as_ref().unwrap(),
         &record,
         true,
     )?;
-    plan = fresh(root, &plan)?;
-    guard(root, &plan)?;
+    recorded(root, &mut plan, &record)?;
     // Advance only the approved local target version; never replace unrelated work.
     if plan.local_target != RefObservation::Commit(record.target_before.clone()) {
         if current_ref(&plan.snapshot.state).as_ref() == Some(&plan.target.reference) {
@@ -446,6 +459,11 @@ fn execute(
             a.push(repository::os(&record.target_before)?);
             command(root, a, Some(&record.base_marker()), report)?;
         } else {
+            // Retention invokes reference-transaction hooks. Before plumbing
+            // advances a branch, refresh its stage binding: update-ref's lease
+            // protects the old OID, but cannot protect an occupied worktree or
+            // establish that the selected source/candidate still owns this stage.
+            guard(root, &plan)?;
             let old = commit(&plan.local_target)
                 .map(<[u8]>::to_vec)
                 .unwrap_or_else(|| vec![b'0'; record.target_before.len()]);
@@ -462,10 +480,17 @@ fn execute(
                 repository::os(&old)?,
             ]);
             command(root, a, None, report)?;
+            // This conditional update acknowledged the selected base. Carry it
+            // into the checkout stage rather than reassessing its unchanged
+            // integration graph. Switch enforces occupancy and its hook exit is
+            // followed by the local candidate/configuration refresh below.
+            plan.local_target = RefObservation::Commit(record.target_before.clone());
+            plan.snapshot.target_log = plan.log(&plan.target.reference)?;
         }
-        plan = fresh(root, &plan)?;
+        if current_ref(&plan.snapshot.state).as_ref() == Some(&plan.target.reference) {
+            plan = fresh(root, &plan)?;
+        }
     }
-    guard(root, &plan)?;
     if current_ref(&plan.snapshot.state).as_ref() != Some(&plan.target.reference) {
         let mut a = args(&[
             "-c",
@@ -481,7 +506,9 @@ fn execute(
         command(root, a, None, report)?;
         plan = fresh(root, &plan)?;
     }
-    guard(root, &plan)?;
+    if !plan.is_ready() {
+        return Err(Error::UnresolvedPlan);
+    }
     if plan.result.is_some() && plan.state != State::Fresh {
         return finish_result(root, plan, report, skip, event);
     }
@@ -551,12 +578,16 @@ fn finish_result(
     skip: bool,
     event: &mut impl FnMut(checks::Event<'_>),
 ) -> Result<(), Error> {
-    guard(root, &plan)?;
     let result = plan.result.clone().ok_or(Error::UnverifiedResult)?;
     let mut record = plan.record.clone().ok_or(Error::UnverifiedResult)?;
     retain(root, &record.result_ref(), &result, report)?;
-    plan = fresh(root, &plan)?;
-    guard(root, &plan)?;
+    if plan.snapshot.pins.len() != 2 {
+        return Err(Error::UnverifiedResult);
+    }
+    plan.snapshot.pins[1] = (
+        RefObservation::Commit(result.clone()),
+        plan.log(record.result_ref().as_bytes())?,
+    );
     if record.result.is_none() {
         record.result = Some(result);
         recovery::write(
@@ -565,9 +596,8 @@ fn finish_result(
             &record,
             true,
         )?;
-        plan = fresh(root, &plan)?;
+        recorded(root, &mut plan, &record)?;
     }
-    guard(root, &plan)?;
     if (!matches!(plan.state, State::Published | State::Complete)
         || (release::enabled(&plan) && !release::candidate_checked(&plan, false)))
         && current_ref(&plan.snapshot.state).as_ref() != Some(&plan.target.reference)
@@ -583,8 +613,7 @@ fn finish_result(
             &selection,
             true,
         )?;
-        plan = fresh(root, &plan)?;
-        guard(root, &plan)?;
+        selection_written(root, &mut plan)?;
         let mut a = args(&[
             "-c",
             "submodule.recurse=false",
@@ -599,7 +628,6 @@ fn finish_result(
         command(root, a, None, report)?;
         plan = fresh(root, &plan)?;
     }
-    guard(root, &plan)?;
     plan = release::prepare(root, &plan, skip, event, &mut report.commands)?;
     report.plan = Some(plan);
     Ok(())
@@ -626,7 +654,9 @@ pub fn prepare_with_checks(
         plan: Some(plan.clone()),
         commands: vec![],
         effects: vec![],
-        remaining: repository::inspect(root),
+        remaining: Ok(repository::Observation::Repository(Box::new(
+            plan.snapshot.state.clone(),
+        ))),
         error: None,
     };
     let validated = revalidate(directory, plan, plan.evidence.as_ref());
@@ -662,42 +692,40 @@ pub fn prepare_with_checks(
             report.effects.push(Effect::CheckedOut { reference });
         }
     }
-    report.plan = None;
-    if let Ok(after) = assess(root, &plan.request, plan.evidence.as_ref()) {
-        if let Some(commit) = &after.result
+    // Normal success already carries the stage result. Only a failed Git/hook
+    // boundary needs recovery assessment to identify an unacknowledged commit.
+    if report.error.is_some() {
+        report.plan = assess(root, &plan.request, plan.evidence.as_ref()).ok();
+        if let Some(after) = report.plan.clone()
+            && let Some(commit) = &after.result
             && approved
             && after.state != State::Fresh
+            && after
+                .blockers
+                .iter()
+                .all(|b| matches!(b, Blocker::DirtyTree | Blocker::GitOperation))
+            && let Some(record) = &after.record
         {
-            // A hook can fail after creating the commit, leaving dirty work or
-            // stale Git machinery. Retain that verified OID without clearing it.
-            if report.error.is_some()
-                && !report.commands.is_empty()
-                && (plan.result.as_ref() != Some(commit) || plan.state == State::Fresh)
-                && after
-                    .blockers
-                    .iter()
-                    .all(|b| matches!(b, Blocker::DirtyTree | Blocker::GitOperation))
-                && let Some(record) = &after.record
-                && revalidate(root, &after, after.evidence.as_ref()).is_ok()
-            {
-                let _ = retain(root, &record.result_ref(), commit, &mut report);
-            }
-
-            report.effects.push(
-                if plan.result.as_ref() == Some(commit) && plan.state != State::Fresh {
-                    Effect::Reused {
-                        commit: commit.clone(),
-                    }
-                } else {
-                    Effect::Integrated {
-                        commit: commit.clone(),
-                    }
-                },
-            );
+            let _ = retain(root, &record.result_ref(), commit, &mut report);
         }
-        report.plan = assess(root, &plan.request, plan.evidence.as_ref()).ok();
     }
-    report.remaining = repository::inspect(root);
+    if let Some(after) = &report.plan
+        && let Some(commit) = &after.result
+        && approved
+        && after.state != State::Fresh
+    {
+        report.effects.push(
+            if plan.result.as_ref() == Some(commit) && plan.state != State::Fresh {
+                Effect::Reused {
+                    commit: commit.clone(),
+                }
+            } else {
+                Effect::Integrated {
+                    commit: commit.clone(),
+                }
+            },
+        );
+    }
     report
 }
 #[derive(Debug)]
@@ -728,9 +756,14 @@ pub fn check(
     } else {
         &plan.settings.finish_checks[..]
     };
+    let mut entry = true;
     let mut checks = checks::run_guarded(root, effective_checks, skip, event, || {
-        revalidate(directory, plan, plan.evidence.as_ref())?;
-        revalidate(root, plan, plan.evidence.as_ref())?;
+        if entry {
+            revalidate(directory, plan, plan.evidence.as_ref())?;
+            entry = false;
+        } else {
+            revalidate_stage(root, plan, plan.evidence.as_ref())?;
+        }
         let head = match &plan.snapshot.state.head {
             repository::Head::Attached { commit, .. } | repository::Head::Detached { commit } => {
                 Some(commit)
@@ -747,16 +780,31 @@ pub fn check(
         Ok(())
     });
     let next = if checks.error.is_none() && release::enabled(plan) {
-        release::record_candidate(root, plan, skip)
+        release::record_candidate(plan, skip)
+    } else if checks.error.is_none() && effective_checks.is_empty() {
+        // No process or callback ran: the entry binding remains current.
+        Ok(plan.clone())
     } else {
-        assess(root, &plan.request, plan.evidence.as_ref())
+        refresh_local(root, plan, false)
     };
     if next.is_err() && checks.error.is_none() {
         checks.error = Some(checks::Error::Context(FinishError::ContextChanged));
     }
+    let remaining = if checks.error.is_none() {
+        let next = next
+            .as_ref()
+            .expect("successful checks have a refreshed candidate");
+        Ok(repository::Observation::Repository(Box::new(
+            next.snapshot.state.clone(),
+        )))
+    } else {
+        // Checks are arbitrary processes: a failure can leave edits or a new
+        // checkout even when the refreshed candidate binding is rejected.
+        repository::inspect(root)
+    };
     CheckReport {
         checks,
-        remaining: repository::inspect(root),
+        remaining,
         plan: next,
     }
 }

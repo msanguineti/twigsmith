@@ -1,5 +1,5 @@
-//! Every observation is a snapshot. Recheck before mutations, use Git's safe
-//! refusals, and retain effects/state rather than rolling back partial work.
+//! Resolve each stage once, refresh workflow conditions after transport and
+//! checkout hooks, and retain Git results instead of rolling back partial work.
 
 use std::{
     ffi::OsString,
@@ -8,7 +8,7 @@ use std::{
     process::Output,
 };
 
-use super::{PreparedRequest, ResolveError, TrackingError, prepare_with_settings};
+use super::{PreparedRequest, ResolveError, TrackingError, prepare_with_options};
 use crate::{
     git,
     repository::{
@@ -214,8 +214,8 @@ struct Workflow<'a> {
     association: Option<settings::BranchPolicy>,
 }
 
-/// Execute a prepared workstream request. Revalidate its names, settings,
-/// and repository identity rather than trusting a mutable/old PreparedRequest.
+/// Execute a prepared workstream request. Validate its names, selected routes,
+/// and repository identity at entry, including a retained or altered request.
 /// Local resume never contacts a remote. Remote paths explicitly discover heads
 /// and fetch one full head ref, overriding restrictive/default fetch mappings.
 /// No CLI output, stash, history rewrite, force switch, or rollback is performed.
@@ -271,40 +271,51 @@ impl Workflow<'_> {
         checked(args, output).map(|_| ())
     }
 
-    fn validated(&self) -> Result<RepositoryState, StartError> {
-        self.validated_with_settings(false)
-    }
-
-    fn validated_with_settings(&self, after_checkout: bool) -> Result<RepositoryState, StartError> {
-        let Some(context) = repository::discover(self.directory)? else {
-            return Err(StartError::OutsideRepository);
-        };
-        if context.kind == RepositoryKind::Bare {
+    // A library caller may retain or alter its request. Validate entry inputs
+    // once; subsequent stages consume these facts rather than preparing again.
+    fn entry(&self) -> Result<RepositoryState, StartError> {
+        let fresh =
+            prepare_with_options(self.directory, &self.request.target, &self.request.options)
+                .map_err(|error| match error {
+                    ResolveError::OutsideRepository => StartError::OutsideRepository,
+                    other => StartError::Resolve(other),
+                })?;
+        if fresh.repository.kind == RepositoryKind::Bare {
             return Err(StartError::Bare);
         }
-        let fresh = prepare_with_settings(
-            self.directory,
-            &self.request.target,
-            &self.request.options,
-            after_checkout.then_some(&self.request.settings),
-        )?;
-        let mut expected = self.request.clone();
-        expected.routing = self.routing.clone();
-        expected.association = self.association.clone();
-        if self.request.options.from.is_none()
-            && self.request.options.from_tag.is_none()
-            && (self.association.is_some() || fresh.source_commit.is_none())
+        if fresh.repository != self.request.repository
+            || !self.same_settings(&fresh.settings)
+            || fresh.routing != self.routing
+            || fresh.association != self.association
+            || fresh.source_commit != self.request.source_commit
+            || fresh.creation_error != self.request.creation_error
         {
-            expected.source_commit = fresh.source_commit.clone();
-            expected.creation_error = fresh.creation_error.clone();
-        }
-        if fresh != expected {
             return Err(StartError::Changed);
         }
+        let state = self.switch_state()?;
+        self.check_occupation(&state)?;
+        Ok(state)
+    }
+
+    fn same_settings(&self, settings: &settings::Settings) -> bool {
+        settings.base == self.request.settings.base
+            && settings.base_remote == self.request.settings.base_remote
+            && settings.publish_remote == self.request.settings.publish_remote
+            && settings.workstream == self.request.settings.workstream
+    }
+
+    fn switch_state(&self) -> Result<RepositoryState, StartError> {
         let state = match repository::inspect_without_upstream(self.directory)? {
             Observation::OutsideRepository => return Err(StartError::OutsideRepository),
             Observation::Repository(state) => *state,
         };
+        if state.git_dir != self.request.repository.git_dir
+            || state.common_dir != self.request.repository.common_dir
+            || state.working_tree.as_ref().map(|tree| &tree.root)
+                != self.request.repository.working_tree_root.as_ref()
+        {
+            return Err(StartError::Changed);
+        }
         if state.operations.is_active() {
             return Err(StartError::Operation(state.operations));
         }
@@ -312,12 +323,6 @@ impl Workflow<'_> {
             Head::Detached { .. } => return Err(StartError::Detached),
             Head::Unborn { .. } => return Err(StartError::Unborn),
             Head::Attached { .. } => {}
-        }
-        self.check_occupation(&state)?;
-        for (remote, urls) in &self.destinations {
-            if self.read(&["remote", "get-url", "--all", remote])? != *urls {
-                return Err(StartError::Changed);
-            }
         }
         Ok(state)
     }
@@ -355,50 +360,73 @@ impl Workflow<'_> {
         }
     }
 
-    fn recheck(
-        &self,
-        initial: &RepositoryState,
-        target_commit: Option<&[u8]>,
-    ) -> Result<(), StartError> {
-        let now = self.validated()?;
+    // Remote helpers can take arbitrary time and run user code. Refresh only
+    // conditions needed to create/switch the selected work, once after acquisition.
+    fn after_transport(&self, initial: &RepositoryState) -> Result<(), StartError> {
+        let now = self.switch_state()?;
         self.clean(&now)?;
+        self.check_occupation(&now)?;
         if now.head != initial.head
             || self
                 .reference(&format!("refs/heads/{}", self.request.target))?
-                .as_deref()
-                != target_commit
+                .is_some()
         {
             return Err(StartError::Changed);
         }
-        Ok(())
+        self.check_routes()
+    }
+
+    // Advertisement and fetch each invoke transport helpers. Bind the intended
+    // routes before the next remote effect without rebuilding repository state.
+    fn check_routes(&self) -> Result<(), StartError> {
+        if tracking::snapshot(self.directory, self.request.target.as_bytes())? != self.routing {
+            return Err(StartError::Changed);
+        }
+        let mut settings = settings::load_for_branch(
+            self.directory,
+            &self.request.repository,
+            self.request.target.as_bytes(),
+        )
+        .map_err(ResolveError::from)?;
+        if self.association.is_none()
+            && (self.request.options.policy.is_some()
+                || self.request.options.target.is_some()
+                || self.request.options.from.is_some()
+                || self.request.options.from_tag.is_some())
+        {
+            settings::resolve_workstream(
+                &mut settings,
+                self.request
+                    .options
+                    .policy
+                    .unwrap_or(settings::WorkstreamKind::Ordinary),
+                self.request.options.target.as_deref(),
+            )
+            .map_err(ResolveError::from)?;
+        }
+        if !self.same_settings(&settings) {
+            return Err(StartError::Changed);
+        }
+        self.check_destinations()
     }
 
     fn reference(&self, reference: &str) -> Result<Option<Vec<u8>>, StartError> {
-        let args = ["show-ref", "--verify", "--hash", reference];
+        let args = [
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            reference,
+        ];
         let output = git::inspect(self.directory, args).map_err(StartError::Io)?;
-        // --quiet avoids show-ref's diagnostic for a nonexistent exact ref.
-        if !output.status.success() {
-            let probe = ["show-ref", "--verify", "--quiet", reference];
-            let result = git::inspect(self.directory, probe).map_err(StartError::Io)?;
-            if result.status.code() == Some(1) && result.stderr.is_empty() {
-                return Ok(None);
-            }
-            return Err(StartError::Git {
-                arguments: args.iter().map(OsString::from).collect(),
-                output,
-            });
+        if output.status.code() == Some(1) && output.stderr.is_empty() {
+            return Ok(None);
         }
-        let oid = output
-            .stdout
+        let bytes = checked(&args, output)?;
+        let oid = bytes
             .strip_suffix(b"\n")
+            .filter(|oid| valid_oid(oid))
             .ok_or(StartError::InvalidOutput("ref object ID"))?;
-        if !valid_oid(oid) {
-            return Err(StartError::InvalidOutput("ref object ID"));
-        }
-        let oid_text = std::str::from_utf8(oid).unwrap();
-        if self.read(&["cat-file", "-t", oid_text])? != b"commit\n" {
-            return Err(StartError::InvalidOutput("branch is not a commit"));
-        }
         Ok(Some(oid.to_vec()))
     }
 
@@ -414,6 +442,15 @@ impl Workflow<'_> {
             // Resolve a named remote locally; never allow a path fallback.
             let urls = self.read(&["remote", "get-url", "--all", remote])?;
             self.destinations.push((remote.to_owned(), urls));
+        }
+        Ok(())
+    }
+
+    fn check_destinations(&self) -> Result<(), StartError> {
+        for (remote, urls) in &self.destinations {
+            if self.read(&["remote", "get-url", "--all", remote])? != *urls {
+                return Err(StartError::Changed);
+            }
         }
         Ok(())
     }
@@ -473,16 +510,13 @@ impl Workflow<'_> {
         Ok(())
     }
 
-    fn establish_policy(&mut self) -> Result<(), StartError> {
+    fn establish_policy(&mut self, commit: &[u8]) -> Result<(), StartError> {
         if self.association.is_some() {
             return Ok(());
         }
         let Some(policy) = self.request.settings.workstream.clone() else {
             return Ok(());
         };
-        let commit = self
-            .reference(&format!("refs/heads/{}", self.request.target))?
-            .ok_or(StartError::Changed)?;
         let anchor = settings::branch_anchor(self.directory, self.request.target.as_bytes())
             .map_err(ResolveError::from)?
             .ok_or_else(|| {
@@ -498,9 +532,12 @@ impl Workflow<'_> {
                     || self.request.options.from_tag.is_some()
                     || self.action == Some(Action::Create)
                 {
-                    self.request.source_commit.clone().unwrap_or(commit)
+                    self.request
+                        .source_commit
+                        .clone()
+                        .unwrap_or_else(|| commit.to_vec())
                 } else {
-                    commit
+                    commit.to_vec()
                 },
             )
             .unwrap(),
@@ -536,17 +573,23 @@ impl Workflow<'_> {
     }
 
     fn execute(&mut self) -> Result<RepositoryState, StartError> {
-        let initial = self.validated()?;
-        if self.is_current(&initial) {
-            self.routing
-                .validate(&self.request.settings, self.request.target.as_bytes())
-                .map_err(StartError::Tracking)?;
-            self.establish_policy()?;
+        let initial = self.entry()?;
+        let current = self.is_current(&initial);
+        if !current {
+            self.clean(&initial)?;
+        }
+        self.routing
+            .validate(&self.request.settings, self.request.target.as_bytes())
+            .map_err(StartError::Tracking)?;
+        if current {
+            let Head::Attached { commit, .. } = &initial.head else {
+                unreachable!()
+            };
+            self.establish_policy(commit)?;
             self.action = Some(Action::AlreadyCurrent);
             self.clear_previous_selection()?;
             return self.observed_state();
         }
-        self.clean(&initial)?;
         // A checkout may remove the caller's nested directory. Execute and
         // observe from the discovered root, verifying that Git's inherited
         // repository-selection environment still selects the same context.
@@ -560,23 +603,15 @@ impl Workflow<'_> {
             return Err(StartError::Changed);
         }
         let local = self.reference(&format!("refs/heads/{}", self.request.target))?;
-        let initial_upstream = self.target_upstream()?;
         let expected_commit;
         if let Some(commit) = local {
-            self.routing
-                .validate(&self.request.settings, self.request.target.as_bytes())
-                .map_err(StartError::Tracking)?;
             expected_commit = commit.clone();
             self.action = Some(Action::ResumeLocal);
-            self.recheck(&initial, Some(&commit))?;
         } else {
             // Do not overwrite orphan/inherited branch configuration silently.
-            if !initial_upstream.remotes.is_empty() || !initial_upstream.merge_refs.is_empty() {
+            if !self.routing.upstream.absent() {
                 return Err(StartError::ExistingUpstreamConfiguration);
             }
-            self.routing
-                .validate(&self.request.settings, self.request.target.as_bytes())
-                .map_err(StartError::Tracking)?;
             let publish_remote = &self.request.settings.publish_remote;
             let base_remote = &self.request.settings.base_remote;
             self.destination(publish_remote)?;
@@ -611,7 +646,6 @@ impl Workflow<'_> {
                 base_remote
             };
             if !target_found && self.request.source_commit.is_none() {
-                self.recheck(&initial, None)?;
                 self.destination(base_remote)?;
                 let base_found = if same_remote {
                     heads[1]
@@ -630,7 +664,6 @@ impl Workflow<'_> {
             } else {
                 Action::Create
             });
-            self.recheck(&initial, None)?;
             let source = if target_found { target_ref } else { base_ref };
             let commit = if !target_found && self.request.source_commit.is_some() {
                 self.request.source_commit.clone().unwrap()
@@ -652,6 +685,7 @@ impl Workflow<'_> {
                         output: probe,
                     });
                 }
+                self.check_routes()?;
                 self.fetched = Some(destination.clone());
                 let refspec = format!("+{source}:{destination}");
                 self.mutate(&[
@@ -688,10 +722,7 @@ impl Workflow<'_> {
                 commit
             };
 
-            self.recheck(&initial, None)?;
-            if self.target_upstream()? != initial_upstream {
-                return Err(StartError::Changed);
-            }
+            self.after_transport(&initial)?;
             expected_commit = commit.clone();
             // Explicit --no-track defeats autoSetupMerge/autoSetupRebase. Use a
             // verified commit ID, not ambiguous names, tags, or revision input.
@@ -725,7 +756,6 @@ impl Workflow<'_> {
             });
             if target_found {
                 // Set the exact counterpart even when remote.fetch excludes it.
-                self.recheck(&initial, Some(&commit))?;
                 self.mutate(&[
                     "config",
                     "--local",
@@ -737,7 +767,6 @@ impl Workflow<'_> {
                 self.effects.push(Effect::UpstreamRemoteSet {
                     remote: remote.clone(),
                 });
-                self.recheck(&initial, Some(&commit))?;
                 self.mutate(&[
                     "config",
                     "--local",
@@ -749,10 +778,8 @@ impl Workflow<'_> {
                 self.effects
                     .push(Effect::UpstreamMergeSet { reference: source });
             }
-            self.recheck(&initial, Some(&commit))?;
         }
-        self.establish_policy()?;
-        self.recheck(&initial, Some(&expected_commit))?;
+        self.establish_policy(&expected_commit)?;
         let initial_commit = match &initial.head {
             Head::Attached { commit, .. } => std::str::from_utf8(commit).unwrap(),
             _ => unreachable!("start requires attached HEAD"),
@@ -763,7 +790,23 @@ impl Workflow<'_> {
             initial_commit,
         )
         .map_err(ResolveError::from)?;
-        let git_configuration = self.read(&["config", "--null", "--list"])?;
+        // Ref creation can invoke reference-transaction hooks after acquisition.
+        // Git switch permits carrying compatible dirty work, while start requires
+        // a clean switch. Refresh that condition at the switch boundary itself.
+        if !self
+            .read(&[
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+                "--ignored=no",
+                "--no-renames",
+            ])?
+            .is_empty()
+        {
+            return Err(StartError::Dirty);
+        }
         // No force, DWIM creation, ignored-file overwrite, or recursive submodule
         // checkout. Git still checks the index, files and other worktrees itself.
         self.mutate(&[
@@ -784,27 +827,23 @@ impl Workflow<'_> {
                 std::str::from_utf8(&expected_commit).unwrap(),
             )
             .map_err(ResolveError::from)?
-            || self.read(&["config", "--null", "--list"])? != git_configuration
         {
             return Err(StartError::Changed);
         }
-        let state = self.validated_with_settings(true)?;
-        let expected_upstream = if matches!(self.action, Some(Action::ResumeRemote)) {
-            TargetUpstream {
-                remotes: vec![self.request.settings.publish_remote.as_bytes().to_vec()],
-                merge_refs: vec![format!("refs/heads/{}", self.request.target).into_bytes()],
-            }
-        } else {
-            initial_upstream
-        };
+        if tracking::snapshot(self.directory, self.request.target.as_bytes())? != self.routing {
+            return Err(StartError::Changed);
+        }
+        let state = self.observed_state()?;
+        if state.operations.is_active() {
+            return Err(StartError::Operation(state.operations));
+        }
         if !self.is_current(&state)
             || !matches!(&state.head, Head::Attached { commit, .. } if commit == &expected_commit)
-            || self.target_upstream()? != expected_upstream
         {
             return Err(StartError::Changed);
         }
         self.clear_previous_selection()?;
-        self.observed_state()
+        Ok(state)
     }
 }
 

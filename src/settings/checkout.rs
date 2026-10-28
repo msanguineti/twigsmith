@@ -256,30 +256,62 @@ impl Snapshot {
         })
     }
 
-    pub(crate) fn matches_checkout(
+    /// A stage whose HEAD has not changed needs only the recognized files,
+    /// including ignored shared files and the private layer. No tree query is
+    /// needed to establish that the already accepted checkout is unchanged.
+    pub(crate) fn matches_files(
         &self,
-        _directory: &Path,
         repository: &RepositoryContext,
-        commit: &str,
     ) -> Result<bool, SettingsError> {
         let Some(root) = repository.working_tree_root.as_deref() else {
             return Ok(false);
         };
-        let directory = root;
-        if files(&repository.common_dir)? != self.private {
-            return Ok(false);
+        Ok(files(root)? == self.shared && files(&repository.common_dir)? == self.private)
+    }
+
+    /// Accept a Git checkout's tracked configuration transition once, then use
+    /// its actual files as the next stage baseline. The effective settings stay
+    /// pinned to the caller's original choice.
+    pub(crate) fn advance_checkout(
+        &self,
+        directory: &Path,
+        repository: &RepositoryContext,
+        commit: &str,
+    ) -> Result<Option<Self>, SettingsError> {
+        let Some(root) = repository.working_tree_root.as_deref() else {
+            return Ok(None);
+        };
+        let private = files(&repository.common_dir)?;
+        if private != self.private {
+            return Ok(None);
         }
         let target = tree_files(directory, commit)?;
-        for (index, actual) in files(root)?.iter().enumerate() {
+        let shared = files(root)?;
+        for (index, actual) in shared.iter().enumerate() {
             if self.tree[index] == target[index] {
                 if actual != &self.shared[index] {
-                    return Ok(false);
+                    return Ok(None);
                 }
-            } else if !matches_tree_file(directory, Some(commit), index, actual, &target[index])? {
-                return Ok(false);
+            } else if !matches_tree_file(root, Some(commit), index, actual, &target[index])? {
+                return Ok(None);
             }
         }
-        Ok(true)
+        Ok(Some(Self {
+            shared,
+            private,
+            tree: target,
+        }))
+    }
+
+    pub(crate) fn matches_checkout(
+        &self,
+        directory: &Path,
+        repository: &RepositoryContext,
+        commit: &str,
+    ) -> Result<bool, SettingsError> {
+        Ok(self
+            .advance_checkout(directory, repository, commit)?
+            .is_some())
     }
 
     /// An authorized squash stages its candidate before moving HEAD. Verify its

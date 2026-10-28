@@ -118,7 +118,13 @@ impl Trees {
             }
             index.read(directory, &args)?;
         }
-        let all = index.tree(directory)?;
+        // No command has touched the private index since the tracked tree was
+        // written when there are no untracked paths to add.
+        let all = if plan.scope.untracked.is_empty() {
+            tracked.clone()
+        } else {
+            index.tree(directory)?
+        };
         let untracked_files: Vec<Vec<u8>> = read(
             directory,
             &[

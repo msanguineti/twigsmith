@@ -19,12 +19,7 @@ fn run(directory: &Path, args: &[&str]) -> Output {
             .output()
             .unwrap()
     };
-    let output = invoke(env!("CARGO_BIN_EXE_twigsmith"));
-    let alias = invoke(env!("CARGO_BIN_EXE_tgi"));
-    assert_eq!(output.status.code(), alias.status.code());
-    assert_eq!(output.stdout, alias.stdout);
-    assert_eq!(output.stderr, alias.stderr);
-    output
+    invoke(env!("CARGO_BIN_EXE_twigsmith"))
 }
 
 fn status(root: &Path, directory: &Path) -> String {
@@ -413,4 +408,25 @@ fn cli_missing_promisor_object_fails_without_fetching() {
             assert!(repo.path().join("fetch-was-called").exists());
         },
     );
+}
+
+#[test]
+fn status_dispatch_matches_both_executables() {
+    isolated("status_dispatch_matches_both_executables", true, |root| {
+        let repo = Repository::new(root);
+        for args in [&["status"][..], &["status", "--help"][..]] {
+            let invoke = |exe| {
+                Command::new(exe)
+                    .current_dir(repo.path())
+                    .args(args)
+                    .output()
+                    .unwrap()
+            };
+            let first = invoke(env!("CARGO_BIN_EXE_twigsmith"));
+            let second = invoke(env!("CARGO_BIN_EXE_tgi"));
+            assert_eq!(first.status.code(), second.status.code());
+            assert_eq!(first.stdout, second.stdout);
+            assert_eq!(first.stderr, second.stderr);
+        }
+    });
 }

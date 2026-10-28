@@ -124,14 +124,17 @@ impl Report {
     }
 }
 fn guard(root: &Path, plan: &Plan) -> Result<(), Error> {
-    revalidate(root, plan, plan.evidence.as_ref())?;
-    let record = plan.record.as_ref().ok_or(Error::UnverifiedAttempt)?;
+    revalidate_stage(root, plan, plan.evidence.as_ref())?;
+    plan.record.as_ref().ok_or(Error::UnverifiedAttempt)?;
     let result = plan.result.as_ref().ok_or(Error::UnverifiedAttempt)?;
     if !matches!(
         plan.state,
         State::PreparedResult | State::PendingPublication | State::Published | State::Complete
-    ) || hint(root, record.result_ref().as_bytes())? != RefObservation::Commit(result.clone())
-        || ancestor(root, &record.target_before, result)? != Some(true)
+    ) || plan
+        .snapshot
+        .pins
+        .get(1)
+        .is_none_or(|(pin, _)| *pin != RefObservation::Commit(result.clone()))
     {
         return Err(Error::UnverifiedAttempt);
     }
@@ -145,9 +148,7 @@ fn observe(
     reference: &[u8],
     commands: &mut Vec<CommandReport>,
 ) -> Result<RefObservation, Error> {
-    guard(root, plan)?;
     let (prefix, name) = remote::endpoint(root, plan, remote, destination, commands)?;
-    guard(root, plan)?;
     let value = remote::observe(
         root,
         &prefix,
@@ -156,13 +157,12 @@ fn observe(
         plan.result.as_ref().ok_or(Error::UnverifiedAttempt)?.len(),
         commands,
     )?;
-    guard(root, plan)?;
     Ok(value)
 }
-// No fetch is needed: completion only compares exact advertised IDs. Reobserve
-// every target before each effect; a cached publication report grants no authority.
+// Completion is a destructive stage: establish its complete delivery set once
+// at entry. Hooks are separate boundaries; ordinary read-only calls do not revoke
+// acknowledged delivery or require another transport round.
 fn delivery(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> {
-    guard(root, plan)?;
     if plan.has_remaining_destinations() {
         return Err(Error::TargetDeliveryIncomplete);
     }
@@ -205,17 +205,54 @@ fn delivery(root: &Path, plan: &Plan, report: &mut Report) -> Result<(), Error> 
     Ok(())
 }
 fn with_evidence(root: &Path, previous: &Plan, evidence: &RemoteEvidence) -> Result<Plan, Error> {
-    let next = assess(root, &previous.request, Some(evidence))?;
-    if next.snapshot != previous.snapshot
-        || next.record != previous.record
-        || next.repository != previous.repository
-        || next.settings != previous.settings
-        || next.source != previous.source
-        || next.source_ref != previous.source_ref
-        || next.target != previous.target
-        || next.local_target != previous.local_target
+    if previous.cleanup == FinishCleanup::Both {
+        let record = previous.record.as_ref().ok_or(Error::UnverifiedAttempt)?;
+        if evidence.work.len() != record.work.len()
+            || evidence
+                .work
+                .iter()
+                .zip(&record.work)
+                .any(|(now, expected)| {
+                    now.destination != expected.destination
+                        || (now.branch != RefObservation::Absent && now.branch != expected.branch)
+                })
+        {
+            return Err(Error::WorkChanged);
+        }
+    }
+    let mut next = previous.clone();
+    next.evidence = Some(evidence.clone());
+    if !matches!(previous.state, State::Published | State::Complete) {
+        // A caller can enter completion with a formerly pending publication
+        // plan after another process delivered its exact result. Derive cleanup
+        // once at this stage transition, rather than replaying checks or pushes.
+        next.integration = Integration::Unresolved;
+        next = refresh_local(root, &next, false)?;
+    }
+    next.effects.retain(|effect| match effect {
+        super::Effect::PublishTarget { destination, .. } => !evidence.targets.iter().any(|d| {
+            &d.destination == destination
+                && Some(&d.branch)
+                    == next
+                        .result
+                        .as_ref()
+                        .map(|oid| RefObservation::Commit(oid.clone()))
+                        .as_ref()
+        }),
+        super::Effect::DeletePublishedWork { destination, .. } => !evidence
+            .work
+            .iter()
+            .any(|d| &d.destination == destination && d.branch == RefObservation::Absent),
+        _ => true,
+    });
+    if next.effects.is_empty() && next.is_ready() {
+        next.state = State::Complete;
+    } else if !next
+        .effects
+        .iter()
+        .any(|e| matches!(e, super::Effect::PublishTarget { .. }))
     {
-        return Err(FinishError::ContextChanged.into());
+        next.state = State::Published;
     }
     Ok(next)
 }
@@ -226,22 +263,30 @@ fn ready(plan: &Plan) -> Result<(), Error> {
         Err(Error::UnverifiedAttempt)
     }
 }
-// Advance only fields explained by one exact completed effect. Recovery's graph
-// proofs remain necessary, but cannot authorize unrelated hook mutations.
+// Only Git effects completed in this stage advance its plan. Local refresh is
+// needed after checkout hooks and ref transactions; it does not reconstruct the
+// complete recovery graph or re-prove acknowledged remote delivery.
 fn successor(root: &Path, previous: &Plan, effect: &super::Effect) -> Result<Plan, Error> {
-    let next = assess(root, &previous.request, previous.evidence.as_ref())?;
-    let mut expected = previous.snapshot.clone();
-    let mut source = previous.source.clone();
+    // Conditional deletion changes only the source ref/reflog. Its integration
+    // proof and retained ownership were established at stage entry; committed
+    // transaction hooks still need an identity/cleanliness guard, not a replay
+    // of the complete recovery proof after our own acknowledged deletion.
+    let deleting = matches!(effect, super::Effect::DeleteLocalWork { .. });
+    let mut next = if deleting {
+        let mut next = previous.clone();
+        next.source = RefObservation::Absent;
+        next.snapshot.source_log = None;
+        next
+    } else {
+        refresh_local(root, previous, false)?
+    };
     match effect {
         super::Effect::Checkout {
             reference,
-            expected: oid,
+            expected,
         } => {
-            let head = repository::Head::Attached {
-                branch: reference[b"refs/heads/".len()..].to_vec(),
-                commit: oid.clone(),
-            };
-            if next.snapshot.state.head != head
+            if current_ref(&next.snapshot.state).as_deref() != Some(reference)
+                || commit(&hint(root, reference)?) != Some(expected.as_slice())
                 || next
                     .snapshot
                     .state
@@ -251,115 +296,29 @@ fn successor(root: &Path, previous: &Plan, effect: &super::Effect) -> Result<Pla
             {
                 return Err(FinishError::ContextChanged.into());
             }
-            let before = previous.snapshot.head_log.as_deref().unwrap_or_default();
-            let after = next.snapshot.head_log.as_deref().unwrap_or_default();
-            let tail = after
-                .strip_prefix(before)
-                .ok_or(FinishError::ContextChanged)?;
-            let from = current_ref(&previous.snapshot.state).ok_or(Error::UnverifiedAttempt)?;
-            let message = [
-                b"checkout: moving from ".as_slice(),
-                &from[b"refs/heads/".len()..],
-                b" to ",
-                &reference[b"refs/heads/".len()..],
-            ]
-            .concat();
-            let lines: Vec<_> = tail
-                .split(|b| *b == b'\n')
-                .filter(|l| !l.is_empty())
-                .collect();
-            if lines.len() != 1
-                || lines[0].split(|b| *b == b'\t').nth(1) != Some(message.as_slice())
-            {
-                return Err(FinishError::ContextChanged.into());
-            }
-            expected.state.head = head;
-            if !previous
-                .snapshot
-                .configuration_files
-                .matches_checkout(root, &next.repository, "HEAD")
-                .map_err(|e| FinishError::from(SaveError::from(e)))?
-            {
-                return Err(FinishError::ContextChanged.into());
-            }
-            expected.configuration_files = next.snapshot.configuration_files.clone();
-            expected.index = next.snapshot.index.clone();
-            expected.head_log = next.snapshot.head_log.clone();
-            // The current worktree's HEAD/branch fields change, but other worktrees
-            // and all their occupation information must remain identical.
-            expected.worktrees =
-                switched_worktrees(&previous.snapshot.worktrees, previous, reference, oid)?;
-            // Selection adds/removes active.json when leaving/returning to source.
-            if previous.snapshot.records.last() != next.snapshot.records.last() {
-                return Err(FinishError::ContextChanged.into());
-            }
-            expected.records = next.snapshot.records.clone();
         }
-        super::Effect::DeleteLocalWork { .. } => {
-            source = RefObservation::Absent;
-            expected.source_log = None;
+        super::Effect::DeleteLocalWork { reference, .. } => {
+            if hint(root, reference)? != RefObservation::Absent {
+                return Err(Error::WorkChanged);
+            }
         }
         _ => return Err(Error::UnverifiedAttempt),
     }
-    if next.snapshot != expected
-        || next.source != source
-        || next.record != previous.record
-        || next.repository != previous.repository
-        || next.settings != previous.settings
-        || next.source_ref != previous.source_ref
-        || next.target != previous.target
-        || next.local_target != previous.local_target
-    {
-        return Err(FinishError::ContextChanged.into());
+    next.effects.retain(|pending| pending != effect);
+    if next.effects.is_empty() && next.is_ready() {
+        next.state = State::Complete;
+    }
+    if deleting {
+        guard(root, &next)?;
     }
     ready(&next)?;
     Ok(next)
 }
-fn switched_worktrees(
-    bytes: &[u8],
-    plan: &Plan,
-    reference: &[u8],
-    oid: &[u8],
-) -> Result<Vec<u8>, Error> {
-    let here = [
-        b"worktree ".as_slice(),
-        plan.repository
-            .working_tree_root
-            .as_ref()
-            .ok_or(Error::UnverifiedAttempt)?
-            .as_os_str()
-            .as_encoded_bytes(),
-    ]
-    .concat();
-    let mut current = false;
-    let mut result = vec![];
-    for field in bytes.split_inclusive(|b| *b == 0) {
-        let value = field.strip_suffix(&[0]).unwrap_or(field);
-        if value.starts_with(b"worktree ") {
-            current = value == here;
-        }
-        let replacement = if current && value.starts_with(b"HEAD ") {
-            Some([b"HEAD ".as_slice(), oid].concat())
-        } else if current && value.starts_with(b"branch ") {
-            Some([b"branch ".as_slice(), reference].concat())
-        } else {
-            None
-        };
-        if let Some(value) = replacement {
-            result.extend(value);
-            result.push(0);
-        } else {
-            result.extend(field);
-        }
-    }
-    Ok(result)
-}
-fn retain_source(root: &Path, plan: &Plan, report: &mut Report) -> Result<Plan, Error> {
+fn retain_source(plan: &Plan, report: &mut Report) -> Result<Plan, Error> {
     let mut record = plan.record.clone().ok_or(Error::UnverifiedAttempt)?;
     if record.cleanup_source_log.is_some() {
         return Ok(plan.clone());
     }
-    guard(root, plan)?;
     record.cleanup_source_log = plan.snapshot.source_log.clone();
     if record.cleanup_source_log.is_none() {
         return Err(Error::UnverifiedAttempt);
@@ -373,17 +332,14 @@ fn retain_source(root: &Path, plan: &Plan, report: &mut Report) -> Result<Plan, 
         true,
     )?;
     report.effects.push(Effect::SourceEvidenceRetained);
-    let next = assess(root, &plan.request, plan.evidence.as_ref())?;
-    let mut expected = plan.snapshot.clone();
-    *expected
+    let mut next = plan.clone();
+    *next
+        .snapshot
         .records
         .last_mut()
         .ok_or(Error::UnverifiedAttempt)? =
         Some(serde_json::to_vec(&record).map_err(io::Error::other)?);
-    if next.snapshot != expected || next.record.as_ref() != Some(&record) {
-        return Err(FinishError::ContextChanged.into());
-    }
-    ready(&next)?;
+    next.record = Some(record);
     Ok(next)
 }
 // Git 2.47's no-deref deletion still compares a symbolic ref's resolved OID.
@@ -397,7 +353,6 @@ fn delete_local(
     expected: &[u8],
     report: &mut Report,
 ) -> Result<(), Error> {
-    guard(root, plan)?;
     ready(plan)?;
     let arguments: Vec<OsString> = ["update-ref", "--no-deref", "--stdin"]
         .iter()
@@ -420,7 +375,6 @@ fn delete_local(
             report.commands.push(CommandReport {
                 arguments,
                 result: Err(e),
-                after: repository::inspect(root),
             });
             return Err(Error::CommandFailed);
         }
@@ -477,11 +431,7 @@ fn delete_local(
         stderr: diagnostics,
     });
     let success = result.as_ref().is_ok_and(|o| o.status.success());
-    report.commands.push(CommandReport {
-        arguments,
-        result,
-        after: repository::inspect(root),
-    });
+    report.commands.push(CommandReport { arguments, result });
     attempt?;
     remaining?;
     if !success {
@@ -555,8 +505,15 @@ fn delete_remote(root: &Path, plan: &Plan, outcome: &mut DestinationOutcome) -> 
             }
         }
     }
-    // Keep command failure/uncertain acknowledgement separate from actual absence.
-    // A fresh retry can confirm absence without repeating deletion.
+    // Git's exact per-ref acknowledgement establishes deletion. Only an
+    // uncertain response needs a readback; command failure remains reportable
+    // even when that readback establishes a completed effect.
+    if acknowledged {
+        outcome.observed = Some(RefObservation::Absent);
+        outcome.state = DestinationState::Deleted;
+        status?;
+        return Ok(());
+    }
     let observed = observe(
         root,
         plan,
@@ -567,16 +524,18 @@ fn delete_remote(root: &Path, plan: &Plan, outcome: &mut DestinationOutcome) -> 
     );
     if let Ok(value) = &observed {
         outcome.observed = Some(value.clone());
+        if *value == RefObservation::Absent {
+            outcome.state = DestinationState::Absent;
+        }
     }
     status?;
-    if !acknowledged || observed? != RefObservation::Absent {
+    if observed? != RefObservation::Absent {
         return Err(Error::UnconfirmedDeletion);
     }
-    outcome.state = DestinationState::Deleted;
     Ok(())
 }
 /// Complete only a corroborated retained attempt. Target delivery is reobserved
-/// before each effect. No target publication, candidate checks, or integration.
+/// at the destructive-stage boundary. No target publication, checks, or integration.
 pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
     let directory = directory.as_ref();
     let root = approved
@@ -590,10 +549,12 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         targets: vec![],
         destinations: vec![],
         caches: vec![],
-        source: hint(root, &approved.source_ref),
-        target: hint(root, &approved.target.reference),
-        plan: assess(root, &approved.request, approved.evidence.as_ref()),
-        remaining: repository::inspect(root),
+        source: Ok(approved.source.clone()),
+        target: Ok(approved.local_target.clone()),
+        plan: Ok(approved.clone()),
+        remaining: Ok(repository::Observation::Repository(Box::new(
+            approved.snapshot.state.clone(),
+        ))),
         error: None,
     };
     let mut plan = approved.clone();
@@ -621,8 +582,8 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             .collect::<Vec<_>>()
     });
     report.error = (|| {
+        validate_repository(directory, &plan)?;
         guard(directory, &plan)?;
-        guard(root, &plan)?;
         delivery(root, &plan, &mut report)?;
         let mut evidence = plan.evidence.clone().ok_or(Error::UnverifiedAttempt)?;
         evidence.targets = report.targets.clone();
@@ -668,8 +629,6 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             .find(|e| matches!(e, super::Effect::Checkout { .. }))
             .cloned()
         {
-            delivery(root, &plan, &mut report)?;
-            guard(root, &plan)?;
             let super::Effect::Checkout { reference, .. } = &effect else {
                 unreachable!()
             };
@@ -685,17 +644,28 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             .map(OsString::from)
             .collect();
             args.push(repository::os(&reference[b"refs/heads/".len()..])?);
-            let status = remote::command(root, args, &mut report.commands);
-            if let Ok(repository::Observation::Repository(after)) = repository::inspect(root)
-                && after.head != plan.snapshot.state.head
+            let next = remote::command(root, args, &mut report.commands)
+                .map_err(Error::from)
+                .and_then(|_| successor(root, &plan, &effect));
+            // Successor already observes the checkout after its hooks. Reuse
+            // that observation for the effect report; only an uncertain or
+            // rejected transition needs a separate remaining-state inspection.
+            let after = match &next {
+                Ok(next) => Some(next.snapshot.state.head.clone()),
+                Err(_) => match repository::inspect(root) {
+                    Ok(repository::Observation::Repository(after)) => Some(after.head),
+                    _ => None,
+                },
+            };
+            if let Some(after) = after
+                && after != plan.snapshot.state.head
             {
                 report.effects.push(Effect::CheckedOut {
                     before: plan.snapshot.state.head.clone(),
-                    after: after.head.clone(),
+                    after,
                 });
             }
-            status?;
-            plan = successor(root, &plan, &effect)?;
+            plan = next?;
         }
         if let Some(effect @ super::Effect::DeleteLocalWork { .. }) = plan
             .effects
@@ -703,9 +673,7 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             .find(|e| matches!(e, super::Effect::DeleteLocalWork { .. }))
             .cloned()
         {
-            delivery(root, &plan, &mut report)?;
-            plan = retain_source(root, &plan, &mut report)?;
-            delivery(root, &plan, &mut report)?;
+            plan = retain_source(&plan, &mut report)?;
             let super::Effect::DeleteLocalWork {
                 reference,
                 expected,
@@ -714,7 +682,7 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
                 unreachable!()
             };
             let status = delete_local(root, &plan, expected, &mut report);
-            if hint(root, reference)? == RefObservation::Absent {
+            if status.is_ok() || hint(root, reference)? == RefObservation::Absent {
                 report.effects.push(Effect::LocalWorkDeleted {
                     reference: reference.clone(),
                     expected: expected.clone(),
@@ -724,7 +692,6 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             plan = successor(root, &plan, &effect)?;
         }
         for i in 0..report.destinations.len() {
-            delivery(root, &plan, &mut report)?;
             let outcome = &mut report.destinations[i];
             outcome.error = delete_remote(root, &plan, outcome).err();
             let mut evidence = plan.evidence.clone().ok_or(Error::UnverifiedAttempt)?;
@@ -737,14 +704,12 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
                     };
                 }
             }
-            guard(root, &plan)?;
             plan = with_evidence(root, &plan, &evidence)?;
             if outcome.error.is_some() {
                 return Err(Error::Incomplete);
             }
             ready(&plan)?;
         }
-        delivery(root, &plan, &mut report)?;
         if plan.state != State::Complete {
             return Err(Error::Incomplete);
         }
@@ -763,9 +728,11 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         })
         .collect::<Vec<_>>();
     if !targets.is_empty() {
-        report
-            .caches
-            .push(target_cache.refresh(root, &targets, plan.result.as_deref()));
+        report.caches.push(target_cache.refresh_acknowledged(
+            root,
+            &targets,
+            plan.result.as_deref(),
+        ));
     }
     if !report.targets.is_empty() {
         for (done, cache) in &completed_caches {
@@ -777,7 +744,7 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
                 .collect::<Vec<_>>();
             report
                 .caches
-                .push(cache.refresh(root, &endpoints, Some(&done.result)));
+                .push(cache.refresh_acknowledged(root, &endpoints, Some(&done.result)));
         }
     }
     let deleted = report
@@ -792,7 +759,9 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         })
         .collect::<Vec<_>>();
     if !deleted.is_empty() {
-        report.caches.push(work_cache.refresh(root, &deleted, None));
+        report
+            .caches
+            .push(work_cache.refresh_acknowledged(root, &deleted, None));
     }
     if !report.caches.is_empty() && report.error.is_none() {
         report.error = guard(root, &plan).err();
@@ -805,7 +774,14 @@ pub fn complete(directory: impl AsRef<Path>, approved: &Plan) -> Report {
     {
         evidence.targets = report.targets.clone();
     }
-    report.plan = assess(root, &approved.request, final_evidence.as_ref());
+    report.plan = if report.error.is_none() {
+        plan.evidence = final_evidence;
+        Ok(plan)
+    } else {
+        // A failure can leave Git effects without acknowledgements. Reconstruct
+        // recovery only here, using the small remote uncertainty collected above.
+        assess(root, &approved.request, final_evidence.as_ref())
+    };
     report.remaining = repository::inspect(root);
     report
 }

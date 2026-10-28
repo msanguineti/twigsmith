@@ -5,7 +5,7 @@ use super::{Plan, SaveError, UpstreamSettings};
 pub use crate::tracking::cache::{
     RefOutcome as CacheRefOutcome, Report as CacheReport, State as CacheState,
 };
-use crate::{git, repository};
+use crate::{git, repository, settings, tracking};
 use std::{ffi::OsString, fmt, io, path::Path, process::Output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,9 +105,6 @@ impl Report {
 pub enum PublishError {
     Save(SaveError),
     PendingLocalSteps,
-    UnsafeFetchMapping(Vec<u8>),
-    LegacyRemote,
-    SymbolicTrackingRef(Vec<u8>),
     InvalidDestinations,
     PushFailed,
     UnconfirmedResponse,
@@ -124,20 +121,6 @@ impl fmt::Display for PublishError {
             Self::PendingLocalSteps => write!(
                 f,
                 "publication requires resolved input and completed local steps; obtain a fresh publish-only plan"
-            ),
-            Self::UnsafeFetchMapping(r) => write!(
-                f,
-                "remote fetch mapping {:?} can update local refs outside remote tracking; publication refused",
-                String::from_utf8_lossy(r)
-            ),
-            Self::LegacyRemote => write!(
-                f,
-                "publication requires a remote defined in Git configuration; legacy remote files cannot be safely inspected"
-            ),
-            Self::SymbolicTrackingRef(r) => write!(
-                f,
-                "tracking ref {:?} is symbolic; publication refused to protect local history",
-                String::from_utf8_lossy(r)
             ),
             Self::InvalidDestinations => write!(
                 f,
@@ -228,83 +211,6 @@ fn branch_ref(plan: &Plan) -> Vec<u8> {
     [b"refs/heads/".as_slice(), &plan.branch].concat()
 }
 
-// Preserve publication's mapping containment independently of isolated transport
-// and narrow cache maintenance. Refuse destinations in local history, tags, or
-// custom namespaces, including nonmatching positive mappings; never rewrite config.
-fn protect_tracking(directory: &Path, plan: &Plan) -> Result<(), PublishError> {
-    // Legacy $GIT_DIR/remotes and $GIT_DIR/branches files have their own fetch
-    // mappings, which config --get-all cannot observe. Do not bypass that guard.
-    if super::config(
-        directory,
-        format!("remote.{}.url", plan.settings.publish_remote).as_bytes(),
-    )?
-    .is_empty()
-        && super::config(
-            directory,
-            format!("remote.{}.pushurl", plan.settings.publish_remote).as_bytes(),
-        )?
-        .is_empty()
-    {
-        return Err(PublishError::LegacyRemote);
-    }
-    let key = format!("remote.{}.fetch", plan.settings.publish_remote);
-    for raw in super::config(directory, key.as_bytes())? {
-        let mapping = raw.strip_prefix(b"+").unwrap_or(&raw);
-        if mapping.starts_with(b"^") {
-            continue;
-        }
-        let Some((source, target)) = mapping.split_once_byte(b':') else {
-            // A source-only fetch refspec has no local tracking destination.
-            continue;
-        };
-        if target.is_empty() {
-            continue;
-        }
-        if !target.starts_with(b"refs/remotes/") {
-            return Err(PublishError::UnsafeFetchMapping(raw));
-        }
-        let reference = branch_ref(plan);
-        let mapped = if let Some((prefix, suffix)) = source.split_once_byte(b'*') {
-            if !reference.starts_with(prefix)
-                || !reference.ends_with(suffix)
-                || reference.len() < prefix.len() + suffix.len()
-            {
-                continue;
-            }
-            let Some((left, right)) = target.split_once_byte(b'*') else {
-                return Err(PublishError::UnsafeFetchMapping(raw));
-            };
-            [
-                left,
-                &reference[prefix.len()..reference.len() - suffix.len()],
-                right,
-            ]
-            .concat()
-        } else if source == reference {
-            target.to_vec()
-        } else {
-            continue;
-        };
-        let args = vec![
-            "symbolic-ref".into(),
-            "-q".into(),
-            repository::os(&mapped).map_err(SaveError::from)?,
-        ];
-        let output = git::inspect(directory, &args).map_err(SaveError::from)?;
-        if output.status.success() {
-            return Err(PublishError::SymbolicTrackingRef(mapped));
-        }
-        if output.status.code() != Some(1) {
-            return Err(SaveError::from(repository::InspectionError::Git {
-                arguments: args,
-                output,
-            })
-            .into());
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn submodule_policy(directory: &Path) -> Result<&'static str, SaveError> {
     // Respect a user's non-mutating publication check. Recursive publication
     // (including submodule.recurse's implicit on-demand) would exceed this intent.
@@ -316,9 +222,10 @@ pub(crate) fn submodule_policy(directory: &Path) -> Result<&'static str, SaveErr
     })
 }
 
-// Shared read-only local guards. Checkpoint execution uses these before writes;
-// publication repeats them because hooks/configuration can change in between.
-pub(crate) fn preflight(directory: &Path, plan: &Plan) -> Result<Vec<Vec<u8>>, PublishError> {
+// Resolve the already selected destinations before checkpoint writes or push.
+// The command-scoped remote omits configured fetch mappings, so the transport
+// cannot update another local ref through an unsafe or symbolic mapping.
+pub(crate) fn preflight(_directory: &Path, plan: &Plan) -> Result<Vec<Vec<u8>>, PublishError> {
     let urls = plan
         .snapshot
         .push_urls
@@ -331,21 +238,8 @@ pub(crate) fn preflight(directory: &Path, plan: &Plan) -> Result<Vec<Vec<u8>>, P
     {
         return Err(PublishError::InvalidDestinations);
     }
-    protect_tracking(directory, plan)?;
-    submodule_policy(directory)?;
     Ok(destinations)
 }
-// Keep this byte-oriented on every platform; URLs/refnames are not decoded.
-trait SplitByte {
-    fn split_once_byte(&self, byte: u8) -> Option<(&[u8], &[u8])>;
-}
-impl SplitByte for [u8] {
-    fn split_once_byte(&self, byte: u8) -> Option<(&[u8], &[u8])> {
-        let index = self.iter().position(|b| *b == byte)?;
-        Some((&self[..index], &self[index + 1..]))
-    }
-}
-
 fn responses(output: &[u8], source: &[u8], target: &[u8]) -> (Vec<DestinationOutcome>, bool) {
     use crate::publication::Status;
     let (responses, valid) = crate::publication::responses(output, source, target);
@@ -371,33 +265,103 @@ fn responses(output: &[u8], source: &[u8], target: &[u8]) -> (Vec<DestinationOut
     )
 }
 
-fn revalidate_tracking(
-    directory: &Path,
-    plan: &Plan,
-    remote_written: bool,
-) -> Result<(), SaveError> {
-    if !remote_written {
-        return super::revalidate(directory, plan);
+// A supplied publication plan can outlive a prompt or library call. Bind the
+// intended repository, committed source and routes at this stage's entry. The
+// push pins the OID and never reads the index or dirty file contents, so changes
+// to those files cannot substitute work or justify a recursive save assessment.
+pub(crate) fn validate_entry(directory: &Path, plan: &Plan) -> Result<(), SaveError> {
+    let repository = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
+    if repository != plan.repository {
+        return Err(SaveError::ContextChanged);
     }
-    let mut expected = plan.clone();
-    expected.snapshot.routing.upstream.remotes =
-        vec![plan.settings.publish_remote.as_bytes().to_vec()];
-    expected.publication.as_mut().unwrap().establish_upstream = false;
-    let fresh = super::assess_with_upstream(
+    let repository::Observation::Repository(state) = repository::inspect_context_with_paths(
         directory,
-        &plan.request,
-        Some(&expected.snapshot.routing.upstream),
+        repository.clone(),
+        &plan.snapshot.metadata,
+    )?
+    else {
+        return Err(SaveError::OutsideRepository);
+    };
+    if state.head
+        != (repository::Head::Attached {
+            branch: plan.branch.clone(),
+            commit: plan.commit.clone(),
+        })
+    {
+        return Err(SaveError::ContextChanged);
+    }
+    if state.operations.is_active() {
+        return Err(SaveError::ActiveOperation);
+    }
+    validate_routes(directory, plan)?;
+    let urls = super::read(
+        directory,
+        &[
+            "remote".into(),
+            "get-url".into(),
+            "--push".into(),
+            "--all".into(),
+            plan.settings.publish_remote.clone().into(),
+        ],
     )?;
-    if fresh != expected {
+    if urls != plan.snapshot.push_urls {
         return Err(SaveError::ContextChanged);
     }
     Ok(())
+}
+
+fn validate_routes(directory: &Path, plan: &Plan) -> Result<(), SaveError> {
+    let current = settings::load_for_branch(directory, &plan.repository, &plan.branch)?;
+    if current.publish_remote != plan.settings.publish_remote
+        || current.base_remote != plan.settings.base_remote
+        || current.base != plan.settings.base
+        || current.workstream.as_ref().map(|p| &p.preparation_source)
+            != plan
+                .settings
+                .workstream
+                .as_ref()
+                .map(|p| &p.preparation_source)
+    {
+        return Err(SaveError::ContextChanged);
+    }
+    let routing = tracking::snapshot(directory, &plan.branch)?;
+    routing.validate(&current, &plan.branch)?;
+    if routing != plan.snapshot.routing {
+        return Err(SaveError::ContextChanged);
+    }
+    Ok(())
+}
+
+// Tracking configuration belongs to the selected local branch, unlike the
+// pinned remote push. A push/cache hook can move HEAD or change its routing;
+// check those facts before the first write, then only our intermediate upstream
+// relationship before the second. Git config commands themselves run no hooks.
+fn validate_tracking_target(directory: &Path, plan: &Plan) -> Result<(), SaveError> {
+    if repository::discover(directory)?.as_ref() != Some(&plan.repository)
+        || super::read(
+            directory,
+            &["symbolic-ref".into(), "--quiet".into(), "HEAD".into()],
+        )?
+        .strip_suffix(b"\n")
+            != Some(branch_ref(plan).as_slice())
+        || super::read(
+            directory,
+            &["rev-parse".into(), "--verify".into(), "HEAD".into()],
+        )?
+        .strip_suffix(b"\n")
+            != Some(plan.commit.as_slice())
+    {
+        return Err(SaveError::ContextChanged);
+    }
+    validate_routes(directory, plan)
 }
 pub(crate) fn establish_tracking(
     directory: &Path,
     plan: &Plan,
     writes: &mut Vec<TrackingWrite>,
 ) -> Result<(), PublishError> {
+    validate_tracking_target(directory, plan)?;
+    let mut expected = plan.snapshot.routing.upstream.clone();
     for (suffix, value, effect) in [
         (
             b".remote".as_slice(),
@@ -410,7 +374,9 @@ pub(crate) fn establish_tracking(
             TrackingWrite::MergeRef,
         ),
     ] {
-        revalidate_tracking(directory, plan, !writes.is_empty())?;
+        if !writes.is_empty() && super::upstream_settings(directory, &plan.branch)? != expected {
+            return Err(SaveError::ContextChanged.into());
+        }
         let arguments = vec![
             "config".into(),
             "--local".into(),
@@ -423,6 +389,7 @@ pub(crate) fn establish_tracking(
             return Err(PublishError::TrackingGit { arguments, output });
         }
         writes.push(effect);
+        expected.remotes = vec![plan.settings.publish_remote.as_bytes().to_vec()];
     }
     Ok(())
 }
@@ -454,10 +421,10 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         error: None,
     };
     let result = (|| -> Result<(), PublishError> {
-        super::revalidate(directory, plan)?;
         if plan.publication.is_none() || !plan.local_steps.is_empty() {
             return Err(PublishError::PendingLocalSteps);
         }
+        validate_entry(directory, plan)?;
         let root = plan
             .snapshot
             .state
@@ -466,16 +433,17 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             .unwrap()
             .root
             .as_path();
-        super::revalidate(root, plan)?;
         report.configured_destinations = preflight(root, plan)?;
-        let cache = crate::tracking::cache::Prepared::new(
+        let config = super::read(root, &["config".into(), "--null".into(), "--list".into()])?;
+        let cache = crate::tracking::cache::Prepared::with_context(
             root,
+            &plan.repository,
+            &config,
             &plan.settings.publish_remote,
             &report.branch_ref,
         );
         let submodules = submodule_policy(root)?;
         let refspec = [&plan.commit, b":".as_slice(), &report.branch_ref].concat();
-        let config = super::read(root, &["config".into(), "--null".into(), "--list".into()])?;
         let (mut arguments, remote) = crate::publication::transport::destinations(
             &config,
             &plan.settings.publish_remote,
@@ -499,7 +467,6 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
                 return Err(PublishError::InvalidDestinations);
             }
         }
-        super::revalidate(root, plan)?;
         arguments.extend([
             "push".into(),
             "--porcelain".into(),
@@ -540,23 +507,26 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         } else {
             PublicationState::Unconfirmed
         };
-        // A matching fresh endpoint observation can update its cache even when
-        // another destination failed. This never upgrades the publication state.
+        // Complete per-ref acknowledgements provide the delivery observation;
+        // partial responses need a fresh fetch-endpoint observation because
+        // transport display URLs cannot safely be assigned to configured URLs.
+        // Cache maintenance never upgrades the publication state.
         if matches!(
             report.state,
             PublicationState::Complete | PublicationState::Partial
         ) {
-            report.caches.push(
-                cache.refresh(
-                    root,
-                    &report
-                        .configured_destinations
-                        .iter()
-                        .map(|d| (d.clone(), None))
-                        .collect::<Vec<_>>(),
-                    Some(&plan.commit),
-                ),
-            );
+            let endpoints = report
+                .configured_destinations
+                .iter()
+                .map(|d| (d.clone(), None))
+                .collect::<Vec<_>>();
+            report
+                .caches
+                .push(if report.state == PublicationState::Complete {
+                    cache.refresh_acknowledged(root, &endpoints, Some(&plan.commit))
+                } else {
+                    cache.refresh(root, &endpoints, Some(&plan.commit))
+                });
         }
         if report.state != PublicationState::Complete {
             return Err(if process_success {
@@ -565,11 +535,12 @@ pub fn publish(directory: impl AsRef<Path>, plan: &Plan) -> Report {
                 PublishError::PushFailed
             });
         }
-        // Cache transaction hooks can change workflow context. Recheck before
-        // granting subsequent tracking-configuration effects.
-        super::revalidate(root, plan)?;
         if plan.publication.as_ref().unwrap().establish_upstream {
             establish_tracking(root, plan, &mut report.tracking.writes)?;
+        } else {
+            // A complete push remains a confirmed effect, but a hook's routing
+            // change must be surfaced even when no tracking write was planned.
+            validate_routes(root, plan)?;
         }
         if !process_success {
             return Err(PublishError::PushFailed);

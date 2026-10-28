@@ -1,8 +1,8 @@
 //! Execute an approved save plan without interaction or rollback.
-use super::{Plan, Request, RequiredInput, SaveError, groups, publication};
+use super::{Plan, RequiredInput, SaveError, groups, publication};
 use crate::{
     git, repository,
-    settings::{SaveKind, SavePlan, SaveScope},
+    settings::{self, SaveKind, SavePlan, SaveScope},
 };
 use std::{
     ffi::OsString,
@@ -32,10 +32,9 @@ pub struct CommandReport {
     pub arguments: Vec<OsString>,
     /// Raw output/status, including failures that produced effects.
     pub result: Result<Output, io::Error>,
-    pub after: LocalObservation,
 }
 /// Verified local steps. Failed or unexpectedly altered steps can also have
-/// effects; those remain in command observations and the final remaining state.
+/// effects; those remain visible in command output and the final remaining state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Checkpoint {
@@ -138,80 +137,231 @@ fn stash(directory: &Path) -> Result<Option<Vec<u8>>, SaveError> {
             .to_vec(),
     ))
 }
-fn stash_history(directory: &Path) -> Result<Vec<u8>, SaveError> {
-    if stash(directory)?.is_none() {
-        return Ok(vec![]);
-    }
-    super::read(
-        directory,
-        &[
-            "reflog".into(),
-            "show".into(),
-            "--format=%H".into(),
-            "refs/stash".into(),
-        ],
-    )
-}
 fn observe(directory: &Path, plan: &Plan) -> LocalObservation {
     LocalObservation {
-        repository: repository::inspect_without_upstream(directory),
-        index: match fs::read(&plan.snapshot.index_path) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.into()),
-        },
+        repository: super::observe_repository(directory, plan),
+        // A stale plan can name a relocated repository or an earlier index
+        // selection. Report the index Git selects here; resolution/read errors
+        // remain unavailable observations rather than bytes from the old path.
+        index: super::index_path(directory).and_then(|path| super::read_index(&path)),
         stash: stash(directory),
     }
 }
-fn fresh(directory: &Path) -> Result<Plan, SaveError> {
-    super::assess(
-        directory,
-        &Request {
-            plan: Some(SavePlan::PublishOnly),
-            message: None,
-            stash_message: None,
-        },
-    )
-}
-fn unchanged_context(before: &Plan, after: &Plan) -> Result<(), SaveError> {
-    if before.repository != after.repository
-        || before.branch != after.branch
-        || before.settings != after.settings
-        || before.snapshot.routing != after.snapshot.routing
-        || before.snapshot.push_urls != after.snapshot.push_urls
-        || before.snapshot.index_path != after.snapshot.index_path
+// The caller may hold a stale library plan. Reuse the real before observation
+// for local state and compare only the inputs needed by preservation, rather
+// than reconstructing actions, settings and observations through assess again.
+fn validate_local_entry(
+    directory: &Path,
+    approved: &Plan,
+    before: &LocalObservation,
+) -> Result<(), ExecutionError> {
+    let state = match &before.repository {
+        Ok(repository::Observation::Repository(state)) => state,
+        _ => return Err(SaveError::ContextChanged.into()),
+    };
+    if !approved.snapshot.metadata.matches_environment()
+        || **state != approved.snapshot.state
+        || before.index.as_ref().ok() != Some(&approved.snapshot.index)
     {
-        return Err(SaveError::ContextChanged);
+        return Err(SaveError::ContextChanged.into());
+    }
+    unchanged_files(directory, approved, state, &approved.commit)?;
+    unchanged_policy(directory, approved)?;
+    let index_path = super::read(
+        directory,
+        &[
+            "rev-parse".into(),
+            "--path-format=absolute".into(),
+            "--git-path".into(),
+            "index".into(),
+        ],
+    )?;
+    if index_path.strip_suffix(b"\n")
+        != Some(approved.snapshot.index_path.as_os_str().as_encoded_bytes())
+    {
+        return Err(SaveError::ContextChanged.into());
+    }
+    // File snapshots bind ordinary contents. Diff also binds clean submodule
+    // pointer changes, which status represents only as a changed flag.
+    if super::read(
+        directory,
+        &[
+            "-c".into(),
+            "diff.autoRefreshIndex=false".into(),
+            "diff".into(),
+            "--no-ext-diff".into(),
+            "--no-textconv".into(),
+            "--binary".into(),
+            "--no-renames".into(),
+            "--no-relative".into(),
+            "--submodule=short".into(),
+            "--ignore-submodules=none".into(),
+            "HEAD".into(),
+            "--".into(),
+        ],
+    )? != approved.snapshot.tracked_diff
+    {
+        return Err(SaveError::ContextChanged.into());
     }
     Ok(())
 }
-// Commit/add may refresh the index and move paths between scope categories.
-// Permit those expected effects only: all approved file contents must survive,
-// and no new changed path may silently enter the next checkpoint/publication.
-fn unchanged_files(directory: &Path, before: &Plan, after: &Plan) -> Result<(), SaveError> {
-    for (path, expected) in &before.snapshot.files {
+// Publication consumes the selected repository, source OID and routes, and
+// validates those facts at its own entry. This private projection carries the
+// completed commit and no pending local steps; it is not a new scope assessment
+// or a claim about the current dirty state in a public report.
+fn publication_plan(approved: &Plan, commit: Vec<u8>) -> Plan {
+    let mut publishing = approved.clone();
+    publishing.commit = commit;
+    publishing.plan = SavePlan::PublishOnly;
+    publishing.local_steps.clear();
+    publishing
+}
+// A checkout can run an index hook. Only this path needs a freshly captured
+// remaining-work tree before recovery deletion. Reuse selected static inputs;
+// observe actual HEAD, status and index for the capture instead of reassessing
+// the whole public save workflow and validating unchanged names again.
+fn remaining_work(directory: &Path, publishing: &Plan) -> Result<groups::Trees, SaveError> {
+    let repository::Observation::Repository(state) = repository::inspect_context_with_paths(
+        directory,
+        publishing.repository.clone(),
+        &publishing.snapshot.metadata,
+    )?
+    else {
+        return Err(SaveError::ContextChanged);
+    };
+    if state.head
+        != (repository::Head::Attached {
+            branch: publishing.branch.clone(),
+            commit: publishing.commit.clone(),
+        })
+        || state.operations.is_active()
+    {
+        return Err(SaveError::ContextChanged);
+    }
+    let mut remaining = publishing.clone();
+    remaining.scope = super::Scope::default();
+    for change in &state.working_tree.as_ref().unwrap().changes {
+        match &change.kind {
+            repository::ChangeKind::Untracked => {
+                remaining.scope.untracked.push(change.path.clone())
+            }
+            repository::ChangeKind::Conflicted { .. } => return Err(SaveError::Conflicts),
+            repository::ChangeKind::Tracked {
+                staged,
+                unstaged,
+                submodule,
+                ..
+            } => {
+                if submodule.is_some_and(|s| s.tracked_changes || s.untracked_changes) {
+                    return Err(SaveError::DirtySubmodules);
+                }
+                if *staged != repository::Change::Unchanged {
+                    remaining.scope.staged.push(change.path.clone());
+                }
+                if *unstaged != repository::Change::Unchanged {
+                    remaining.scope.remaining_tracked.push(change.path.clone());
+                }
+            }
+        }
+    }
+    remaining.snapshot.index = match fs::read(&publishing.snapshot.index_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    groups::Trees::capture(directory, &remaining)
+}
+// Git commits can run hooks which alter both the selected artifact and the
+// remaining work. Before the next local mutation, bind the HEAD and original
+// work to the approved groups. Status detects newly introduced paths; the file
+// snapshots detect edits within an existing path. These are stage observations,
+// not a lock against concurrent writers.
+fn unchanged_work(directory: &Path, approved: &Plan, commit: &[u8]) -> Result<(), SaveError> {
+    let repository::Observation::Repository(state) = repository::inspect_context_with_paths(
+        directory,
+        approved.repository.clone(),
+        &approved.snapshot.metadata,
+    )?
+    else {
+        return Err(SaveError::ContextChanged);
+    };
+    unchanged_files(directory, approved, &state, commit)
+}
+fn unchanged_files(
+    directory: &Path,
+    approved: &Plan,
+    state: &repository::RepositoryState,
+    commit: &[u8],
+) -> Result<(), SaveError> {
+    if state.head
+        != (repository::Head::Attached {
+            branch: approved.branch.clone(),
+            commit: commit.to_vec(),
+        })
+        || state.operations.is_active()
+    {
+        return Err(SaveError::ContextChanged);
+    }
+    for (path, expected) in &approved.snapshot.files {
         if super::file_snapshot(
             &directory.join(repository::os(path)?),
-            before.scope.untracked.contains(path),
+            approved.scope.untracked.contains(path),
         )? != *expected
         {
             return Err(SaveError::ContextChanged);
         }
     }
-    if after
-        .snapshot
-        .files
+    if state
+        .working_tree
+        .as_ref()
+        .unwrap()
+        .changes
         .iter()
-        .any(|(path, _)| !before.snapshot.files.iter().any(|(old, _)| old == path))
+        .any(|change| {
+            !approved
+                .snapshot
+                .files
+                .iter()
+                .any(|(path, _)| path == &change.path)
+        })
     {
         return Err(SaveError::ContextChanged);
     }
     Ok(())
 }
+// A hook may change the selected policy or publication route. Git's commit and
+// read-tree do not enforce those workflow choices. Refresh them after commit
+// hooks, before continuing local preservation or publishing the captured tree.
+fn unchanged_policy(directory: &Path, approved: &Plan) -> Result<(), ExecutionError> {
+    if settings::load(directory, &approved.repository).map_err(SaveError::from)?
+        != approved.settings
+        || crate::tracking::snapshot(directory, &approved.branch)? != approved.snapshot.routing
+        || super::read(
+            directory,
+            &[
+                "remote".into(),
+                "get-url".into(),
+                "--push".into(),
+                "--all".into(),
+                approved.settings.publish_remote.clone().into(),
+            ],
+        )? != approved.snapshot.push_urls
+    {
+        return Err(SaveError::ContextChanged.into());
+    }
+    publication::preflight(directory, approved)?;
+    Ok(())
+}
+#[derive(Default)]
+struct Progress {
+    recovery: Option<Recovery>,
+    commands: Vec<CommandReport>,
+    effects: Vec<Effect>,
+    publication: Option<publication::Report>,
+}
 fn command(
     directory: &Path,
-    plan: &Plan,
-    report: &mut Report,
+    report: &mut Progress,
     operation: Operation,
     arguments: Vec<OsString>,
 ) -> Result<(), ExecutionError> {
@@ -221,7 +371,6 @@ fn command(
         operation,
         arguments,
         result,
-        after: observe(directory, plan),
     });
     if success {
         Ok(())
@@ -229,9 +378,17 @@ fn command(
         Err(ExecutionError::LocalCommandFailed)
     }
 }
-fn guard(directory: &Path, plan: &Plan) -> Result<(), ExecutionError> {
-    super::revalidate(directory, plan)?;
-    publication::preflight(directory, plan)?;
+// An invalidated route is an execution precondition failure, not an attempted
+// publication. Keep that distinction without running publication validation
+// twice. Once push starts, its complete report owns failures and partial effects.
+fn publish(directory: &Path, plan: &Plan, progress: &mut Progress) -> Result<(), ExecutionError> {
+    let mut report = publication::publish(directory, plan);
+    if report.push.is_none()
+        && let Some(error) = report.error.take()
+    {
+        return Err(error.into());
+    }
+    progress.publication = Some(report);
     Ok(())
 }
 fn tree(directory: &Path) -> Result<Vec<u8>, SaveError> {
@@ -249,80 +406,98 @@ fn scope_mask(scope: SaveScope) -> usize {
 }
 fn set_index(
     directory: &Path,
-    approved: &Plan,
-    report: &mut Report,
+    report: &mut Progress,
+    expected: &[u8],
     target: &[u8],
-) -> Result<(), ExecutionError> {
-    if tree(directory)? != target {
+) -> Result<bool, ExecutionError> {
+    // Reference-transaction and index hooks can stage work that exists nowhere
+    // else. read-tree does not protect that work when replacing the index.
+    // Compare its tree with the last known stage result before any replacement;
+    // an index refresh alone is harmless, while changed staged content is kept.
+    let actual = tree(directory)?;
+    if actual != expected {
+        return Err(SaveError::ContextChanged.into());
+    }
+    if actual != target {
         command(
             directory,
-            approved,
             report,
             Operation::PrepareIndex {
                 tree: target.to_vec(),
             },
             vec!["read-tree".into(), repository::os(target)?],
         )?;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 fn commit(
     directory: &Path,
-    original: &Plan,
-    current: &Plan,
-    report: &mut Report,
+    approved: &Plan,
+    current: &[u8],
+    expected_index: &[u8],
+    report: &mut Progress,
     message: &str,
     target: &[u8],
-) -> Result<Plan, ExecutionError> {
-    guard(directory, current)?;
-    set_index(directory, original, report, target)?;
-    let prepared = fresh(directory)?;
-    unchanged_context(current, &prepared)?;
-    unchanged_files(directory, current, &prepared)?;
-    if prepared.commit != current.commit || tree(directory)? != target {
+) -> Result<Vec<u8>, ExecutionError> {
+    set_index(directory, report, expected_index, target)?;
+    // read-tree can run a post-index-change hook. Do not commit on a branch
+    // switched by that hook; the selected commit tree is checked after commit.
+    let reference = super::read(
+        directory,
+        &["symbolic-ref".into(), "--quiet".into(), "HEAD".into()],
+    )?;
+    let head = super::read(directory, &["rev-parse".into(), "HEAD".into()])?;
+    if reference.strip_suffix(b"\n")
+        != Some(
+            [b"refs/heads/".as_slice(), &approved.branch]
+                .concat()
+                .as_slice(),
+        )
+        || head.strip_suffix(b"\n") != Some(current)
+    {
         return Err(SaveError::ContextChanged.into());
     }
-    guard(directory, &prepared)?;
     command(
         directory,
-        original,
         report,
         Operation::CommitIndex {
             message: message.to_owned(),
         },
         vec!["commit".into(), "--message".into(), message.into()],
     )?;
-    let after = fresh(directory)?;
-    unchanged_context(current, &after)?;
-    unchanged_files(directory, current, &after)?;
-    let parents = super::read(
+    // Obtain the candidate required by subsequent commits/publication and bind
+    // the hook-produced parent/tree to the exact selected work in one read.
+    let raw = super::read(
         directory,
         &[
             "show".into(),
             "--no-patch".into(),
-            "--format=%P".into(),
-            repository::os(&after.commit)?,
+            "--format=%H%x00%P%x00%T".into(),
+            "HEAD".into(),
             "--".into(),
         ],
     )?;
-    let committed_tree = super::read(
-        directory,
-        &[
-            "rev-parse".into(),
-            repository::os(&[after.commit.as_slice(), b"^{tree}"].concat())?,
-        ],
-    )?;
-    if parents.strip_suffix(b"\n") != Some(current.commit.as_slice())
-        || committed_tree.strip_suffix(b"\n") != Some(target)
+    let fields = raw
+        .strip_suffix(b"\n")
+        .ok_or(repository::InspectionError::InvalidOutput("save commit"))?
+        .split(|byte| *byte == 0)
+        .collect::<Vec<_>>();
+    if fields.len() != 3
+        || fields[1] != current
+        || fields[2] != target
         || tree(directory)? != target
     {
         return Err(SaveError::ContextChanged.into());
     }
+    let commit = fields[0].to_vec();
+    unchanged_work(directory, approved, &commit)?;
+    unchanged_policy(directory, approved)?;
     report.effects.push(Effect::Checkpoint {
-        commit: after.commit.clone(),
+        commit: commit.clone(),
         message: message.to_owned(),
     });
-    Ok(after)
+    Ok(commit)
 }
 
 /// Preserve the invocation's original groups. All necessary tree separations are
@@ -336,27 +511,19 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         .working_tree_root
         .as_deref()
         .unwrap_or(directory);
-    let mut report = Report {
-        plan: approved.plan.clone(),
-        recovery: None,
-        before: observe(root, approved),
-        commands: vec![],
-        effects: vec![],
-        publication: None,
-        after: observe(root, approved),
-        error: None,
-    };
+    let before = observe(root, approved);
+    let mut report = Progress::default();
     let result = (|| -> Result<(), ExecutionError> {
         if approved.required_input != RequiredInput::None || approved.publication.is_none() {
             return Err(ExecutionError::RequiredInput(approved.required_input));
         }
-        super::revalidate(directory, approved)?;
-        guard(root, approved)?;
-        if approved.local_steps.is_empty() {
-            let publishing = fresh(root)?;
-            report.publication = Some(publication::publish(root, &publishing));
-            return Ok(());
+        if repository::discover(directory)?.as_ref() != Some(&approved.repository) {
+            return Err(SaveError::ContextChanged.into());
         }
+        if approved.local_steps.is_empty() {
+            return publish(root, approved, &mut report);
+        }
+        validate_local_entry(root, approved, &before)?;
         let mut index_lock = approved.snapshot.index_path.as_os_str().to_owned();
         index_lock.push(".lock");
         match fs::symlink_metadata(PathBuf::from(index_lock)) {
@@ -400,7 +567,6 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             super::read(root, &["var".into(), ident.into()])?;
         }
         let mut trees = groups::Trees::capture(root, approved)?;
-        super::revalidate(root, approved)?;
         let active = usize::from(!approved.scope.staged.is_empty())
             | if approved.scope.has_remaining() { 2 } else { 0 };
         let mut selected = 0;
@@ -420,8 +586,16 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         if needs_independent {
             trees.separate(root, approved)?;
         }
-        let protection = groups::CheckoutProtection::new(root, trees.get(final_work))?;
-        protection.check(root)?;
+        // Commit-only saves leave working files in place. Checkout protection
+        // is needed only when consuming a stash changes the worktree contents.
+        let reconcile = trees.get(final_work) != trees.get(3);
+        let protection = if reconcile {
+            let protection = groups::CheckoutProtection::new(root, trees.get(final_work))?;
+            protection.check(root)?;
+            Some(protection)
+        } else {
+            None
+        };
         // Construct artifacts while unreachable; no stash/ref/index/worktree
         // change is allowed until all required separation has succeeded.
         let stash_objects = approved
@@ -447,8 +621,6 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             "refs/twigsmith/save-recovery/{}",
             token.path().file_name().unwrap().to_string_lossy()
         );
-        guard(root, approved)?;
-        protection.check(root)?;
         let args = vec![
             "update-ref".into(),
             "--create-reflog".into(),
@@ -459,11 +631,18 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             "".into(),
         ];
         let result = git::workflow(root, &args);
-        let retained = git::inspect(root, ["rev-parse", "--verify", "--quiet", &reference])
-            .is_ok_and(|output| {
-                output.status.success()
-                    && output.stdout.strip_suffix(b"\n") == Some(recovery.as_slice())
-            });
+        // Successful conditional update-ref acknowledges retention. Only a
+        // failed/missing acknowledgement needs a targeted recovery-ref read.
+        let retained = if result.as_ref().is_ok_and(|output| output.status.success()) {
+            true
+        } else {
+            git::inspect(root, ["rev-parse", "--verify", "--quiet", &reference]).is_ok_and(
+                |output| {
+                    output.status.success()
+                        && output.stdout.strip_suffix(b"\n") == Some(recovery.as_slice())
+                },
+            )
+        };
         report.recovery = Some(Recovery {
             commit: recovery,
             reference,
@@ -480,12 +659,10 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
         if !retained {
             return Err(SaveError::ContextChanged.into());
         }
-        super::revalidate(root, approved)?;
-        let mut current = approved.clone();
+        let mut current = approved.commit.clone();
+        let mut current_index = trees.get(1).to_vec();
         let mut committed = 0;
         for (step, stash_object) in approved.local_steps.iter().zip(stash_objects) {
-            guard(root, &current)?;
-            protection.check(root)?;
             match step.operation.action {
                 SaveKind::Commit => {
                     committed |= scope_mask(step.operation.scope) & active;
@@ -493,18 +670,17 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
                         root,
                         approved,
                         &current,
+                        &current_index,
                         &mut report,
                         &step.message,
                         trees.get(committed),
                     )?;
+                    current_index = trees.get(committed).to_vec();
                 }
                 SaveKind::Stash => {
                     let object = stash_object.unwrap();
-                    let before_stash = stash(root)?;
-                    let before_history = stash_history(root)?;
                     command(
                         root,
-                        approved,
                         &mut report,
                         Operation::Stash {
                             message: step.message.clone(),
@@ -517,77 +693,63 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
                             repository::os(&object)?,
                         ],
                     )?;
-                    let after = fresh(root)?;
-                    unchanged_context(&current, &after)?;
-                    unchanged_files(root, &current, &after)?;
-                    if current.commit != after.commit
-                        || current.snapshot.index != after.snapshot.index
-                        || stash(root)?.as_deref() != Some(object.as_slice())
-                    {
-                        return Err(SaveError::ContextChanged.into());
-                    }
-                    let history = stash_history(root)?;
-                    if history != [object.as_slice(), b"\n", &before_history].concat()
-                        && !(before_stash.as_ref() == Some(&object) && history == before_history)
-                    {
-                        return Err(SaveError::ContextChanged.into());
-                    }
                     report.effects.push(Effect::LocalStash {
                         commit: object,
                         message: step.message.clone(),
                     });
-                    current = after;
                 }
             }
         }
-        guard(root, &current)?;
-        // First align the index with the actual original worktree, so read-tree
-        // can safely remove consumed tracked/addition paths. Eligible original
-        // untracked files become index entries here and are excluded again by
-        // the final index when their group was left local.
-        set_index(root, approved, &mut report, trees.get(3))?;
-        let staged = fresh(root)?;
-        unchanged_context(&current, &staged)?;
-        unchanged_files(root, &current, &staged)?;
-        if staged.commit != current.commit {
+        if approved
+            .local_steps
+            .last()
+            .is_some_and(|step| step.operation.action == SaveKind::Stash)
+        {
+            unchanged_work(root, approved, &current)?;
+            unchanged_policy(root, approved)?;
+        }
+        if let Some(protection) = &protection {
+            // Align with original working files before consuming the stashed
+            // groups. read-tree --reset -u can overwrite ignored obstructions,
+            // so check those again after the index hook and before checkout.
+            set_index(root, &mut report, &current_index, trees.get(3))?;
+            unchanged_work(root, approved, &current)?;
+            if tree(root)? != trees.get(3) {
+                return Err(SaveError::ContextChanged.into());
+            }
+            protection.check(root)?;
+            command(
+                root,
+                &mut report,
+                Operation::Reconcile {
+                    tree: trees.get(final_work).to_vec(),
+                },
+                vec![
+                    "read-tree".into(),
+                    "--reset".into(),
+                    "-u".into(),
+                    repository::os(trees.get(final_work))?,
+                ],
+            )?;
+            current_index = trees.get(final_work).to_vec();
+        }
+        let index_changed = set_index(root, &mut report, &current_index, trees.get(final_index))?;
+        if !reconcile && index_changed {
+            unchanged_work(root, approved, &current)?;
+        }
+        let publishing = publication_plan(approved, current);
+        // A successful no-op set_index already observed this exact tree. If it
+        // ran read-tree, its hook may have changed the index and must be checked.
+        if index_changed && tree(root)? != trees.get(final_index) {
             return Err(SaveError::ContextChanged.into());
         }
-        protection.check(root)?;
-        command(
-            root,
-            approved,
-            &mut report,
-            Operation::Reconcile {
-                tree: trees.get(final_work).to_vec(),
-            },
-            vec![
-                "read-tree".into(),
-                "--reset".into(),
-                "-u".into(),
-                repository::os(trees.get(final_work))?,
-            ],
-        )?;
-        let reconciled = fresh(root)?;
-        unchanged_context(&current, &reconciled)?;
-        if reconciled.commit != current.commit || tree(root)? != trees.get(final_work) {
-            return Err(SaveError::ContextChanged.into());
+        if reconcile {
+            unchanged_policy(root, approved)?;
+            let observed = remaining_work(root, &publishing)?;
+            if observed.get(3) != trees.get(final_work) {
+                return Err(SaveError::ContextChanged.into());
+            }
         }
-        let observed_work = groups::Trees::capture(root, &reconciled)?;
-        if observed_work.get(3) != trees.get(final_work) {
-            return Err(SaveError::ContextChanged.into());
-        }
-        super::revalidate(root, &reconciled)?;
-        set_index(root, approved, &mut report, trees.get(final_index))?;
-        let publishing = fresh(root)?;
-        unchanged_context(&current, &publishing)?;
-        if publishing.commit != current.commit || tree(root)? != trees.get(final_index) {
-            return Err(SaveError::ContextChanged.into());
-        }
-        let observed = groups::Trees::capture(root, &publishing)?;
-        if observed.get(3) != trees.get(final_work) {
-            return Err(SaveError::ContextChanged.into());
-        }
-        super::revalidate(root, &publishing)?;
         if let Some(recovery) = &mut report.recovery {
             let args = vec![
                 "update-ref".into(),
@@ -605,11 +767,16 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             }
             recovery.retained = false;
         }
-        super::revalidate(root, &publishing)?;
-        report.publication = Some(publication::publish(root, &publishing));
-        Ok(())
+        publish(root, &publishing, &mut report)
     })();
-    report.error = result.err();
-    report.after = observe(root, approved);
-    report
+    Report {
+        plan: approved.plan.clone(),
+        recovery: report.recovery,
+        before,
+        commands: report.commands,
+        effects: report.effects,
+        publication: report.publication,
+        after: observe(root, approved),
+        error: result.err(),
+    }
 }

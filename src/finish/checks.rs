@@ -69,13 +69,95 @@ pub fn run(directory: &Path, plan: &Plan, skip: bool, mut event: impl FnMut(Even
         .as_deref()
         .unwrap_or(directory);
     run_guarded(root, &plan.settings.finish_checks, skip, &mut event, || {
-        revalidate_prepared(directory, plan)?;
+        // Checks execute at the selected worktree root. Validate that context
+        // directly, including inherited Git selection; a nested caller directory
+        // does not need a second identical assessment before every check.
         revalidate_prepared(root, plan)?;
         if !plan.is_ready() || plan.update != FinishUpdate::None {
             return Err(Error::Unprepared);
         }
         Ok(())
     })
+}
+
+// Porcelain status honors assume-unchanged and skip-worktree. Those hints cannot
+// establish what configured checks actually read. When present, compare through
+// a fresh disposable index for the already guarded HEAD candidate: Git then owns
+// filters, executable/symlink handling and submodule comparison. The real index
+// and its flags remain untouched. Missing sparse paths fail this content guard.
+pub(crate) fn guard_hidden_work(root: &Path) -> Result<(), FinishError> {
+    let entries = read(root, &["ls-files", "-v", "-z"])?;
+    if !entries.split(|byte| *byte == 0).any(|entry| {
+        entry
+            .first()
+            .is_some_and(|flag| flag.is_ascii_lowercase() || *flag == b'S')
+    }) {
+        return Ok(());
+    }
+    let scratch = tempfile::tempdir()?;
+    let index = scratch.path().join("index");
+    let mut hooks = OsString::from("core.hooksPath=");
+    hooks.push(scratch.path());
+    let execute = |arguments: &[&str]| -> Result<std::process::Output, FinishError> {
+        let mut command = std::process::Command::new("git");
+        command
+            .current_dir(root)
+            .args([
+                "--no-optional-locks",
+                "--no-lazy-fetch",
+                "--no-replace-objects",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.ignorestat=false",
+                "-c",
+                "core.sparseCheckout=false",
+                "-c",
+                "core.sparseCheckoutCone=false",
+                "-c",
+                "core.splitIndex=false",
+                "-c",
+                "index.sparse=false",
+            ])
+            .arg("-c")
+            .arg(&hooks)
+            .args(arguments)
+            .env("GIT_INDEX_FILE", &index)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("LC_ALL", "C");
+        Ok(crate::activity::capture(&mut command)?)
+    };
+    let arguments = ["read-tree", "--no-sparse-checkout", "HEAD"];
+    let output = execute(&arguments)?;
+    if !output.status.success() {
+        return Err(InspectionError::Git {
+            arguments: arguments.iter().map(OsString::from).collect(),
+            output,
+        }
+        .into());
+    }
+    // diff-files alone can report zero-stat fresh entries as changed. Porcelain
+    // diff against HEAD resolves their content while using only the scratch index.
+    let arguments = [
+        "diff",
+        "--quiet",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "HEAD",
+        "--",
+    ];
+    let output = execute(&arguments)?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(1) => Err(FinishError::DirtyTree),
+        _ => Err(InspectionError::Git {
+            arguments: arguments.iter().map(OsString::from).collect(),
+            output,
+        }
+        .into()),
+    }
 }
 
 pub(crate) fn run_guarded(
@@ -87,8 +169,8 @@ pub(crate) fn run_guarded(
 ) -> Report {
     let mut report = Report::default();
     report.error = (|| -> Result<(), Error> {
-        guard()?;
         if skip {
+            guard()?;
             report.skipped = true;
             if !checks.is_empty() {
                 event(Event::Skipped {
@@ -98,6 +180,7 @@ pub(crate) fn run_guarded(
             return Ok(());
         }
         if checks.is_empty() {
+            guard()?;
             return Ok(());
         }
         let cancellation = check_process::Cancellation::new()?;
@@ -105,6 +188,7 @@ pub(crate) fn run_guarded(
             report.failed = Some(index);
             cancellation.check()?;
             guard()?;
+            guard_hidden_work(root)?;
             event(Event::Started {
                 index,
                 total: checks.len(),
@@ -118,6 +202,7 @@ pub(crate) fn run_guarded(
                 return Err(Error::Failed(status));
             }
             guard()?;
+            guard_hidden_work(root)?;
             cancellation.check()?;
             report.completed += 1;
             event(Event::Passed { index });

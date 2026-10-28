@@ -387,15 +387,7 @@ fn changed_configuration_during_update_requires_fresh_assessment() {
             let (local, _remote, _, _) = fixture(root, true, false);
             hooks(&local, "post-rewrite", "git config finish.example changed");
             let report = prepare(&local, &request(FinishUpdate::Rebase, FinishRewrite::Allow));
-            assert!(
-                matches!(
-                    report.error,
-                    Some(PreparationError::Finish(
-                        finish::FinishError::ContextChanged
-                    ))
-                ),
-                "{report:#?}"
-            );
+            assert!(report.is_prepared(), "{report:#?}");
             assert!(matches!(
                 report.plan.unwrap().recovery,
                 Recovery::Verified(_)
@@ -750,7 +742,12 @@ fn refresh_stops_after_transport_changes_local_context() {
             .unwrap();
             let result = preparation::refresh(local.path(), &plan);
             assert!(result.error.is_some());
-            assert_eq!(result.commands.len(), 1);
+            assert!(
+                !result
+                    .effects
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::Updated { .. }))
+            );
             assert_eq!(oid(&local, "HEAD"), work);
             assert!(!record_path(&local).exists());
         },
@@ -977,6 +974,79 @@ fn interactive_editors(local: &Repository) {
     local.success(&["config", "core.editor", "sh .git/history-message"]);
 }
 #[test]
+fn interactive_recovery_uses_completed_objects_after_unrelated_git_preferences_change() {
+    isolated(
+        "interactive_recovery_uses_completed_objects_after_unrelated_git_preferences_change",
+        true,
+        |root| {
+            let (local, remote, original, _) = fixture(root, true, false);
+            interactive_editors(&local);
+            let req = interactive_request();
+            let report = prepare(&local, &req);
+            assert!(report.is_prepared(), "{report:#?}");
+            let edited = oid(&local, "HEAD");
+            assert_ne!(edited, original);
+            local.success(&["config", "oneflow.unrelated", "changed"]);
+            local.success(&["config", "core.editor", "false"]);
+            local.success(&["config", "sequence.editor", "false"]);
+            let plan = fresh(&local, &req);
+            assert!(plan.is_ready(), "{plan:#?}");
+            assert!(matches!(plan.recovery, Recovery::Verified(_)), "{plan:#?}");
+            assert_eq!(plan.commit, edited);
+            let publication = finish::publication::publish(local.path(), &plan);
+            assert!(publication.is_complete(), "{publication:#?}");
+            assert_eq!(oid(&remote, "work"), edited);
+        },
+    );
+}
+
+#[test]
+fn prior_review_recovery_records_require_the_producing_binary() {
+    isolated(
+        "prior_review_recovery_records_require_the_producing_binary",
+        true,
+        |root| {
+            for interactive in [false, true] {
+                let (local, remote, _, _) = fixture(root, true, false);
+                if interactive {
+                    interactive_editors(&local);
+                }
+                let req = if interactive {
+                    interactive_request()
+                } else {
+                    request(FinishUpdate::Rebase, FinishRewrite::Allow)
+                };
+                let report = prepare(&local, &req);
+                assert!(report.is_prepared(), "{report:#?}");
+                let record_path = record_path(&local);
+                let mut record: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+                assert_eq!(record["version"], 4);
+                record["version"] = 3.into();
+                if interactive {
+                    record["interactive"]["config"] = serde_json::json!([]);
+                }
+                let bytes = serde_json::to_vec(&record).unwrap();
+                fs::write(&record_path, &bytes).unwrap();
+                let refs = local.success(&["show-ref"]).stdout;
+                let head = oid(&local, "HEAD");
+                let remote_work = oid(&remote, "work");
+                let error = finish::assess(local.path(), &req, None).unwrap_err();
+                assert!(
+                    matches!(error, finish::FinishError::RecoveryVersion(3)),
+                    "{error}"
+                );
+                assert!(error.to_string().contains("prior binary"), "{error}");
+                assert_eq!(fs::read(&record_path).unwrap(), bytes);
+                assert_eq!(local.success(&["show-ref"]).stdout, refs);
+                assert_eq!(oid(&local, "HEAD"), head);
+                assert_eq!(oid(&remote, "work"), remote_work);
+            }
+        },
+    );
+}
+
+#[test]
 fn interactive_recovery_rejects_reset_changed_context_and_missing_retention() {
     isolated(
         "interactive_recovery_rejects_reset_changed_context_and_missing_retention",
@@ -995,7 +1065,7 @@ fn interactive_recovery_rejects_reset_changed_context_and_missing_retention() {
                         local.success(&["reset", "--hard", "HEAD"]);
                     }
                     "context" => {
-                        local.success(&["config", "oneflow.changed", "true"]);
+                        local.success(&["config", "remote.origin.receivepack", "changed"]);
                     }
                     "retention" => {
                         let refs = local.success(&[

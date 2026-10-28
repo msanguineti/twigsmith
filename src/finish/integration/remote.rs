@@ -20,7 +20,6 @@ pub enum Error {
     Context(FinishError),
     CommandFailed,
     EndpointChanged,
-    ObjectUnavailable,
 }
 impl From<FinishError> for Error {
     fn from(e: FinishError) -> Self {
@@ -41,9 +40,6 @@ impl fmt::Display for Error {
             }
             Self::EndpointChanged => {
                 f.write_str("the selected endpoint resolves differently; reassess before transport")
-            }
-            Self::ObjectUnavailable => {
-                f.write_str("the advertised commit is unavailable after fetch")
             }
         }
     }
@@ -74,31 +70,12 @@ pub(super) fn command(
     commands.push(CommandReport {
         arguments: args,
         result,
-        after: repository::inspect(root),
     });
     if success {
         Ok(bytes)
     } else {
         Err(Error::CommandFailed)
     }
-}
-
-// Acquired objects may resolve ancestry and thus change derived planning state.
-// Every local binding remains fixed; remote evidence itself is replaced explicitly.
-fn guard(root: &Path, plan: &Plan) -> Result<(), Error> {
-    let now = assess(root, &plan.request, None)?;
-    if now.repository != plan.repository
-        || now.settings != plan.settings
-        || now.source_ref != plan.source_ref
-        || now.source != plan.source
-        || now.target != plan.target
-        || now.local_target != plan.local_target
-        || now.snapshot != plan.snapshot
-        || now.record != plan.record
-    {
-        return Err(FinishError::ContextChanged.into());
-    }
-    Ok(())
 }
 
 pub(super) fn endpoint(
@@ -154,9 +131,7 @@ pub(super) fn acquire(
     reference: &[u8],
     report: &mut Report,
 ) -> Result<RefObservation, Error> {
-    guard(root, plan)?;
     let (prefix, name) = endpoint(root, plan, remote, destination, &mut report.commands)?;
-    guard(root, plan)?;
     let length = commit(&plan.source)
         .or_else(|| plan.record.as_ref().map(|r| r.target_before.as_slice()))
         .ok_or(FinishError::InvalidEvidence("missing source object ID"))?
@@ -174,8 +149,12 @@ pub(super) fn acquire(
         reference: reference.to_vec(),
         value: value.clone(),
     });
-    guard(root, plan)?;
-    if let RefObservation::Commit(oid) = &value {
+    if let RefObservation::Commit(oid) = &value
+        && !report
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Fetched { commit, .. } if commit == oid))
+    {
         // Pin the advertisement's object, not a moving branch name. An endpoint
         // refusing that OID stops the operation; it cannot substitute a new base.
         let mut args = prefix;
@@ -202,19 +181,6 @@ pub(super) fn acquire(
             destination: destination.to_vec(),
             commit: oid.clone(),
         });
-        guard(root, plan)?;
-        let object = run(
-            root,
-            &[
-                "--no-replace-objects".into(),
-                "cat-file".into(),
-                "-t".into(),
-                repository::os(oid)?,
-            ],
-        )?;
-        if !object.status.success() || object.stdout != b"commit\n" {
-            return Err(Error::ObjectUnavailable);
-        }
     }
     Ok(value)
 }
@@ -235,12 +201,13 @@ pub fn refresh(directory: impl AsRef<Path>, plan: &Plan) -> Report {
         plan: None,
         commands: vec![],
         effects: vec![],
-        remaining: repository::inspect(root),
+        remaining: Ok(repository::Observation::Repository(Box::new(
+            plan.snapshot.state.clone(),
+        ))),
         error: None,
     };
     report.error = (|| {
         revalidate(directory, plan, plan.evidence.as_ref())?;
-        guard(root, plan)?;
         let fetched = acquire(
             root,
             plan,
@@ -270,14 +237,18 @@ pub fn refresh(directory: impl AsRef<Path>, plan: &Plan) -> Report {
             evidence.preparation = Some(PreparationEvidence { reference, branch });
         }
         for destination in &plan.target.push_destinations {
-            let branch = acquire(
-                root,
-                plan,
-                &plan.target.remote,
-                destination,
-                &plan.target.reference,
-                &mut report,
-            )?;
+            let branch = if destination == &plan.target.fetch_destination {
+                evidence.fetched.clone()
+            } else {
+                acquire(
+                    root,
+                    plan,
+                    &plan.target.remote,
+                    destination,
+                    &plan.target.reference,
+                    &mut report,
+                )?
+            };
             evidence.targets.push(DestinationEvidence {
                 destination: destination.clone(),
                 branch,
@@ -301,12 +272,22 @@ pub fn refresh(directory: impl AsRef<Path>, plan: &Plan) -> Report {
                 });
             }
         }
-        guard(root, plan)?;
-        report.plan = Some(assess(root, &plan.request, Some(&evidence))?);
+        // Fetch imports objects without changing workflow refs or policy. Reuse
+        // its acknowledgements and refresh the graph only at this stage exit.
+        report.plan = Some(refresh_acquired(root, plan, &evidence)?);
         report.evidence = Some(evidence);
         Ok::<_, Error>(())
     })()
     .err();
-    report.remaining = repository::inspect(root);
+    // Object-only fetch has no branch, checkout or index effect. Its successful
+    // acknowledgement supplies the next graph's evidence; transport failures
+    // retain the last known local stage rather than inventing a new snapshot.
+    if report.error.is_some() {
+        report.remaining = repository::inspect(root);
+    } else if let Some(next) = &report.plan {
+        report.remaining = Ok(repository::Observation::Repository(Box::new(
+            next.snapshot.state.clone(),
+        )));
+    }
     report
 }

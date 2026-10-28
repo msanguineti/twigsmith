@@ -303,9 +303,9 @@ fn upstream_revalidation_refuses_incomplete_conflicting_and_duplicate_values() {
 }
 
 #[test]
-fn intended_head_settings_upstream_and_scope_are_revalidated() {
+fn intended_head_settings_upstream_and_operations_are_revalidated() {
     isolated(
-        "intended_head_settings_upstream_and_scope_are_revalidated",
+        "intended_head_settings_upstream_and_operations_are_revalidated",
         true,
         |root| {
             for change in [
@@ -314,7 +314,6 @@ fn intended_head_settings_upstream_and_scope_are_revalidated() {
                 "settings",
                 "pushurl",
                 "upstream",
-                "content",
                 "operation",
             ] {
                 let (repo, remote) = fixture(root);
@@ -336,7 +335,6 @@ fn intended_head_settings_upstream_and_scope_are_revalidated() {
                         repo.success(&["config", "remote.origin.pushurl", "/missing/other"]);
                     }
                     "upstream" => matching(&repo),
-                    "content" => fs::write(repo.path().join("untracked"), "after").unwrap(),
                     "operation" => {
                         fs::write(repo.path().join(".git/CHERRY_PICK_HEAD"), "active\n").unwrap()
                     }
@@ -353,6 +351,33 @@ fn intended_head_settings_upstream_and_scope_are_revalidated() {
                 assert_eq!(oid(&remote, REF), None);
                 assert_eq!(snapshot(root), before);
             }
+        },
+    );
+}
+
+#[test]
+fn publish_only_ignores_dirty_work_and_unrelated_setting_changes() {
+    isolated(
+        "publish_only_ignores_dirty_work_and_unrelated_setting_changes",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            fs::write(repo.path().join("untracked"), "before").unwrap();
+            let approved = plan(&repo);
+            fs::write(repo.path().join("untracked"), "after").unwrap();
+            fs::write(repo.path().join("tracked"), "uncommitted").unwrap();
+            repo.success(&["add", "tracked"]);
+            fs::write(repo.path().join("tracked"), "remaining").unwrap();
+            fs::write(
+                repo.path().join(".git/twigsmith.config.toml"),
+                "save-message='Changed message'\nfinish-cleanup='keep'\n",
+            )
+            .unwrap();
+            let check = preserved_local(&repo);
+            let report = publication::publish(repo.path(), &approved);
+            assert_success(&report, DestinationState::Created);
+            assert_eq!(oid(&remote, REF).unwrap().as_bytes(), approved.commit);
+            check();
         },
     );
 }
@@ -565,9 +590,9 @@ fn expansive_push_settings_do_not_publish_unrelated_branches_or_tags() {
 }
 
 #[test]
-fn unsafe_fetch_mapping_and_symbolic_tracking_targets_are_refused_locally() {
+fn exact_transport_ignores_unsafe_fetch_mappings_and_preserves_symbolic_cache_targets() {
     isolated(
-        "unsafe_fetch_mapping_and_symbolic_tracking_targets_are_refused_locally",
+        "exact_transport_ignores_unsafe_fetch_mappings_and_preserves_symbolic_cache_targets",
         true,
         |root| {
             for mapping in [
@@ -577,31 +602,26 @@ fn unsafe_fetch_mapping_and_symbolic_tracking_targets_are_refused_locally() {
             ] {
                 let (repo, remote) = fixture(root);
                 repo.success(&["config", "remote.origin.fetch", mapping]);
-                let approved = plan(&repo);
-                let before = snapshot(root);
-                let report = publication::publish(repo.path(), &approved);
-                assert_eq!(report.state, PublicationState::NotAttempted);
-                assert!(matches!(
-                    report.error,
-                    Some(PublishError::UnsafeFetchMapping(_))
-                ));
-                assert_eq!(oid(&remote, REF), None);
-                assert_eq!(snapshot(root), before);
+                let check = preserved_local(&repo);
+                let report = publish(&repo);
+                assert_success(&report, DestinationState::Created);
+                assert_eq!(oid(&remote, REF), oid(repo.path(), "HEAD"));
+                assert!(report.caches[0].has_issue(), "{report:#?}");
+                check();
             }
-            let (repo, _) = fixture(root);
-            repo.success(&[
-                "symbolic-ref",
-                &format!("refs/remotes/origin/{BRANCH}"),
-                "refs/heads/main",
-            ]);
-            let approved = plan(&repo);
-            let before = snapshot(root);
-            let report = publication::publish(repo.path(), &approved);
-            assert!(matches!(
-                report.error,
-                Some(PublishError::SymbolicTrackingRef(_))
-            ));
-            assert_eq!(snapshot(root), before);
+            let (repo, remote) = fixture(root);
+            let cache = format!("refs/remotes/origin/{BRANCH}");
+            repo.success(&["symbolic-ref", &cache, "refs/heads/main"]);
+            let check = preserved_local(&repo);
+            let report = publish(&repo);
+            assert_success(&report, DestinationState::Created);
+            assert_eq!(oid(&remote, REF), oid(repo.path(), "HEAD"));
+            assert_eq!(
+                repo.success(&["symbolic-ref", &cache]).stdout,
+                b"refs/heads/main\n"
+            );
+            assert!(report.caches[0].has_issue(), "{report:#?}");
+            check();
         },
     );
 }
@@ -1028,44 +1048,9 @@ fn push_url_rewrites_use_gits_resolved_push_destinations() {
 }
 
 #[test]
-fn plain_git_push_demonstrates_unsafe_fetch_mapping_history_effects() {
+fn legacy_remote_file_mappings_are_excluded_from_exact_transport() {
     isolated(
-        "plain_git_push_demonstrates_unsafe_fetch_mapping_history_effects",
-        true,
-        |root| {
-            for symbolic in [false, true] {
-                let (repo, _) = fixture(root);
-                let before = oid(repo.path(), "refs/heads/main").unwrap();
-                let work = commit(&repo, "workstream\n");
-                if symbolic {
-                    repo.success(&[
-                        "symbolic-ref",
-                        &format!("refs/remotes/origin/{BRANCH}"),
-                        "refs/heads/main",
-                    ]);
-                } else {
-                    repo.success(&[
-                        "config",
-                        "remote.origin.fetch",
-                        &format!("+{REF}:refs/heads/main"),
-                    ]);
-                }
-                let report = publish(&repo);
-                assert_eq!(report.state, PublicationState::NotAttempted);
-                assert_eq!(oid(repo.path(), "refs/heads/main").unwrap(), before);
-                // Positive control: ordinary Git follows the configured tracking
-                // mapping (and symbolic refs) and really changes local branch history.
-                repo.success(&["push", "origin", &format!("HEAD:{REF}")]);
-                assert_eq!(oid(repo.path(), "refs/heads/main").unwrap(), work);
-            }
-        },
-    );
-}
-
-#[test]
-fn legacy_remote_files_are_refused_before_uninspectable_tracking_writes() {
-    isolated(
-        "legacy_remote_files_are_refused_before_uninspectable_tracking_writes",
+        "legacy_remote_file_mappings_are_excluded_from_exact_transport",
         true,
         |root| {
             let (repo, remote) = fixture(root);
@@ -1079,13 +1064,11 @@ fn legacy_remote_files_are_refused_before_uninspectable_tracking_writes() {
                 ),
             )
             .unwrap();
-            let approved = plan(&repo);
-            let before = snapshot(root);
-            let report = publication::publish(repo.path(), &approved);
-            assert_eq!(report.state, PublicationState::NotAttempted);
-            assert!(matches!(report.error, Some(PublishError::LegacyRemote)));
-            assert_eq!(snapshot(root), before);
-            assert_eq!(oid(&remote, REF), None);
+            let check = preserved_local(&repo);
+            let report = publish(&repo);
+            assert_success(&report, DestinationState::Created);
+            assert_eq!(oid(&remote, REF), oid(repo.path(), "HEAD"));
+            check();
         },
     );
 }
@@ -1356,7 +1339,11 @@ fn cache_transaction_refuses_symbolic_replacement_and_survives_lock_failure() {
                     "{case}: {report:#?}"
                 );
                 assert_eq!(oid(repo.path(), "main"), Some(source.clone()));
-                assert!(report.caches[0].has_issue(), "{case}: {report:#?}");
+                assert_eq!(
+                    report.caches[0].has_issue(),
+                    case != "remote-moved",
+                    "{case}: {report:#?}"
+                );
                 assert_eq!(
                     report.is_complete(),
                     case != "workflow-changed",
@@ -1367,6 +1354,11 @@ fn cache_transaction_refuses_symbolic_replacement_and_survives_lock_failure() {
                         repo.success(&["symbolic-ref", &cache]).stdout,
                         b"refs/heads/main\n"
                     );
+                } else if case == "remote-moved" {
+                    // The acknowledgement is an observation of delivery. A later
+                    // remote deletion does not invalidate that cached observation
+                    // or establish that it remains the remote's current value.
+                    assert_eq!(oid(repo.path(), &cache), Some(source.clone()));
                 } else if case != "workflow-changed" {
                     assert_eq!(oid(repo.path(), &cache), None);
                 }

@@ -12,7 +12,6 @@ use twigsmith::{
     settings::{
         self, CONFIG_FILES, FinishCheck, FinishRewrite, FinishUpdate, SettingSource, Settings,
     },
-    start,
 };
 
 fn load(directory: &Path) -> Result<Settings, settings::SettingsError> {
@@ -382,13 +381,35 @@ fn fixture(root: &Path) -> (Repository, Repository) {
 }
 
 #[test]
-fn check_values_and_sources_invalidate_workflow_plans_before_effects() {
+fn check_values_and_sources_do_not_invalidate_save_scope() {
     isolated(
-        "check_values_and_sources_invalidate_workflow_plans_before_effects",
+        "check_values_and_sources_do_not_invalidate_save_scope",
         true,
         |root| {
             let (repo, _remote) = fixture(root);
             let common = repo.path().join(".git");
+            // This test changes only checks. Rendering full Settings would
+            // also move the provenance of explicit save defaults between files.
+            let write_checks = |index, checks: &[FinishCheck]| {
+                let toml = format!(
+                    "[{}]",
+                    checks
+                        .iter()
+                        .map(|check| format!(
+                            "{{name={},command={}}}",
+                            serde_json::to_string(&check.name).unwrap(),
+                            serde_json::to_string(&check.command).unwrap(),
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                let json = serde_json::to_string(checks).unwrap();
+                fs::write(
+                    common.join(CONFIG_FILES[index]),
+                    document(index, &toml, &json),
+                )
+                .unwrap();
+            };
             let first = vec![
                 check("Tests", &["missing-check", "first"]),
                 check("Lint", &["missing-lint"]),
@@ -405,29 +426,21 @@ fn check_values_and_sources_invalidate_workflow_plans_before_effects() {
                 vec![first[1].clone(), first[0].clone()],
                 vec![],
             ] {
-                write(&common, 0, &first);
-                let start_plan = start::prepare(repo.path(), "new-work").unwrap();
+                write_checks(0, &first);
                 let save_plan = save::assess(repo.path(), &save::Request::default()).unwrap();
-                write(&common, 0, &replacement);
+                write_checks(0, &replacement);
                 let before = snapshot(root);
-                assert!(save::revalidate(repo.path(), &save_plan).is_err());
-                let failure = start::execute(repo.path(), &start_plan).unwrap_err();
-                assert!(failure.effects.is_empty());
-                let failure = save::execution::execute(repo.path(), &save_plan);
-                assert!(failure.effects.is_empty());
-                assert!(failure.commands.is_empty());
-                assert!(failure.publication.is_none());
+                save::revalidate(repo.path(), &save_plan).unwrap();
+                save::resolve(repo.path(), &save_plan, &save::Request::default()).unwrap();
                 assert_eq!(snapshot(root), before);
             }
             for checks in [&first[..], &[][..]] {
-                write(&common, 0, checks);
-                let start_plan = start::prepare(repo.path(), "new-work").unwrap();
+                write_checks(0, checks);
                 let save_plan = save::assess(repo.path(), &save::Request::default()).unwrap();
                 fs::remove_file(common.join(CONFIG_FILES[0])).unwrap();
-                write(&common, 3, checks);
+                write_checks(3, checks);
                 let before = snapshot(root);
-                assert!(save::revalidate(repo.path(), &save_plan).is_err());
-                assert!(start::execute(repo.path(), &start_plan).is_err());
+                save::revalidate(repo.path(), &save_plan).unwrap();
                 assert_eq!(snapshot(root), before);
                 fs::remove_file(common.join(CONFIG_FILES[3])).unwrap();
             }
@@ -773,6 +786,100 @@ fn successful_state_mutations_stop_before_next_check_and_publication() {
             assert!(output.status.success(), "{output:?}");
             assert!(!absent(&remote, "work"));
             assert!(repo.path().join("build/artifact").exists());
+        },
+    );
+}
+
+#[test]
+fn index_hints_cannot_hide_content_from_configured_checks() {
+    isolated(
+        "index_hints_cannot_hide_content_from_configured_checks",
+        true,
+        |root| {
+            for flag in ["--assume-unchanged", "--skip-worktree"] {
+                for timing in [
+                    "before-checks",
+                    "during-check-existing-flag",
+                    "during-check-new-flag",
+                ] {
+                    let (repo, remote) = fixture(root);
+                    if timing != "during-check-new-flag" {
+                        repo.success(&["update-index", flag, "work"]);
+                    }
+                    let mutation = if timing == "before-checks" {
+                        fs::write(repo.path().join("work"), "modified").unwrap();
+                        "touch .git/first-check".to_owned()
+                    } else {
+                        format!(
+                            "touch .git/first-check; git update-index {flag} work; printf modified > work"
+                        )
+                    };
+                    configured(
+                        &repo,
+                        &[
+                            shell("Hidden mutation", &mutation),
+                            shell("Later", "touch .git/later-check"),
+                        ],
+                    );
+                    let output = finish_cli(&repo, &[]);
+                    assert_eq!(output.status.code(), Some(1), "{flag}/{timing}: {output:?}");
+                    assert!(absent(&remote, "work"));
+                    assert!(!repo.path().join(".git/later-check").exists());
+                    assert_eq!(
+                        repo.path().join(".git/first-check").exists(),
+                        timing != "before-checks"
+                    );
+                    assert_eq!(fs::read(repo.path().join("work")).unwrap(), b"modified");
+                    assert!(
+                        String::from_utf8_lossy(&output.stderr)
+                            .contains("Check 1 (Hidden mutation) stopped"),
+                        "{output:?}"
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn unchanged_index_hints_preserve_checked_content_and_real_index() {
+    isolated(
+        "unchanged_index_hints_preserve_checked_content_and_real_index",
+        true,
+        |root| {
+            for (flag, expected) in [("--assume-unchanged", b'h'), ("--skip-worktree", b'S')] {
+                for preexisting in [false, true] {
+                    let (repo, remote) = fixture(root);
+                    if preexisting {
+                        repo.success(&["update-index", flag, "work"]);
+                    }
+                    configured(
+                        &repo,
+                        &[
+                            shell("Index hint", &format!("git update-index {flag} work")),
+                            shell(
+                                "Actual content",
+                                "test \"$(cat work)\" = work && touch .git/later-check",
+                            ),
+                        ],
+                    );
+                    let before = fs::read(repo.path().join(".git/index")).unwrap();
+                    let output = finish_cli(&repo, &[]);
+                    assert!(output.status.success(), "{flag}/{preexisting}: {output:?}");
+                    assert!(repo.path().join(".git/later-check").exists());
+                    assert_eq!(
+                        repo.success(&["ls-files", "-v", "--", "work"]).stdout[0],
+                        expected
+                    );
+                    assert_eq!(
+                        remote.success(&["show", "refs/heads/work:work"]).stdout,
+                        b"work"
+                    );
+                    if preexisting {
+                        assert_eq!(fs::read(repo.path().join(".git/index")).unwrap(), before);
+                    }
+                }
+            }
         },
     );
 }

@@ -279,8 +279,7 @@ and tag ambiguity out of branch selection and publication.
 
 ### Snapshot limits
 
-Revalidation repeats observation and compares the relevant approved context.
-Save snapshots include HEAD, repository identity, settings and sources, raw routing
+Entry assessment records the facts needed to execute a plan. Save snapshots include HEAD, repository identity, settings and sources, raw routing
 values, resolved push URLs, index path/bytes, scope, tracked diff, and included
 file bytes, permissions, or symlink targets. Untracked directories are inspected
 recursively without following symlinks. Changes to contents can invalidate a plan
@@ -290,10 +289,10 @@ invalidate it even when selected content is unchanged.
 Finish additionally binds effective Git configuration, committed shared-settings
 blob IDs, history boundaries, fresh remote evidence, and recovery state. Integration
 also binds source/target/HEAD reflogs, worktree occupancy, selected private records,
-and retention refs. The full effective Git configuration is compared conservatively,
-so even an unrelated changed value can require reassessment. Save and review
-compare settings by resolved values and sources, with finish additionally binding
-committed configuration blobs. Start's checkout guard and integration stages
+and retention refs. Direct integration binds operational Git configuration;
+review binds the selected transport configuration. Guards refresh facts needed by
+the next stage rather than comparing every unrelated setting. Finish also binds
+committed configuration blobs where they define the accepted policy. Start's checkout guard and integration stages
 snapshot recognized shared and private file contents and modes; only verified
 tracked-tree transitions may change shared files during the selected Git effects.
 
@@ -474,10 +473,9 @@ remote/merge pair even if Git's fetch mapping cannot resolve a local upstream
 comparison. Orphan upstream configuration on an absent local target blocks
 creation before fetch rather than being silently reused.
 
-Before each effect, start rechecks context/settings, attached HEAD, operation and
-worktree guards, expected target version, cleanliness, raw routing values, and
-resolved fetch destinations. Its own tracking writes advance only the expected
-routing snapshot. Fetch, branch creation, tracking writes, and switching are
+Start validates the supplied request at entry, refreshes selected routes around
+transport, and checks HEAD, occupancy and cleanliness before switching. Its own
+tracking writes advance the expected routing snapshot. Fetch, branch creation, tracking writes, and switching are
 separate effects. After partial failure, an existing created target is treated
 as local resume on retry. A post-checkout hook failure can leave HEAD switched;
 the remaining-state report preserves that fact. Git's switch parser can also
@@ -487,7 +485,7 @@ by [start workflow tests](../tests/start_workflow.rs).
 
 Checkout can restore, remove, or change tracked shared configuration. The final
 guard compares recognized configuration files with the approved target tree and
-keeps the pre-switch private configuration and effective Git configuration bound.
+keeps the pre-switch private configuration and selected routing bound.
 It validates the original request using its original settings; restored settings
 grant no additional start effects. Subsequent commands load the current branch's
 configuration. Unexpected file changes, including checkout-hook changes, still
@@ -532,7 +530,7 @@ reconstruction guidance. Preservation and hook-failure cases are exercised in
 [`save::publication`](../src/save/publication.rs) accepts a resolved plan with no
 pending local steps. It permits dirty publish-only work and an existing index
 lock because publication performs no staging, commit, stash, or index edit.
-It revalidates the selected branch/commit and scope, then pushes through a
+It validates the selected branch, commit and publication route, then pushes through a
 command-scoped remote with the configured endpoints and a literal
 `<approved-oid>:refs/heads/<branch>` refspec. A pre-push hook moving the local branch cannot change that pinned source.
 
@@ -548,20 +546,16 @@ Exact-ref containment also requires controlling Git's incidental effects:
 - `push.autoSetupRemote=false` prevents incidental upstream writes. Recursive
   submodule publication is disabled, including implicit recursion, while the
   nonmutating `push.recurseSubmodules=check` policy stays effective.
-- Ordinary named Git pushes can update fetch-mapped local refs. Positive fetch mappings
-  with destinations must have full destinations under `refs/remotes/`; any
-  mapping elsewhere is refused, including unrelated mappings. Matching symbolic
-  tracking refs are refused. Negative mappings, source-only refspecs, and
-  restrictive tracking mappings remain supported.
-- Legacy remote definitions without configured URL values are refused because
-  their separate mappings cannot be checked through this configuration boundary.
+- Ordinary named Git pushes can update fetch-mapped local refs. The command-scoped
+  remote omits those mappings, including legacy remote mappings. Separate cache
+  maintenance limits updates to eligible `refs/remotes/` refs and refuses symbolic
+  targets or changed expected values.
 
 Signing, receive-pack, push options, credentials, helpers, and normal hooks remain
 effective. A pre-push hook receives the command-scoped remote name and selected
-endpoint. Unsafe configuration is reported rather than rewritten. The containment
-rationale is supported by positive-control ordinary Git examples in
-[save publication tests](../tests/save_publication.rs): even a non-forced
-single-branch push can change local branch history through a fetch mapping.
+endpoint. Cache issues are reported rather than repaired by rewriting configuration.
+[Save publication tests](../tests/save_publication.rs) exercise containment of
+unsafe mappings and symbolic cache refs.
 
 ## Finish for review: prepare, check, and deliver
 
@@ -626,8 +620,8 @@ Tags, pruning, submodule recursion, FETCH_HEAD, maintenance, and commit-graph
 writes are disabled. Git documents these controls in
 [git-fetch](https://git-scm.com/docs/git-fetch).
 
-Preparation requires a ready plan, repeats refresh, and rejects changed context
-or observations before updating the branch. Rebase uses the fetched base OID,
+Preparation requires a ready plan and confirms the selected remote refs before
+updating the branch, reusing the objects acquired during refresh. Rebase uses the fetched base OID,
 preserves merge structure with `--rebase-merges=no-rebase-cousins`, and disables
 update-refs, fork-point, autosquash, and autostash. Merge uses that base with Git's
 normal generated message and no recursive submodule update. None performs no
@@ -635,8 +629,7 @@ history update. Merge recreation follows [Git rebase semantics](https://git-scm.
 and can require resolving earlier conflicts again.
 
 After preparation, assessment checks the actual clean attached branch and graph.
-Changed settings, committed configuration, Git configuration, branch, routing,
-or endpoints stop later execution. Reports retain observations, fetched objects,
+Changes to the selected policy, candidate, routing or endpoints stop later execution. Reports retain observations, fetched objects,
 private recovery writes, verified branch changes, command output, and remaining
 state. Preparation never publishes or establishes tracking.
 
@@ -699,13 +692,13 @@ and fresh-process continuation through the public commands.
 ### Rebase recovery proves incorporation
 
 Before a review rebase, [`finish/recovery.rs`](../src/finish/recovery.rs) writes
-an atomic version-3 record at
+an atomic version-4 record at
 `<worktree-git-dir>/twigsmith-finish/branches/<branch>/rewrite.json`. Owner-only
 files/directories on Unix and symlink rejection protect its private storage.
 The record binds repository/worktree identity, refs, remote roles/endpoints,
 ordered original destination observations, original commits, fetched bases,
 selected remote/URL-rewrite configuration, and branch/HEAD reflog anchors.
-Interactive records additionally bind full settings/configuration, local shared
+Interactive records additionally bind settings, selected routes, local shared
 refs/raw logs, exact target evidence, and an original retention ref with its
 creation reflog. Raw branch and HEAD prefixes corroborate the pre-edit anchors;
 interactive completion accepts only its verified finish, with no later source
@@ -770,6 +763,11 @@ signal facility. Non-Unix configured execution is unsupported. SIGKILL and delib
 process-group escape are outside the lifecycle guarantee; checks are project code,
 not sandboxed work. Failed launch, exit, signal, collection, cancellation, or guard
 stops execution without automatic fixes, commits, stashes, retries, or rollback.
+When assume-unchanged or skip-worktree flags are present, the check boundary uses
+a disposable index populated from the guarded candidate and a native Git diff to
+compare actual working content. This catches edits hidden from status without
+modifying the real index or its flags. Missing sparse paths stop checked execution;
+filter behavior follows Git and arbitrary filter effects remain outside this guard.
 Preparation and check effects remain visible; retry runs the whole effective list.
 [Finish check tests](../tests/finish_checks.rs) cover this boundary and live output.
 
@@ -819,10 +817,10 @@ The helper binds repository identity, routing configuration, the configured fetc
 endpoint and each mapped ref's version and raw reflog before delivery. Positive
 mappings must identify full destinations under `refs/remotes/`; negative mappings
 exclude sources. Inverse mapping collisions, symbolic refs, endpoint mismatch and
-changed observations leave caches intact. An exact fresh remote observation must
-still match the confirmed effect. Conditional no-deref ref transactions lock the
-cache and recheck binding and remote equality after transaction hooks before
-committing. Existing newer or unrelated local observations are preserved; history
+changed observations leave caches intact. A complete exact push acknowledgement
+can supply the delivered value; partial or uncertain delivery requires a fresh
+matching observation. Conditional no-deref ref transactions lock the cache and
+recheck local binding and ref identity after transaction hooks before committing. Existing newer or unrelated local observations are preserved; history
 evidence
 must establish safe advancement when exact previous-remote equality does not.
 Graft history cannot supply that ancestry proof. Fetch matching/exclusions follow
@@ -836,8 +834,8 @@ refresh does not erase confirmed effects or authorize another push/deletion. A
 retry observes actual remote state through the workflow's normal guards; cache
 contents grant no additional authority. Maintenance performs no blanket fetch or
 prune and changes no branch tracking configuration. As with publication, the
-remote observation and local transaction are separate boundaries; a remote can
-move after observation. Tests and journey checks exercise these limits with real
+acknowledgement or remote observation and local transaction are separate boundaries;
+a remote can move afterward. Tests and journey checks exercise these limits with real
 Git and local transports.
 
 ## Publication reports and failure diagnosis
@@ -899,8 +897,8 @@ or completion; pending delivery restores the candidate checkout when needed for
 checks. Already-delivered retries leave checkout to the completion policy. The CLI
 uses the verified root after switching branches. Review retains its independent pipeline.
 
-Choice resolution revalidates the presented plan before and after reassessment.
-New input changes only its selected choice; concurrent context changes cannot
+Choice resolution validates the presented binding and resolves the selected input
+against its established facts. New input changes only its selected choice; concurrent context changes cannot
 become fresh authorization through a prompt. Accepted method/message input after
 verified preparation is retained through a guarded private-record write before
 target effects, even if subsequent input is cancelled. A message editor follows
@@ -990,9 +988,8 @@ transport configuration. Assessment itself performs no transport.
 
 Refresh fetches each observed full OID without a destination refspec. Empty
 `--refmap=`, disabled tag/prune/submodule handling, and disabled FETCH_HEAD,
-commit-graph, and maintenance writes contain acquisition to objects. It verifies
-the observed commit is available rather than substituting a newer branch tip or
-cached history. An endpoint refusing that exact object stops refresh. These
+commit-graph, and maintenance writes contain acquisition to objects. The successful fetch obtains the selected object rather than substituting a newer
+branch tip or cached history. An endpoint refusing that exact object stops refresh. These
 mapping and metadata controls follow [git-fetch](https://git-scm.com/docs/git-fetch).
 Fetch does not advance work/base branches, ordinary tracking refs, or tracking
 relationships, and does not change the index or working tree. Completed transports
@@ -1030,8 +1027,9 @@ checkout or branch deletion.
 [`integration::completion`](../src/finish/integration/completion.rs) completes
 one corroborated, retained attempt from an evidence-bearing assessment. Callers
 can obtain that assessment through explicit refresh. Completion observes every
-exact target push endpoint at the completion boundary and before subsequent
-effects; all must still equal the verified result. A publication report or supplied cache cannot authorize
+exact target push endpoint at the completion boundary; all must still equal the
+verified result. It retains acknowledged delivery and refreshes facts required
+by later cleanup boundaries. A publication report or supplied cache cannot authorize
 checkout or deletion. Completion performs no preparation, integration, target
 push, or candidate checks. Unresolved policy or changed local binding stops it.
 
@@ -1091,9 +1089,9 @@ state. The [snapshot limits](#snapshot-limits) and trusted-hook limits still app
 ### Local execution and retention
 
 [`integration::execution::prepare`](../src/finish/integration/execution.rs)
-revalidates the approved plan and rereads the exact target at its fetch/push
-endpoints before history changes. The caller supplies objects and initial evidence
-from explicit refresh. Ordinary local execution performs no fetch or remote write.
+validates the approved local binding before history changes. The caller supplies
+pinned objects and initial evidence from explicit refresh; the publication lease
+protects the original target if a remote moves afterward. Ordinary local execution performs no fetch or remote write.
 Tagged execution also observes version refs, acquires any required marker objects,
 and checks the exact source before creating its tag; publication remains a separate
 stage. It
@@ -1130,7 +1128,7 @@ the result and a retry runs the effective list again.
 ### Association and recovery proof
 
 [`integration/recovery.rs`](../src/finish/integration/recovery.rs) stores private
-version-3 records at
+version-4 records at
 `<worktree-git-dir>/twigsmith-integration/branches/<source>/attempt.json` and an
 `active.json` selector for association after target checkout. Atomic writes sync
 files and containing directories and reject symlinks; Unix paths must be private.
@@ -1167,7 +1165,12 @@ the selector must retain a valid HEAD anchor and corroborate checkout from that
 same source. Later checkout from another work branch breaks association.
 Recorded rebase can select a detached source only through Git's matching
 `head-name` and surviving HEAD anchor. Unassociated HEAD or a selected missing
-record cannot authorize recovery.
+record cannot authorize recovery. When a selector is malformed or unreadable,
+refusal can also use an earlier source-to-target checkout, a readable owned record,
+and the matching native transition in both target and HEAD history. A completed
+ordered destination must additionally match its recorded result. This historical
+identity can stop an unintended finish; it does not authorize continuation. If the
+required record or reflogs are unavailable, that fallback cannot establish identity.
 
 Recovery checks anchored source preparation, target alignment, and the exact
 integration transition. A preparation merge must retain original-source and

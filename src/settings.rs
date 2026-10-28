@@ -644,7 +644,16 @@ impl WorkstreamConfig {
         directory: &Path,
         kind: WorkstreamKind,
     ) -> Result<(), SettingsError> {
-        self.validate(directory)?;
+        self.validate_for_with(directory, kind, &mut NameValidation::default())
+    }
+
+    fn validate_for_with(
+        &self,
+        directory: &Path,
+        kind: WorkstreamKind,
+        names: &mut NameValidation,
+    ) -> Result<(), SettingsError> {
+        self.validate_with(directory, names)?;
         if kind == WorkstreamKind::Ordinary && self.integration_targets.is_some() {
             return Err(SettingsError::InvalidSettings(
                 "integration-targets applies to release or hotfix work".into(),
@@ -652,7 +661,7 @@ impl WorkstreamConfig {
         }
         if kind == WorkstreamKind::Hotfix
             && let Some(source) = &self.creation_source
-            && (!source.starts_with("refs/tags/") || !valid_ref(directory, source)?)
+            && (!source.starts_with("refs/tags/") || !names.reference(directory, source)?)
         {
             return Err(SettingsError::InvalidSettings(
                 "hotfix creation-source must be an exact full version tag reference refs/tags/TAG"
@@ -661,7 +670,11 @@ impl WorkstreamConfig {
         }
         Ok(())
     }
-    pub(crate) fn validate(&self, directory: &Path) -> Result<(), SettingsError> {
+    fn validate_with(
+        &self,
+        directory: &Path,
+        names: &mut NameValidation,
+    ) -> Result<(), SettingsError> {
         if self.integration_target.is_some() && self.integration_targets.is_some() {
             return Err(SettingsError::InvalidSettings(
                 "select integration-target or integration-targets, not both".into(),
@@ -675,7 +688,7 @@ impl WorkstreamConfig {
             }
             let mut seen = std::collections::BTreeSet::new();
             for target in targets {
-                if !valid_branch(directory, target)? || !seen.insert(target) {
+                if !names.branch(directory, target)? || !seen.insert(target) {
                     return Err(SettingsError::InvalidSettings(
                         "integration-targets must contain distinct valid branch names".into(),
                     ));
@@ -689,7 +702,7 @@ impl WorkstreamConfig {
             .into_iter()
             .flatten()
         {
-            if !valid_remote(directory, value)? {
+            if !names.remote(directory, value)? {
                 return Err(SettingsError::InvalidSettings(format!(
                     "invalid workstream remote {value:?}"
                 )));
@@ -703,7 +716,7 @@ impl WorkstreamConfig {
         .into_iter()
         .flatten()
         {
-            if !valid_branch(directory, value)? {
+            if !names.branch(directory, value)? {
                 return Err(SettingsError::InvalidSettings(format!(
                     "invalid preparation/integration branch {value:?}"
                 )));
@@ -713,7 +726,7 @@ impl WorkstreamConfig {
             .into_iter()
             .flatten()
         {
-            if value != "none" && !valid_branch(directory, value)? {
+            if value != "none" && !names.branch(directory, value)? {
                 return Err(SettingsError::InvalidSettings(format!(
                     "invalid workstream branch {value:?}"
                 )));
@@ -1016,10 +1029,16 @@ impl Layer {
             )),
         }
     }
-    fn validate(&self, directory: &Path, path: &Path, local: bool) -> Result<(), SettingsError> {
+    fn validate(
+        &self,
+        directory: &Path,
+        path: &Path,
+        local: bool,
+        names: &mut NameValidation,
+    ) -> Result<(), SettingsError> {
         if let Some(policies) = &self.workstreams {
             for (kind, config) in policies {
-                config.validate_for(directory, *kind)?;
+                config.validate_for_with(directory, *kind, names)?;
             }
         }
         if !local && self.redact_credentials.is_some() {
@@ -1033,13 +1052,13 @@ impl Layer {
             ("base-remote", &self.base_remote),
         ] {
             if let Some(remote) = value
-                && !valid_remote(directory, remote)?
+                && !names.remote(directory, remote)?
             {
                 return Err(invalid(path, format!("invalid {key} name: {remote:?}")));
             }
         }
         if let Some(base) = &self.base
-            && !valid_branch(directory, base)?
+            && !names.branch(directory, base)?
         {
             return Err(invalid(path, format!("invalid base branch name: {base:?}")));
         }
@@ -1379,7 +1398,7 @@ pub fn load(directory: &Path, repository: &RepositoryContext) -> Result<Settings
             .stdout
             .strip_suffix(b"\n")
             .ok_or(InspectionError::InvalidOutput("HEAD branch"))?;
-        apply_branch_policy(directory, branch, &mut settings)?;
+        apply_branch_policy(directory, repository, branch, &mut settings)?;
     }
     Ok(settings)
 }
@@ -1418,12 +1437,13 @@ fn load_layers(
     let mut settings = Settings::default();
     let mut redact_credentials = true;
     let mut redact_credentials_source = SettingSource::BuiltIn;
+    let mut names = NameValidation::default();
     for (file, is_local) in [
         (shared_layer, false),
         (local.clone().zip(local_layer), true),
     ] {
         if let Some((path, layer)) = file {
-            layer.validate(directory, &path, is_local)?;
+            layer.validate(directory, &path, is_local, &mut names)?;
             let source = if is_local {
                 SettingSource::Local(path)
             } else {
@@ -1451,6 +1471,33 @@ fn load_layers(
         redact_credentials,
         redact_credentials_source,
     })
+}
+
+// Git validates syntax once for each immutable full ref within one settings load.
+// This stores no repository state and does not survive the load.
+#[derive(Default)]
+struct NameValidation(std::collections::BTreeMap<String, bool>);
+impl NameValidation {
+    fn reference(&mut self, directory: &Path, reference: &str) -> Result<bool, InspectionError> {
+        if let Some(valid) = self.0.get(reference) {
+            return Ok(*valid);
+        }
+        let valid = valid_ref(directory, reference)?;
+        self.0.insert(reference.to_owned(), valid);
+        Ok(valid)
+    }
+    fn branch(&mut self, directory: &Path, name: &str) -> Result<bool, InspectionError> {
+        if name.starts_with('-') || name == "HEAD" {
+            return Ok(false);
+        }
+        self.reference(directory, &format!("refs/heads/{name}"))
+    }
+    fn remote(&mut self, directory: &Path, name: &str) -> Result<bool, InspectionError> {
+        if name.is_empty() || name.starts_with('-') || name == "." {
+            return Ok(false);
+        }
+        self.reference(directory, &format!("refs/remotes/{name}/base"))
+    }
 }
 
 pub(crate) fn valid_branch(directory: &Path, name: &str) -> Result<bool, InspectionError> {
@@ -1768,7 +1815,7 @@ pub fn load_for_branch(
     branch: &[u8],
 ) -> Result<Settings, SettingsError> {
     let mut settings = load_with_files(directory, repository)?.settings;
-    apply_branch_policy(directory, branch, &mut settings)?;
+    apply_branch_policy(directory, repository, branch, &mut settings)?;
     Ok(settings)
 }
 
@@ -1844,15 +1891,23 @@ pub(crate) fn load_for_branch_from_shared_tree(
         return Ok(None);
     }
     let mut loaded = load_layers(directory, repository, shared)?;
-    apply_branch_policy(directory, branch, &mut loaded.settings)?;
+    apply_branch_policy(directory, repository, branch, &mut loaded.settings)?;
     Ok(Some(loaded))
 }
 /// Refuse only legacy records associated with the branch being operated on.
 /// Historical reflogs and independent save-recovery refs are not ownership records.
 pub(crate) fn legacy_branch_guard(directory: &Path, branch: &[u8]) -> Result<(), SettingsError> {
+    let repository = crate::repository::discover(directory)?;
+    legacy_branch_guard_with_context(directory, branch, repository.as_ref())
+}
+
+fn legacy_branch_guard_with_context(
+    directory: &Path,
+    branch: &[u8],
+    repository: Option<&RepositoryContext>,
+) -> Result<(), SettingsError> {
     let legacy_key = crate::tracking::key(branch, b".oneflow-policy");
     let old_policy = !crate::tracking::config(directory, &legacy_key)?.is_empty();
-    let repository = crate::repository::discover(directory)?;
     let mut old_record = false;
     if let Some(repository) = repository {
         let branch_path = crate::repository::os(branch)?;
@@ -1901,7 +1956,16 @@ pub(crate) fn branch_policy(
     directory: &Path,
     branch: &[u8],
 ) -> Result<Option<BranchPolicy>, SettingsError> {
-    legacy_branch_guard(directory, branch)?;
+    let repository = crate::repository::discover(directory)?;
+    branch_policy_with_context(directory, branch, repository.as_ref())
+}
+
+fn branch_policy_with_context(
+    directory: &Path,
+    branch: &[u8],
+    repository: Option<&RepositoryContext>,
+) -> Result<Option<BranchPolicy>, SettingsError> {
+    legacy_branch_guard_with_context(directory, branch, repository)?;
     let values = crate::tracking::config(
         directory,
         &crate::tracking::key(branch, b".twigsmith-policy"),
@@ -1963,10 +2027,11 @@ pub(crate) fn branch_anchor(
 }
 fn apply_branch_policy(
     directory: &Path,
+    repository: &RepositoryContext,
     branch: &[u8],
     settings: &mut Settings,
 ) -> Result<(), SettingsError> {
-    if let Some(record) = branch_policy(directory, branch)? {
+    if let Some(record) = branch_policy_with_context(directory, branch, Some(repository))? {
         // Missing source is allowed for retained completion. A surviving or recreated
         // source must still carry the exact original branch-creation reflog entry.
         let args = vec![

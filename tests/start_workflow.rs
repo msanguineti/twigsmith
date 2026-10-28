@@ -83,6 +83,61 @@ fn current_dirty_branch_is_a_preserved_noop() {
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn branch_creation_hook_work_blocks_the_clean_switch() {
+    isolated(
+        "branch_creation_hook_work_blocks_the_clean_switch",
+        true,
+        |root| {
+            for policy in [None, Some(twigsmith::settings::WorkstreamKind::Ordinary)] {
+                let (_remote, local) = pair(root);
+                let source = oid(&local, "HEAD");
+                let hooks = local.path().join(".git/start-hooks");
+                fs::create_dir(&hooks).unwrap();
+                executable(
+                    &hooks.join("reference-transaction"),
+                    "#!/bin/sh\nif test \"$1\" != committed; then cat >/dev/null; exit 0; fi\nwhile read old new reference; do\n  if test \"$reference\" = refs/heads/work; then\n    printf 'hook introduced dirty work\\n' > tracked\n  fi\ndone\n",
+                );
+                local.success(&[
+                    "config".as_ref(),
+                    "core.hooksPath".as_ref(),
+                    hooks.as_os_str(),
+                ]);
+                let request = start::prepare_with_options(
+                    local.path(),
+                    "work",
+                    &start::Options {
+                        policy,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let failure = start::execute(local.path(), &request).unwrap_err();
+                assert!(matches!(failure.error, StartError::Dirty), "{failure:?}");
+                branch(remaining(&failure), "main", &source);
+                assert_eq!(oid(&local, "refs/heads/work"), source);
+                assert_eq!(
+                    fs::read_to_string(local.path().join("tracked")).unwrap(),
+                    "hook introduced dirty work\n",
+                );
+                assert!(
+                    failure
+                        .effects
+                        .iter()
+                        .any(|effect| matches!(effect, Effect::BranchCreated { .. }))
+                );
+                assert!(
+                    !failure
+                        .effects
+                        .iter()
+                        .any(|effect| matches!(effect, Effect::Switched { .. }))
+                );
+            }
+        },
+    );
+}
+
 #[test]
 fn local_resume_preserves_history_upstream_and_never_contacts_remote() {
     isolated(
@@ -883,6 +938,61 @@ fn old_or_forged_requests_are_revalidated() {
         ));
         assert_eq!(snapshot(root), before);
     });
+}
+
+#[cfg(unix)]
+#[test]
+fn unrelated_configuration_changes_do_not_invalidate_start() {
+    isolated(
+        "unrelated_configuration_changes_do_not_invalidate_start",
+        true,
+        |root| {
+            for boundary in ["entry", "transport", "checkout"] {
+                let (_remote, local) = pair(root);
+                let source = oid(&local, "HEAD");
+                let request = start::prepare(local.path(), "work").unwrap();
+                match boundary {
+                    "entry" => {
+                        // This setting does not select start's effects.
+                        fs::write(
+                            local.path().join(".git/twigsmith.config.toml"),
+                            "save-message='Different save message'\n",
+                        )
+                        .unwrap();
+                    }
+                    "transport" => transport_probe(
+                        &local,
+                        &format!(
+                            "git -C {} config test.unrelated changed",
+                            shell_path(local.path()),
+                        ),
+                    ),
+                    _ => {
+                        let hooks = local.path().join(".git/start-hooks");
+                        fs::create_dir(&hooks).unwrap();
+                        executable(
+                            &hooks.join("post-checkout"),
+                            "#!/bin/sh\ngit config test.unrelated changed\n",
+                        );
+                        local.success(&[
+                            "config".as_ref(),
+                            "core.hooksPath".as_ref(),
+                            hooks.as_os_str(),
+                        ]);
+                    }
+                }
+                let outcome = start::execute(local.path(), &request).unwrap();
+                assert_eq!(outcome.action, Action::Create, "{boundary}");
+                branch(&outcome.state, "work", &source);
+                if boundary != "entry" {
+                    assert_eq!(
+                        local.success(&["config", "--get", "test.unrelated"]).stdout,
+                        b"changed\n",
+                    );
+                }
+            }
+        },
+    );
 }
 
 #[cfg(unix)]

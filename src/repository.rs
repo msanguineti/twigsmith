@@ -27,6 +27,101 @@ pub struct RepositoryContext {
     pub working_tree_root: Option<PathBuf>,
 }
 
+/// Git-resolved metadata paths retained by one command's selected context.
+/// Resolving through Git preserves relocation variables, linked worktrees and
+/// arbitrary path bytes. Reads stay fresh; no file contents or ref values cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MetadataPaths {
+    paths: std::collections::BTreeMap<String, PathBuf>,
+    environment: Vec<Option<OsString>>,
+}
+impl MetadataPaths {
+    const VARIABLES: [&'static str; 9] = [
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_GRAFT_FILE",
+        "GIT_SHALLOW_FILE",
+        "GIT_NAMESPACE",
+    ];
+    pub(crate) fn operations(directory: &Path) -> Result<Self> {
+        let mut paths = Self {
+            paths: Default::default(),
+            environment: Self::VARIABLES.iter().map(std::env::var_os).collect(),
+        };
+        paths.extend(
+            directory,
+            &[
+                "MERGE_HEAD",
+                "rebase-merge",
+                "rebase-apply/rebasing",
+                "CHERRY_PICK_HEAD",
+                "REVERT_HEAD",
+                "rebase-apply/applying",
+                "BISECT_START",
+                "sequencer/todo",
+            ],
+        )?;
+        Ok(paths)
+    }
+    pub(crate) fn matches_environment(&self) -> bool {
+        self.environment
+            == Self::VARIABLES
+                .iter()
+                .map(std::env::var_os)
+                .collect::<Vec<_>>()
+    }
+    pub(crate) fn extend(&mut self, directory: &Path, names: &[&str]) -> Result<()> {
+        if !self.matches_environment() {
+            return Err(InspectionError::InvalidOutput(
+                "repository path environment changed",
+            ));
+        }
+        for name in names {
+            if !self.paths.contains_key(*name) {
+                let path = Inspector(directory).path(&[
+                    "rev-parse",
+                    "--path-format=absolute",
+                    "--git-path",
+                    name,
+                ])?;
+                self.paths.insert((*name).into(), path);
+            }
+        }
+        Ok(())
+    }
+    fn path(&self, name: &str) -> Result<&Path> {
+        self.paths
+            .get(name)
+            .map(PathBuf::as_path)
+            .ok_or(InspectionError::InvalidOutput(
+                "unresolved repository metadata path",
+            ))
+    }
+    fn present(&self, name: &str) -> Result<bool> {
+        match fs::symlink_metadata(self.path(name)?) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+    pub(crate) fn read(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        if !self.matches_environment() {
+            return Err(InspectionError::InvalidOutput(
+                "repository path environment changed",
+            ));
+        }
+        match fs::read(self.path(name)?) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryState {
     pub kind: RepositoryKind,
@@ -215,15 +310,6 @@ impl Inspector<'_> {
         Ok(PathBuf::from(os(line(&output)?)?))
     }
 
-    fn present(&self, name: &str) -> Result<bool> {
-        let path = self.path(&["rev-parse", "--path-format=absolute", "--git-path", name])?;
-        match fs::symlink_metadata(path) {
-            Ok(_) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
-        }
-    }
-
     fn ref_exists(&self, reference: &[u8]) -> Result<bool> {
         let args = vec![
             "show-ref".into(),
@@ -387,21 +473,16 @@ impl Inspector<'_> {
         })
     }
 
-    fn operations(&self) -> Result<Operations> {
+    fn operations(&self, paths: &MetadataPaths) -> Result<Operations> {
         let mut operations = Operations {
-            merge: self.present("MERGE_HEAD")?,
-            rebase: self.present("rebase-merge")? || self.present("rebase-apply/rebasing")?,
-            cherry_pick: self.present("CHERRY_PICK_HEAD")?,
-            revert: self.present("REVERT_HEAD")?,
-            am: self.present("rebase-apply/applying")?,
-            bisect: self.present("BISECT_START")?,
+            merge: paths.present("MERGE_HEAD")?,
+            rebase: paths.present("rebase-merge")? || paths.present("rebase-apply/rebasing")?,
+            cherry_pick: paths.present("CHERRY_PICK_HEAD")?,
+            revert: paths.present("REVERT_HEAD")?,
+            am: paths.present("rebase-apply/applying")?,
+            bisect: paths.present("BISECT_START")?,
         };
-        let todo = self.path(&[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            "sequencer/todo",
-        ])?;
+        let todo = paths.path("sequencer/todo")?;
         match fs::read(todo) {
             Ok(contents) => {
                 // The sequencer may remain after a conflict is committed manually.
@@ -474,10 +555,33 @@ pub fn inspect(directory: impl AsRef<Path>) -> Result<Observation> {
 /// Save validates raw upstream values itself before any tracking resolution.
 /// Upstream is deliberately NotApplicable in this internal observation.
 pub(crate) fn inspect_without_upstream(directory: &Path) -> Result<Observation> {
-    let inspector = Inspector(directory);
     let Some(context) = discover(directory)? else {
         return Ok(Observation::OutsideRepository);
     };
+    inspect_context_without_upstream(directory, context)
+}
+
+// Reuse discovery within one read-only assessment; no workflow effect intervenes
+// between selecting the context and observing it.
+pub(crate) fn inspect_context_without_upstream(
+    directory: &Path,
+    context: RepositoryContext,
+) -> Result<Observation> {
+    let paths = MetadataPaths::operations(directory)?;
+    inspect_context_with_paths(directory, context, &paths)
+}
+
+pub(crate) fn inspect_context_with_paths(
+    directory: &Path,
+    context: RepositoryContext,
+    paths: &MetadataPaths,
+) -> Result<Observation> {
+    if !paths.matches_environment() {
+        return Err(InspectionError::InvalidOutput(
+            "repository path environment changed",
+        ));
+    }
+    let inspector = Inspector(directory);
     let RepositoryContext {
         kind,
         git_dir,
@@ -502,7 +606,7 @@ pub(crate) fn inspect_without_upstream(directory: &Path) -> Result<Observation> 
     } else {
         None
     };
-    let operations = inspector.operations()?;
+    let operations = inspector.operations(paths)?;
     let upstream = Upstream::NotApplicable;
     Ok(Observation::Repository(Box::new(RepositoryState {
         kind,

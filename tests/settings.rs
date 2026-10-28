@@ -1370,7 +1370,7 @@ fn completion_settings_and_sources_revalidate_workflows_and_guided_review() {
                     write(&repo.path().join(".git"), 0, &[(key, value)]);
                     let before = snapshot(root);
                     assert!(start::execute(repo.path(), &start).is_err());
-                    assert!(save::revalidate(repo.path(), &save).is_err());
+                    save::revalidate(repo.path(), &save).unwrap();
                     assert!(twigsmith::finish::revalidate(repo.path(), &finish, None).is_err());
                     assert!(twigsmith::config::revalidate_review(repo.path(), &setup).is_err());
                     assert_eq!(snapshot(root), before);

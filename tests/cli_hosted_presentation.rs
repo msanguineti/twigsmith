@@ -127,7 +127,7 @@ fn hosted_cancel_eof_and_context_changes_stop_before_effects() {
                 if change {
                     fixture
                         .local
-                        .success(&["config", "oneflow.test-context", "changed"]);
+                        .success(&["config", "remote.origin.receivepack", "changed"]);
                 }
                 terminal.send(response);
                 assert_eq!(terminal.finish().code(), Some(1), "{}", terminal.output);

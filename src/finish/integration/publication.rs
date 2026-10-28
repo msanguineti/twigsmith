@@ -1,4 +1,4 @@
-//! Guarded delivery and cache maintenance for a retained integration result.
+//! Exact staged delivery and cache maintenance for a retained integration result.
 //! Upstream configuration and final completion remain separate.
 use super::*;
 use crate::{
@@ -80,7 +80,7 @@ pub struct Report {
     pub state: PublicationState,
     pub destinations: Vec<DestinationOutcome>,
     pub caches: Vec<shared::CacheReport>,
-    /// Reassessed recovery with this attempt's destination observations. An
+    /// Recovery with this attempt's acknowledged destination outcomes. An
     /// uncertain response remains unavailable until an explicit refresh.
     pub plan: Result<Plan, FinishError>,
     pub remaining: Result<repository::Observation, repository::InspectionError>,
@@ -94,7 +94,7 @@ impl Report {
     }
 }
 fn guard(root: &Path, plan: &Plan) -> Result<(), Error> {
-    revalidate(root, plan, plan.evidence.as_ref())?;
+    revalidate_stage(root, plan, plan.evidence.as_ref())?;
     let record = plan.record.as_ref().ok_or(Error::UnverifiedResult)?;
     let result = plan.result.as_ref().ok_or(Error::UnverifiedResult)?;
     if !matches!(plan.state, State::PendingPublication | State::Published | State::Complete)
@@ -113,7 +113,6 @@ fn observe(
     plan: &Plan,
     outcome: &mut DestinationOutcome,
 ) -> Result<(Vec<OsString>, String), Error> {
-    guard(root, plan)?;
     outcome.state = DestinationState::Unconfirmed;
     let (prefix, name) = remote::endpoint(
         root,
@@ -122,7 +121,6 @@ fn observe(
         &outcome.destination,
         &mut outcome.commands,
     )?;
-    guard(root, plan)?;
     let result = plan.result.as_ref().ok_or(Error::UnverifiedResult)?;
     let value = remote::observe(
         root,
@@ -133,7 +131,6 @@ fn observe(
         &mut outcome.commands,
     )?;
     outcome.observed = Some(value.clone());
-    guard(root, plan)?;
     if value == RefObservation::Commit(result.clone()) {
         outcome.state = DestinationState::Unchanged;
     } else if value == RefObservation::Commit(outcome.expected.clone()) {
@@ -144,13 +141,13 @@ fn observe(
     }
     Ok((prefix, name))
 }
-fn push(root: &Path, plan: &Plan, outcome: &mut DestinationOutcome) -> Result<(), Error> {
-    sequence::verify_completed_delivery(root, plan, &mut outcome.commands)?;
-    release::pending_routes(root, plan, &mut outcome.commands)?;
-    let (mut args, name) = observe(root, plan, outcome)?;
-    if outcome.state.is_published() {
-        return Ok(());
-    }
+fn push(
+    root: &Path,
+    plan: &Plan,
+    outcome: &mut DestinationOutcome,
+    endpoint: (Vec<OsString>, String),
+) -> Result<(), Error> {
+    let (mut args, name) = endpoint;
     let result = plan.result.as_ref().ok_or(Error::UnverifiedResult)?;
     let lease = [
         b"--force-with-lease=".as_slice(),
@@ -174,7 +171,9 @@ fn push(root: &Path, plan: &Plan, outcome: &mut DestinationOutcome) -> Result<()
         name.into(),
         repository::os(&refspec)?,
     ]);
-    guard(root, plan)?;
+    // The exact expected-old lease enforces the selected remote observation.
+    // Ancestry was established at stage entry: the lease grants no rewrite
+    // authority and must not silently renew after checks or a previous push.
     outcome.state = DestinationState::Unconfirmed;
     let status = remote::command(root, args, &mut outcome.commands);
     // Transport status and exact acknowledgement are independent observations.
@@ -268,13 +267,18 @@ pub fn publish_with_checks(
             })
             .collect(),
         caches: vec![],
-        plan: assess(root, &plan.request, plan.evidence.as_ref()),
-        remaining: repository::inspect(root),
+        plan: Ok(plan.clone()),
+        remaining: Ok(repository::Observation::Repository(Box::new(
+            plan.snapshot.state.clone(),
+        ))),
         error: None,
     };
     report.error = (|| {
+        // One entry validation binds a supplied library plan to the selected
+        // worktree, policy, retained attempt and immutable candidate. Git's
+        // conditional push owns races in the destination ref after this point.
+        validate_repository(directory, plan)?;
         guard(directory, plan)?;
-        guard(root, plan)?;
         if report.destinations.is_empty() {
             return Err(Error::UnverifiedResult);
         }
@@ -286,11 +290,16 @@ pub fn publish_with_checks(
         sequence::verify_completed_delivery(root, plan, &mut report.destinations[0].commands)?;
         release::pending_routes(root, plan, &mut report.destinations[0].commands)?;
         // Observe first: a retry delivered elsewhere needs no candidate execution.
+        let mut endpoints = Vec::with_capacity(report.destinations.len());
         for d in &mut report.destinations {
-            guard(root, plan)?;
-            d.error = observe(root, plan, d).err();
+            match observe(root, plan, d) {
+                Ok(endpoint) => endpoints.push(Some(endpoint)),
+                Err(error) => {
+                    d.error = Some(error);
+                    endpoints.push(None);
+                }
+            }
         }
-        guard(root, plan)?;
         if (release::enabled(plan) && !release::candidate_checked(plan, skip))
             || report
                 .destinations
@@ -300,18 +309,38 @@ pub fn publish_with_checks(
             if release::enabled(plan) && !release::source_checked(plan, skip) {
                 return Err(Error::UnverifiedResult);
             }
-            let checked = execution::check(root, plan, skip, event);
-            report.checks = checked.checks;
-            if report.checks.error.is_none() {
-                *plan = checked.plan.map_err(Error::from)?;
-            }
-            if report.checks.error.is_some() {
+            // Even an empty check policy binds the actual checked-out artifact;
+            // a ready retry may still be sitting on the source branch.
+            let head = match &plan.snapshot.state.head {
+                repository::Head::Attached { commit, .. }
+                | repository::Head::Detached { commit } => Some(commit),
+                _ => None,
+            };
+            if head != plan.result.as_ref() {
+                report.checks.error = Some(checks::Error::Unprepared);
                 return Err(Error::ChecksFailed);
             }
-            for d in &mut report.destinations {
-                guard(root, plan)?;
+            if !plan.settings.finish_checks.is_empty() || release::enabled(plan) || skip {
+                let checked = execution::check(root, plan, skip, event);
+                report.checks = checked.checks;
+                if report.checks.error.is_none() {
+                    *plan = checked.plan.map_err(Error::from)?;
+                }
+                if report.checks.error.is_some() {
+                    return Err(Error::ChecksFailed);
+                }
+            }
+            let mut hook_boundary = false;
+            for (d, endpoint) in report.destinations.iter_mut().zip(endpoints) {
                 if d.state == DestinationState::NotAttempted && d.error.is_none() {
-                    d.error = push(root, plan, d).err();
+                    if hook_boundary {
+                        // A prior push invokes trusted hooks. Before delivering
+                        // another copy, keep the checked artifact and approved
+                        // routes bound; a remote lease cannot enforce those facts.
+                        guard(root, plan)?;
+                    }
+                    d.error = push(root, plan, d, endpoint.expect("observed endpoint")).err();
+                    hook_boundary = true;
                 }
             }
         }
@@ -322,11 +351,12 @@ pub fn publish_with_checks(
             .map(|d| (d.destination.clone(), Some(d.expected.clone())))
             .collect::<Vec<_>>();
         if !confirmed.is_empty() {
-            report
-                .caches
-                .push(cache.refresh(root, &confirmed, plan.result.as_deref()));
+            report.caches.push(cache.refresh_acknowledged(
+                root,
+                &confirmed,
+                plan.result.as_deref(),
+            ));
         }
-        guard(root, plan)?;
         if state(&report.destinations) != PublicationState::Complete
             || report.destinations.iter().any(|d| d.error.is_some())
         {
@@ -353,7 +383,16 @@ pub fn publish_with_checks(
             })
             .collect();
     }
-    report.plan = assess(root, &plan.request, evidence.as_ref());
-    report.remaining = repository::inspect(root);
+    // The acknowledgements are observations for the next stage, not a reason
+    // to recontact successful destinations. Derive completion effects from the
+    // current local context and these exact per-ref results once.
+    report.plan = refresh_local(root, plan, false)
+        .and_then(|next| refresh_evidence(root, &next, evidence.as_ref()));
+    report.remaining = match &report.plan {
+        Ok(next) => Ok(repository::Observation::Repository(Box::new(
+            next.snapshot.state.clone(),
+        ))),
+        Err(_) => repository::inspect(root),
+    };
     report
 }

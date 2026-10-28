@@ -4,7 +4,6 @@ use std::{
     ffi::OsString,
     fmt::Write as _,
     io::{self, IsTerminal},
-    path::Path,
     process::ExitCode,
 };
 
@@ -150,7 +149,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         let approved = plan.clone();
         let input = (|| -> Result<(), InputError> {
             request.plan = Some(select_plan()?);
-            plan = resolve(&directory, &approved, &request)?;
+            plan = save::resolve(&directory, &approved, &request)?;
             Ok(())
         })();
         if let Err(error) = input {
@@ -275,13 +274,6 @@ fn select_plan() -> Result<SavePlan, InputError> {
     }
 }
 
-fn resolve(directory: &Path, approved: &Plan, request: &Request) -> Result<Plan, SaveError> {
-    // Input resolves the same approved scope, never silently approves a new one.
-    save::revalidate(directory, approved)?;
-    let resolved = save::assess(directory, request)?;
-    save::revalidate(directory, approved)?;
-    Ok(resolved)
-}
 fn scope_summary(plan: &Plan) {
     crate::presentation::section("Save work");
     crate::presentation::prose(&format!(

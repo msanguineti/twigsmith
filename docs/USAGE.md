@@ -30,6 +30,11 @@ Twigsmith detects legacy configuration and relevant unfinished state before
 continuing; retain the evidence while resolving it. The older JavaScript/npm tool
 is not a recovery tool for the Rust version.
 
+Unfinished review and direct-integration attempts using version 3 recovery records
+must be finished or recovered with the Twigsmith binary that created them. Preserve
+the records and retained refs until recovery is complete; current version 4 does not
+reinterpret those records.
+
 ## Shell completion
 
 PowerShell completion requires PowerShell 7.3 or newer. Put either executable
@@ -336,6 +341,9 @@ For ordinary work, review mode prepares the current clean branch against `base-r
 configured checks, and publishes through `publish-remote`. Completion identifies
 the branch, each destination, the pinned commit, and the project base for manual
 submission. It keeps the working branch checked out.
+When the mode prompt shows a retained direct-integration source while its target is
+checked out, resume integration or switch back to the source before choosing review.
+An explicit `--mode review` operates on the current checkout.
 
 | Option | Effect |
 | --- | --- |
@@ -1152,8 +1160,10 @@ checks for verified unchanged source and candidate commits; a bypassed tree need
 validation on a later retry without `--skip-checks` before pending delivery completes.
 Checks that change the branch, committed work, index, working tree, effective
 settings, or routing stop the attempt before another check or publication.
-Ignored build outputs are permitted. Remote movement during checks can still stop
-publication.
+Ignored build outputs are permitted. When index flags hide tracked paths from Git
+status, finish verifies their working content before and after each configured check.
+If sparse checkout omits such paths, this verification stops the checks; restore the
+tracked paths before retrying. Remote movement during checks can still stop publication.
 
 ### Credential display
 
@@ -1190,12 +1200,11 @@ errors, and observed remaining state. Twigsmith retains completed effects rather
 automatically rolling them back. Acknowledgement proves publication at that time;
 another writer may subsequently move the remote ref.
 
-Save and finish refuse fetch mappings that could let Git update local branch
-history during push: positive mappings with local destinations must point under
-`refs/remotes/`, and matching symbolic tracking references are refused. Negative
-and source-only mappings remain supported. Legacy remote definitions without
-configured URL values are also refused. Start refuses symbolic fetch destinations.
-Repair the reported Git configuration explicitly; tgi does not rewrite it for you.
+Save and review finish use an isolated publication remote so configured fetch
+mappings cannot redirect incidental push updates into local branch history. Cache
+maintenance only updates eligible nonsymbolic remote-tracking refs; a cache issue
+is reported without undoing confirmed publication. Start refuses symbolic fetch
+destinations. Twigsmith does not rewrite your remote configuration.
 
 Git credentials must be available through the configured environment and helpers;
 workflow subprocesses disable terminal credential prompts. Observation and publication

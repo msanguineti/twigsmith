@@ -292,6 +292,113 @@ fn parse(args: &[OsString]) -> Result<(Request, Completion, bool, bool), &'stati
     Ok((request, completion, show_credentials, skip_checks))
 }
 
+// A delivery-mode answer approves the source and routes shown by this prompt.
+// There is no workflow plan yet on a fresh invocation: capture only the facts
+// that would let a subsequent assessment silently choose different work/routes.
+#[derive(PartialEq, Eq)]
+struct ModeContext {
+    head: Vec<u8>,
+    routes: Vec<Vec<u8>>,
+    direct_selections: Vec<Result<Option<Vec<u8>>, io::ErrorKind>>,
+}
+fn mode_read(directory: &Path, args: &[&str]) -> Result<Vec<u8>, FinishError> {
+    let output = crate::git::inspect(directory, args)?;
+    if !output.status.success() {
+        return Err(InspectionError::Git {
+            arguments: args.iter().map(OsString::from).collect(),
+            output,
+        }
+        .into());
+    }
+    Ok(output.stdout)
+}
+impl ModeContext {
+    fn capture(
+        directory: &Path,
+        repository: &repository::RepositoryContext,
+        routing: &finish::hosted::Routing,
+    ) -> Result<Self, FinishError> {
+        let settings = &routing.settings;
+        let mut remotes = vec![&settings.publish_remote, &settings.base_remote];
+        if let Some(policy) = &settings.workstream {
+            remotes.push(&policy.review_remote);
+        }
+        let prefixes: Vec<_> = remotes
+            .iter()
+            .map(|remote| format!("remote.{remote}.").into_bytes())
+            .collect();
+        let branch_prefix = routing
+            .source_branch
+            .as_ref()
+            .map(|branch| [b"branch.".as_slice(), branch.as_slice(), b"."].concat());
+        let config = mode_read(directory, &["config", "--null", "--list"])?;
+        let routes = config
+            .split(|b| *b == 0)
+            .filter(|entry| {
+                let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
+                key.starts_with(b"url.")
+                    || prefixes.iter().any(|prefix| key.starts_with(prefix))
+                    || branch_prefix
+                        .as_ref()
+                        .is_some_and(|prefix| key.starts_with(prefix))
+            })
+            .map(<[u8]>::to_vec)
+            .collect();
+        let direct_selections = [
+            integration::recovery::selection_path(repository),
+            repository.git_dir.join("oneflow-integration/active.json"),
+        ]
+        .iter()
+        .map(|path| match std::fs::read(path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            // An unreadable selector can belong to unrelated work. Preserve its
+            // observed condition across the prompt; the chosen workflow owns
+            // deciding whether that evidence is relevant and valid.
+            Err(error) => Err(error.kind()),
+        })
+        .collect();
+        Ok(Self {
+            head: mode_read(directory, &["rev-parse", "--verify", "HEAD"])?,
+            routes,
+            direct_selections,
+        })
+    }
+}
+fn mode_bound<'a>(
+    initial: &'a Option<Result<integration::Plan, FinishError>>,
+    branch: Option<&[u8]>,
+) -> Option<&'a integration::Plan> {
+    initial
+        .as_ref()
+        .and_then(|initial| initial.as_ref().ok())
+        .filter(|plan| {
+            // A selector for a different source must retain source-mode
+            // precedence even when its recovery evidence is no longer usable.
+            // Invalid evidence on this same work branch cannot bind review.
+            plan.source_ref.strip_prefix(b"refs/heads/") != branch
+                || !plan
+                    .blockers
+                    .iter()
+                    .any(|blocker| matches!(blocker, integration::Blocker::Recovery(_)))
+        })
+}
+fn same_mode_policy(left: &crate::settings::Settings, right: &crate::settings::Settings) -> bool {
+    left.publish_remote == right.publish_remote
+        && left.base_remote == right.base_remote
+        && left.base == right.base
+        && left.finish_mode == right.finish_mode
+        && left.finish_integration == right.finish_integration
+        && left.finish_message == right.finish_message
+        && left.finish_checkout == right.finish_checkout
+        && left.finish_cleanup == right.finish_cleanup
+        && left.finish_update == right.finish_update
+        && left.history_edit == right.history_edit
+        && left.finish_rewrite == right.finish_rewrite
+        && left.finish_checks == right.finish_checks
+        && left.workstream == right.workstream
+}
+
 pub fn run(args: &[OsString]) -> ExitCode {
     if matches!(args, [arg] if arg == "--help" || arg == "-h") {
         help();
@@ -327,9 +434,18 @@ pub fn run(args: &[OsString]) -> ExitCode {
     };
     presentation =
         resolve_presentation(show_credentials, Some(configured.loaded.redact_credentials));
-    let mut mode = completion
-        .mode
-        .unwrap_or(configured.loaded.settings.finish_mode);
+    let routing = match finish::hosted::routing(
+        &directory,
+        &configured.repository,
+        &configured.loaded.settings,
+    ) {
+        Ok(routing) => routing,
+        Err(error) => {
+            crate::presentation::error(format!("error: {}", text(presentation, error)));
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut mode = completion.mode.unwrap_or(routing.settings.finish_mode);
     let integration_request = integration::Request {
         update: request.update,
         history_edit: request.history_edit,
@@ -340,61 +456,77 @@ pub fn run(args: &[OsString]) -> ExitCode {
         cleanup: completion.cleanup,
         release: completion.release.clone(),
     };
-    // Branch policy is resolved from the associated source, including retained
-    // attempts already checked out on their integration target.
-    if let Ok(bound) = integration::assess(&directory, &integration_request, None)
+    // Only a retained direct selector can put us on a target whose own policy
+    // differs from the source. Its normal assessment corroborates that ownership;
+    // fresh work needs no assessment of a workflow the user has not selected.
+    let direct_selection = [
+        integration::recovery::selection_path(&configured.repository),
+        configured
+            .repository
+            .git_dir
+            .join("oneflow-integration/active.json"),
+    ]
+    .iter()
+    .any(|path| std::fs::symlink_metadata(path).is_ok());
+    let mut bound_initial =
+        (completion.mode != Some(FinishMode::Review) && !routing.retained && direct_selection)
+            .then(|| integration::assess(&directory, &integration_request, None));
+    if completion.mode.is_none()
+        && let Some(initial) = &bound_initial
+        && integration::recovery::unresolved_selection_is_relevant(
+            &directory,
+            &configured.repository,
+            routing.branch.as_deref(),
+            initial.as_ref().ok(),
+        )
+        .unwrap_or(true)
+    {
+        match initial {
+            Err(error) => {
+                crate::presentation::error(format!("error: {}", text(presentation, error)));
+                error_diagnostics(presentation, error);
+            }
+            Ok(_) => crate::presentation::error(
+                "error: retained integration association could not be resolved; restore its attempt evidence before retrying finish.",
+            ),
+        }
+        return ExitCode::FAILURE;
+    }
+    if let Some(bound) = mode_bound(&bound_initial, routing.branch.as_deref())
         && completion.mode.is_none()
     {
         mode = bound.settings.finish_mode;
     }
-    let integrated_review = configured
-        .loaded
-        .settings
-        .workstream
-        .as_ref()
-        .is_some_and(|p| {
-            p.version_tagging && p.version_tag_identity == VersionTagIdentity::IntegratedResult
-        });
     let hosted_request = finish::hosted::Request {
         release: completion.release.clone(),
         merge_back: completion.merge_back.clone(),
         update: request.update,
         history_edit: request.history_edit,
     };
-    let hosted_initial = finish::hosted::assess(&directory, &hosted_request);
-    if completion.mode.is_none()
-        && let Ok(plan) = &hosted_initial
-    {
-        mode = plan.settings.finish_mode;
-    }
-    let hosted_selected = match finish::hosted::selected(&directory) {
-        Ok(selected) => selected,
-        Err(error) => {
-            crate::presentation::error(format!("error: {}", text(presentation, error)));
-            return ExitCode::FAILURE;
+    let mut hosted_initial = routing
+        .retained
+        .then(|| finish::hosted::assess(&directory, &hosted_request));
+    if let Some(initial) = &hosted_initial {
+        match initial {
+            Ok(plan) if completion.mode.is_none() => mode = plan.settings.finish_mode,
+            Ok(_) => (),
+            Err(error) => {
+                crate::presentation::error(format!("error: {}", text(presentation, error)));
+                return ExitCode::FAILURE;
+            }
         }
+    }
+    let mode_context = if mode == FinishMode::Ask {
+        match ModeContext::capture(&directory, &configured.repository, &routing) {
+            Ok(context) => Some(context),
+            Err(error) => {
+                crate::presentation::error(format!("error: {}", text(presentation, error)));
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
     };
-    if finish::hosted::associated(&directory).unwrap_or(true)
-        && let Err(error) = &hosted_initial
-    {
-        crate::presentation::error(format!("error: {}", text(presentation, error)));
-        return ExitCode::FAILURE;
-    }
-    if hosted_initial.as_ref().is_ok_and(|p| p.is_retry()) && mode == FinishMode::Integrate {
-        crate::presentation::error(
-            "error: a retained hosted preparation must resume in review mode",
-        );
-        return ExitCode::FAILURE;
-    }
-    // Snapshot each selectable workflow before asking. The selected workflow's
-    // full guard prevents mode input from adopting concurrent unrelated changes.
-    // Assessment failure in an unselected workflow does not affect the choice.
-    let mode_snapshot = (mode == FinishMode::Ask).then(|| {
-        (
-            finish::assess(&directory, &request, None),
-            integration::assess(&directory, &integration_request, None),
-        )
-    });
     let mut context_shown = false;
     if mode == FinishMode::Ask {
         if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
@@ -404,55 +536,49 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
         crate::presentation::section("Finish work");
-        if let Some((review, integrate)) = &mode_snapshot {
-            let context = integrate
-                .as_ref()
-                .ok()
-                .map(|p| {
-                    (
-                        p.source_ref
-                            .strip_prefix(b"refs/heads/")
-                            .unwrap_or(&p.source_ref),
-                        &p.settings,
-                        p.target
-                            .reference
-                            .strip_prefix(b"refs/heads/")
-                            .unwrap_or(&p.target.reference),
-                    )
-                })
-                .or_else(|| {
-                    review.as_ref().ok().map(|p| {
-                        (
-                            p.branch.as_slice(),
-                            &p.settings,
-                            p.settings
-                                .workstream
-                                .as_ref()
-                                .map_or(&p.settings.base, |policy| &policy.integration_target)
-                                .as_bytes(),
-                        )
-                    })
-                });
-            if let Some((branch, settings, target)) = context {
-                let preparation = settings
-                    .workstream
-                    .as_ref()
-                    .map_or(&settings.base, |p| &p.preparation_source);
-                crate::presentation::prose(&format!(
-                    "Work: {}\nPublish to: {}\nUpdate from: {}/{}",
-                    display(presentation, branch),
-                    text(presentation, &settings.publish_remote),
-                    text(presentation, &settings.base_remote),
-                    text(presentation, preparation)
-                ));
-                crate::presentation::prose(&format!(
-                    "Deliver to: {}/{}",
-                    text(presentation, &settings.base_remote),
-                    display(presentation, target)
-                ));
-                context_shown = true;
-            }
-        }
+        let (branch, settings, target) =
+            if let Some(bound) = mode_bound(&bound_initial, routing.branch.as_deref()) {
+                (
+                    bound
+                        .source_ref
+                        .strip_prefix(b"refs/heads/")
+                        .unwrap_or(&bound.source_ref),
+                    &bound.settings,
+                    bound
+                        .target
+                        .reference
+                        .strip_prefix(b"refs/heads/")
+                        .unwrap_or(&bound.target.reference),
+                )
+            } else {
+                (
+                    routing.source_branch.as_deref().unwrap_or(b"HEAD"),
+                    &routing.settings,
+                    routing
+                        .settings
+                        .workstream
+                        .as_ref()
+                        .map_or(&routing.settings.base, |p| &p.integration_target)
+                        .as_bytes(),
+                )
+            };
+        let preparation = settings
+            .workstream
+            .as_ref()
+            .map_or(&settings.base, |p| &p.preparation_source);
+        crate::presentation::prose(&format!(
+            "Work: {}\nPublish to: {}\nUpdate from: {}/{}",
+            display(presentation, branch),
+            text(presentation, &settings.publish_remote),
+            text(presentation, &settings.base_remote),
+            text(presentation, preparation)
+        ));
+        crate::presentation::prose(&format!(
+            "Deliver to: {}/{}",
+            text(presentation, &settings.base_remote),
+            display(presentation, target)
+        ));
+        context_shown = true;
         let answer = match read_menu_answer(
             presentation,
             "How should this work be delivered?",
@@ -480,10 +606,67 @@ pub fn run(args: &[OsString]) -> ExitCode {
             }
         };
     }
+    if let Some(context) = &mode_context {
+        let guarded = if let Some(Ok(initial)) = &hosted_initial {
+            finish::hosted::revalidate(&directory, initial)
+        } else if let Some(initial) = mode_bound(&bound_initial, routing.branch.as_deref()) {
+            integration::revalidate(&directory, initial, initial.evidence.as_ref())
+        } else {
+            (|| {
+                let current =
+                    crate::config::inspect(&directory).map_err(|_| FinishError::ContextChanged)?;
+                if current.repository != configured.repository {
+                    return Err(FinishError::ContextChanged);
+                }
+                let now = finish::hosted::routing(
+                    &directory,
+                    &current.repository,
+                    &current.loaded.settings,
+                )?;
+                if now.branch != routing.branch
+                    || now.source_branch != routing.source_branch
+                    || now.selected != routing.selected
+                    || now.retained != routing.retained
+                    || !same_mode_policy(&now.settings, &routing.settings)
+                    || ModeContext::capture(&directory, &current.repository, &now)? != *context
+                {
+                    return Err(FinishError::ContextChanged);
+                }
+                Ok(())
+            })()
+        };
+        if let Err(error) = guarded {
+            crate::presentation::error(format!(
+                "error: completion mode context could not be retained: {}; rerun finish.",
+                text(presentation, error)
+            ));
+            return ExitCode::FAILURE;
+        }
+    }
+    if completion.mode.is_none()
+        && mode == FinishMode::Review
+        && mode_bound(&bound_initial, routing.branch.as_deref()).is_some_and(|plan| {
+            plan.source_ref.strip_prefix(b"refs/heads/") != routing.branch.as_deref()
+        })
+    {
+        crate::presentation::error(
+            "error: retained integration is checked out on its target; select integrate to resume, or switch to the retained work branch before choosing review.",
+        );
+        return ExitCode::FAILURE;
+    }
+    if routing.retained && mode == FinishMode::Integrate {
+        crate::presentation::error(
+            "error: a retained hosted preparation must resume in review mode",
+        );
+        return ExitCode::FAILURE;
+    }
+    let effective_settings = mode_bound(&bound_initial, routing.branch.as_deref())
+        .map_or(&routing.settings, |plan| &plan.settings);
+    let integrated_review = effective_settings.workstream.as_ref().is_some_and(|p| {
+        p.version_tagging && p.version_tag_identity == VersionTagIdentity::IntegratedResult
+    });
     if mode == FinishMode::Review
-        && configured
-            .loaded
-            .settings
+        && effective_settings
             .workstream
             .as_ref()
             .is_some_and(|p| p.integration_targets.len() != 1)
@@ -502,10 +685,12 @@ pub fn run(args: &[OsString]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    if hosted_selected && mode == FinishMode::Review {
+    if routing.selected && mode == FinishMode::Review {
         return hosted_cli::run(
             &directory,
-            hosted_initial,
+            hosted_initial
+                .take()
+                .unwrap_or_else(|| finish::hosted::assess(&directory, &hosted_request)),
             &request,
             &completion,
             presentation,
@@ -521,39 +706,9 @@ pub fn run(args: &[OsString]) -> ExitCode {
         crate::presentation::error(format!("error: {error}; use finish --help (alias: f)"));
         return ExitCode::from(2);
     }
-    if let Some((review, integrate)) = &mode_snapshot {
-        let guarded = match mode {
-            FinishMode::Review => {
-                review
-                    .as_ref()
-                    .map_err(|e| text(presentation, e))
-                    .and_then(|p| {
-                        finish::revalidate(&directory, p, p.evidence.as_ref())
-                            .map_err(|e| text(presentation, e))
-                    })
-            }
-            FinishMode::Integrate => integrate
-                .as_ref()
-                .map_err(|e| text(presentation, e))
-                .and_then(|p| {
-                    integration::revalidate(&directory, p, p.evidence.as_ref())
-                        .map_err(|e| text(presentation, e))
-                }),
-            FinishMode::Ask => unreachable!("mode resolved"),
-        };
-        if let Err(error) = guarded {
-            crate::presentation::error(format!(
-                "error: completion mode context could not be retained: {error}; rerun finish."
-            ));
-            return ExitCode::FAILURE;
-        }
-    }
-    let (review_initial, integrate_initial) = match mode_snapshot {
-        Some((review, integrate)) => (Some(review), Some(integrate)),
-        None => (None, None),
-    };
     if mode == FinishMode::Integrate {
-        let initial = match integrate_initial
+        let initial = match bound_initial
+            .take()
             .unwrap_or_else(|| integration::assess(&directory, &integration_request, None))
         {
             Ok(plan) => plan,
@@ -566,16 +721,6 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        if initial.repository != configured.repository
-            || crate::config::inspect(&directory).map_or(true, |now| {
-                now.loaded.settings != configured.loaded.settings
-            })
-        {
-            crate::presentation::error(
-                "error: repository or settings changed while resolving completion mode; rerun finish.",
-            );
-            return ExitCode::FAILURE;
-        }
         return integration_cli::run(
             &directory,
             initial,
@@ -584,8 +729,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             context_shown,
         );
     }
-    let initial = match review_initial.unwrap_or_else(|| finish::assess(&directory, &request, None))
-    {
+    let initial = match finish::assess(&directory, &request, None) {
         Ok(plan) => plan,
         Err(error) => {
             crate::presentation::error(format!("error: {}", text(presentation, &error)));
@@ -597,13 +741,6 @@ pub fn run(args: &[OsString]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if initial.repository != configured.repository || initial.settings != configured.loaded.settings
-    {
-        crate::presentation::error(
-            "error: repository or settings changed while resolving completion mode; rerun finish.",
-        );
-        return ExitCode::FAILURE;
-    }
     let refresh = preparation::refresh(&directory, &initial);
     let Some(mut plan) = refresh.plan.clone().filter(|_| refresh.error.is_none()) else {
         preparation_failure(presentation, &refresh, None);

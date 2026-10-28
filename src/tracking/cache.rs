@@ -88,6 +88,9 @@ fn os(value: &[u8]) -> Result<OsString, String> {
 }
 fn configuration(root: &Path) -> Result<(Vec<u8>, Vec<Mapping>), String> {
     let raw = read(root, &["config".into(), "--null".into(), "--list".into()])?;
+    configuration_bytes(&raw)
+}
+fn configuration_bytes(raw: &[u8]) -> Result<(Vec<u8>, Vec<Mapping>), String> {
     let mut relevant = vec![];
     let mut mappings = vec![];
     for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
@@ -200,11 +203,33 @@ pub(crate) struct Prepared {
 }
 impl Prepared {
     pub(crate) fn new(root: &Path, remote: &str, reference: &[u8]) -> Self {
+        let context = repository::discover(root)
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.ok_or_else(|| "cache repository unavailable".into()));
+        let config = read(root, &["config".into(), "--null".into(), "--list".into()]);
+        Self::prepare(root, context.as_ref(), config.as_deref(), remote, reference)
+    }
+    /// Reuse facts obtained at this publication stage's entry. Ref versions and
+    /// the fetch endpoint are still observed here, before transport hooks run.
+    pub(crate) fn with_context(
+        root: &Path,
+        context: &repository::RepositoryContext,
+        config: &[u8],
+        remote: &str,
+        reference: &[u8],
+    ) -> Self {
+        Self::prepare(root, Ok(context), Ok(config), remote, reference)
+    }
+    fn prepare(
+        root: &Path,
+        context: Result<&repository::RepositoryContext, &String>,
+        raw_config: Result<&[u8], &String>,
+        remote: &str,
+        reference: &[u8],
+    ) -> Self {
         let binding = (|| {
-            let repository = repository::discover(root)
-                .map_err(|e| e.to_string())?
-                .ok_or("cache repository unavailable")?;
-            let (config, mappings) = configuration(root)?;
+            let repository = context.map_err(Clone::clone)?.clone();
+            let (config, mappings) = configuration_bytes(raw_config.map_err(Clone::clone)?)?;
             let endpoint = read(
                 root,
                 &[
@@ -327,6 +352,26 @@ impl Prepared {
         confirmed: &[(Vec<u8>, Option<Vec<u8>>)],
         desired: Option<&[u8]>,
     ) -> Report {
+        self.refresh_with_evidence(root, confirmed, desired, false)
+    }
+    /// Each supplied endpoint acknowledged this exact ref and value. This
+    /// records that delivery observation; it does not claim the endpoint still
+    /// retains the value or grant any publication/cleanup authority.
+    pub(crate) fn refresh_acknowledged(
+        &self,
+        root: &Path,
+        confirmed: &[(Vec<u8>, Option<Vec<u8>>)],
+        desired: Option<&[u8]>,
+    ) -> Report {
+        self.refresh_with_evidence(root, confirmed, desired, true)
+    }
+    fn refresh_with_evidence(
+        &self,
+        root: &Path,
+        confirmed: &[(Vec<u8>, Option<Vec<u8>>)],
+        desired: Option<&[u8]>,
+        acknowledged: bool,
+    ) -> Report {
         let mut report = Report {
             remote: self.remote.clone(),
             reference: self.reference.clone(),
@@ -344,8 +389,13 @@ impl Prepared {
                 .iter()
                 .find(|(endpoint, _)| endpoint == &binding.endpoint)
                 .ok_or("confirmed delivery has no matching configured fetch endpoint")?;
-            self.guard(root, binding)?;
-            self.verify_remote(root, desired)?;
+            // Partial/uncertain transport display responses cannot be assigned
+            // to configured endpoints. Obtain one distinct fetch observation in
+            // that case; complete acknowledgements already supply that evidence.
+            if !acknowledged {
+                self.guard(root, binding)?;
+                self.verify_remote(root, desired)?;
+            }
             report.state = State::Current;
             for (reference, before) in &binding.refs {
                 let mut outcome = RefOutcome {
@@ -356,24 +406,28 @@ impl Prepared {
                     issue: None,
                 };
                 outcome.issue = (|| {
-                    self.guard(root, binding)?;
                     if before.symbolic {
                         return Err("cache ref is symbolic; its target was preserved".into());
                     }
-                    if version(root, &binding.repository, reference)? != *before {
-                        return Err(
-                            "cache changed concurrently; newer local observation was preserved"
-                                .into(),
-                        );
-                    }
                     if before.oid.as_deref() == desired {
+                        // No write is needed, but report the current cache only
+                        // after checking for a newer local observation.
+                        self.guard(root, binding)?;
+                        if version(root, &binding.repository, reference)? != *before {
+                            return Err(
+                                "cache changed concurrently; newer local observation was preserved"
+                                    .into(),
+                            );
+                        }
                         return Ok(());
                     }
                     if let Some(old) = before.oid.as_deref() {
                         let bound = desired
                             .or(previous.as_deref())
                             .ok_or("cache deletion has no verified previous remote version")?;
-                        if Some(old) != previous.as_deref() && !ancestor(root, old, bound)? {
+                        if Some(old) != previous.as_deref()
+                            && !ancestor(root, &binding.repository, old, bound)?
+                        {
                             return Err(
                                 "cache contains a newer or unrelated observation; it was preserved"
                                     .into(),
@@ -388,26 +442,26 @@ impl Prepared {
                                     .into(),
                             );
                         }
-                        self.verify_remote(root, desired)?;
-                        self.guard(root, binding)?;
-                        if version(root, &binding.repository, reference)? != *before {
-                            return Err(
-                                "cache changed during endpoint observation; it was preserved"
-                                    .into(),
-                            );
-                        }
                         Ok(())
                     })?;
                     outcome.updated = true;
                     Ok(())
                 })()
                 .err();
-                match version(root, &binding.repository, reference) {
-                    Ok(after) => outcome.after = after.oid,
-                    Err(e) => {
-                        outcome.issue.get_or_insert(e);
+                if outcome.issue.is_none() {
+                    // update-ref committed the conditional transaction. Its
+                    // successful result supplies the completed effect directly.
+                    outcome.after = desired.map(<[u8]>::to_vec);
+                } else {
+                    // A failed command/hook can have effects. Only this uncertain
+                    // boundary needs a new local observation.
+                    match version(root, &binding.repository, reference) {
+                        Ok(after) => outcome.after = after.oid,
+                        Err(e) => {
+                            outcome.issue.get_or_insert(e);
+                        }
                     }
-                };
+                }
                 if outcome.issue.is_some() {
                     report.state = State::Unavailable
                 } else if outcome.updated && report.state != State::Unavailable {
@@ -423,10 +477,12 @@ impl Prepared {
         report
     }
 }
-fn ancestor(root: &Path, old: &[u8], new: &[u8]) -> Result<bool, String> {
-    let repo = repository::discover(root)
-        .map_err(|e| e.to_string())?
-        .ok_or("cache repository unavailable")?;
+fn ancestor(
+    root: &Path,
+    repo: &repository::RepositoryContext,
+    old: &[u8],
+    new: &[u8],
+) -> Result<bool, String> {
     match fs::read(repo.common_dir.join("info/grafts")) {
         Ok(bytes) if !bytes.is_empty() => {
             return Err("grafted history cannot establish a safe cache update".into());

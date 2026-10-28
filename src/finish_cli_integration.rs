@@ -744,13 +744,19 @@ fn complete(
     }
     let mut commands = Vec::new();
     let mut caches = Vec::new();
-    let delivered = integration::release::deliver_with_caches(
-        root,
-        plan,
-        skip_checks,
-        &mut commands,
-        &mut caches,
-    );
+    // Ordinary work has no version ref to deliver. Completion performs its
+    // own entry and delivery checks before any checkout or cleanup.
+    let delivered = if integration::release::enabled(plan) {
+        integration::release::deliver_with_caches(
+            root,
+            plan,
+            skip_checks,
+            &mut commands,
+            &mut caches,
+        )
+    } else {
+        Ok(plan.clone())
+    };
     eprint!(
         "{}",
         crate::cli::cache_issues(&caches, |bytes| display(presentation, bytes), true)

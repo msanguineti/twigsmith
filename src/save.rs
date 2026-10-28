@@ -95,11 +95,13 @@ pub struct Plan {
     pub local_steps: Vec<LocalStep>,
     /// None while input is unresolved. Only this branch may be published.
     pub publication: Option<Publication>,
-    request: Request,
     snapshot: ContextSnapshot,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ContextSnapshot {
+    // Git-resolved paths belong to this selected worktree and environment.
+    // Every observation rereads their contents; no HEAD/status/file state caches.
+    metadata: repository::MetadataPaths,
     state: RepositoryState,
     routing: tracking::Snapshot,
     push_urls: Vec<u8>,
@@ -260,99 +262,23 @@ fn file_snapshot(path: &Path, recurse: bool) -> Result<FileSnapshot, SaveError> 
     }
 }
 
-/// Assess local eligibility and exact action scope without contacting any remote.
-/// Publication is an intended effect, not evidence of remote availability/history.
-pub fn assess(directory: impl AsRef<Path>, request: &Request) -> Result<Plan, SaveError> {
-    assess_with_upstream(directory.as_ref(), request, None)
+struct Action {
+    plan: SavePlan,
+    action_source: ActionSource,
+    required_input: RequiredInput,
+    local_steps: Vec<LocalStep>,
+    publication: Option<Publication>,
 }
-
-// Only the publisher's second tracking write may validate its own intermediate
-// remote-only configuration. Public assessment always enforces the full guard.
-fn assess_with_upstream(
-    directory: &Path,
+// Action selection consumes established facts and performs no repository reads.
+// Both initial assessment and prompt resolution apply the same grammar/defaults.
+fn select_action(
+    settings: &Settings,
+    scope: &Scope,
+    branch: &[u8],
+    absent: bool,
     request: &Request,
-    expected_upstream: Option<&UpstreamSettings>,
-) -> Result<Plan, SaveError> {
-    let repository = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
-    if repository.kind == RepositoryKind::Bare {
-        return Err(SaveError::BareRepository);
-    }
-    let settings = settings::load(directory, &repository)?;
-    let Observation::Repository(state) = repository::inspect_without_upstream(directory)? else {
-        return Err(SaveError::OutsideRepository);
-    };
-    let (branch, commit) = match &state.head {
-        Head::Attached { branch, commit } => (branch.clone(), commit.clone()),
-        Head::Detached { .. } => return Err(SaveError::DetachedHead),
-        Head::Unborn { .. } => return Err(SaveError::UnbornBranch),
-    };
-    if branch == settings.base.as_bytes() {
-        return Err(SaveError::ProtectedBase);
-    }
-    if state.operations.is_active() {
-        return Err(SaveError::ActiveOperation);
-    }
-    let tree = state
-        .working_tree
-        .as_ref()
-        .ok_or(SaveError::BareRepository)?;
-    let mut scope = Scope::default();
-    for change in &tree.changes {
-        match &change.kind {
-            ChangeKind::Conflicted { .. } => return Err(SaveError::Conflicts),
-            ChangeKind::Untracked => scope.untracked.push(change.path.clone()),
-            ChangeKind::Tracked {
-                staged,
-                unstaged,
-                submodule,
-                ..
-            } => {
-                if submodule.is_some_and(|s| s.tracked_changes || s.untracked_changes) {
-                    return Err(SaveError::DirtySubmodules);
-                }
-                if *staged != Change::Unchanged {
-                    scope.staged.push(change.path.clone());
-                }
-                if *unstaged != Change::Unchanged {
-                    scope.remaining_tracked.push(change.path.clone());
-                }
-            }
-        }
-    }
-    let routing = tracking::snapshot(directory, &branch)?;
-    let branch_ref = [b"refs/heads/".as_slice(), &branch].concat();
-    let absent = routing.upstream.absent();
-    if let Some(expected) = expected_upstream {
-        if expected != &routing.upstream {
-            return Err(SaveError::InvalidUpstream);
-        }
-        // Admit only the publisher's own intermediate tracking write, while
-        // retaining the same explicit push-selection guard.
-        let mut complete = routing.clone();
-        complete.upstream.merge_refs = vec![branch_ref.clone()];
-        complete.validate(&settings, &branch)?;
-    } else {
-        routing.validate(&settings, &branch)?;
-    }
-    // get-url resolves the named remote and ordinary push URL rewrites locally.
-    // Preserve every destination for revalidation; publication handles outcomes later.
-    let push_urls = read(
-        directory,
-        &[
-            "remote".into(),
-            "get-url".into(),
-            "--push".into(),
-            "--all".into(),
-            settings.publish_remote.clone().into(),
-        ],
-    )
-    .map_err(|error| match error {
-        SaveError::Inspection(source @ InspectionError::Git { .. }) => SaveError::InvalidRemote {
-            name: settings.publish_remote.clone(),
-            source,
-        },
-        other => other,
-    })?;
+) -> Result<Action, SaveError> {
+    let branch_ref = [b"refs/heads/".as_slice(), branch].concat();
     let selected = request
         .plan
         .clone()
@@ -427,24 +353,98 @@ fn assess_with_upstream(
         branch_ref,
         establish_upstream: absent,
     });
-    let index_path = read(
+    Ok(Action {
+        plan,
+        action_source,
+        required_input,
+        local_steps,
+        publication,
+    })
+}
+
+/// Assess local eligibility and exact action scope without contacting any remote.
+/// Publication is an intended effect, not evidence of remote availability/history.
+pub fn assess(directory: impl AsRef<Path>, request: &Request) -> Result<Plan, SaveError> {
+    let directory = directory.as_ref();
+    let repository = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
+    if repository.kind == RepositoryKind::Bare {
+        return Err(SaveError::BareRepository);
+    }
+    let settings = settings::load(directory, &repository)?;
+    let metadata = repository::MetadataPaths::operations(directory)?;
+    let Observation::Repository(state) =
+        repository::inspect_context_with_paths(directory, repository.clone(), &metadata)?
+    else {
+        return Err(SaveError::OutsideRepository);
+    };
+    let (branch, commit) = match &state.head {
+        Head::Attached { branch, commit } => (branch.clone(), commit.clone()),
+        Head::Detached { .. } => return Err(SaveError::DetachedHead),
+        Head::Unborn { .. } => return Err(SaveError::UnbornBranch),
+    };
+    if branch == settings.base.as_bytes() {
+        return Err(SaveError::ProtectedBase);
+    }
+    if state.operations.is_active() {
+        return Err(SaveError::ActiveOperation);
+    }
+    let tree = state
+        .working_tree
+        .as_ref()
+        .ok_or(SaveError::BareRepository)?;
+    let mut scope = Scope::default();
+    for change in &tree.changes {
+        match &change.kind {
+            ChangeKind::Conflicted { .. } => return Err(SaveError::Conflicts),
+            ChangeKind::Untracked => scope.untracked.push(change.path.clone()),
+            ChangeKind::Tracked {
+                staged,
+                unstaged,
+                submodule,
+                ..
+            } => {
+                if submodule.is_some_and(|s| s.tracked_changes || s.untracked_changes) {
+                    return Err(SaveError::DirtySubmodules);
+                }
+                if *staged != Change::Unchanged {
+                    scope.staged.push(change.path.clone());
+                }
+                if *unstaged != Change::Unchanged {
+                    scope.remaining_tracked.push(change.path.clone());
+                }
+            }
+        }
+    }
+    let routing = tracking::snapshot(directory, &branch)?;
+    routing.validate(&settings, &branch)?;
+    // get-url resolves the named remote and ordinary push URL rewrites locally.
+    // Preserve every destination for revalidation; publication handles outcomes later.
+    let push_urls = read(
         directory,
         &[
-            "rev-parse".into(),
-            "--path-format=absolute".into(),
-            "--git-path".into(),
-            "index".into(),
+            "remote".into(),
+            "get-url".into(),
+            "--push".into(),
+            "--all".into(),
+            settings.publish_remote.clone().into(),
         ],
+    )
+    .map_err(|error| match error {
+        SaveError::Inspection(source @ InspectionError::Git { .. }) => SaveError::InvalidRemote {
+            name: settings.publish_remote.clone(),
+            source,
+        },
+        other => other,
+    })?;
+    let action = select_action(
+        &settings,
+        &scope,
+        &branch,
+        routing.upstream.absent(),
+        request,
     )?;
-    let index_path = index_path
-        .strip_suffix(b"\n")
-        .ok_or(InspectionError::InvalidOutput("index path"))?;
-    let index_path = PathBuf::from(repository::os(index_path)?);
-    let index = match fs::read(&index_path) {
-        Ok(b) => Some(b),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.into()),
-    };
+    let index_path = index_path(directory)?;
+    let index = read_index(&index_path)?;
     let mut files = vec![];
     for change in &tree.changes {
         files.push((
@@ -457,7 +457,69 @@ fn assess_with_upstream(
     }
     // Also capture worktree gitlink revisions, which status reduces to a flag.
     // Disable external diff/textconv execution and use local binary output.
-    let tracked_diff = read(
+    let tracked_diff = tracked_diff(directory)?;
+    Ok(Plan {
+        repository,
+        settings,
+        branch,
+        commit,
+        scope,
+        plan: action.plan,
+        action_source: action.action_source,
+        required_input: action.required_input,
+        local_steps: action.local_steps,
+        publication: action.publication,
+        snapshot: ContextSnapshot {
+            metadata,
+            state: *state,
+            routing,
+            push_urls,
+            index_path,
+            index,
+            tracked_diff,
+            files,
+        },
+    })
+}
+
+// Reports observe the repository actually selected at this boundary. Reuse
+// only paths whose worktree and environment still match; an invalidated plan
+// must not make the report describe its earlier repository as the current one.
+fn observe_repository(directory: &Path, plan: &Plan) -> Result<Observation, InspectionError> {
+    let Some(context) = repository::discover(directory)? else {
+        return Ok(Observation::OutsideRepository);
+    };
+    if context == plan.repository && plan.snapshot.metadata.matches_environment() {
+        repository::inspect_context_with_paths(directory, context, &plan.snapshot.metadata)
+    } else {
+        repository::inspect_context_without_upstream(directory, context)
+    }
+}
+
+fn index_path(directory: &Path) -> Result<PathBuf, SaveError> {
+    let index_path = read(
+        directory,
+        &[
+            "rev-parse".into(),
+            "--path-format=absolute".into(),
+            "--git-path".into(),
+            "index".into(),
+        ],
+    )?;
+    let index_path = index_path
+        .strip_suffix(b"\n")
+        .ok_or(InspectionError::InvalidOutput("index path"))?;
+    Ok(PathBuf::from(repository::os(index_path)?))
+}
+fn read_index(index_path: &Path) -> Result<Option<Vec<u8>>, SaveError> {
+    match fs::read(index_path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+fn tracked_diff(directory: &Path) -> Result<Vec<u8>, SaveError> {
+    read(
         directory,
         &[
             "-c".into(),
@@ -473,40 +535,118 @@ fn assess_with_upstream(
             "HEAD".into(),
             "--".into(),
         ],
-    )?;
-    Ok(Plan {
-        repository,
-        settings,
-        branch,
-        commit,
-        scope,
-        plan,
-        action_source,
-        required_input,
-        local_steps,
-        publication,
-        request: request.clone(),
-        snapshot: ContextSnapshot {
-            state: *state,
-            routing,
-            push_urls,
-            index_path,
-            index,
-            tracked_diff,
-            files,
-        },
-    })
+    )
 }
 
-/// Compare a fresh assessment with the approved plan, including index bytes,
-/// changed-file contents, exact HEAD/settings/upstream and push destinations.
-/// A failed fresh guard is returned directly. No snapshot protects against a
-/// concurrent change between this check and a later executor's Git operation.
+/// Validate the selected local work and save inputs after a caller-controlled
+/// boundary. This reads the facts needed by preservation/publication, without
+/// rebuilding the plan or comparing settings used only by finish. The reads do
+/// not lock against a concurrent writer; execution validates its next effects.
 pub fn revalidate(directory: impl AsRef<Path>, approved: &Plan) -> Result<(), SaveError> {
-    if assess(directory, &approved.request)? != *approved {
+    validate_context(directory.as_ref(), approved).map(|_| ())
+}
+fn validate_context(directory: &Path, approved: &Plan) -> Result<Settings, SaveError> {
+    let repository = repository::discover(directory)?.ok_or(SaveError::OutsideRepository)?;
+    if repository != approved.repository {
         return Err(SaveError::ContextChanged);
     }
-    Ok(())
+    let Observation::Repository(state) = repository::inspect_context_with_paths(
+        directory,
+        repository.clone(),
+        &approved.snapshot.metadata,
+    )?
+    else {
+        return Err(SaveError::ContextChanged);
+    };
+    if *state != approved.snapshot.state {
+        return Err(SaveError::ContextChanged);
+    }
+    let current = settings::load_for_branch(directory, &repository, &approved.branch)?;
+    if !same_save_settings(&current, &approved.settings) {
+        return Err(SaveError::ContextChanged);
+    }
+    let routing = tracking::snapshot(directory, &approved.branch)?;
+    routing.validate(&current, &approved.branch)?;
+    if routing != approved.snapshot.routing
+        || read(
+            directory,
+            &[
+                "remote".into(),
+                "get-url".into(),
+                "--push".into(),
+                "--all".into(),
+                approved.settings.publish_remote.clone().into(),
+            ],
+        )? != approved.snapshot.push_urls
+    {
+        return Err(SaveError::ContextChanged);
+    }
+    let current_index = index_path(directory)?;
+    if current_index != approved.snapshot.index_path
+        || read_index(&current_index)? != approved.snapshot.index
+        || tracked_diff(directory)? != approved.snapshot.tracked_diff
+    {
+        return Err(SaveError::ContextChanged);
+    }
+    let root = repository
+        .working_tree_root
+        .as_ref()
+        .ok_or(SaveError::BareRepository)?;
+    for (path, expected) in &approved.snapshot.files {
+        if file_snapshot(
+            &root.join(repository::os(path)?),
+            approved.scope.untracked.contains(path),
+        )? != *expected
+        {
+            return Err(SaveError::ContextChanged);
+        }
+    }
+    Ok(current)
+}
+// These settings determine the presented save choice, labels, protected branch
+// or routing eligibility. Finish-only preferences/checks cannot change those
+// effects. Preserve provenance for the relevant layered choices.
+pub(crate) fn same_save_settings(current: &Settings, approved: &Settings) -> bool {
+    current.publish_remote == approved.publish_remote
+        && current.base_remote == approved.base_remote
+        && current.base == approved.base
+        && current.save_plan == approved.save_plan
+        && current.save_message == approved.save_message
+        && current.save_stash_message == approved.save_stash_message
+        && current.sources.publish_remote == approved.sources.publish_remote
+        && current.sources.base_remote == approved.sources.base_remote
+        && current.sources.base == approved.sources.base
+        && current.sources.save_plan == approved.sources.save_plan
+        && current.sources.save_message == approved.sources.save_message
+        && current.sources.save_stash_message == approved.sources.save_stash_message
+        && current.workstream.as_ref().map(|p| &p.preparation_source)
+            == approved.workstream.as_ref().map(|p| &p.preparation_source)
+}
+/// Resolve a choice against the work and routes already presented to the caller.
+/// Only that boundary is validated; constructing the selected action is pure.
+pub fn resolve(
+    directory: impl AsRef<Path>,
+    approved: &Plan,
+    request: &Request,
+) -> Result<Plan, SaveError> {
+    let action = select_action(
+        &approved.settings,
+        &approved.scope,
+        &approved.branch,
+        approved.snapshot.routing.upstream.absent(),
+        request,
+    )?;
+    let current = validate_context(directory.as_ref(), approved)?;
+    let mut resolved = approved.clone();
+    // Preserve the selected save inputs, while carrying the already validated
+    // current informational settings into execution rather than stale finish fields.
+    resolved.settings = current;
+    resolved.plan = action.plan;
+    resolved.action_source = action.action_source;
+    resolved.required_input = action.required_input;
+    resolved.local_steps = action.local_steps;
+    resolved.publication = action.publication;
+    Ok(resolved)
 }
 
 fn upstream_key(branch: &[u8], suffix: &[u8]) -> Vec<u8> {

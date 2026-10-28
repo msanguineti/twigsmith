@@ -665,6 +665,46 @@ fn current_records_require_complete_matching_bindings_and_verified_history() {
                     }
                     _ => (),
                 }
+                if matches!(change, "unsupported-version" | "previous-version") {
+                    let expected = if change == "unsupported-version" {
+                        99
+                    } else {
+                        1
+                    };
+                    let invalid_record = fs::read(f.record()).unwrap();
+                    let before_refs = refs(&f.local);
+                    let before_head = oid(&f.local, "HEAD");
+                    let error = finish::assess(f.local.path(), &request(FinishUpdate::None), None)
+                        .unwrap_err();
+                    assert!(
+                        matches!(error, finish::FinishError::RecoveryVersion(version) if version == expected),
+                        "{error}"
+                    );
+                    let output = cli(&f.local, "none");
+                    assert!(!output.status.success(), "{output:?}");
+                    assert!(
+                        String::from_utf8_lossy(&output.stderr).contains("prior binary"),
+                        "{output:?}"
+                    );
+                    assert_eq!(refs(&f.local), before_refs);
+                    assert_eq!(oid(&f.local, "HEAD"), before_head);
+                    assert_eq!(oid(&f.fork, REF), f.original);
+                    assert_eq!(fs::read(f.record()).unwrap(), invalid_record);
+                    // Native incorporation cannot reinterpret an unsupported
+                    // record as current authority or silently bypass its boundary.
+                    f.local.success(&[
+                        "merge",
+                        "--no-edit",
+                        std::str::from_utf8(&f.original).unwrap(),
+                    ]);
+                    assert!(
+                        matches!(finish::assess(f.local.path(), &request(FinishUpdate::None), None),
+                        Err(finish::FinishError::RecoveryVersion(version)) if version == expected)
+                    );
+                    assert_eq!(oid(&f.fork, REF), f.original);
+                    assert_eq!(fs::read(f.record()).unwrap(), invalid_record);
+                    continue;
+                }
                 let plan = fresh(&f.local, &request(FinishUpdate::None));
                 if change == "verified" {
                     assert!(matches!(plan.recovery, Recovery::Verified(_)), "{plan:#?}");
@@ -678,14 +718,7 @@ fn current_records_require_complete_matching_bindings_and_verified_history() {
                     assert!(!stopped.is_complete());
                     assert!(stopped.destinations.iter().all(|d| d.commands.is_empty()));
                     assert_eq!(oid(&f.fork, REF), f.original);
-                    if matches!(
-                        change,
-                        "missing-bindings"
-                            | "unsupported-version"
-                            | "previous-version"
-                            | "malformed"
-                            | "unknown-field"
-                    ) {
+                    if matches!(change, "missing-bindings" | "malformed" | "unknown-field") {
                         let invalid_record = fs::read(f.record()).unwrap();
                         f.local.success(&[
                             "merge",
@@ -822,7 +855,7 @@ fn advancing_base_extends_recovery_with_equal_and_split_roles() {
                 );
                 let record: serde_json::Value =
                     serde_json::from_slice(&fs::read(f.record()).unwrap()).unwrap();
-                assert_eq!(record["version"], 3);
+                assert_eq!(record["version"], 4);
                 assert_eq!(record["attempts"].as_array().unwrap().len(), 2);
                 assert!(record.get("roles").is_some());
                 succeeds(cli(&f.local, "none"));

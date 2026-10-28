@@ -698,3 +698,97 @@ fn nested_scope_and_multiple_push_urls_revalidate() {
         },
     );
 }
+
+#[test]
+fn resolve_reuses_presented_scope_and_only_changes_the_selected_action() {
+    isolated(
+        "resolve_reuses_presented_scope_and_only_changes_the_selected_action",
+        true,
+        |root| {
+            let repo = fixture(root);
+            staged(&repo);
+            fs::write(repo.path().join("tracked"), "remaining after staging\n").unwrap();
+            let approved = assess(root, repo.path(), &Request::default()).unwrap();
+            assert_eq!(approved.required_input, RequiredInput::Action);
+            // These preferences cannot alter a save selection or its routes.
+            fs::write(repo.path().join(".git/twigsmith.config.toml"),
+                "finish-message = 'auto'\nfinish-checks = [{ name = 'Unused', command = ['missing-check'] }]\n").unwrap();
+            repo.success(&["config", "advice.detachedHead", "false"]);
+            for action in [TestPlan::Split, TestPlan::Stash, TestPlan::PublishOnly] {
+                let before = snapshot(root);
+                let resolved = save::resolve(repo.path(), &approved, &request(action)).unwrap();
+                assert_eq!(resolved.required_input, RequiredInput::None);
+                assert_eq!(resolved.scope, approved.scope);
+                assert_eq!(resolved.branch, approved.branch);
+                assert_eq!(resolved.commit, approved.commit);
+                assert_eq!(resolved.settings.save_plan, approved.settings.save_plan);
+                assert_eq!(
+                    resolved.settings.save_message,
+                    approved.settings.save_message
+                );
+                assert_eq!(
+                    resolved.settings.publish_remote,
+                    approved.settings.publish_remote
+                );
+                assert_eq!(resolved.settings.finish_checks.len(), 1);
+                assert!(resolved.publication.is_some());
+                assert_eq!(resolved.plan, request(action).plan.unwrap());
+                assert_eq!(
+                    resolved.local_steps.len(),
+                    match action {
+                        TestPlan::Split => 2,
+                        TestPlan::Stash => 1,
+                        TestPlan::PublishOnly => 0,
+                        TestPlan::Ask => unreachable!(),
+                    }
+                );
+                assert_eq!(snapshot(root), before);
+            }
+        },
+    );
+}
+
+#[test]
+fn resolve_refuses_prompt_time_scope_index_and_route_changes_without_effects() {
+    isolated(
+        "resolve_refuses_prompt_time_scope_index_and_route_changes_without_effects",
+        true,
+        |root| {
+            for change in ["contents", "index", "new-path", "route", "message"] {
+                let repo = fixture(root);
+                staged(&repo);
+                fs::write(repo.path().join("tracked"), "remaining after staging\n").unwrap();
+                let approved = assess(root, repo.path(), &Request::default()).unwrap();
+                let original = fs::read(repo.path().join("tracked")).unwrap();
+                match change {
+                    "contents" => fs::write(repo.path().join("tracked"), "prompt edit\n").unwrap(),
+                    "index" => {
+                        fs::write(repo.path().join("tracked"), "prompt staging\n").unwrap();
+                        repo.success(&["add", "tracked"]);
+                        fs::write(repo.path().join("tracked"), original).unwrap();
+                    }
+                    "new-path" => fs::write(repo.path().join("prompt-file"), "new\n").unwrap(),
+                    "route" => {
+                        repo.success(&[
+                            "config",
+                            "remote.origin.pushurl",
+                            "/different/prompt-route",
+                        ]);
+                    }
+                    "message" => fs::write(
+                        repo.path().join(".git/twigsmith.config.toml"),
+                        "save-message = 'different label'\n",
+                    )
+                    .unwrap(),
+                    _ => unreachable!(),
+                }
+                let before = snapshot(root);
+                assert!(
+                    save::resolve(repo.path(), &approved, &request(TestPlan::Split)).is_err(),
+                    "{change}"
+                );
+                assert_eq!(snapshot(root), before);
+            }
+        },
+    );
+}

@@ -228,6 +228,99 @@ fn save_clean_empty_selected_groups_publish_without_questions() {
 }
 
 #[test]
+fn save_observes_working_tree_at_stage_boundaries_without_subprocess_amplification() {
+    isolated(
+        "save_observes_working_tree_at_stage_boundaries_without_subprocess_amplification",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            dirty(&repo, true, true);
+            let original = oid(repo.path(), "HEAD").unwrap();
+            let trace = root.join("save-trace.jsonl");
+            let output = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
+                .current_dir(repo.path())
+                .args(["save", "--commit", "staged", "--message", "Selected work"])
+                .stdin(Stdio::null())
+                // Trace only the real command: setup and outcome verification
+                // below do not inherit this child's environment.
+                .env("GIT_TRACE2_EVENT", &trace)
+                .output()
+                .unwrap();
+            check(output, 0, &["Save complete"]);
+
+            // One working-tree observation is allowed at each responsibility:
+            // initial selection, supplied-plan/local execution entry, the commit
+            // hook boundary, publication entry after recovery-ref deletion (which
+            // can run a reference-transaction hook), and the final state report.
+            // The publication allowance permits a bundled status while checking
+            // HEAD/operations; it does not require inspecting dirty files to push
+            // a pinned OID. Additional local commands earn no extra observation.
+            // This family bound detects recursive assessments/per-command report
+            // snapshots without prescribing ordering or an incidental exact count.
+            const STATUS_STAGE_ALLOWANCE: usize = 5;
+            let status_calls = fs::read_to_string(&trace)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                .filter(|event| {
+                    event["event"] == "cmd_name"
+                        && event["name"] == "status"
+                        // Git's own descendants have hierarchical session IDs.
+                        // Only Git processes launched directly by Twigsmith count.
+                        && event["sid"]
+                            .as_str()
+                            .is_some_and(|sid| !sid.contains('/'))
+                })
+                .count();
+            assert!(status_calls > 0, "Git status tracing must be active");
+            assert!(
+                status_calls <= STATUS_STAGE_ALLOWANCE,
+                "{status_calls} working-tree observations exceed the \
+                 {STATUS_STAGE_ALLOWANCE} stage responsibilities"
+            );
+
+            // Count reductions must still deliver the selected group and leave
+            // the unselected/ignored work local, with no abandoned recovery ref.
+            published(&repo, &remote);
+            assert_ne!(oid(repo.path(), "HEAD").unwrap(), original);
+            assert_eq!(
+                repo.success(&["rev-list", "--count", &format!("{original}..HEAD")])
+                    .stdout,
+                b"1\n"
+            );
+            assert_eq!(
+                repo.success(&["show", "HEAD:tracked"]).stdout,
+                b"selected\n"
+            );
+            assert_eq!(
+                fs::read(repo.path().join("tracked")).unwrap(),
+                b"remaining\n"
+            );
+            assert_eq!(fs::read(repo.path().join("untracked")).unwrap(), b"new\n");
+            assert_eq!(
+                fs::read(repo.path().join("ignored")).unwrap(),
+                b"ignored local\n"
+            );
+            assert!(
+                repo.success(&["diff", "--cached", "--name-only"])
+                    .stdout
+                    .is_empty()
+            );
+            assert!(
+                repo.success(&[
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/twigsmith/save-recovery/"
+                ])
+                .stdout
+                .is_empty()
+            );
+            assert!(oid(repo.path(), "refs/stash").is_none());
+        },
+    );
+}
+
+#[test]
 fn save_configured_plan_labels_and_cli_replacement_are_observable() {
     cases(
         "save_configured_plan_labels_and_cli_replacement_are_observable",
@@ -440,13 +533,37 @@ fn save_terminal_correction_cancellation_and_context_revalidation_preserve_work(
                 "interrupt",
                 "split-cancel",
                 "changed",
+                "changed-index",
+                "changed-url",
+                "changed-message",
             ] {
                 let (repo, remote) = fixture(root);
                 dirty(&repo, true, true);
                 let mut terminal = cli.terminal(repo.path(), &[]);
                 terminal.until("How would you like to save this work?");
-                if answer == "changed" {
-                    fs::write(repo.path().join("tracked"), "changed during prompt\n").unwrap();
+                match answer {
+                    "changed" => {
+                        fs::write(repo.path().join("tracked"), "changed during prompt\n").unwrap()
+                    }
+                    "changed-index" => {
+                        fs::write(repo.path().join("tracked"), "new staging during prompt\n")
+                            .unwrap();
+                        repo.success(&["add", "tracked"]);
+                        fs::write(repo.path().join("tracked"), "remaining\n").unwrap();
+                    }
+                    "changed-url" => {
+                        repo.success(&[
+                            "config",
+                            "remote.origin.pushurl",
+                            "/changed-during-prompt",
+                        ]);
+                    }
+                    "changed-message" => fs::write(
+                        repo.path().join(".git/twigsmith.config.toml"),
+                        "save-message = 'Changed during prompt'\n",
+                    )
+                    .unwrap(),
+                    _ => (),
                 }
                 let before = snapshot(repo.path());
                 let remote_before = snapshot(&remote);
@@ -465,13 +582,40 @@ fn save_terminal_correction_cancellation_and_context_revalidation_preserve_work(
                         terminal.until("How should unstaged changes be preserved?");
                         terminal.send(b"cancel\n");
                     }
-                    "changed" => terminal.send(b"commit-all\n"),
+                    "changed" | "changed-index" | "changed-url" | "changed-message" => {
+                        terminal.send(b"commit-all\n")
+                    }
                     _ => terminal.send(b"cancel\n"),
                 }
                 assert!(!terminal.finish().success(), "{}", terminal.output);
                 assert_eq!(snapshot(repo.path()), before);
                 assert_eq!(snapshot(&remote), remote_before);
             }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn save_terminal_keeps_choice_when_only_finish_settings_change() {
+    isolated(
+        "save_terminal_keeps_choice_when_only_finish_settings_change",
+        true,
+        |root| {
+            let (repo, remote) = fixture(root);
+            dirty(&repo, true, true);
+            let mut terminal =
+                terminal::Terminal::start(env!("CARGO_BIN_EXE_tgi"), repo.path(), &["save"]);
+            terminal.until("How would you like to save this work?");
+            fs::write(repo.path().join(".git/twigsmith.config.toml"),
+                "finish-message = 'auto'\nfinish-checks = [{ name = 'Unused', command = ['missing-check'] }]\n").unwrap();
+            terminal.send(b"commit-all\n");
+            assert!(terminal.finish().success(), "{}", terminal.output);
+            published(&repo, &remote);
+            assert_eq!(
+                repo.success(&["show", "HEAD:tracked"]).stdout,
+                b"remaining\n"
+            );
         },
     );
 }

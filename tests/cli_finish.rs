@@ -675,7 +675,7 @@ fn finish_terminal_revalidates_local_and_remote_changes_during_input() {
                         }
                         "settings" => settings(&local, "merge", "allow"),
                         "git-config" => {
-                            local.success(&["config", "arbitrary.value", "changed"]);
+                            local.success(&["config", "remote.origin.receivepack", "changed"]);
                         }
                         "index" => {
                             fs::write(local.path().join("work"), "changed\n").unwrap();
@@ -695,7 +695,7 @@ fn finish_terminal_revalidates_local_and_remote_changes_during_input() {
                     let before = work_snapshot(&local);
                     let remote_head = oid(&remote, REF);
                     term.send(if rewrite { b"allow\n" } else { b"rebase\n" });
-                    // Remote-only changes are detected by preparation's repeated refresh,
+                    // Remote-only changes are detected by the preparation entry confirmation,
                     // after both choices have been resolved.
                     if !rewrite && ["remote", "base"].contains(&mutation) {
                         term.until("Allow replacing published work history?");
@@ -1475,6 +1475,648 @@ fn integration_checkout_failure_reports_delivery_and_retries_without_publication
 
 #[test]
 #[cfg(target_os = "linux")]
+fn completion_mode_prompt_selects_each_workflow_and_accepts_unrelated_changes() {
+    cases(
+        "completion_mode_prompt_selects_each_workflow_and_accepts_unrelated_changes",
+        true,
+        |root, exe| {
+            for mode in ["review", "integrate"] {
+                for unrelated_change in [false, true] {
+                    let f = integration_fixture(root, false);
+                    let private = f.local.path().join(".git/twigsmith.config.toml");
+                    let settings = fs::read_to_string(&private)
+                        .unwrap()
+                        .replace("finish-mode='integrate'", "finish-mode='ask'");
+                    fs::write(&private, &settings).unwrap();
+                    let original = oid(&f.local, REF);
+                    let base = remote_oid(f.project.path(), "main");
+                    let mut args = vec!["finish", "--update", "none", "--no-rewrite"];
+                    if mode == "integrate" {
+                        args.extend([
+                            "--integration",
+                            "ff-only",
+                            "--checkout",
+                            "work",
+                            "--cleanup",
+                            "keep",
+                        ]);
+                    }
+                    let mut term = terminal::Terminal::start(exe, f.local.path(), &args);
+                    term.until("How should this work be delivered?");
+                    contains(&term.output, &[BRANCH, "project/main", "personal"]);
+                    if unrelated_change {
+                        f.local.success(&["config", "notes.unrelated", "changed"]);
+                        fs::write(
+                            &private,
+                            format!("{settings}save-message='Updated save preference'\n"),
+                        )
+                        .unwrap();
+                    }
+                    term.send(format!("{mode}\n").as_bytes());
+                    assert_eq!(term.finish().code(), Some(0), "{}", term.output);
+                    assert_eq!(oid(&f.local, REF), original);
+                    assert_eq!(remote_oid(f.fork.path(), REF), original);
+                    assert_eq!(
+                        remote_oid(f.project.path(), "main"),
+                        if mode == "integrate" { original } else { base }
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn completion_mode_prompt_keeps_unrelated_invalid_direct_selector_out_of_review() {
+    cases(
+        "completion_mode_prompt_keeps_unrelated_invalid_direct_selector_out_of_review",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            let private = f.local.path().join(".git/twigsmith.config.toml");
+            let settings = fs::read_to_string(&private)
+                .unwrap()
+                .replace("finish-mode='integrate'", "finish-mode='ask'");
+            fs::write(&private, settings).unwrap();
+            // Invalid direct recovery evidence has no authority over ordinary
+            // review. It still cannot be substituted while a mode answer waits.
+            let selector = f
+                .local
+                .path()
+                .join(".git/twigsmith-integration/active.json");
+            fs::create_dir_all(&selector).unwrap();
+            let work = oid(&f.local, REF);
+            let base = remote_oid(f.project.path(), "main");
+            let mut term = terminal::Terminal::start(
+                exe,
+                f.local.path(),
+                &["finish", "--update", "none", "--no-rewrite"],
+            );
+            term.until("How should this work be delivered?");
+            term.send(b"review\n");
+            assert_eq!(term.finish().code(), Some(0), "{}", term.output);
+            assert_eq!(oid(&f.local, REF), work);
+            assert_eq!(remote_oid(f.fork.path(), REF), work);
+            assert_eq!(remote_oid(f.project.path(), "main"), base);
+            assert!(selector.is_dir());
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn completion_mode_retains_source_policy_and_refuses_review_of_a_different_checkout() {
+    cases(
+        "completion_mode_retains_source_policy_and_refuses_review_of_a_different_checkout",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            let private = f.local.path().join(".git/twigsmith.config.toml");
+            fs::write(&private, "finish-mode='review'\nfinish-message='auto'\nbase-remote='project'\npublish-remote='personal'\n[workstreams.ordinary]\nfinish-mode='ask'\n").unwrap();
+            integration_status(
+                completion_run(
+                    exe,
+                    f.local.path(),
+                    "start",
+                    &["pending-mode", "--policy", "ordinary"],
+                ),
+                0,
+            );
+            commit(&f.local, "pending-work", "pending work\n");
+            let reject = bare_hook(
+                f.project.path(),
+                "pre-receive",
+                "echo retain-mode-target >&2; exit 1",
+            );
+            let output = integration_status(
+                integration_run(
+                    exe,
+                    &f,
+                    &[
+                        "--mode",
+                        "integrate",
+                        "--integration",
+                        "merge",
+                        "--update",
+                        "none",
+                        "--cleanup",
+                        "keep",
+                    ],
+                ),
+                1,
+            );
+            contains(&output, &["retain-mode-target"]);
+            assert_eq!(
+                f.local.success(&["branch", "--show-current"]).stdout,
+                b"main\n"
+            );
+            let local_before = f.local.success(&["show-ref"]).stdout;
+            let project_before = remote_oid(f.project.path(), "main");
+            let record = f
+                .local
+                .path()
+                .join(".git/twigsmith-integration/branches/pending-mode/attempt.json");
+            let saved = fs::read(&record).unwrap();
+            let permissions = fs::metadata(&record).unwrap().permissions();
+            fs::remove_file(&record).unwrap();
+            // Missing source evidence must still select the source's Ask mode,
+            // rather than treating the target's review setting as fresh intent.
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(
+                &output,
+                &["retained integration association could not be resolved"],
+            );
+            fs::write(&record, saved).unwrap();
+            fs::set_permissions(&record, permissions).unwrap();
+            let mut term = terminal::Terminal::start(exe, f.local.path(), &["finish"]);
+            term.until("How should this work be delivered?");
+            contains(&term.output, &["Work: pending-mode"]);
+            term.send(b"review\n");
+            assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+            contains(&term.output, &["switch to the retained work branch"]);
+            assert_eq!(f.local.success(&["show-ref"]).stdout, local_before);
+            assert_eq!(remote_oid(f.project.path(), "main"), project_before);
+            // Explicit mode keeps its existing current-checkout semantics.
+            let output = integration_status(integration_run(exe, &f, &["--mode", "review"]), 1);
+            contains(&output, &["branch different from the configured base"]);
+            fs::remove_file(reject).unwrap();
+            let mut term = terminal::Terminal::start(exe, f.local.path(), &["finish"]);
+            term.until("How should this work be delivered?");
+            term.send(b"integrate\n");
+            assert_eq!(term.finish().code(), Some(0), "{}", term.output);
+            assert_eq!(remote_oid(f.project.path(), "main"), oid(&f.local, "HEAD"));
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn completion_default_review_keeps_retained_source_binding() {
+    cases(
+        "completion_default_review_keeps_retained_source_binding",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            f.local.success(&["branch", "develop", "main"]);
+            f.local.success(&["push", "project", "develop"]);
+            let private = f.local.path().join(".git/twigsmith.config.toml");
+            fs::write(&private, "publish-remote='personal'\nbase-remote='project'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-message='auto'\nfinish-cleanup='keep'\nfinish-checkout='target'\nfinish-rewrite='deny'\n[workstreams.ordinary]\nintegration-target='develop'\nfinish-mode='review'\n").unwrap();
+            integration_status(
+                completion_run(
+                    exe,
+                    f.local.path(),
+                    "start",
+                    &["pending-default", "--policy", "ordinary"],
+                ),
+                0,
+            );
+            commit(&f.local, "pending-default-work", "pending source\n");
+            bare_hook(
+                f.project.path(),
+                "pre-receive",
+                "echo retain-default-review >&2; exit 1",
+            );
+            let output = integration_status(integration_run(exe, &f, &["--mode", "integrate"]), 1);
+            contains(&output, &["retain-default-review"]);
+            assert_eq!(
+                f.local.success(&["branch", "--show-current"]).stdout,
+                b"develop\n"
+            );
+            let local_before = f.local.success(&["show-ref"]).stdout;
+            let project_before = remote_oid(f.project.path(), "develop");
+            let work_before = oid(&f.local, "pending-default");
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(&output, &["switch to the retained work branch"]);
+            assert_eq!(f.local.success(&["show-ref"]).stdout, local_before);
+            assert_eq!(remote_oid(f.project.path(), "develop"), project_before);
+            assert_eq!(remote_oid(f.fork.path(), "develop"), None);
+            assert_eq!(remote_oid(f.fork.path(), "pending-default"), None);
+            assert_eq!(oid(&f.local, "pending-default"), work_before);
+            let selector = f
+                .local
+                .path()
+                .join(".git/twigsmith-integration/active.json");
+            let association = fs::read(&selector).unwrap();
+            fs::write(&selector, b"{").unwrap();
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(
+                &output,
+                &["retained integration association could not be resolved"],
+            );
+            assert_eq!(f.local.success(&["show-ref"]).stdout, local_before);
+            assert_eq!(remote_oid(f.fork.path(), "develop"), None);
+            fs::write(&selector, association).unwrap();
+            let record = f
+                .local
+                .path()
+                .join(".git/twigsmith-integration/branches/pending-default/attempt.json");
+            let mut unsupported: serde_json::Value =
+                serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+            unsupported["version"] = 3.into();
+            fs::write(&record, serde_json::to_vec(&unsupported).unwrap()).unwrap();
+            let settings = fs::read_to_string(&private)
+                .unwrap()
+                .replace("finish-mode='integrate'", "finish-mode='review'");
+            fs::write(&private, settings).unwrap();
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(&output, &["prior Twigsmith binary"]);
+            assert_eq!(f.local.success(&["show-ref"]).stdout, local_before);
+            assert_eq!(remote_oid(f.fork.path(), "develop"), None);
+            f.local.success(&["switch", "pending-default"]);
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(&output, &["prior Twigsmith binary"]);
+            // The selector/old record for A cannot intercept a distinct B,
+            // including a branch that happens to share the target's exact OID.
+            f.local
+                .success(&["switch", "-c", "unrelated-default", "develop"]);
+            assert_eq!(oid(&f.local, "HEAD"), oid(&f.local, "develop"));
+            integration_status(integration_run(exe, &f, &[]), 0);
+            assert_eq!(
+                remote_oid(f.fork.path(), "unrelated-default"),
+                oid(&f.local, "develop")
+            );
+            assert_eq!(remote_oid(f.fork.path(), "develop"), None);
+            assert_eq!(remote_oid(f.fork.path(), "pending-default"), None);
+            f.local.success(&["switch", "develop"]);
+            // The explicit flag selects review of the actual checkout, without
+            // borrowing the retained source's default policy or prompt answer.
+            integration_status(integration_run(exe, &f, &["--mode", "review"]), 0);
+            assert_eq!(
+                remote_oid(f.fork.path(), "develop"),
+                oid(&f.local, "develop")
+            );
+            assert_eq!(remote_oid(f.fork.path(), "pending-default"), None);
+            assert_eq!(remote_oid(f.project.path(), "develop"), project_before);
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn completion_invalid_selector_keeps_owned_target_after_an_independent_branch() {
+    cases(
+        "completion_invalid_selector_keeps_owned_target_after_an_independent_branch",
+        true,
+        |root, exe| {
+            for unreadable in [false, true] {
+                let f = integration_fixture(root, false);
+                f.local.success(&["branch", "develop", "main"]);
+                f.local.success(&["push", "project", "develop"]);
+                fs::write(f.local.path().join(".git/twigsmith.config.toml"),
+                    "publish-remote='personal'\nbase-remote='project'\nfinish-mode='review'\nfinish-update='none'\nfinish-integration='merge'\nfinish-message='auto'\nfinish-cleanup='keep'\nfinish-checkout='target'\nfinish-rewrite='deny'\n[workstreams.ordinary]\nintegration-target='develop'\n").unwrap();
+                integration_status(
+                    completion_run(
+                        exe,
+                        f.local.path(),
+                        "start",
+                        &["pending-invalid", "--policy", "ordinary"],
+                    ),
+                    0,
+                );
+                commit(&f.local, "pending-invalid-work", "pending source\n");
+                bare_hook(
+                    f.project.path(),
+                    "pre-receive",
+                    "echo retain-invalid-selector >&2; exit 1",
+                );
+                let output =
+                    integration_status(integration_run(exe, &f, &["--mode", "integrate"]), 1);
+                contains(&output, &["retain-invalid-selector"]);
+                assert_eq!(
+                    f.local.success(&["branch", "--show-current"]).stdout,
+                    b"develop\n"
+                );
+                let selector = f
+                    .local
+                    .path()
+                    .join(".git/twigsmith-integration/active.json");
+                if unreadable {
+                    fs::remove_file(&selector).unwrap();
+                    fs::create_dir(&selector).unwrap();
+                } else {
+                    fs::write(&selector, b"{").unwrap();
+                }
+                let record = f
+                    .local
+                    .path()
+                    .join(".git/twigsmith-integration/branches/pending-invalid/attempt.json");
+                let retained = fs::read(&record).unwrap();
+                let target = oid(&f.local, "develop");
+                let project = remote_oid(f.project.path(), "develop");
+                // A fresh branch at the exact integrated OID has its own branch
+                // creation, rather than the retained target's operation marker.
+                f.local
+                    .success(&["switch", "-c", "independent-invalid", "develop"]);
+                integration_status(integration_run(exe, &f, &[]), 0);
+                assert_eq!(remote_oid(f.fork.path(), "independent-invalid"), target);
+                assert_eq!(remote_oid(f.project.path(), "develop"), project);
+                assert_eq!(remote_oid(f.fork.path(), "develop"), None);
+                // The latest checkout names B, but an earlier checkout and the
+                // target's exact operation still identify A for refusal only.
+                f.local.success(&["switch", "develop"]);
+                let before = preservation::snapshot(root);
+                let output = integration_status(integration_run(exe, &f, &[]), 1);
+                contains(
+                    &output,
+                    &["retained integration association could not be resolved"],
+                );
+                assert_eq!(preservation::snapshot(root), before);
+                assert_eq!(oid(&f.local, "HEAD"), target);
+                assert_eq!(remote_oid(f.project.path(), "develop"), project);
+                assert_eq!(remote_oid(f.fork.path(), "develop"), None);
+                assert_eq!(fs::read(&record).unwrap(), retained);
+            }
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn completion_invalid_selector_keeps_completed_ordered_target_scope() {
+    cases(
+        "completion_invalid_selector_keeps_completed_ordered_target_scope",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            f.local.success(&["branch", "develop", "main"]);
+            f.local.success(&["switch", "-c", "stable", "main"]);
+            commit(&f.local, "stable-work", "distinct target baseline\n");
+            f.local.success(&["push", "project", "develop", "stable"]);
+            fs::write(f.local.path().join(".git/twigsmith.config.toml"),
+                "publish-remote='personal'\nbase-remote='project'\nfinish-mode='review'\nfinish-update='none'\nfinish-integration='merge'\nfinish-message='auto'\nfinish-cleanup='keep'\nfinish-checkout='target'\nfinish-rewrite='deny'\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-targets=['develop','stable']\nversion-tagging='required'\nfinish-mode='integrate'\n").unwrap();
+            integration_status(
+                completion_run(
+                    exe,
+                    f.local.path(),
+                    "start",
+                    &["pending-invalid-ordered", "--policy", "release"],
+                ),
+                0,
+            );
+            commit(&f.local, "ordered-work", "ordered source\n");
+            bare_hook(
+                f.project.path(),
+                "pre-receive",
+                "while read old new reference; do test \"$reference\" != refs/heads/stable || { echo retained-invalid-ordered >&2; exit 1; }; done",
+            );
+            let output = integration_status(
+                integration_run(
+                    exe,
+                    &f,
+                    &["--tag", "invalid-ordered", "--tag-message", "ordered"],
+                ),
+                1,
+            );
+            contains(&output, &["retained-invalid-ordered"]);
+            assert_eq!(
+                remote_oid(f.project.path(), "develop"),
+                oid(&f.local, "develop")
+            );
+            assert_ne!(
+                remote_oid(f.project.path(), "stable"),
+                oid(&f.local, "stable")
+            );
+            fs::write(
+                f.local
+                    .path()
+                    .join(".git/twigsmith-integration/active.json"),
+                b"{",
+            )
+            .unwrap();
+            f.local
+                .success(&["switch", "-c", "independent-ordered", "develop"]);
+            integration_status(integration_run(exe, &f, &[]), 0);
+            assert_eq!(
+                remote_oid(f.fork.path(), "independent-ordered"),
+                oid(&f.local, "develop")
+            );
+            f.local.success(&["switch", "develop"]);
+            let before = preservation::snapshot(root);
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(
+                &output,
+                &["retained integration association could not be resolved"],
+            );
+            assert_eq!(preservation::snapshot(root), before);
+            assert_eq!(remote_oid(f.fork.path(), "develop"), None);
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn completion_missing_record_distinguishes_owned_target_from_new_branch() {
+    cases(
+        "completion_missing_record_distinguishes_owned_target_from_new_branch",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            let private = f.local.path().join(".git/twigsmith.config.toml");
+            let settings = fs::read_to_string(&private)
+                .unwrap()
+                .replace("finish-mode='integrate'", "finish-mode='review'");
+            fs::write(&private, settings).unwrap();
+            bare_hook(
+                f.project.path(),
+                "pre-receive",
+                "echo retained-missing-record >&2; exit 1",
+            );
+            let output = integration_status(
+                integration_run(
+                    exe,
+                    &f,
+                    &[
+                        "--mode",
+                        "integrate",
+                        "--integration",
+                        "merge",
+                        "--update",
+                        "none",
+                        "--cleanup",
+                        "keep",
+                    ],
+                ),
+                1,
+            );
+            contains(&output, &["retained-missing-record"]);
+            let target = oid(&f.local, "HEAD");
+            let project = remote_oid(f.project.path(), "main");
+            fs::remove_file(f.local.path().join(format!(
+                ".git/twigsmith-integration/branches/{BRANCH}/attempt.json"
+            )))
+            .unwrap();
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(
+                &output,
+                &["retained integration association could not be resolved"],
+            );
+            assert_eq!(oid(&f.local, "HEAD"), target);
+            assert_eq!(
+                remote_oid(f.fork.path(), "main"),
+                Some(project.clone().unwrap())
+            );
+            f.local.success(&["switch", BRANCH]);
+            f.local
+                .success(&["switch", "-c", "fresh-independent", BRANCH]);
+            let work = oid(&f.local, "HEAD");
+            integration_status(
+                integration_run(exe, &f, &["--update", "none", "--no-rewrite"]),
+                0,
+            );
+            assert_eq!(oid(&f.local, "HEAD"), work);
+            assert_eq!(remote_oid(f.fork.path(), "fresh-independent"), work);
+            assert_eq!(remote_oid(f.project.path(), "main"), project);
+            assert_ne!(remote_oid(f.fork.path(), "main"), target);
+            // Returning from A to its integrated target checks out the result
+            // OID. That remains the same owned target despite the intervening B.
+            f.local.success(&["switch", BRANCH]);
+            f.local.success(&["switch", "main"]);
+            let before = f.local.success(&["show-ref"]).stdout;
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(
+                &output,
+                &["retained integration association could not be resolved"],
+            );
+            assert_eq!(f.local.success(&["show-ref"]).stdout, before);
+            assert_eq!(oid(&f.local, "HEAD"), target);
+            assert_eq!(remote_oid(f.project.path(), "main"), project);
+            assert_ne!(remote_oid(f.fork.path(), "main"), target);
+        },
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn completion_missing_record_retains_ordered_target_scope() {
+    cases(
+        "completion_missing_record_retains_ordered_target_scope",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            for target in ["develop", "stable"] {
+                f.local.success(&["branch", target, "main"]);
+                f.local.success(&["push", "project", target]);
+            }
+            fs::write(f.local.path().join(".git/twigsmith.config.toml"),
+                "publish-remote='personal'\nbase-remote='project'\nfinish-mode='review'\nfinish-update='none'\nfinish-integration='merge'\nfinish-message='auto'\nfinish-cleanup='keep'\nfinish-checkout='target'\nfinish-rewrite='deny'\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-targets=['develop','stable']\nversion-tagging='required'\nfinish-mode='integrate'\n").unwrap();
+            integration_status(
+                completion_run(
+                    exe,
+                    f.local.path(),
+                    "start",
+                    &["pending-ordered", "--policy", "release"],
+                ),
+                0,
+            );
+            commit(&f.local, "ordered-work", "ordered source\n");
+            bare_hook(
+                f.project.path(),
+                "pre-receive",
+                "while read old new reference; do test \"$reference\" != refs/heads/stable || { echo retained-ordered-target >&2; exit 1; }; done",
+            );
+            let output = integration_status(
+                integration_run(
+                    exe,
+                    &f,
+                    &["--tag", "ordered-missing", "--tag-message", "ordered"],
+                ),
+                1,
+            );
+            contains(&output, &["retained-ordered-target"]);
+            assert_eq!(
+                f.local.success(&["branch", "--show-current"]).stdout,
+                b"stable\n"
+            );
+            assert_eq!(
+                remote_oid(f.project.path(), "develop"),
+                oid(&f.local, "develop")
+            );
+            assert_ne!(
+                remote_oid(f.project.path(), "stable"),
+                oid(&f.local, "stable")
+            );
+            fs::remove_file(
+                f.local
+                    .path()
+                    .join(".git/twigsmith-integration/branches/pending-ordered/attempt.json"),
+            )
+            .unwrap();
+            let local = f.local.success(&["show-ref"]).stdout;
+            let project = f
+                .local
+                .success(&["--git-dir", f.project.path().to_str().unwrap(), "show-ref"])
+                .stdout;
+            let personal = f
+                .local
+                .success(&["--git-dir", f.fork.path().to_str().unwrap(), "show-ref"])
+                .stdout;
+            let output = integration_status(integration_run(exe, &f, &[]), 1);
+            contains(
+                &output,
+                &["retained integration association could not be resolved"],
+            );
+            assert_eq!(f.local.success(&["show-ref"]).stdout, local);
+            assert_eq!(
+                f.local
+                    .success(&["--git-dir", f.project.path().to_str().unwrap(), "show-ref"])
+                    .stdout,
+                project
+            );
+            assert_eq!(
+                f.local
+                    .success(&["--git-dir", f.fork.path().to_str().unwrap(), "show-ref"])
+                    .stdout,
+                personal
+            );
+            f.local.success(&["switch", "pending-ordered"]);
+            f.local
+                .success(&["switch", "-c", "fresh-after-ordered", "pending-ordered"]);
+            integration_status(integration_run(exe, &f, &[]), 0);
+            assert_eq!(
+                remote_oid(f.fork.path(), "fresh-after-ordered"),
+                oid(&f.local, "fresh-after-ordered")
+            );
+            assert_eq!(
+                f.local
+                    .success(&["--git-dir", f.project.path().to_str().unwrap(), "show-ref"])
+                    .stdout,
+                project
+            );
+            f.local.success(&["switch", "-c", "unrelated-C", "main"]);
+            commit(&f.local, "unrelated-C", "independent visit\n");
+            let personal_after_b = f
+                .local
+                .success(&["--git-dir", f.fork.path().to_str().unwrap(), "show-ref"])
+                .stdout;
+            for target in ["stable", "develop"] {
+                f.local.success(&["switch", target]);
+                let before = f.local.success(&["show-ref"]).stdout;
+                let output = integration_status(integration_run(exe, &f, &[]), 1);
+                contains(
+                    &output,
+                    &["retained integration association could not be resolved"],
+                );
+                assert_eq!(f.local.success(&["show-ref"]).stdout, before);
+                assert_eq!(
+                    f.local
+                        .success(&["--git-dir", f.project.path().to_str().unwrap(), "show-ref"])
+                        .stdout,
+                    project
+                );
+                assert_eq!(
+                    f.local
+                        .success(&["--git-dir", f.fork.path().to_str().unwrap(), "show-ref"])
+                        .stdout,
+                    personal_after_b
+                );
+            }
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
 fn integration_terminal_choices_are_relevant_and_context_bound() {
     cases(
         "integration_terminal_choices_are_relevant_and_context_bound",
@@ -1513,7 +2155,7 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                     match mutation {
                         "config" => {
                             f.local
-                                .success(&["config", "fixture.concurrent-change", "true"]);
+                                .success(&["config", "remote.project.receivepack", "changed"]);
                         }
                         "head" => commit(&f.local, "concurrent", "concurrent commit\n"),
                         "endpoint" => {
@@ -1556,8 +2198,31 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                         b"cancel\n"
                     });
                     assert_eq!(term.finish().code(), Some(1), "{}", term.output);
-                    unchanged_work(&f.local, &before);
-                    assert_eq!(oid(&f.local, REF), expected_work);
+                    if mutation == "remote" {
+                        // Preparation/integration consumes pinned objects. Its local
+                        // result remains useful when the original target lease rejects
+                        // publication; a remote race does not imply rollback.
+                        f.local.success(&[
+                            "merge-base",
+                            "--is-ancestor",
+                            expected_work.as_deref().unwrap(),
+                            REF,
+                        ]);
+                        f.local
+                            .success(&["merge-base", "--is-ancestor", REF, "HEAD"]);
+                        contains(
+                            &term.output,
+                            &["Retained integration result", "target changed"],
+                        );
+                    } else {
+                        assert_eq!(
+                            work_snapshot(&f.local),
+                            before,
+                            "{choice}/{mutation}: {}",
+                            term.output
+                        );
+                        assert_eq!(oid(&f.local, REF), expected_work);
+                    }
                     assert_eq!(remote_oid(f.project.path(), "main"), expected_base);
                     assert_eq!(remote_oid(f.fork.path(), REF), work);
                 }
@@ -1656,7 +2321,7 @@ fn integration_git_editor_suggestion_multiline_failure_and_context_guard() {
                         "nul" => "printf 'invalid\\000message\\n' > \"$1\"",
                         "non-utf8" => "printf '\\377\\n' > \"$1\"",
                         "changed" => {
-                            "git config fixture.editor-change true; printf 'Edited subject\\n' > \"$1\""
+                            "git config remote.project.receivepack changed; printf 'Edited subject\\n' > \"$1\""
                         }
                         _ => unreachable!(),
                     },

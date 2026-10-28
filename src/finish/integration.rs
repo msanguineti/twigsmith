@@ -182,6 +182,32 @@ pub struct Plan {
     record: Option<recovery::Record>,
 }
 impl Plan {
+    pub(super) fn metadata(&self, name: &str) -> Result<Option<Vec<u8>>, FinishError> {
+        Ok(self.snapshot.paths.read(name)?)
+    }
+    pub(super) fn log(&self, reference: &[u8]) -> Result<Option<Vec<u8>>, FinishError> {
+        let name = std::str::from_utf8(reference)
+            .map_err(|_| FinishError::InvalidEvidence("non-UTF-8 recovery reference"))?;
+        self.metadata(&format!("logs/{name}"))
+    }
+    pub(super) fn resolve_logs(
+        &mut self,
+        root: &Path,
+        references: &[&[u8]],
+    ) -> Result<(), FinishError> {
+        let names: Vec<_> = references
+            .iter()
+            .map(|reference| {
+                std::str::from_utf8(reference)
+                    .map(|name| format!("logs/{name}"))
+                    .map_err(|_| FinishError::InvalidEvidence("non-UTF-8 recovery reference"))
+            })
+            .collect::<Result<_, _>>()?;
+        self.snapshot
+            .paths
+            .extend(root, &names.iter().map(String::as_str).collect::<Vec<_>>())?;
+        Ok(())
+    }
     pub fn active_destination_index(&self) -> usize {
         self.record.as_ref().map_or(0, |r| r.completed.len())
     }
@@ -265,6 +291,8 @@ impl Plan {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Snapshot {
+    paths: repository::MetadataPaths,
+    record_path: Option<PathBuf>,
     state: repository::RepositoryState,
     config: Vec<u8>,
     index: Option<Vec<u8>>,
@@ -332,6 +360,73 @@ fn symbolic(directory: &Path, reference: &[u8]) -> Result<bool, FinishError> {
     )?;
     Ok(output.status.code() != Some(1))
 }
+/// Observe only refs that bind this attempt, in one Git ref-store read. Full
+/// names are filtered exactly because for-each-ref patterns also match children.
+fn stage_refs(
+    root: &Path,
+    plan: &Plan,
+) -> Result<std::collections::BTreeMap<Vec<u8>, RefObservation>, FinishError> {
+    let mut references = vec![plan.source_ref.clone(), plan.target.reference.clone()];
+    if let Some(record) = &plan.record {
+        references.extend([
+            record.original_ref().into_bytes(),
+            record.result_ref().into_bytes(),
+        ]);
+    }
+    references.extend(release::binding_refs(plan));
+    references.retain(|reference| !reference.is_empty());
+    references.sort();
+    references.dedup();
+    let mut values: std::collections::BTreeMap<_, _> = references
+        .iter()
+        .map(|reference| (reference.clone(), RefObservation::Absent))
+        .collect();
+    if references.is_empty() {
+        return Ok(values);
+    }
+    let mut args = vec![
+        "for-each-ref".into(),
+        "--format=%(refname)%00%(objectname)%00%(symref)".into(),
+        "--".into(),
+    ];
+    args.extend(
+        references
+            .iter()
+            .map(|reference| repository::os(reference))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    let output = run(root, &args)?;
+    if !output.status.success() {
+        return Err(FinishError::ContextChanged);
+    }
+    for row in output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|row| !row.is_empty())
+    {
+        let fields: Vec<_> = row.split(|byte| *byte == 0).collect();
+        if fields.len() != 3 {
+            return Err(FinishError::InvalidEvidence("selected ref observation"));
+        }
+        if let Some(value) = values.get_mut(fields[0]) {
+            *value = if fields[2].is_empty() {
+                RefObservation::Commit(fields[1].to_vec())
+            } else {
+                RefObservation::Unavailable
+            };
+        }
+    }
+    Ok(values)
+}
+fn stage_ref(
+    values: &std::collections::BTreeMap<Vec<u8>, RefObservation>,
+    reference: &[u8],
+) -> RefObservation {
+    values
+        .get(reference)
+        .cloned()
+        .unwrap_or(RefObservation::Unavailable)
+}
 fn current_ref(state: &repository::RepositoryState) -> Option<Vec<u8>> {
     match &state.head {
         repository::Head::Attached { branch, .. } => Some(branch_ref(branch)),
@@ -367,8 +462,13 @@ pub fn assess(
     {
         return Err(SaveError::BlankMessage.into());
     }
+    let mut paths = repository::MetadataPaths::operations(directory)?;
+    paths.extend(
+        directory,
+        &["index", "shallow", "info/grafts", "logs/HEAD", "SQUASH_MSG"],
+    )?;
     let repository::Observation::Repository(state) =
-        repository::inspect_without_upstream(directory)?
+        repository::inspect_context_with_paths(directory, repository.clone(), &paths)?
     else {
         return Err(SaveError::OutsideRepository.into());
     };
@@ -442,6 +542,7 @@ pub fn assess(
     {
         return Err(SaveError::BlankMessage.into());
     }
+    release::validate_request(directory, &request.release)?;
     let source_ref = selection
         .source_ref
         .clone()
@@ -453,7 +554,36 @@ pub fn assess(
         hint(directory, &source_ref)?
     };
     let local_target = hint(directory, &target.reference)?;
+    let log_name = |reference: &[u8]| -> Result<String, FinishError> {
+        let reference = std::str::from_utf8(reference)
+            .map_err(|_| FinishError::InvalidEvidence("non-UTF-8 recovery reference"))?;
+        Ok(format!("logs/{reference}"))
+    };
+    let source_log_name = log_name(&source_ref)?;
+    let target_log_name = log_name(&target.reference)?;
+    let mut log_names = vec![source_log_name.clone(), target_log_name.clone()];
+    if let Some(record) = &selection.record {
+        log_names.extend([
+            format!("logs/{}", record.original_ref()),
+            format!("logs/{}", record.result_ref()),
+        ]);
+    }
+    if let Some(tag) = &request.release.tag {
+        log_names.push(format!("logs/refs/tags/{tag}"));
+    }
+    if let Some(marker) = settings
+        .workstream
+        .as_ref()
+        .and_then(|policy| policy.release_marker.as_ref())
+    {
+        log_names.push(format!("logs/refs/heads/{marker}"));
+    }
+    paths.extend(
+        directory,
+        &log_names.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?;
     let snapshot = Snapshot {
+        record_path: selection.path.clone(),
         configuration_files,
         shared_preparation: if request.history_edit.unwrap_or(settings.history_edit)
             == HistoryEdit::Interactive
@@ -475,17 +605,17 @@ pub fn assess(
             vec![]
         },
         state: *state,
-        config: read(directory, &["config", "--null", "--list"])?,
-        index: metadata(directory, "index")?,
-        shallow: metadata(directory, "shallow")?,
-        grafts: metadata(directory, "info/grafts")?,
-        head_log: metadata(directory, "logs/HEAD")?,
+        config: binding_config(directory)?,
+        index: paths.read("index")?,
+        shallow: paths.read("shallow")?,
+        grafts: paths.read("info/grafts")?,
+        head_log: paths.read("logs/HEAD")?,
         source_log: if source_ref.is_empty() {
             None
         } else {
-            log(directory, &source_ref)?
+            paths.read(&source_log_name)?
         },
-        target_log: log(directory, &target.reference)?,
+        target_log: paths.read(&target_log_name)?,
         worktrees: read(directory, &["worktree", "list", "--porcelain", "-z"])?,
         pins: if let Some(record) = &selection.record {
             [record.original_ref(), record.result_ref()]
@@ -493,7 +623,7 @@ pub fn assess(
                 .map(|r| {
                     Ok((
                         hint(directory, r.as_bytes())?,
-                        log(directory, r.as_bytes())?,
+                        paths.read(&format!("logs/{r}"))?,
                     ))
                 })
                 .collect::<Result<_, FinishError>>()?
@@ -502,6 +632,7 @@ pub fn assess(
         },
         release: release::snapshot(directory, &request.release, selection.record.as_ref())?,
         records: selection.bytes,
+        paths,
     };
     let mut plan = Plan {
         repository,
@@ -527,6 +658,17 @@ pub fn assess(
         snapshot,
         record: selection.record,
     };
+    sequence::resolve_logs(directory, &mut plan)?;
+    assess_observed(directory, plan, pinned_shared, selection.problem, true)
+}
+
+fn assess_observed(
+    directory: &Path,
+    mut plan: Plan,
+    pinned_shared: bool,
+    problem: Option<recovery::Problem>,
+    validate_inputs: bool,
+) -> Result<Plan, FinishError> {
     if plan.history_edit == HistoryEdit::Interactive {
         if plan
             .snapshot
@@ -551,7 +693,7 @@ pub fn assess(
             plan.blockers.push(Blocker::HistoryEdit(reason));
         }
     }
-    if let Some(problem) = selection.problem {
+    if let Some(problem) = problem {
         plan.blockers.push(Blocker::Recovery(problem));
         plan.state = State::ChangedOrUnverifiable;
     }
@@ -611,7 +753,11 @@ pub fn assess(
         assess_fresh(directory, &mut plan)?;
     }
     sequence::assess_completed(directory, &mut plan)?;
-    release::assess(directory, &mut plan)?;
+    if validate_inputs {
+        release::assess(directory, &mut plan)?;
+    } else {
+        release::reassess(directory, &mut plan)?;
+    }
     Ok(plan)
 }
 
@@ -900,15 +1046,315 @@ fn completion_choices(plan: &mut Plan) {
     }
 }
 
-/// Reobserve the full local binding and compare caller-supplied fresh evidence.
-/// This is observational, not a lock; repeated old evidence cannot detect movement
-/// at a remote. Errors and changed observations revoke this particular plan.
+/// Configuration that can affect Git's operations or selected transport. Arbitrary
+/// application keys do not invalidate an attempt; Git still reads its own settings.
+/// Store the same projection in recovery records so unrelated configuration edits
+/// remain unrelated after a process restart.
+fn binding_config(directory: &Path) -> Result<Vec<u8>, FinishError> {
+    let config = read(directory, &["config", "--null", "--list"])?;
+    Ok(config
+        .split(|b| *b == 0)
+        .filter(|entry| {
+            let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
+            [
+                "remote.",
+                "url.",
+                "branch.",
+                "core.",
+                "extensions.",
+                "user.",
+                "gpg.",
+                "commit.",
+                "merge.",
+                "rebase.",
+                "push.",
+                "fetch.",
+                "tag.",
+                "protocol.",
+                "credential.",
+                "http.",
+                "https.",
+                "ssh.",
+                "transfer.",
+                "submodule.",
+                "include.",
+                "includeif.",
+            ]
+            .iter()
+            .any(|prefix| key.starts_with(prefix.as_bytes()))
+        })
+        .flat_map(|entry| entry.iter().copied().chain(std::iter::once(0)))
+        .collect())
+}
+
+/// Refresh changing local stage facts while retaining the selected settings and
+/// routes. Git/hook/check boundaries need candidate, cleanliness and ownership
+/// observations, not repository rediscovery or settings reconstruction.
+pub(super) fn refresh_local(
+    root: &Path,
+    previous: &Plan,
+    staged_squash: bool,
+) -> Result<Plan, FinishError> {
+    refresh_context(root, previous, staged_squash, previous.evidence.as_ref())
+}
+
+/// Newly acquired evidence can resolve a new stage obligation, such as source
+/// publication proof after choosing both cleanup scopes. Keep the prior evidence
+/// separate so its derived blockers and effects cannot survive that transition.
+pub(super) fn refresh_acquired(
+    root: &Path,
+    previous: &Plan,
+    evidence: &RemoteEvidence,
+) -> Result<Plan, FinishError> {
+    let mut next = previous.clone();
+    next.evidence = Some(evidence.clone());
+    next.update = next.request.update.unwrap_or(next.settings.finish_update);
+    next.state = State::Fresh;
+    next.result = None;
+    next.integration = Integration::Unresolved;
+    next.blockers.clear();
+    next.required_input.clear();
+    next.effects.clear();
+    // This stage only imported pinned objects. Resolve the newly available graph
+    // against the selected local facts, without re-observing an unchanged tree.
+    assess_observed(root, next, false, None, false)
+}
+
+fn refresh_context(
+    root: &Path,
+    previous: &Plan,
+    staged_squash: bool,
+    evidence: Option<&RemoteEvidence>,
+) -> Result<Plan, FinishError> {
+    let configuration = if staged_squash {
+        previous
+            .snapshot
+            .configuration_files
+            .matches_index(&previous.repository)
+            .map(|matches| matches.then(|| previous.snapshot.configuration_files.clone()))
+    } else {
+        previous
+            .snapshot
+            .configuration_files
+            .advance_checkout(root, &previous.repository, "HEAD")
+    }
+    .map_err(SaveError::from)?;
+    let Some(configuration) = configuration else {
+        return Err(FinishError::ContextChanged);
+    };
+    if binding_config(root)? != previous.snapshot.config {
+        return Err(FinishError::ContextChanged);
+    }
+    let repository::Observation::Repository(state) = repository::inspect_context_with_paths(
+        root,
+        previous.repository.clone(),
+        &previous.snapshot.paths,
+    )?
+    else {
+        return Err(FinishError::ContextChanged);
+    };
+    recovery::verify_records(previous)?;
+    let mut next = previous.clone();
+    next.snapshot.configuration_files = configuration;
+    next.evidence = evidence.cloned();
+    let references = stage_refs(root, &next)?;
+    next.source = stage_ref(&references, &next.source_ref);
+    next.local_target = stage_ref(&references, &next.target.reference);
+    next.snapshot.state = *state;
+    next.snapshot.index = previous.metadata("index")?;
+    next.snapshot.shallow = previous.metadata("shallow")?;
+    next.snapshot.grafts = previous.metadata("info/grafts")?;
+    next.snapshot.head_log = previous.metadata("logs/HEAD")?;
+    next.snapshot.source_log = next.log(&next.source_ref)?;
+    next.snapshot.target_log = next.log(&next.target.reference)?;
+    next.snapshot.worktrees = read(root, &["worktree", "list", "--porcelain", "-z"])?;
+    next.snapshot.pins = if let Some(record) = &next.record {
+        [record.original_ref(), record.result_ref()]
+            .iter()
+            .map(|reference| {
+                Ok((
+                    stage_ref(&references, reference.as_bytes()),
+                    next.log(reference.as_bytes())?,
+                ))
+            })
+            .collect::<Result<_, FinishError>>()?
+    } else {
+        vec![]
+    };
+    next.snapshot.release = release::snapshot_with_refs(&next, &references)?;
+    if !matches!(previous.integration, Integration::Unresolved | Integration::AfterPreparation)
+        // Preparation resolves the next integration choices even when native
+        // editing preserves every commit. Its completed HEAD-reflog interval,
+        // rather than an OID change, establishes that the editor ran once.
+        // Aligning an already-incorporated target completes a real stage even
+        // though it creates no commit. Its Fresh result must become delivery
+        // effects before candidate checks or completion can use it.
+        && !(previous.integration == Integration::AlreadyIntegrated && previous.state == State::Fresh)
+        && !previous
+            .blockers
+            .contains(&Blocker::FreshRemoteEvidenceRequired)
+        && next.evidence == previous.evidence
+        && next.source == previous.source
+        && next.local_target == previous.local_target
+        && next.record == previous.record
+        && next.snapshot.source_log == previous.snapshot.source_log
+        && next.snapshot.target_log == previous.snapshot.target_log
+        && next.snapshot.pins == previous.snapshot.pins
+    {
+        // A checkout, tag or metadata acknowledgement did not change the
+        // selected graph. Keep its established integration/recovery outcome;
+        // only cleanliness, occupancy and release identity can differ here.
+        next.blockers.retain(|blocker| {
+            !matches!(
+                blocker,
+                Blocker::DirtyTree
+                    | Blocker::GitOperation
+                    | Blocker::TargetInAnotherWorktree
+                    | Blocker::SourceInAnotherWorktree
+            )
+        });
+        if next
+            .snapshot
+            .state
+            .working_tree
+            .as_ref()
+            .is_some_and(|tree| tree.is_dirty())
+        {
+            next.blockers.push(Blocker::DirtyTree);
+        }
+        if next.snapshot.state.operations.is_active() {
+            next.blockers.push(Blocker::GitOperation);
+        }
+        if in_another_worktree(&next, &next.target.reference) {
+            next.blockers.push(Blocker::TargetInAnotherWorktree);
+        }
+        if next.integration == Integration::AfterPreparation
+            && in_another_worktree(&next, &next.source_ref)
+        {
+            next.blockers.push(Blocker::SourceInAnotherWorktree);
+        }
+        // Checkouts invoke hooks. Neither an unchanged branch ref nor a
+        // successful switch proves HEAD still names that selected branch.
+        let head = current_ref(&next.snapshot.state);
+        if head.as_ref() != Some(&next.source_ref)
+            && head.as_ref() != Some(&next.target.reference)
+            && head != current_ref(&previous.snapshot.state)
+        {
+            return Err(FinishError::ContextChanged);
+        }
+        release::reassess(root, &mut next)?;
+        return Ok(next);
+    }
+    next.update = next.request.update.unwrap_or(next.settings.finish_update);
+    next.state = State::Fresh;
+    next.result = None;
+    next.integration = Integration::Unresolved;
+    next.blockers.clear();
+    next.required_input.clear();
+    next.effects.clear();
+    assess_observed(root, next, false, None, false)
+}
+
+/// Apply known per-ref delivery outcomes to an established local stage. The
+/// caller validates entry and hook boundaries; an acknowledgement does not
+/// require rediscovering settings or reproving the retained candidate graph.
+pub(super) fn refresh_evidence(
+    root: &Path,
+    previous: &Plan,
+    evidence: Option<&RemoteEvidence>,
+) -> Result<Plan, FinishError> {
+    let mut next = previous.clone();
+    next.evidence = evidence.cloned();
+    next.effects.clear();
+    let result = next
+        .result
+        .clone()
+        .ok_or(FinishError::InvalidEvidence("retained result missing"))?;
+    let record = next
+        .record
+        .clone()
+        .ok_or(FinishError::InvalidEvidence("integration record missing"))?;
+    recovery::assess_delivery(root, &mut next, &record, result)?;
+    release::reassess(root, &mut next)?;
+    Ok(next)
+}
+
+/// Validate a caller's stage binding. Git owns command execution; this guard
+/// protects candidate identity, selected routing and private-attempt ownership
+/// across prompts/checks/hooks, which a later merge or push cannot establish.
+/// No graph assessment or remote observation is repeated here.
 pub fn revalidate(
     directory: impl AsRef<Path>,
     plan: &Plan,
     evidence: Option<&RemoteEvidence>,
 ) -> Result<(), FinishError> {
-    if assess(directory, &plan.request, evidence)? != *plan {
+    let directory = directory.as_ref();
+    validate_repository(directory, plan)?;
+    revalidate_stage(directory, plan, evidence)
+}
+
+pub(super) fn validate_repository(directory: &Path, plan: &Plan) -> Result<(), FinishError> {
+    if repository::discover(directory)?.as_ref() != Some(&plan.repository) {
+        return Err(FinishError::ContextChanged);
+    }
+    Ok(())
+}
+
+/// Within an executing stage, repository selection is already established.
+/// MetadataPaths checks selection-related environment changes; the operations
+/// below keep the candidate, routing and attempt ownership bound across hooks.
+/// Read-only calls and private record writes do not create another entry point.
+pub(super) fn revalidate_stage(
+    directory: &Path,
+    plan: &Plan,
+    evidence: Option<&RemoteEvidence>,
+) -> Result<(), FinishError> {
+    if evidence != plan.evidence.as_ref() || binding_config(directory)? != plan.snapshot.config {
+        return Err(FinishError::ContextChanged);
+    }
+    let repository::Observation::Repository(state) = repository::inspect_context_with_paths(
+        directory,
+        plan.repository.clone(),
+        &plan.snapshot.paths,
+    )?
+    else {
+        return Err(FinishError::ContextChanged);
+    };
+    let references = stage_refs(directory, plan)?;
+    // Index bytes bind check results even when a check hides modifications with
+    // assume-unchanged. Reflogs and records bind retained attempts to their owner.
+    if *state != plan.snapshot.state
+        || stage_ref(&references, &plan.source_ref) != plan.source
+        || stage_ref(&references, &plan.target.reference) != plan.local_target
+        || plan.metadata("index")? != plan.snapshot.index
+        || plan.metadata("shallow")? != plan.snapshot.shallow
+        || plan.metadata("info/grafts")? != plan.snapshot.grafts
+        || plan.metadata("logs/HEAD")? != plan.snapshot.head_log
+        || plan.log(&plan.source_ref)? != plan.snapshot.source_log
+        || plan.log(&plan.target.reference)? != plan.snapshot.target_log
+        || read(directory, &["worktree", "list", "--porcelain", "-z"])? != plan.snapshot.worktrees
+        || !plan
+            .snapshot
+            .configuration_files
+            .matches_files(&plan.repository)
+            .map_err(SaveError::from)?
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    recovery::verify_records(plan)?;
+    if let Some(record) = &plan.record {
+        for (reference, expected) in [record.original_ref(), record.result_ref()]
+            .iter()
+            .zip(&plan.snapshot.pins)
+        {
+            if stage_ref(&references, reference.as_bytes()) != expected.0
+                || plan.log(reference.as_bytes())? != expected.1
+            {
+                return Err(FinishError::ContextChanged);
+            }
+        }
+    }
+    if release::snapshot_with_refs(plan, &references)? != plan.snapshot.release {
         return Err(FinishError::ContextChanged);
     }
     Ok(())
@@ -924,9 +1370,58 @@ pub fn resolve(
 ) -> Result<Plan, FinishError> {
     let directory = directory.as_ref();
     revalidate(directory, reviewed, reviewed.evidence.as_ref())?;
-    let resolved = assess(directory, request, reviewed.evidence.as_ref())?;
-    revalidate(directory, reviewed, reviewed.evidence.as_ref())?;
-    Ok(resolved)
+    let request = reviewed
+        .record
+        .as_ref()
+        .map_or_else(|| request.clone(), |record| record.request(request));
+    if request
+        .message
+        .as_ref()
+        .is_some_and(|message| message.trim().is_empty() || message.contains('\0'))
+    {
+        return Err(SaveError::BlankMessage.into());
+    }
+    if request.release.tag != reviewed.request.release.tag {
+        release::validate_request(directory, &request.release)?;
+    }
+    let mut resolved = reviewed.clone();
+    resolved.update = request.update.unwrap_or(resolved.settings.finish_update);
+    resolved.history_edit = request
+        .history_edit
+        .unwrap_or(resolved.settings.history_edit);
+    resolved.method = request
+        .integration
+        .unwrap_or(resolved.settings.finish_integration);
+    resolved.checkout = request
+        .checkout
+        .unwrap_or(resolved.settings.finish_checkout);
+    resolved.cleanup = request.cleanup.unwrap_or(resolved.settings.finish_cleanup);
+    resolved.request = request;
+    if let Some(tag) = &resolved.request.release.tag {
+        let reference = format!("refs/tags/{tag}").into_bytes();
+        resolved.resolve_logs(directory, &[&reference])?;
+    }
+    resolved.snapshot.release = release::snapshot_from_plan(directory, &resolved)?;
+    if resolved.history_edit == HistoryEdit::Interactive
+        && reviewed.history_edit != HistoryEdit::Interactive
+    {
+        resolved.snapshot.shared_preparation =
+            super::history::shared_refs(directory, &resolved.settings)?
+                .into_iter()
+                .filter(|(reference, _, _)| {
+                    !destination_refs(&resolved.settings)
+                        .iter()
+                        .any(|destination| destination == reference.as_bytes())
+                })
+                .collect();
+    }
+    resolved.state = State::Fresh;
+    resolved.result = None;
+    resolved.integration = Integration::Unresolved;
+    resolved.required_input.clear();
+    resolved.blockers.clear();
+    resolved.effects.clear();
+    assess_observed(directory, resolved, false, None, true)
 }
 
 /// Retain accepted input after verified preparation, including a method selected
@@ -936,12 +1431,6 @@ pub fn resolve(
 pub fn retain_choices(directory: impl AsRef<Path>, plan: &Plan) -> Result<Plan, FinishError> {
     let directory = directory.as_ref();
     revalidate(directory, plan, plan.evidence.as_ref())?;
-    let root = plan
-        .repository
-        .working_tree_root
-        .as_deref()
-        .expect("worktree");
-    revalidate(root, plan, plan.evidence.as_ref())?;
     let mut record = plan.record.clone().ok_or(FinishError::InvalidEvidence(
         "retaining choices requires verified preparation",
     ))?;
@@ -955,24 +1444,14 @@ pub fn retain_choices(directory: impl AsRef<Path>, plan: &Plan) -> Result<Plan, 
         &record,
         true,
     )?;
-    let next = assess(root, &plan.request, plan.evidence.as_ref())?;
-    let mut expected_snapshot = plan.snapshot.clone();
-    // Selection reads its association before the record when HEAD has left the
-    // source. The branch record is always the last selected snapshot entry.
-    *expected_snapshot
+    let mut next = plan.clone();
+    // The successful private write only acknowledges accepted choices; Git
+    // refs, graph and candidate are unchanged.
+    *next
+        .snapshot
         .records
         .last_mut()
         .ok_or(FinishError::InvalidEvidence("recovery snapshot missing"))? = Some(bytes);
-    if next.repository != plan.repository
-        || next.settings != plan.settings
-        || next.source_ref != plan.source_ref
-        || next.source != plan.source
-        || next.target != plan.target
-        || next.local_target != plan.local_target
-        || next.snapshot != expected_snapshot
-        || next.record.as_ref() != Some(&record)
-    {
-        return Err(FinishError::ContextChanged);
-    }
+    next.record = Some(record);
     Ok(next)
 }

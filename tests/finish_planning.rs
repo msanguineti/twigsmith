@@ -300,9 +300,9 @@ fn finish_submodule_cleanliness_includes_gitlinks_and_content() {
 }
 
 #[test]
-fn finish_preserves_strict_upstream_and_mapping_guards() {
+fn finish_preserves_upstream_contract_with_command_scoped_fetch_mapping() {
     isolated(
-        "finish_preserves_strict_upstream_and_mapping_guards",
+        "finish_preserves_upstream_contract_with_command_scoped_fetch_mapping",
         true,
         |root| {
             for (remotes, merges, valid) in [
@@ -354,10 +354,14 @@ fn finish_preserves_strict_upstream_and_mapping_guards() {
                 "remote.origin.fetch",
                 "+refs/heads/*:refs/heads/*",
             ]);
-            assert!(matches!(
-                assess(root, &repo, &Request::default(), None),
-                Err(FinishError::Publication(_))
-            ));
+            // Finish fetches pinned objects with an empty refmap, and its
+            // command-scoped publication remote omits fetch mappings. A broad
+            // configured mapping therefore supplies no extra write authority.
+            let plan = assess(root, &repo, &Request::default(), None).unwrap();
+            assert_eq!(
+                plan.publication.branch_ref,
+                b"refs/heads/Feature/Exact_Name"
+            );
         },
     );
 }
@@ -627,16 +631,14 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
             for case in [
                 "head",
                 "branch",
-                "index",
+                "staged-content",
                 "dirty",
                 "settings",
                 "source",
                 "upstream",
                 "pushurl",
                 "fetch",
-                "git-config",
                 "shallow",
-                "tracking",
                 "remote-base",
                 "remote-tip",
                 "evidence-lost",
@@ -651,8 +653,9 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
                     "branch" => {
                         repo.success(&["switch", "-c", "other"]);
                     }
-                    "index" => {
-                        repo.success(&["update-index", "--assume-unchanged", "tracked"]);
+                    "staged-content" => {
+                        fs::write(repo.path().join("tracked"), "new staged content").unwrap();
+                        repo.success(&["add", "tracked"]);
                     }
                     "dirty" => {
                         fs::write(repo.path().join("new"), "new").unwrap();
@@ -684,22 +687,12 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
                             "+refs/heads/*:refs/remotes/custom/*",
                         ]);
                     }
-                    "git-config" => {
-                        repo.success(&["config", "rebase.autoStash", "true"]);
-                    }
                     "shallow" => {
                         fs::write(
                             repo.path().join(".git/shallow"),
                             [base.as_slice(), b"\n"].concat(),
                         )
                         .unwrap();
-                    }
-                    "tracking" => {
-                        repo.success(&[
-                            "update-ref",
-                            "refs/remotes/origin/main",
-                            std::str::from_utf8(&base).unwrap(),
-                        ]);
                     }
                     "remote-base" => remote.base = RefObservation::Unavailable,
                     "remote-tip" => {
@@ -712,6 +705,29 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
                     revalidate(root, &repo, &plan, current_evidence).is_err(),
                     "{case}"
                 );
+            }
+            for case in ["index-flags", "git-preference", "tracking-hint"] {
+                let (repo, base) = fixture(root);
+                let remote = evidence(base.clone(), RefObservation::Absent);
+                let plan = assess(root, &repo, &Request::default(), Some(&remote)).unwrap();
+                match case {
+                    "index-flags" => {
+                        repo.success(&["update-index", "--assume-unchanged", "tracked"]);
+                    }
+                    "git-preference" => {
+                        // Preparation selects --no-autostash explicitly.
+                        repo.success(&["config", "rebase.autoStash", "true"]);
+                    }
+                    _ => {
+                        repo.success(&[
+                            "update-ref",
+                            "refs/remotes/origin/main",
+                            std::str::from_utf8(&base).unwrap(),
+                        ]);
+                    }
+                }
+                revalidate(root, &repo, &plan, Some(&remote)).unwrap();
+                assert_eq!(oid(&repo, "HEAD"), plan.commit, "{case}");
             }
             // Formatting-only changes preserve settings values and sources.
             let (repo, base) = fixture(root);

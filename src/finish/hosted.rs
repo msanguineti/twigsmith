@@ -430,26 +430,7 @@ pub fn assess(root: &Path, supplied: &Request) -> Result<Plan, FinishError> {
         record_bytes,
         association,
     };
-    let replacements = read(
-        root,
-        &[
-            "--no-replace-objects",
-            "for-each-ref",
-            "--format=%(refname)",
-            "--",
-            std::env::var("GIT_REPLACE_REF_BASE")
-                .as_deref()
-                .unwrap_or("refs/replace/"),
-        ],
-    )?;
-    if !replacements.is_empty()
-        || metadata(root, "info/grafts")?.is_some_and(|v| !v.is_empty())
-        || metadata(root, "shallow")?.is_some_and(|v| !v.is_empty())
-    {
-        return Err(invalid(
-            "hosted version checks require original, complete Git history without replacements or grafts",
-        ));
-    }
+    original_history(root)?;
     if let Some(back) = &plan.merge_back {
         let reference = branch_ref(back.as_bytes());
         if symbolic(root, &reference)? {
@@ -479,6 +460,31 @@ pub fn assess(root: &Path, supplied: &Request) -> Result<Plan, FinishError> {
         ));
     }
     Ok(plan)
+}
+// Version-source checks require Git's original complete graph. Checks and hooks
+// can introduce these overrides, so stage validation retains this narrow rule.
+fn original_history(root: &Path) -> Result<(), FinishError> {
+    let replacements = read(
+        root,
+        &[
+            "--no-replace-objects",
+            "for-each-ref",
+            "--format=%(refname)",
+            "--",
+            std::env::var("GIT_REPLACE_REF_BASE")
+                .as_deref()
+                .unwrap_or("refs/replace/"),
+        ],
+    )?;
+    if !replacements.is_empty()
+        || metadata(root, "info/grafts")?.is_some_and(|v| !v.is_empty())
+        || metadata(root, "shallow")?.is_some_and(|v| !v.is_empty())
+    {
+        return Err(invalid(
+            "hosted version checks require original, complete Git history without replacements or grafts",
+        ));
+    }
+    Ok(())
 }
 fn check_worktrees(plan: &Plan) -> Result<(), FinishError> {
     let source = branch_ref(&plan.source_branch);
@@ -522,7 +528,8 @@ fn verify_record(root: &Path, plan: &Plan, r: &Record) -> Result<(), FinishError
         || plan.source != r.source
         || plan.source_log != r.source_log
         || plan.settings != r.settings
-        || plan.config != r.config
+        || route_config(&plan.config, &hosted_roles(plan), &plan.source_branch)
+            != route_config(&r.config, &hosted_roles(plan), &plan.source_branch)
         || plan.committed_settings != r.committed_settings
         || !plan.head_log.starts_with(&r.head_log)
     {
@@ -735,9 +742,101 @@ fn route_specs(root: &Path, plan: &Plan, previous: &[Route]) -> Result<Vec<Route
     }
     Ok(routes)
 }
-pub fn revalidate(root: &Path, plan: &Plan) -> Result<(), FinishError> {
-    if assess(root, &plan.request)? != *plan {
+// Native commands protect their own refs. This stage guard protects the owned
+// source/attempt and checked candidate, plus clean work and selected routes that
+// a pinned push or tag creation does not check. Refresh after checks and hooks,
+// never merely because a read-only Git subprocess completed.
+fn local_stage(root: &Path, plan: &Plan) -> Result<Plan, FinishError> {
+    let repo = repository::discover(root)?.ok_or(SaveError::OutsideRepository)?;
+    if repo != plan.repository {
         return Err(FinishError::ContextChanged);
+    }
+    let repository::Observation::Repository(state) =
+        repository::inspect_context_without_upstream(root, repo.clone())?
+    else {
+        return Err(FinishError::ContextChanged);
+    };
+    let repository::Head::Attached { branch, .. } = &state.head else {
+        return Err(FinishError::ContextChanged);
+    };
+    original_history(root)?;
+    let mut next = plan.clone();
+    next.settings =
+        settings::load_for_branch(root, &repo, &plan.source_branch).map_err(SaveError::from)?;
+    next.config = read(root, &["config", "--null", "--list"])?;
+    let source_ref = branch_ref(&plan.source_branch);
+    if symbolic(root, &source_ref)? {
+        return Err(invalid("symbolic hosted source is unsupported"));
+    }
+    next.source = commit(&hint(root, &source_ref)?)?;
+    next.source_log = log(root, &branch_ref(&plan.source_branch))?
+        .ok_or(invalid("source branch reflog missing"))?;
+    next.head_log = metadata(root, "logs/HEAD")?.ok_or(invalid("HEAD reflog missing"))?;
+    next.association = private_read(&repo, &path(&repo, branch, true))?;
+    next.record_bytes = private_read(&repo, &path(&repo, &plan.source_branch, false))?;
+    next.worktrees = read(root, &["worktree", "list", "--porcelain", "-z"])?;
+    next.state = *state;
+    if let Some(back) = &plan.merge_back {
+        let reference = branch_ref(back.as_bytes());
+        if symbolic(root, &reference)? {
+            return Err(invalid("symbolic merge-back branch is unsupported"));
+        }
+        next.candidate = hint(root, &reference)?;
+        next.branch_log = log(root, &reference)?;
+    }
+    if let Some(tag) = &plan.tag {
+        let reference = [b"refs/tags/", tag.as_bytes()].concat();
+        if symbolic(root, &reference)? {
+            return Err(invalid("symbolic version tag is unsupported"));
+        }
+        next.tag_object = hint(root, &reference)?;
+        next.tag_log = log(root, &reference)?;
+    }
+    let roles = hosted_roles(plan);
+    if next.settings != plan.settings
+        || next.source != plan.source
+        || next.source_log != plan.source_log
+        || next.record_bytes != plan.record_bytes
+        || route_config(&next.config, &roles, &plan.source_branch)
+            != route_config(&plan.config, &roles, &plan.source_branch)
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    check_worktrees(&next)?;
+    Ok(next)
+}
+fn hosted_roles(plan: &Plan) -> Vec<&str> {
+    plan.settings
+        .workstream
+        .as_ref()
+        .map_or_else(Vec::new, |p| {
+            vec![
+                p.base_remote.as_str(),
+                p.publish_remote.as_str(),
+                p.review_remote.as_str(),
+            ]
+        })
+}
+pub fn revalidate(root: &Path, plan: &Plan) -> Result<(), FinishError> {
+    let next = local_stage(root, plan)?;
+    if next.state != plan.state
+        || next.source_log != plan.source_log
+        || next.head_log != plan.head_log
+        || next.association != plan.association
+        || next.candidate != plan.candidate
+        || next.branch_log != plan.branch_log
+        || next.tag_object != plan.tag_object
+        || next.tag_log != plan.tag_log
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    if let Some(record) = &plan.record {
+        if record.target_retained {
+            verify_pin(root, record, "target", &record.target_oid)?;
+        }
+        if record.preparation_retained {
+            verify_pin(root, record, "prepare", &record.source)?;
+        }
     }
     Ok(())
 }
@@ -756,7 +855,6 @@ fn command(
     reports.push(preparation::CommandReport {
         arguments: args,
         result,
-        after: repository::inspect(root),
     });
     if success {
         Ok(bytes)
@@ -772,7 +870,6 @@ fn endpoint(
     route: &Route,
     commands: &mut Vec<preparation::CommandReport>,
 ) -> Result<(Vec<OsString>, String), FinishError> {
-    revalidate(root, plan)?;
     let (prefix, remote) = transport::endpoint(&plan.config, &route.remote, &route.endpoint)?;
     let mut args = prefix.clone();
     args.extend([
@@ -801,7 +898,6 @@ fn observe(
         repository::os(&route.reference)?,
     ]);
     let output = command(root, args, None, commands)?;
-    revalidate(root, plan)?;
     preparation::parse_advertisement(&output, &route.reference, plan.source.len())
 }
 fn acquire(
@@ -829,7 +925,6 @@ fn acquire(
     );
     args.extend(["--".into(), remote.into(), repository::os(oid)?]);
     command(root, args, None, commands)?;
-    revalidate(root, plan)?;
     if read(
         root,
         &[
@@ -844,8 +939,7 @@ fn acquire(
     }
     Ok(())
 }
-fn store(root: &Path, plan: &Plan, record: &Record) -> Result<Plan, FinishError> {
-    revalidate(root, plan)?;
+fn store(_root: &Path, plan: &Plan, record: &Record) -> Result<Plan, FinishError> {
     let bytes = serde_json::to_vec(record).map_err(|_| invalid("cannot encode hosted attempt"))?;
     write_private(
         &plan.repository,
@@ -864,19 +958,19 @@ fn store(root: &Path, plan: &Plan, record: &Record) -> Result<Plan, FinishError>
     if association.is_none() {
         write_private(&plan.repository, &source_path, &plan.source_branch, None)?;
     }
-    assess(root, &plan.request)
+    let mut next = plan.clone();
+    next.record = Some(record.clone());
+    next.record_bytes = Some(bytes);
+    if matches!(&plan.state.head, repository::Head::Attached { branch, .. } if branch == &plan.source_branch)
+    {
+        next.association = Some(plan.source_branch.clone());
+    }
+    Ok(next)
 }
 fn after(root: &Path, plan: &Plan) -> Result<Plan, FinishError> {
-    let next = assess(root, &plan.request)?;
-    if next.repository != plan.repository
-        || next.settings != plan.settings
-        || next.source != plan.source
-        || next.source_branch != plan.source_branch
-        || next.config != plan.config
-        || next.committed_settings != plan.committed_settings
-        || next.record != plan.record
-    {
-        return Err(FinishError::ContextChanged);
+    let next = local_stage(root, plan)?;
+    if let Some(record) = &next.record {
+        verify_record(root, &next, record)?;
     }
     Ok(next)
 }
@@ -902,7 +996,13 @@ fn switch(
         None,
         commands,
     )?;
-    after(root, plan)
+    let next = after(root, plan)?;
+    if !matches!(&next.state.head, repository::Head::Attached { branch: selected, .. } if selected == branch)
+    {
+        return Err(FinishError::ContextChanged);
+    }
+    clean(&next.state)?;
+    Ok(next)
 }
 fn checked(
     root: &Path,
@@ -1290,12 +1390,22 @@ pub fn execute(
                 plan = store(root, &plan, &record)?;
             }
         }
+        // Refresh remote workflow conditions once after candidate checks. Each
+        // pending write then uses its original exact lease; successful porcelain
+        // acknowledgements supply delivery evidence without remote readback.
+        pending_routes(root, &plan, &mut report.commands)?;
         for route in &record.routes {
-            pending_routes(root, &plan, &mut report.commands)?;
             let oid = desired(&plan, route)?.ok_or(invalid("publication candidate missing"))?;
             if observe(root, &plan, route, &mut report.commands)?
                 == RefObservation::Commit(oid.clone())
             {
+                report.publications.push(PublicationStatus {
+                    remote: route.remote.clone(),
+                    destination: route.endpoint.clone(),
+                    reference: route.reference.clone(),
+                    observed: RefObservation::Commit(oid.clone()),
+                    expected: Some(oid),
+                });
                 continue;
             }
             let old = match &route.before {
@@ -1331,21 +1441,37 @@ pub fn execute(
             ]);
             revalidate(root, &plan)?;
             clean(&plan.state)?;
-            command(root, args, None, &mut report.commands)?;
-            if observe(root, &plan, route, &mut report.commands)? != RefObservation::Commit(oid) {
+            let pushed = command(root, args, None, &mut report.commands);
+            let confirmed = report
+                .commands
+                .last()
+                .and_then(|command| command.result.as_ref().ok())
+                .is_some_and(|output| {
+                    let (responses, valid) =
+                        crate::publication::responses(&output.stdout, &oid, &route.reference);
+                    valid
+                        && responses.len() == 1
+                        && matches!(
+                            responses[0].state,
+                            crate::publication::Status::Created
+                                | crate::publication::Status::Advanced
+                                | crate::publication::Status::Unchanged
+                        )
+                });
+            if confirmed {
+                report.publications.push(PublicationStatus {
+                    remote: route.remote.clone(),
+                    destination: route.endpoint.clone(),
+                    reference: route.reference.clone(),
+                    observed: RefObservation::Commit(oid.clone()),
+                    expected: Some(oid),
+                });
+            }
+            pushed?;
+            if !confirmed {
                 return Err(invalid(
                     "hosted publication is unconfirmed; retry finish to observe pending delivery",
                 ));
-            }
-        }
-        pending_routes(root, &plan, &mut report.commands)?;
-        for route in &record.routes {
-            if observe(root, &plan, route, &mut report.commands)?
-                != RefObservation::Commit(
-                    desired(&plan, route)?.ok_or(invalid("missing desired ref"))?,
-                )
-            {
-                return Err(invalid("hosted publication incomplete"));
             }
         }
         report.ready = true;
@@ -1358,26 +1484,28 @@ pub fn execute(
         hint(root, &branch_ref(branch.as_bytes())).unwrap_or(RefObservation::Unavailable)
     });
     report.error = result.err();
-    report.plan = assess(root, &plan.request).ok().or(Some(plan));
+    report.plan = if report.error.is_some() {
+        assess(root, &plan.request).ok()
+    } else {
+        None
+    }
+    .or(Some(plan));
     if let Some(current) = &report.plan
         && let Some(record) = &current.record
     {
+        // Failure may leave a completed effect without acknowledgement. Reconcile
+        // only destinations that have no known exact outcome; retain prior success.
         for route in &record.routes {
+            if report.publications.iter().any(|p| {
+                p.remote == route.remote
+                    && p.destination == route.endpoint
+                    && p.reference == route.reference
+            }) {
+                continue;
+            }
             let observed = observe(root, current, route, &mut report.commands)
                 .unwrap_or(RefObservation::Unavailable);
             let expected = desired(current, route).ok().flatten();
-            if report.ready
-                && expected
-                    .as_ref()
-                    .map(|oid| RefObservation::Commit(oid.clone()))
-                    .as_ref()
-                    != Some(&observed)
-            {
-                report.ready = false;
-                report.error = Some(invalid(
-                    "final hosted publication observation is incomplete",
-                ));
-            }
             report.publications.push(PublicationStatus {
                 remote: route.remote.clone(),
                 destination: route.endpoint.clone(),
@@ -1444,33 +1572,78 @@ pub fn destinations(plan: &Plan) -> Vec<Vec<u8>> {
             .collect()
     })
 }
-/// Identify only explicit source policy or an exact private merge-back association.
-pub fn selected(root: &Path) -> Result<bool, FinishError> {
-    let Some(repo) = repository::discover(root)? else {
-        return Ok(false);
-    };
-    let repository::Observation::Repository(state) = repository::inspect_without_upstream(root)?
-    else {
-        return Ok(false);
-    };
-    let repository::Head::Attached { branch, .. } = &state.head else {
-        return Ok(false);
-    };
-    if private_read(&repo, &path(&repo, branch, true))?.is_some() {
-        return Ok(true);
+/// Cheap workflow dispatch from the command's already selected repository and
+/// policy. Full hosted assessment belongs only to tagged review or its retry.
+/// Associations and creation reflogs are still checked before another workflow
+/// can run: Git cannot recognize ownership of an unfinished hosted preparation.
+pub(crate) struct Routing {
+    pub branch: Option<Vec<u8>>,
+    pub source_branch: Option<Vec<u8>>,
+    pub settings: Settings,
+    pub selected: bool,
+    pub retained: bool,
+}
+pub(crate) fn routing(
+    root: &Path,
+    repo: &repository::RepositoryContext,
+    settings: &Settings,
+) -> Result<Routing, FinishError> {
+    let output =
+        git::inspect(root, ["symbolic-ref", "--quiet", "HEAD"]).map_err(InspectionError::Io)?;
+    if !output.status.success() {
+        if output.status.code() != Some(1) {
+            return Err(InspectionError::Git {
+                arguments: ["symbolic-ref", "--quiet", "HEAD"]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                output,
+            }
+            .into());
+        }
+        return Ok(Routing {
+            branch: None,
+            source_branch: None,
+            settings: settings.clone(),
+            selected: false,
+            retained: false,
+        });
     }
-    if hosted_branch(root, branch)? {
+    let branch = output
+        .stdout
+        .strip_suffix(b"\n")
+        .and_then(|reference| reference.strip_prefix(b"refs/heads/"))
+        .ok_or(invalid("invalid HEAD branch"))?
+        .to_vec();
+    let association = private_read(repo, &path(repo, &branch, true))?;
+    if association.is_none() && hosted_branch(root, &branch)? {
         return Err(invalid(
             "owned merge-back association is missing; restore hosted recovery evidence",
         ));
     }
-    Ok(settings::load_for_branch(root, &repo, branch)
-        .map_err(SaveError::from)?
-        .workstream
-        .as_ref()
-        .is_some_and(|p| {
+    let source_branch = association.clone().unwrap_or_else(|| branch.clone());
+    let record = private_read(repo, &path(repo, &source_branch, false))?;
+    if association.is_some() && record.is_none() {
+        return Err(invalid(
+            "hosted attempt missing for this merge-back association",
+        ));
+    }
+    let settings = if source_branch != branch {
+        settings::load_for_branch(root, repo, &source_branch).map_err(SaveError::from)?
+    } else {
+        settings.clone()
+    };
+    let selected = association.is_some()
+        || settings.workstream.as_ref().is_some_and(|p| {
             p.version_tagging && p.version_tag_identity == settings::VersionTagIdentity::WorkSource
-        }))
+        });
+    Ok(Routing {
+        branch: Some(branch),
+        source_branch: Some(source_branch),
+        settings,
+        selected,
+        retained: record.is_some(),
+    })
 }
 
 fn hosted_branch(root: &Path, branch: &[u8]) -> Result<bool, FinishError> {
@@ -1509,13 +1682,12 @@ fn verify_pin(root: &Path, record: &Record, kind: &str, oid: &[u8]) -> Result<()
 }
 fn retain_pin(
     root: &Path,
-    plan: &Plan,
+    _plan: &Plan,
     record: &Record,
     kind: &str,
     oid: &[u8],
     commands: &mut Vec<preparation::CommandReport>,
 ) -> Result<(), FinishError> {
-    revalidate(root, plan)?;
     let reference = pin_ref(record, kind);
     if hint(root, reference.as_bytes())? == RefObservation::Absent {
         if log(root, reference.as_bytes())?.is_some()
@@ -1542,21 +1714,6 @@ fn retain_pin(
     }
     verify_pin(root, record, kind, oid)
 }
-/// Existing associations must never fall back to another workflow on an invalid record.
-pub fn associated(root: &Path) -> Result<bool, FinishError> {
-    let Some(repo) = repository::discover(root)? else {
-        return Ok(false);
-    };
-    let repository::Observation::Repository(state) = repository::inspect_without_upstream(root)?
-    else {
-        return Ok(false);
-    };
-    let repository::Head::Attached { branch, .. } = &state.head else {
-        return Ok(false);
-    };
-    Ok(private_read(&repo, &path(&repo, branch, true))?.is_some() || hosted_branch(root, branch)?)
-}
-
 // Git's non-fast-forward merge machinery can overwrite ignored paths even with
 // --no-overwrite-ignore. Refuse target path overlap explicitly before the merge.
 fn protect_ignored(root: &Path, target: &[u8]) -> Result<(), FinishError> {

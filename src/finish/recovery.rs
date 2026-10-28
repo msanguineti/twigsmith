@@ -129,33 +129,25 @@ pub(super) struct Record {
 #[serde(deny_unknown_fields)]
 struct InteractiveBinding {
     settings: Settings,
-    config: Vec<Vec<u8>>,
     boundary: RefObservation,
     target: Option<TargetEvidence>,
     shared_history: history::SharedRefs,
 }
 impl InteractiveBinding {
     fn new(plan: &Plan) -> Self {
-        let branch = String::from_utf8_lossy(&plan.branch);
-        let remote = format!("branch.{branch}.remote");
-        let merge = format!("branch.{branch}.merge");
+        // RoleBinding already binds selected transport/routing configuration.
+        // Rewrite authorization depends on the retained original, exact native
+        // transition, boundary and shared history. Editor/signing preferences
+        // cannot change those completed objects and need no recovery equality.
         Self {
             settings: plan.settings.clone(),
             shared_history: plan.shared_history.clone(),
             boundary: plan.evidence.as_ref().expect("evidence").base.clone(),
             target: plan.evidence.as_ref().expect("evidence").target.clone(),
-            config: plan
-                .git_config
-                .split(|b| *b == 0)
-                .filter(|entry| {
-                    let key = entry.split(|b| *b == b'\n').next().unwrap_or_default();
-                    key != remote.as_bytes() && key != merge.as_bytes()
-                })
-                .map(<[u8]>::to_vec)
-                .collect(),
         }
     }
 }
+
 fn identity(plan: &Plan) -> Vec<Vec<u8>> {
     [
         &plan.repository.git_dir,
@@ -255,11 +247,28 @@ fn private_path(plan: &Plan) -> Result<(), FinishError> {
 fn load(plan: &Plan) -> Result<Option<Record>, FinishError> {
     private_path(plan)?;
     match fs::read(path(plan)?) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|_| FinishError::InvalidEvidence("invalid recovery record")),
+        Ok(bytes) => {
+            // Inspect the version before decoding the current shape. Old
+            // unfinished attempts retain their producing binary's semantics.
+            let value: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|_| FinishError::InvalidEvidence("invalid recovery record"))?;
+            if let Some(version) = value.get("version").and_then(serde_json::Value::as_u64)
+                && version != 4
+            {
+                return Err(FinishError::RecoveryVersion(version));
+            }
+            serde_json::from_value(value)
+                .map(Some)
+                .map_err(|_| FinishError::InvalidEvidence("invalid recovery record"))
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
+    }
+}
+pub(super) fn check_version(plan: &Plan) -> Result<(), FinishError> {
+    match load(plan) {
+        Err(error @ FinishError::RecoveryVersion(_)) => Err(error),
+        _ => Ok(()),
     }
 }
 fn finish_message(action: &str, branch: &[u8], base: &[u8]) -> Vec<u8> {
@@ -269,7 +278,7 @@ impl Record {
     fn verify(&self, directory: &Path, plan: &Plan) -> Result<Recovery, FinishError> {
         let invalid = || Ok(Recovery::Invalid);
         let evidence = plan.evidence.as_ref().expect("fresh evidence");
-        if self.version != 3
+        if self.version != 4
             || (self.interactive.is_some() != (plan.history_edit == HistoryEdit::Interactive))
             || self
                 .interactive
@@ -526,7 +535,10 @@ impl Record {
 }
 
 pub(super) fn apply(directory: &Path, plan: &mut Plan) -> Result<(), FinishError> {
-    let loaded = load(plan);
+    let loaded = match load(plan) {
+        Err(error @ FinishError::RecoveryVersion(_)) => return Err(error),
+        loaded => loaded,
+    };
     let interactive_record = match &loaded {
         Ok(Some(record)) => record.interactive.is_some(),
         Ok(None) => false,
@@ -612,7 +624,7 @@ pub(super) fn record(directory: &Path, plan: &Plan) -> Result<(PathBuf, String),
             record
         }
         _ => Record {
-            version: 3,
+            version: 4,
             repository: identity(plan),
             evidence: RecordedEvidence::from(&evidence),
             roles: RoleBinding::new(plan),

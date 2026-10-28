@@ -6,7 +6,6 @@ use std::{path::PathBuf, process::Output};
 pub struct CommandReport {
     pub arguments: Vec<OsString>,
     pub result: Result<Output, io::Error>,
-    pub after: Result<repository::Observation, InspectionError>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
@@ -133,7 +132,6 @@ fn command(
     report.commands.push(CommandReport {
         arguments: args,
         result,
-        after: repository::inspect(directory),
     });
     if success {
         Ok(bytes)
@@ -152,7 +150,6 @@ fn observe(
     reference: &[u8],
     report: &mut Report,
 ) -> Result<RefObservation, PreparationError> {
-    guard(directory, plan)?;
     let bytes = command(
         directory,
         vec![
@@ -166,7 +163,6 @@ fn observe(
         None,
         report,
     )?;
-    guard(directory, plan)?;
     let value = parse_advertisement(&bytes, reference, plan.commit.len())?;
     report.effects.push(Effect::Observed {
         destination: endpoint.to_vec(),
@@ -174,7 +170,6 @@ fn observe(
         value: value.clone(),
     });
     if let RefObservation::Commit(oid) = &value {
-        guard(directory, plan)?;
         // Fetch the advertised OID itself: a ref moving between advertisement
         // and fetch cannot silently substitute different history. An endpoint
         // that refuses the exact object stops this run rather than guessing.
@@ -200,7 +195,6 @@ fn observe(
             destination: endpoint.to_vec(),
             commit: oid.clone(),
         });
-        guard(directory, plan)?;
     }
     Ok(value)
 }
@@ -215,7 +209,6 @@ fn refresh_inner(
         .working_tree_root
         .as_deref()
         .expect("working plan");
-    guard(root, plan)?;
     let preparation_source = plan
         .settings
         .workstream
@@ -272,7 +265,6 @@ fn refresh_inner(
         // URLs returned by `remote get-url --push` are already rewritten. Fail
         // closed if using one for reads would rewrite it again or select a
         // same-named remote. Reading another endpoint cannot prove push history.
-        guard(root, plan)?;
         let resolved = command(
             root,
             vec![
@@ -322,12 +314,82 @@ fn stable_after(before: &Plan, after: &Plan) -> bool {
         && before.branch == after.branch
         && before.publication == after.publication
         && before.base_destination == after.base_destination
-        && before.git_config == after.git_config
+        && route_config(
+            &before.git_config,
+            &[
+                before.settings.base_remote.as_str(),
+                before.settings.publish_remote.as_str(),
+            ],
+            &before.branch,
+        ) == route_config(
+            &after.git_config,
+            &[
+                after.settings.base_remote.as_str(),
+                after.settings.publish_remote.as_str(),
+            ],
+            &after.branch,
+        )
         && before.shallow == after.shallow
         && before.grafts == after.grafts
-        && before.tracking_hints == after.tracking_hints
         && before.committed_settings == after.committed_settings
         && before.shared_history == after.shared_history
+}
+// A prompt may outlive the history observation that justified a local rewrite.
+// Reconfirm only those selected refs before changing the work branch: rebase
+// cannot enforce remote incorporation, while refetching unchanged objects or
+// reconstructing the entire assessment would add no protection.
+fn confirm_preparation_evidence(
+    root: &Path,
+    plan: &Plan,
+    report: &mut Report,
+) -> Result<(), PreparationError> {
+    let evidence = plan
+        .evidence
+        .as_ref()
+        .ok_or(PreparationError::UnresolvedPlan)?;
+    let mut observations = vec![(
+        plan.settings.base_remote.as_bytes(),
+        evidence.base_ref.as_slice(),
+        &evidence.base,
+    )];
+    if let Some(target) = &evidence.target {
+        observations.push((
+            plan.settings.base_remote.as_bytes(),
+            target.reference.as_slice(),
+            &target.branch,
+        ));
+    }
+    for destination in &evidence.destinations {
+        observations.push((
+            destination.destination.as_slice(),
+            evidence.branch_ref.as_slice(),
+            &destination.branch,
+        ));
+    }
+    for (endpoint, reference, expected) in observations {
+        let bytes = command(
+            root,
+            vec![
+                "ls-remote".into(),
+                "--refs".into(),
+                "--".into(),
+                repository::os(endpoint)?,
+                repository::os(reference)?,
+            ],
+            None,
+            report,
+        )?;
+        let value = parse_advertisement(&bytes, reference, plan.commit.len())?;
+        report.effects.push(Effect::Observed {
+            destination: endpoint.to_vec(),
+            reference: reference.to_vec(),
+            value: value.clone(),
+        });
+        if &value != expected {
+            return Err(FinishError::ContextChanged.into());
+        }
+    }
+    guard(root, plan)
 }
 fn prepare_inner(
     directory: &Path,
@@ -339,11 +401,10 @@ fn prepare_inner(
         report.plan = Some(plan.clone());
         return Err(PreparationError::UnresolvedPlan);
     }
-    // Reobserve destinations before acting, even for caller-supplied evidence.
-    refresh_inner(directory, plan, report)?;
-    if report.plan.as_ref() != Some(plan) {
-        return Err(FinishError::ContextChanged.into());
-    }
+    // Refresh established exact operands. Preparation consumes those pins;
+    // publication later protects each pending destination with its original lease.
+    report.evidence = plan.evidence.clone();
+    report.plan = Some(plan.clone());
     let root = plan
         .repository
         .working_tree_root
@@ -353,10 +414,10 @@ fn prepare_inner(
         report.state = State::Prepared;
         return Ok(());
     }
+    confirm_preparation_evidence(root, plan, report)?;
     let RefObservation::Commit(base) = &plan.evidence.as_ref().unwrap().base else {
         unreachable!("ready base")
     };
-    guard(root, plan)?;
     if plan.history_edit == HistoryEdit::Interactive {
         history::editor_ready(root)?;
         history::protect_ignored(root, &plan.commit, base)?;
@@ -364,13 +425,6 @@ fn prepare_inner(
     let action = if plan.update == FinishUpdate::Rebase {
         let (path, action) = recovery::record(root, plan)?;
         report.effects.push(Effect::RecoveryRecorded(path));
-        // Recovery metadata is the sole expected difference before execution.
-        let fresh = assess(root, &plan.request, plan.evidence.as_ref())?;
-        let mut expected = plan.clone();
-        expected.recovery = fresh.recovery.clone();
-        if fresh != expected {
-            return Err(FinishError::ContextChanged.into());
-        }
         Some(action)
     } else {
         None
@@ -432,11 +486,9 @@ fn prepare_inner(
         return Err(PreparationError::RecoveryUnverified);
     }
     if plan.history_edit == HistoryEdit::Interactive {
-        let checked = after.clone();
-        refresh_inner(root, &checked, report)?;
-        if report.evidence != checked.evidence {
-            return Err(FinishError::ContextChanged.into());
-        }
+        // Native editing is a real external-code boundary; confirm the selected
+        // remote refs without refetching their already pinned objects.
+        confirm_preparation_evidence(root, &after, report)?;
     }
     if !after.is_ready() {
         return Err(PreparationError::UnresolvedPlan);

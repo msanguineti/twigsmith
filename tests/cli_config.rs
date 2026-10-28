@@ -22,7 +22,19 @@ use twigsmith::{
 
 fn cases(name: &str, git_available: bool, test: impl Fn(&Path, &str)) {
     isolated(name, git_available, |root| {
-        for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
+        let executables = [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")];
+        // Both binaries share the dispatcher. Exercise both for grammar and a
+        // representative generated configuration; detailed scenarios need one.
+        let count = if matches!(
+            name,
+            "config_help_terminal_requirement_and_syntax_need_no_git"
+                | "unattended_formats_generate_defaults_from_nested_unborn_worktrees"
+        ) {
+            2
+        } else {
+            1
+        };
+        for executable in &executables[..count] {
             let fixture = tempfile::tempdir_in(root).unwrap();
             test(fixture.path(), executable);
         }
