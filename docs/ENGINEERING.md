@@ -515,6 +515,9 @@ inseparable requested groups fail before preservation. Ordinary commits use Git'
 hooks and signing; unexpected changes stop later effects. Stashes retain native Git
 object identities and remain local. Ignored untracked work is excluded.
 
+Private index and delta files use the `twigsmith-save-index-` and
+`twigsmith-save-delta-` prefixes in the worktree Git directory.
+
 Before reconciling the index and working tree, save retains the original work as a
 native-compatible stash object under a visible `refs/twigsmith/save-recovery/` ref.
 It removes that ref after verified local preservation; failures or interruption can

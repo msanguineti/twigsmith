@@ -16,7 +16,7 @@ pub(super) struct Index {
 impl Index {
     pub fn new(plan: &Plan) -> Result<Self, SaveError> {
         let file = tempfile::Builder::new()
-            .prefix("tgi-save-index-")
+            .prefix("twigsmith-save-index-")
             .tempfile_in(&plan.repository.git_dir)?;
         if let Some(bytes) = &plan.snapshot.index {
             fs::write(file.path(), bytes)?;
@@ -195,7 +195,7 @@ impl Trees {
             self.index.set(directory, base)?;
             if !patch.is_empty() {
                 let patch_file = tempfile::Builder::new()
-                    .prefix("tgi-save-delta-")
+                    .prefix("twigsmith-save-delta-")
                     .tempfile_in(&plan.repository.git_dir)?;
                 fs::write(patch_file.path(), patch)?;
                 let output = scratch.apply(directory, &self.index, patch_file.path())?;
