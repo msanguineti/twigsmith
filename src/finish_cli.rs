@@ -1423,7 +1423,7 @@ fn help() {
     println!(
         r#"Prepare and deliver finished work for review or integration. Alias: f.
 
-Usage: git-oneflow finish [OPTIONS]
+Usage: twigsmith finish [OPTIONS]
 
 Options:
   --mode <review|integrate>      Override completion mode
@@ -1446,12 +1446,12 @@ Options:
   -h, --help                    Show help
 
 Examples:
-  gof finish
-  gof f --mode review --update merge
-  gof finish --mode integrate --integration ff-only --cleanup both
-  gof finish --update rebase --history-edit interactive
-  gof finish --integration squash -m "Complete parser work" --cleanup keep
-  gof finish --tag v1.2 --merge-back review/v1.2
+  tgi finish
+  tgi f --mode review --update merge
+  tgi finish --mode integrate --integration ff-only --cleanup both
+  tgi finish --update rebase --history-edit interactive
+  tgi finish --integration squash -m "Complete parser work" --cleanup keep
+  tgi finish --tag v1.2 --merge-back review/v1.2
 
 Notes:
   Review prepares and publishes work for manual submission into the project base.
@@ -1489,7 +1489,7 @@ Settings:
   Use arrow keys and Enter for finite choices, or type a displayed number or name.
   Invalid choices stay correctable. Esc, Ctrl-C/Ctrl-D, or cancel stops finish;
   completed preparation/check effects remain. Scripts must resolve choices with flags/settings.
-  Run gof config for setup or gof config show to inspect effective settings.
+  Run tgi config for setup or tgi config show to inspect effective settings.
 
 Exit status:
   0  Confirmed complete review publication or integration with checkout and cleanup

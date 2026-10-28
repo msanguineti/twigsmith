@@ -2,15 +2,15 @@
 mod preservation;
 mod support;
 
-use git_oneflow::{
+use preservation::snapshot;
+use std::{fs, path::Path};
+use support::{Repository, isolated};
+use twigsmith::{
     git,
     repository::RepositoryKind,
     settings::{Settings, SettingsError},
     start::{self, PreparedRequest, ResolveError},
 };
-use preservation::snapshot;
-use std::{fs, path::Path};
-use support::{Repository, isolated};
 
 fn preserved(root: &Path, directory: &Path, input: &str) -> Result<PreparedRequest, ResolveError> {
     let before = snapshot(root);
@@ -133,7 +133,7 @@ fn literal_unicode_preserves_normalization_and_rejects_spaces() {
 fn settings_overrides_and_errors() {
     isolated("settings_overrides_and_errors", true, |root| {
         let repo = Repository::new(root);
-        let path = repo.path().join(".git/git-oneflow.config.toml");
+        let path = repo.path().join(".git/twigsmith.config.toml");
         fs::write(
             &path,
             "# repository settings\npublish-remote = 'team/upstream'\nbase = 'Feature/École'\n",
@@ -146,9 +146,9 @@ fn settings_overrides_and_errors() {
                 publish_remote: "team/upstream".into(),
                 base_remote: "team/upstream".into(),
                 base: "Feature/École".into(),
-                sources: git_oneflow::settings::SettingSources {
-                    publish_remote: git_oneflow::settings::SettingSource::Local(path.clone()),
-                    base: git_oneflow::settings::SettingSource::Local(path.clone()),
+                sources: twigsmith::settings::SettingSources {
+                    publish_remote: twigsmith::settings::SettingSource::Local(path.clone()),
+                    base: twigsmith::settings::SettingSource::Local(path.clone()),
                     ..Default::default()
                 },
                 ..Settings::default()
@@ -234,7 +234,7 @@ fn common_settings_in_linked_and_bare_contexts() {
             ]);
             fs::create_dir(linked.join("nested")).unwrap();
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "publish-remote='upstream'\nbase='trunk'",
             )
             .unwrap();
@@ -248,7 +248,7 @@ fn common_settings_in_linked_and_bare_contexts() {
             assert_eq!(local.settings, other.settings);
             // A worktree-private lookalike is ignored by the common-dir contract.
             fs::write(
-                other.repository.git_dir.join("git-oneflow.config.toml"),
+                other.repository.git_dir.join("twigsmith.config.toml"),
                 "base='wrong'",
             )
             .unwrap();
@@ -263,7 +263,7 @@ fn common_settings_in_linked_and_bare_contexts() {
                 repo.path().as_os_str(),
                 bare.as_os_str(),
             ]);
-            fs::write(bare.join("git-oneflow.config.toml"), "base='trunk'").unwrap();
+            fs::write(bare.join("twigsmith.config.toml"), "base='trunk'").unwrap();
             let request = preserved(root, &bare, "Fix").unwrap();
             assert_eq!(request.repository.kind, RepositoryKind::Bare);
             assert_eq!(request.settings.base, "trunk");

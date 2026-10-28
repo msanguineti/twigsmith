@@ -137,7 +137,7 @@ fn help_start() {
     println!(
         r#"Create or resume an exact work branch. Alias: s.
 
-Usage: git-oneflow start <branch-name> [OPTIONS]
+Usage: twigsmith start <branch-name> [OPTIONS]
 
 Arguments:
   <branch-name>                      One literal Git branch name
@@ -150,11 +150,11 @@ Options:
   -h, --help                         Show help
 
 Examples:
-  gof start add-user-avatars
-  gof s fix/parser_v2
-  gof start 中文/修复
-  gof start release/winter --policy release --from main~1
-  gof start hotfix/parser --policy hotfix --from-tag v1.2
+  tgi start add-user-avatars
+  tgi s fix/parser_v2
+  tgi start 中文/修复
+  tgi start release/winter --policy release --from main~1
+  tgi start hotfix/parser --policy hotfix --from-tag v1.2
 
 Notes:
   Names retain spelling, case, punctuation and Unicode form. Spaces are invalid,
@@ -168,7 +168,7 @@ Notes:
 
 Settings:
   publish-remote: origin; base-remote follows publication; base: main (defaults).
-  Run gof config for setup or gof config show to inspect effective settings.
+  Run tgi config for setup or tgi config show to inspect effective settings.
 
 Exit status:
   0  Created, resumed, or already current
@@ -203,7 +203,7 @@ fn resolve_guidance(error: &ResolveError) {
         }
         ResolveError::Settings(_) => {
             eprintln!(
-                "check the reported configuration file; run gof config show to inspect settings and their sources"
+                "check the reported configuration file; run tgi config show to inspect settings and their sources"
             );
         }
         ResolveError::Input(_) => {}

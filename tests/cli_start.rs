@@ -41,7 +41,7 @@ fn cli_cases(name: &str, git_available: bool, test: impl Fn(&Path, Invocation)) 
         test(
             root,
             Invocation {
-                executable: env!("CARGO_BIN_EXE_git-oneflow"),
+                executable: env!("CARGO_BIN_EXE_twigsmith"),
                 command: "start",
             },
         );
@@ -50,7 +50,7 @@ fn cli_cases(name: &str, git_available: bool, test: impl Fn(&Path, Invocation)) 
 
 fn cli_spellings(name: &str, git_available: bool, test: impl Fn(&Path, Invocation)) {
     isolated(name, git_available, |root| {
-        for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+        for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
             for command in ["start", "s"] {
                 let fixture = tempfile::tempdir_in(root).unwrap();
                 test(
@@ -153,7 +153,7 @@ fn cli_start_literal_names_use_fresh_base() {
                     local.success(&["symbolic-ref", "--short", "HEAD"]).stdout,
                     format!("{name}\n").as_bytes()
                 );
-                let upstream = git_oneflow::git::run(
+                let upstream = twigsmith::git::run(
                     local.path(),
                     ["config", "--get", &format!("branch.{name}.remote")],
                 )
@@ -390,7 +390,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
                 assert_eq!(snapshot(root), before, "{input:?}");
             }
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "base = 'main'\nbase = 'trunk'\n",
             )
             .unwrap();
@@ -398,10 +398,10 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             check(
                 cli.start(&repo, "work"),
                 1,
-                &["invalid settings:", "duplicate key", "gof config show"],
+                &["invalid settings:", "duplicate key", "tgi config show"],
             );
             assert_eq!(snapshot(root), before);
-            fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+            fs::remove_file(repo.path().join(".git/twigsmith.config.toml")).unwrap();
             check(
                 cli.start(&repo, "work"),
                 1,
@@ -419,7 +419,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             );
             let (remote, local) = pair(root);
             fs::write(
-                local.path().join(".git/git-oneflow.config.toml"),
+                local.path().join(".git/twigsmith.config.toml"),
                 "base = 'absent'\n",
             )
             .unwrap();
@@ -431,7 +431,7 @@ fn cli_start_eligibility_settings_and_remote_errors() {
             remote.success(&["branch", "trunk"]);
             local.success(&["remote", "rename", "origin", "upstream"]);
             fs::write(
-                local.path().join(".git/git-oneflow.config.toml"),
+                local.path().join(".git/twigsmith.config.toml"),
                 "publish-remote = 'upstream'\nbase = 'trunk'\n",
             )
             .unwrap();
@@ -453,7 +453,7 @@ fn cli_start_help_is_independent_of_git_repository_and_settings() {
         |root, cli| {
             let repo = Repository::new(root);
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "invalid settings",
             )
             .unwrap();
@@ -479,12 +479,12 @@ fn cli_start_help_is_independent_of_git_repository_and_settings() {
                     let help = check(output, 0, &[]);
                     if args[0] == "start" {
                         for content in [
-                            "Usage: git-oneflow start <branch-name>",
+                            "Usage: twigsmith start <branch-name>",
                             "Alias: s",
                             "Arguments:",
                             "Options:",
                             "Examples:",
-                            "gof s fix/parser_v2",
+                            "tgi s fix/parser_v2",
                             "Settings:",
                             "Exit status:",
                         ] {
@@ -584,12 +584,12 @@ fn cli_start_occupied_worktree_paths_and_settings_paths_escape_controls() {
             );
             assert!(!output.contains('\x1b'));
             assert_eq!(snapshot(root), before);
-            let settings = repo.path().join(".git/git-oneflow.config.toml");
+            let settings = repo.path().join(".git/twigsmith.config.toml");
             fs::create_dir(&settings).unwrap();
             check(
                 cli.start(&repo, "work"),
                 1,
-                &["cannot read settings", "git-oneflow.config.toml"],
+                &["cannot read settings", "twigsmith.config.toml"],
             );
         },
     );
@@ -681,7 +681,7 @@ fn cli_start_bare_repository_is_a_preserved_failure() {
 
 #[test]
 fn explicit_hotfix_policy_resumes_published_history_without_creation_tag() {
-    use git_oneflow::settings::{self, WorkstreamKind};
+    use twigsmith::settings::{self, WorkstreamKind};
     cli_cases(
         "explicit_hotfix_policy_resumes_published_history_without_creation_tag",
         true,
@@ -700,10 +700,10 @@ fn explicit_hotfix_policy_resumes_published_history_without_creation_tag() {
                 .get_mut(&WorkstreamKind::Hotfix)
                 .unwrap()
                 .creation_source = Some("refs/tags/Train-base".into());
-            let path = local.path().join(".git/git-oneflow.config.toml");
+            let path = local.path().join(".git/twigsmith.config.toml");
             fs::write(
                 &path,
-                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+                twigsmith::config::render(twigsmith::config::Format::Toml, &proposed),
             )
             .unwrap();
             check(
@@ -740,7 +740,7 @@ fn explicit_hotfix_policy_resumes_published_history_without_creation_tag() {
                 .creation_source = None;
             fs::write(
                 path,
-                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+                twigsmith::config::render(twigsmith::config::Format::Toml, &proposed),
             )
             .unwrap();
             let before = snapshot(root);

@@ -175,7 +175,7 @@ pub(super) fn path(plan: &Plan) -> Result<PathBuf, FinishError> {
     Ok(plan
         .repository
         .git_dir
-        .join("oneflow-finish")
+        .join("twigsmith-finish")
         .join("branches")
         .join(repository::os(&plan.branch)?)
         .join("rewrite.json"))
@@ -359,7 +359,7 @@ impl Record {
             }
             if attempt.before != before
                 || !valid_oid(&attempt.base, plan.commit.len())
-                || !attempt.action.starts_with("oneflow-finish-")
+                || !attempt.action.starts_with("twigsmith-finish-")
                 || !attempt.branch_log.matches(&branch)
                 || !attempt.head_log.matches(&head)
                 || attempt.branch_log.tip.as_ref().map(|e| &e.commit) != Some(&before)
@@ -635,14 +635,14 @@ pub(super) fn record(directory: &Path, plan: &Plan) -> Result<(PathBuf, String),
     private_path(plan)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     let action = format!(
-        "oneflow-finish-{}",
+        "twigsmith-finish-{}",
         file.path().file_name().unwrap().to_string_lossy()
     );
     let RefObservation::Commit(base) = evidence.base else {
         unreachable!("ready base")
     };
     let retained_ref = if plan.history_edit == HistoryEdit::Interactive {
-        let reference = format!("refs/oneflow/finish/{action}/original");
+        let reference = format!("refs/twigsmith/finish/{action}/original");
         let output = git::workflow(
             directory,
             &[

@@ -1,7 +1,8 @@
-# git-oneflow
+# Twigsmith
 
 A Git workflow CLI for starting workstreams, saving progress, and delivering
-finished work, releases, and hotfixes. Invoke it as `git-oneflow` or `gof`.
+finished work, releases, and hotfixes. Invoke it as `twigsmith` or the equivalent
+shorthand `tgi`; both share settings and recovery state.
 
 The native Rust version is under development. Its documented build and validation
 environment is Linux. It currently provides `start`,
@@ -12,11 +13,11 @@ environment is Linux. It currently provides `start`,
 Once a built executable is on PATH, run these commands from your Git checkout:
 
 ```sh
-gof start add-user-avatars
+tgi start add-user-avatars
 # Work and make normal Git commits
-gof save
-gof finish
-gof status
+tgi save
+tgi finish
+tgi status
 ```
 
 `start` creates or resumes a branch. `save` publishes progress and offers
@@ -38,17 +39,17 @@ work in Git's interactive rebase editor before review or integration; see
 | `status` | | Inspect repository state |
 | `config` / `config show` / `config --yes` | | Set up or inspect shared settings |
 
-Run `gof config` to choose a publication remote and a base source for a single
-repository or a fork. Use `gof config show` to inspect effective roles and sources.
+Run `tgi config` to choose a publication remote and a base source for a single
+repository or a fork. Use `tgi config show` to inspect effective roles and sources.
 See the [user guide](docs/USAGE.md#remote-roles-and-fork-workflows) for both
 workflows and tracking styles.
 
-Use `gof config --oneflow` to select an editable direct OneFlow setup bundle,
+Use `tgi config --oneflow` to select an editable direct OneFlow setup bundle,
 then start with explicit ordinary, release, or hotfix policy. Branch prefixes alone select no policy.
 The [release guide](docs/USAGE.md#direct-releases-and-hotfixes) covers source
 selection, source or integrated-result tags, ordered destinations, optional one-time
 rebase, active-release routing, marker branches, and recovery.
-Use `gof config --oneflow-hosted` for version publication and a separate merge-back
+Use `tgi config --oneflow-hosted` for version publication and a separate merge-back
 branch ready for manual submission. The [hosted guide](docs/USAGE.md#hosted-releases-and-hotfixes)
 covers review destinations and follow-up. Finish creates no pull request and performs
 no deployment.
@@ -57,7 +58,7 @@ Terminal menus support arrow keys and Enter; slow Git operations show activity.
 `NO_COLOR` disables colour, and redirected output stays plain. See the
 [user manual](docs/USAGE.md#start-or-resume-work) for command details.
 
-Use `gof --help` or `gof <command> --help` for a quick reference.
+Use `tgi --help` or `tgi <command> --help` for a quick reference.
 Enable Tab completion for Bash, Zsh, Fish or PowerShell with the
 [shell completion guide](docs/USAGE.md#shell-completion).
 

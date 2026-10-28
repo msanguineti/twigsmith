@@ -2,18 +2,18 @@
 mod preservation;
 mod support;
 
-use git_oneflow::{
-    finish, git,
-    save::{self, Request, SaveError, execution, publication},
-    settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
-    start::{self, Action, StartError},
-};
 use preservation::snapshot;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 use support::{Repository, isolated};
+use twigsmith::{
+    finish, git,
+    save::{self, Request, SaveError, execution, publication},
+    settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
+    start::{self, Action, StartError},
+};
 
 const PROJECT: &str = "team/project";
 const FORK: &str = "personal/publish";
@@ -84,7 +84,7 @@ impl Fixture {
         local.success(&["push", FORK, "HEAD:refs/heads/trunk"]);
         local.success(&["switch", "main"]);
         fs::write(
-            local.path().join(".git/git-oneflow.config.toml"),
+            local.path().join(".git/twigsmith.config.toml"),
             format!("publish-remote = {FORK:?}\nbase-remote = {PROJECT:?}\nbase = \"trunk\"\n"),
         )
         .unwrap();
@@ -543,7 +543,7 @@ fn equal_and_split_roles_accept_finish_assessment() {
             assert!(finish::assess(f.local.path(), &finish::Request::default(), None).is_ok());
             assert_eq!(snapshot(root), before);
             fs::write(
-                f.local.path().join(".git/git-oneflow.config.toml"),
+                f.local.path().join(".git/twigsmith.config.toml"),
                 format!("publish-remote = {FORK:?}\nbase = \"trunk\"\n"),
             )
             .unwrap();
@@ -599,7 +599,7 @@ fn start_revalidates_routes_and_destinations_after_discovery_and_fetch() {
                             format!("git remote set-url {FORK} /missing/changed-publish")
                         }
                         _ => format!(
-                            "printf 'publish-remote = \"{FORK}\"\\nbase-remote = \"{FORK}\"\\nbase = \"trunk\"\\n' > .git/git-oneflow.config.toml"
+                            "printf 'publish-remote = \"{FORK}\"\\nbase-remote = \"{FORK}\"\\nbase = \"trunk\"\\n' > .git/twigsmith.config.toml"
                         ),
                     };
                     executable(
@@ -781,7 +781,7 @@ fn cli_start_and_save_use_split_roles_and_report_explicit_push_conflicts() {
         true,
         |root| {
             use std::process::{Command, Stdio};
-            for executable in [env!("CARGO_BIN_EXE_gof"), env!("CARGO_BIN_EXE_git-oneflow")] {
+            for executable in [env!("CARGO_BIN_EXE_tgi"), env!("CARGO_BIN_EXE_twigsmith")] {
                 for (start_command, save_command) in [("start", "save"), ("s", "v")] {
                     let f = Fixture::new(root);
                     let run = |args: &[&str]| {

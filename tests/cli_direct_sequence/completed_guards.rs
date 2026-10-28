@@ -37,7 +37,7 @@ fn recreated_completed_target_or_missing_pin_cannot_authorize_pending_delivery()
                         "--format=%(refname)",
                         "--points-at",
                         &first,
-                        "refs/oneflow/integration",
+                        "refs/twigsmith/integration",
                     ]);
                     let pins = String::from_utf8(pins.stdout).unwrap();
                     let pins: Vec<_> = pins.lines().collect();

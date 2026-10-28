@@ -2,8 +2,8 @@
 use super::*;
 use std::process::Output;
 
-const EXE: &str = env!("CARGO_BIN_EXE_gof");
-const SHARED: &str = "git-oneflow.config.toml";
+const EXE: &str = env!("CARGO_BIN_EXE_tgi");
+const SHARED: &str = "twigsmith.config.toml";
 const MESSAGE: &str = "Routine checkpoint";
 const STASH_LABEL: &str = "Local remainder";
 
@@ -21,7 +21,7 @@ fn succeeds(output: Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 fn optional_oid(repo: &Repository, reference: &str) -> Option<String> {
-    let output = git_oneflow::git::run(repo.path(), ["rev-parse", "--verify", reference]).unwrap();
+    let output = twigsmith::git::run(repo.path(), ["rev-parse", "--verify", reference]).unwrap();
     output
         .status
         .success()
@@ -240,7 +240,7 @@ fn reported_stashes_reconstruct_in_separate_worktree_without_touching_leftover_w
                     format!("{staged_id}^1").as_ref(),
                 ]);
                 let native = |args: &[&str]| {
-                    let output = git_oneflow::git::run(&recovered, args).unwrap();
+                    let output = twigsmith::git::run(&recovered, args).unwrap();
                     assert!(output.status.success(), "{args:?}: {output:?}");
                     output.stdout
                 };

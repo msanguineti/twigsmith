@@ -104,7 +104,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
         }
         Command::Guided(..) if !io::stdin().is_terminal() || !io::stderr().is_terminal() => {
             crate::presentation::error(
-                "error: guided setup requires terminal input and stderr; use gof config --yes [--format <toml|yaml|json>] for unattended defaults",
+                "error: guided setup requires terminal input and stderr; use tgi config --yes [--format <toml|yaml|json>] for unattended defaults",
             );
             return ExitCode::FAILURE;
         }
@@ -130,7 +130,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
             .map(|generated| {
                 crate::presentation::report(&format!("Created shared configuration: {}", text(generated.path.display())), true);
                 for path in generated.local_files {
-                    println!("Local overrides in {} take precedence over generated values; use gof config show to inspect effective settings.", text(path.display()));
+                    println!("Local overrides in {} take precedence over generated values; use tgi config show to inspect effective settings.", text(path.display()));
                 }
             }),
         Command::Guided(format, oneflow, marker) => guided(&directory, format, oneflow, marker),
@@ -1756,15 +1756,15 @@ fn show(inspection: &config::Inspection) {
         Some(&inspection.repository.common_dir),
     );
     println!(
-        "Recognized files: git-oneflow.config.{{toml,yaml,yml,json}}\nPrecedence: local overrides > shared settings > built-in defaults.\nBase remote follows publication when base-remote is absent from both layers.\nExplicit save/finish flags override their corresponding settings."
+        "Recognized files: twigsmith.config.{{toml,yaml,yml,json}}\nPrecedence: local overrides > shared settings > built-in defaults.\nBase remote follows publication when base-remote is absent from both layers.\nExplicit save/finish flags override their corresponding settings."
     );
 }
 fn help() {
     println!(
         r#"Set up shared workflow settings or inspect effective configuration.
 
-Usage: git-oneflow config [OPTIONS]
-       git-oneflow config show
+Usage: twigsmith config [OPTIONS]
+       twigsmith config show
 
 Arguments:
   show                      Inspect settings, their sources, and local routing
@@ -1778,13 +1778,13 @@ Options:
   -h, --help                Show help
 
 Examples:
-  gof config
-  gof config show
-  gof config --yes --format yaml
-  gof config --oneflow --yes --marker stable
+  tgi config
+  tgi config show
+  tgi config --yes --format yaml
+  tgi config --oneflow --yes --marker stable
 
 Notes:
-  Setup creates git-oneflow.config.<format> at the working-tree root, including
+  Setup creates twigsmith.config.<format> at the working-tree root, including
   when invoked from a nested directory. An existing recognized shared file is preserved.
   Guided setup groups preferences and reviews effective behavior before creation.
   Review offers exact contents and editing earlier choices; creation defaults to no.
@@ -1807,7 +1807,7 @@ Defaults:
   finish-history-edit: none; finish-checks: [].
 
 Configuration:
-  One git-oneflow.config.toml, .yaml, .yml, or .json file per layer.
+  One twigsmith.config.toml, .yaml, .yml, or .json file per layer.
   Shared files live at the worktree root; local overrides live in the Git common directory.
   Explicit command flags override local, shared, and built-in values in that order.
   Local finish-checks replaces the shared list; [] disables inherited checks.

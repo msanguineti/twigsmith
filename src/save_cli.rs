@@ -142,7 +142,7 @@ pub fn run(args: &[OsString]) -> ExitCode {
                 "error: save requires an action; no interactive terminal is available",
             );
             eprintln!(
-                "select --commit <scope>, --stash <scope>, or --publish-only; or configure save-plan in git-oneflow.config.toml"
+                "select --commit <scope>, --stash <scope>, or --publish-only; or configure save-plan in twigsmith.config.toml"
             );
             return ExitCode::FAILURE;
         }
@@ -305,7 +305,7 @@ fn assessment_error(error: &SaveError) -> ExitCode {
             inspection_diagnostics(error);
         }
         SaveError::Settings(_) => eprintln!(
-            "check the reported configuration file; run gof config show to inspect settings and their sources"
+            "check the reported configuration file; run tgi config show to inspect settings and their sources"
         ),
         SaveError::ContextChanged => eprintln!(
             "inspect the changed branch/settings/index/work and rerun save to approve its current scope"
@@ -629,7 +629,7 @@ fn render(plan: &Plan, report: &Report) -> String {
         );
         let _ = writeln!(
             out,
-            "This snapshot preserves the original staged/unstaged work. Inspect git stash show {}. Reconstruct the original work in a separate directory with git worktree add --detach <new-directory> {}^1, then git -C <new-directory> stash apply --index {}. Recovery references are listed by git for-each-ref refs/git-oneflow/save-recovery/; remove one only after recovery is verified.",
+            "This snapshot preserves the original staged/unstaged work. Inspect git stash show {}. Reconstruct the original work in a separate directory with git worktree add --detach <new-directory> {}^1, then git -C <new-directory> stash apply --index {}. Recovery references are listed by git for-each-ref refs/twigsmith/save-recovery/; remove one only after recovery is verified.",
             display(&recovery.commit),
             display(&recovery.commit),
             display(&recovery.commit)
@@ -650,7 +650,7 @@ fn help() {
     println!(
         r#"Preserve selected work and publish the current branch. Alias: v.
 
-Usage: git-oneflow save [ACTION ...] [LABELS]
+Usage: twigsmith save [ACTION ...] [LABELS]
 
 Options:
   --commit <scope>         Commit all, staged, or unstaged changes
@@ -661,11 +661,11 @@ Options:
   -h, --help              Show help
 
 Examples:
-  gof save
-  gof v --commit all
-  gof save --commit staged --stash unstaged
-  gof save --stash staged --commit unstaged --message "Preserve progress"
-  gof save --stash staged --stash unstaged
+  tgi save
+  tgi v --commit all
+  tgi save --commit staged --stash unstaged
+  tgi save --stash staged --commit unstaged --message "Preserve progress"
+  tgi save --stash staged --stash unstaged
 
 Notes:
   Repeat --commit or --stash to select separate staged and unstaged artifacts.
@@ -695,7 +695,7 @@ Settings:
     for example ["commit:staged", "stash:unstaged"].
   save-message and save-stash-message: nonblank literal default labels.
   publish-remote: origin; base-remote follows publication; base: main (defaults).
-  Run gof config for setup or gof config show to inspect effective settings.
+  Run tgi config for setup or tgi config show to inspect effective settings.
 
 Exit status:
   0  Selected plan completed, including unchanged publication

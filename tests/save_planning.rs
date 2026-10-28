@@ -1,14 +1,14 @@
 #[path = "support/snapshot.rs"]
 mod preservation;
 mod support;
-use git_oneflow::{
+use preservation::snapshot;
+use std::{fs, path::Path};
+use support::{Repository, isolated};
+use twigsmith::{
     git,
     save::{self, LocalStep, Plan, Request, RequiredInput, SaveError, TreeState},
     settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
 };
-use preservation::snapshot;
-use std::{fs, path::Path};
-use support::{Repository, isolated};
 
 fn fixture(root: &Path) -> Repository {
     let repo = Repository::new(root);
@@ -377,7 +377,7 @@ fn linked_worktrees_share_settings_but_keep_local_scope() {
             ]);
             repo.success(&["remote", "add", "team", "/missing/team"]);
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "publish-remote='team'\nbase='trunk'\nsave-plan=['commit:staged','commit:unstaged']",
             )
             .unwrap();
@@ -402,7 +402,7 @@ fn linked_worktrees_share_settings_but_keep_local_scope() {
                 b"refs/heads/release/Exact"
             );
             assert_eq!(
-                git_oneflow::start::prepare(&linked, "another")
+                twigsmith::start::prepare(&linked, "another")
                     .unwrap()
                     .settings,
                 other.settings
@@ -447,7 +447,7 @@ fn revalidation_detects_content_index_head_settings_and_destination_changes() {
                     "untracked" => fs::write(repo.path().join("untracked"), "after\n").unwrap(),
                     "new-path" => fs::write(repo.path().join("another"), "new\n").unwrap(),
                     "settings" => fs::write(
-                        repo.path().join(".git/git-oneflow.config.toml"),
+                        repo.path().join(".git/twigsmith.config.toml"),
                         "base='trunk'",
                     )
                     .unwrap(),
@@ -687,7 +687,7 @@ fn nested_scope_and_multiple_push_urls_revalidate() {
                 Err(SaveError::ContextChanged)
             ));
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "base='Feature/Exact_Name'",
             )
             .unwrap();

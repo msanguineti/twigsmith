@@ -1,6 +1,6 @@
 # Technical manual
 
-git-oneflow is a Rust application that composes ordinary Git operations into
+Twigsmith is a Rust application that composes ordinary Git operations into
 three workstream commands: start, save, and finish. This manual explains the
 implementation and the invariants that matter when diagnosing or changing it.
 The [user manual](USAGE.md) covers commands and recovery procedures; the
@@ -21,7 +21,7 @@ Read the architecture and Git boundary first, then follow the relevant workflow:
 
 ## Architecture and execution model
 
-Both executables, `git-oneflow` and `gof`, enter the same
+Both executables, `twigsmith` and `tgi`, enter the same
 [command dispatcher](../src/cli.rs). The lifecycle aliases `s`, `v`, and `f`
 use the same command implementations. CLI modules parse arguments, resolve
 interactive choices, render reports, and choose exit status. Workflow libraries
@@ -137,7 +137,7 @@ coverage checks the public option/alias surface against installed help and parse
 cases. Shell-specific grammar and Git inventories are absent from the adapters.
 
 [`completion_shells.rs`](../src/completion_shells.rs) and the sourceable
-[Bash adapter](../completions/git-oneflow.bash) transport literal words to the
+[Bash adapter](../completions/twigsmith.bash) transport literal words to the
 private `__complete` entry point, handled before activity and workflow dispatch.
 Bash preserves Readline word-break and quote contexts, and suppresses mid-word
 replacement because Readline retains a suffix after the cursor; Zsh uses native
@@ -310,7 +310,7 @@ All lifecycle commands share the [settings model](../src/settings.rs). Shared
 settings live at the discovered worktree root; private overrides live in the
 common Git directory and apply across linked worktrees. Bare repositories have
 only the local layer. Each layer independently permits one recognized
-`git-oneflow.config.toml`, `.yaml`, `.yml`, or `.json` file. Multiple recognized
+`twigsmith.config.toml`, `.yaml`, `.yml`, or `.json` file. Multiple recognized
 files in one layer are ambiguous; extensions have no priority. There is no
 parent/home inheritance, custom path selection, or external import.
 
@@ -516,7 +516,7 @@ hooks and signing; unexpected changes stop later effects. Stashes retain native 
 object identities and remain local. Ignored untracked work is excluded.
 
 Before reconciling the index and working tree, save retains the original work as a
-native-compatible stash object under a visible `refs/git-oneflow/save-recovery/` ref.
+native-compatible stash object under a visible `refs/twigsmith/save-recovery/` ref.
 It removes that ref after verified local preservation; failures or interruption can
 leave it for recovery. Completed commits and stashes remain independently visible.
 A fresh retry assesses current state rather than replaying the previous plan. See
@@ -697,7 +697,7 @@ and fresh-process continuation through the public commands.
 
 Before a review rebase, [`finish/recovery.rs`](../src/finish/recovery.rs) writes
 an atomic version-3 record at
-`<worktree-git-dir>/oneflow-finish/branches/<branch>/rewrite.json`. Owner-only
+`<worktree-git-dir>/twigsmith-finish/branches/<branch>/rewrite.json`. Owner-only
 files/directories on Unix and symlink rejection protect its private storage.
 The record binds repository/worktree identity, refs, remote roles/endpoints,
 ordered original destination observations, original commits, fetched bases,
@@ -1094,7 +1094,7 @@ from explicit refresh. Ordinary local execution performs no fetch or remote writ
 Tagged execution also observes version refs, acquires any required marker objects,
 and checks the exact source before creating its tag; publication remains a separate
 stage. It
-records intent and retains the original source at `refs/oneflow/integration/<token>/original` before
+records intent and retains the original source at `refs/twigsmith/integration/<token>/original` before
 changing history.
 
 Work preparation preserves merge structure and uses the same bounded rebase
@@ -1114,7 +1114,7 @@ Integration runs Git `--ff-only`, `--no-ff` with message, or squash followed by 
 guarded commit. The automatic message is `Integrate <source> into <target>`.
 Explicit messages are literal arguments with normal Git cleanup, hooks, and
 signing. The verified result is retained at
-`refs/oneflow/integration/<token>/result`. Source/target branches and retention
+`refs/twigsmith/integration/<token>/result`. Source/target branches and retention
 refs survive failed checks. Reports distinguish new integration from reuse and
 retain observed changes even when Git fails afterward.
 
@@ -1128,7 +1128,7 @@ the result and a retry runs the effective list again.
 
 [`integration/recovery.rs`](../src/finish/integration/recovery.rs) stores private
 version-3 records at
-`<worktree-git-dir>/oneflow-integration/branches/<source>/attempt.json` and an
+`<worktree-git-dir>/twigsmith-integration/branches/<source>/attempt.json` and an
 `active.json` selector for association after target checkout. Atomic writes sync
 files and containing directories and reject symlinks; Unix paths must be private.
 Records bind identity, exact source/target refs and commits, local target expectation,
@@ -1343,12 +1343,12 @@ endpoints, and independently verified equality recovers completed delivery.
 Command errors remain reportable after effects and no rollback discards work.
 
 Recovery covers the tool's own preparation and publication across processes.
-Version-1 private records live under `<worktree-git-dir>/oneflow-hosted/`, with
+Version-1 private records live under `<worktree-git-dir>/twigsmith-hosted/`, with
 separate attempts and merge-back associations keyed by the exact source/branch
 bytes. Private attempt evidence binds repository/worktree, original association,
 settings/provenance and Git configuration, endpoints, source/tag identities,
 merge-back creation and preparation transitions, and check receipts. Private refs
-at `refs/oneflow/hosted/<token>/target` and `/prepare` retain the exact target and
+at `refs/twigsmith/hosted/<token>/target` and `/prepare` retain the exact target and
 corroborate preparation start through attempt-marked creation reflogs. Missing or
 changed acknowledged retention blocks reuse. A branch at
 the same OID is insufficient proof of ownership after recreation. A conflict

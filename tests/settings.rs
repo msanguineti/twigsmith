@@ -2,7 +2,10 @@
 mod preservation;
 mod support;
 
-use git_oneflow::{
+use preservation::snapshot;
+use std::{fs, path::Path};
+use support::{Repository, isolated};
+use twigsmith::{
     git, repository,
     save::{self, ActionSource, Request, SaveError, execution},
     settings::{
@@ -11,9 +14,6 @@ use git_oneflow::{
     },
     start,
 };
-use preservation::snapshot;
-use std::{fs, path::Path};
-use support::{Repository, isolated};
 
 fn save_plan(value: &str) -> SavePlan {
     SavePlan::parse(&value.split(',').map(str::to_owned).collect::<Vec<_>>()).unwrap()
@@ -1090,7 +1090,7 @@ fn remote_role_changes_revalidate_workflow_apis() {
         "remote_role_changes_revalidate_workflow_apis",
         true,
         |root| {
-            use git_oneflow::finish;
+            use twigsmith::finish;
             let repo = Repository::new(root);
             fs::write(repo.path().join("tracked"), "initial").unwrap();
             commit(&repo);
@@ -1235,11 +1235,11 @@ fn completion_settings_round_trip_layer_precedence_and_provenance() {
                         let loaded = load(repo.path()).unwrap();
                         assert_eq!(completion_values(&loaded)[index].0, *value);
                         // General rendering preserves inactive settings too.
-                        let rendered = git_oneflow::config::render(
+                        let rendered = twigsmith::config::render(
                             match format {
-                                0 => git_oneflow::config::Format::Toml,
-                                1 | 2 => git_oneflow::config::Format::Yaml,
-                                _ => git_oneflow::config::Format::Json,
+                                0 => twigsmith::config::Format::Toml,
+                                1 | 2 => twigsmith::config::Format::Yaml,
+                                _ => twigsmith::config::Format::Json,
                             },
                             &loaded,
                         );
@@ -1361,19 +1361,18 @@ fn completion_settings_and_sources_revalidate_workflows_and_guided_review() {
                     let start = start::prepare(repo.path(), "another").unwrap();
                     let save = save::assess(repo.path(), &Request::default()).unwrap();
                     let finish =
-                        git_oneflow::finish::assess(repo.path(), &Default::default(), None)
-                            .unwrap();
-                    let setup = git_oneflow::config::prepare_guided(
+                        twigsmith::finish::assess(repo.path(), &Default::default(), None).unwrap();
+                    let setup = twigsmith::config::prepare_guided(
                         repo.path(),
-                        git_oneflow::config::Format::Toml,
+                        twigsmith::config::Format::Toml,
                     )
                     .unwrap();
                     write(&repo.path().join(".git"), 0, &[(key, value)]);
                     let before = snapshot(root);
                     assert!(start::execute(repo.path(), &start).is_err());
                     assert!(save::revalidate(repo.path(), &save).is_err());
-                    assert!(git_oneflow::finish::revalidate(repo.path(), &finish, None).is_err());
-                    assert!(git_oneflow::config::revalidate_review(repo.path(), &setup).is_err());
+                    assert!(twigsmith::finish::revalidate(repo.path(), &finish, None).is_err());
+                    assert!(twigsmith::config::revalidate_review(repo.path(), &setup).is_err());
                     assert_eq!(snapshot(root), before);
                 }
             }
@@ -1383,7 +1382,7 @@ fn completion_settings_and_sources_revalidate_workflows_and_guided_review() {
 
 #[test]
 fn workstream_bundle_round_trips_and_sparse_private_routes_preserve_provenance() {
-    use git_oneflow::{config::Format, settings::WorkstreamKind};
+    use twigsmith::{config::Format, settings::WorkstreamKind};
     isolated(
         "workstream_bundle_round_trips_and_sparse_private_routes_preserve_provenance",
         true,
@@ -1397,8 +1396,8 @@ fn workstream_bundle_round_trips_and_sparse_private_routes_preserve_provenance()
                 (Format::Json, CONFIG_FILES[3]),
             ] {
                 let shared = repo.path().join(filename);
-                fs::write(&shared, git_oneflow::config::render(format, &proposed)).unwrap();
-                let private = repo.path().join(".git/git-oneflow.config.json");
+                fs::write(&shared, twigsmith::config::render(format, &proposed)).unwrap();
+                let private = repo.path().join(".git/twigsmith.config.json");
                 fs::write(&private, r#"{"workstreams":{"release":{"publish-remote":"project"},"hotfix":{"active-release":"release/train"}}}"#).unwrap();
                 let loaded = load(repo.path()).unwrap();
                 let mut release = loaded.clone();
@@ -1500,7 +1499,7 @@ fn workstream_configuration_rejects_typed_duplicate_and_inactive_invalid_values(
 
 #[test]
 fn hosted_workstream_routes_round_trip_and_private_fields_layer_independently() {
-    use git_oneflow::{
+    use twigsmith::{
         config::Format,
         settings::{FinishCheckout, FinishCleanup, FinishMode, WorkstreamKind},
     };
@@ -1521,8 +1520,8 @@ fn hosted_workstream_routes_round_trip_and_private_fields_layer_independently() 
                 (Format::Json, CONFIG_FILES[3]),
             ] {
                 let shared = repo.path().join(filename);
-                fs::write(&shared, git_oneflow::config::render(format, &proposed)).unwrap();
-                let private = repo.path().join(".git/git-oneflow.config.json");
+                fs::write(&shared, twigsmith::config::render(format, &proposed)).unwrap();
+                let private = repo.path().join(".git/twigsmith.config.json");
                 fs::write(&private, r#"{"redact-credentials":false,"workstreams":{"release":{"review-remote":"review","merge-back-branch":"review/version"},"hotfix":{"active-release":"release/train"}}}"#).unwrap();
                 let loaded = load(repo.path()).unwrap();
                 let mut release = loaded.clone();
@@ -1581,7 +1580,7 @@ fn hosted_workstream_routes_round_trip_and_private_fields_layer_independently() 
 
 #[test]
 fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
-    use git_oneflow::{config::Format, settings::WorkstreamKind};
+    use twigsmith::{config::Format, settings::WorkstreamKind};
     isolated(
         "hosted_settings_reject_invalid_fields_and_incompatible_effective_policies",
         true,
@@ -1608,7 +1607,7 @@ fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
                     for (scalar, duplicate) in [("true", false), ("1", false), ("\"first\"", true)]
                     {
                         let content = match filename {
-                            "git-oneflow.config.toml" => format!(
+                            "twigsmith.config.toml" => format!(
                                 "[workstreams.release]\n{key}={scalar}\n{}",
                                 if duplicate {
                                     format!("{key}='second'\n")
@@ -1616,7 +1615,7 @@ fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
                                     String::new()
                                 }
                             ),
-                            "git-oneflow.config.yaml" => format!(
+                            "twigsmith.config.yaml" => format!(
                                 "workstreams:\n  release:\n    {key}: {scalar}\n{}",
                                 if duplicate {
                                     format!("    {key}: second\n")
@@ -1652,12 +1651,8 @@ fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
                 ("merge-back-branch", "main"),
                 ("merge-back-branch", "stable"),
             ] {
-                fs::write(
-                    &shared,
-                    git_oneflow::config::render(Format::Json, &proposed),
-                )
-                .unwrap();
-                let private = repo.path().join(".git/git-oneflow.config.json");
+                fs::write(&shared, twigsmith::config::render(Format::Json, &proposed)).unwrap();
+                let private = repo.path().join(".git/twigsmith.config.json");
                 fs::write(
                     &private,
                     serde_json::json!({"workstreams":{"release":{key:value}}}).to_string(),
@@ -1673,7 +1668,7 @@ fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
                     .get_mut(&WorkstreamKind::Release)
                     .unwrap()
                     .finish_update = Some(update.into());
-                fs::write(&shared, git_oneflow::config::render(Format::Json, &allowed)).unwrap();
+                fs::write(&shared, twigsmith::config::render(Format::Json, &allowed)).unwrap();
                 assert!(load(repo.path()).is_ok(), "rejected {update}");
             }
             // Validate supplied layers even when a private layer would repair them.
@@ -1682,13 +1677,9 @@ fn hosted_settings_reject_invalid_fields_and_incompatible_effective_policies() {
                 .get_mut(&WorkstreamKind::Release)
                 .unwrap()
                 .finish_cleanup = Some("both".into());
+            fs::write(&shared, twigsmith::config::render(Format::Json, &proposed)).unwrap();
             fs::write(
-                &shared,
-                git_oneflow::config::render(Format::Json, &proposed),
-            )
-            .unwrap();
-            fs::write(
-                repo.path().join(".git/git-oneflow.config.json"),
+                repo.path().join(".git/twigsmith.config.json"),
                 r#"{"workstreams":{"release":{"finish-cleanup":"keep"}}}"#,
             )
             .unwrap();
@@ -1786,10 +1777,10 @@ fn ordered_tagged_routes_layer_replace_and_select_identity() {
             let shared = repo.path().join(CONFIG_FILES[3]);
             fs::write(
                 &shared,
-                git_oneflow::config::render(git_oneflow::config::Format::Json, &proposed),
+                twigsmith::config::render(twigsmith::config::Format::Json, &proposed),
             )
             .unwrap();
-            let private = repo.path().join(".git/git-oneflow.config.json");
+            let private = repo.path().join(".git/twigsmith.config.json");
             fs::write(&private, r#"{"workstreams":{"release":{"integration-targets":["main","stable"],"version-tag-identity":"integrated-result"},"hotfix":{"active-release":"release/train","integration-targets":["release/train","main"]}}}"#).unwrap();
             let loaded = load(repo.path()).unwrap();
             let mut release = loaded.clone();
@@ -1835,7 +1826,7 @@ fn ordered_tagged_routes_layer_replace_and_select_identity() {
                 .integration_targets = Some(vec!["main".into(), "stable".into()]);
             fs::write(
                 &shared,
-                git_oneflow::config::render(git_oneflow::config::Format::Json, &proposed),
+                twigsmith::config::render(twigsmith::config::Format::Json, &proposed),
             )
             .unwrap();
             fs::write(
@@ -1963,15 +1954,15 @@ fn invalid_policy_correction_quotes_literal_git_configuration_key() {
         |root| {
             let repo = Repository::new(root);
             let branch = "release/quoted'$;branch";
-            let key = format!("branch.{branch}.oneflow-policy");
+            let key = format!("branch.{branch}.twigsmith-policy");
             repo.success(&["config", "--local", &key, "invalid-json"]);
-            let repository = git_oneflow::repository::discover(repo.path())
+            let repository = twigsmith::repository::discover(repo.path())
                 .unwrap()
                 .unwrap();
             let message = settings::load_for_branch(repo.path(), &repository, branch.as_bytes())
                 .unwrap_err()
                 .to_string();
-            let correction = "git config --local --unset-all 'branch.release/quoted'\\''$;branch.oneflow-policy'";
+            let correction = "git config --local --unset-all 'branch.release/quoted'\\''$;branch.twigsmith-policy'";
             assert!(message.contains(correction), "{message}");
             // The suggested command removes exactly this local key, with shell
             // metacharacters treated as literal branch bytes.

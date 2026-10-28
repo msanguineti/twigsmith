@@ -283,7 +283,7 @@ fn retain(root: &Path, reference: &str, oid: &[u8], report: &mut Report) -> Resu
         "--no-deref",
         "--create-reflog",
         "-m",
-        "oneflow retain",
+        "twigsmith retain",
         reference,
     ]);
     a.extend([

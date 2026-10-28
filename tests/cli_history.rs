@@ -34,7 +34,7 @@ fn fixture(root: &Path, published: bool) -> (Repository, Repository) {
         local.success(&["push", "origin", "HEAD:refs/heads/work/history"]);
     }
     fs::write(
-        local.path().join(".git/git-oneflow.config.toml"),
+        local.path().join(".git/twigsmith.config.toml"),
         "finish-message='auto'\nfinish-cleanup='keep'\n",
     )
     .unwrap();
@@ -50,7 +50,7 @@ fn editor(root: &Path, name: &str, body: &str) -> String {
     format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
 }
 fn finish(repo: &Repository, mode: &str, sequence: &str, message: &str, extra: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+    Command::new(env!("CARGO_BIN_EXE_twigsmith"))
         .current_dir(repo.path())
         .args([
             "finish",
@@ -184,7 +184,7 @@ fn direct_drop_all_needs_no_integration_message_or_new_commit() {
                 "sed 's/^pick /drop /' \"$1\" > \"$1.new\"; mv \"$1.new\" \"$1\"",
             );
             fs::write(
-                local.path().join(".git/git-oneflow.config.toml"),
+                local.path().join(".git/twigsmith.config.toml"),
                 "finish-cleanup='keep'\n",
             )
             .unwrap();
@@ -261,7 +261,7 @@ fn check_failure_retains_edited_result_and_retry_checks_that_result() {
             fs::write(&check_path, "#!/bin/sh\nexit 1\n").unwrap();
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&check_path, fs::Permissions::from_mode(0o755)).unwrap();
-            fs::write(local.path().join(".git/git-oneflow.config.toml"),
+            fs::write(local.path().join(".git/twigsmith.config.toml"),
             "finish-message='auto'\nfinish-cleanup='keep'\n[[finish-checks]]\nname='Edited tree'\ncommand=['sh','.git/check']\n").unwrap();
             let sequence = editor(
                 root,
@@ -296,7 +296,7 @@ fn unavailable_editors_and_invalid_todo_cannot_publish() {
         |root| {
             let (local, remote) = fixture(root, false);
             let source = oid(&local, "HEAD");
-            let missing = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+            let missing = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
                 .current_dir(local.path())
                 .args([
                     "finish",
@@ -450,9 +450,9 @@ fn distinct_preparation_and_integration_routes_preserve_both_shared_lines() {
                 local.success(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
                 local.success(&["fetch", "origin"]);
                 local.success(&["reset", "--hard", "origin/main"]);
-                fs::write(local.path().join(".git/git-oneflow.config.toml"),
+                fs::write(local.path().join(".git/twigsmith.config.toml"),
                 "finish-message='auto'\nfinish-cleanup='keep'\n[workstreams.ordinary]\npreparation-source='preparation'\nintegration-target='main'\n").unwrap();
-                let start = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+                let start = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
                     .current_dir(local.path())
                     .args([
                         "start",
@@ -516,7 +516,7 @@ fn linked_worktree_native_edit_completion_keeps_recovery_interval_offsets() {
                 "sed 's/^pick /reword /' \"$1\" > \"$1.new\"; mv \"$1.new\" \"$1\"",
             );
             let message = editor(root, "message", "printf 'Linked edit\\n' > \"$1\"");
-            let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+            let output = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
                 .current_dir(&linked)
                 .args([
                     "finish",

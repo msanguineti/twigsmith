@@ -2,7 +2,10 @@
 mod preservation;
 mod support;
 
-use git_oneflow::{
+use preservation::snapshot;
+use std::{fs, path::Path, process::Command};
+use support::{Repository, isolated};
+use twigsmith::{
     config::{self, ConfigError, Format},
     finish::{self, preparation, publication},
     repository, save,
@@ -11,9 +14,6 @@ use git_oneflow::{
     },
     start,
 };
-use preservation::snapshot;
-use std::{fs, path::Path, process::Command};
-use support::{Repository, isolated};
 
 fn load(directory: &Path) -> Result<Settings, settings::SettingsError> {
     settings::load(
@@ -490,7 +490,7 @@ fn cli_inspects_literal_checks_start_and_save_ignore_them() {
         "cli_inspects_literal_checks_start_and_save_ignore_them",
         true,
         |root| {
-            for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+            for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
                 for (index, filename) in CONFIG_FILES.iter().enumerate() {
                     let (repo, remote) = fixture(root);
                     let checks = vec![
@@ -544,7 +544,7 @@ fn cli_inspects_literal_checks_start_and_save_ignore_them() {
 }
 
 fn finish_cli(repo: &Repository, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_gof"))
+    Command::new(env!("CARGO_BIN_EXE_tgi"))
         .current_dir(repo.path())
         .arg("finish")
         .args(["--mode", "review"])
@@ -553,7 +553,7 @@ fn finish_cli(repo: &Repository, args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 fn absent(repo: &Repository, reference: &str) -> bool {
-    !git_oneflow::git::run(repo.path(), ["rev-parse", "--verify", reference])
+    !twigsmith::git::run(repo.path(), ["rev-parse", "--verify", reference])
         .unwrap()
         .status
         .success()
@@ -602,7 +602,7 @@ fn real_checks_use_literal_arguments_root_environment_and_order() {
             );
             let nested = repo.path().join("nested/deeper");
             fs::create_dir_all(&nested).unwrap();
-            let output = Command::new(env!("CARGO_BIN_EXE_gof"))
+            let output = Command::new(env!("CARGO_BIN_EXE_tgi"))
                 .current_dir(&nested)
                 .env("CHECK_ENV", "inherited value")
                 .arg("f")
@@ -739,7 +739,7 @@ fn successful_state_mutations_stop_before_next_check_and_publication() {
                 "printf changed > work; git add work",
                 "git commit --allow-empty -m check-change",
                 "git switch -c different",
-                "printf 'finish-checks=[]\\n' > .git/git-oneflow.config.toml",
+                "printf 'finish-checks=[]\\n' > .git/twigsmith.config.toml",
                 "git config remote.origin.pushurl /changed/destination",
                 "git config branch.work.pushRemote changed",
             ] {
@@ -824,7 +824,7 @@ fn skip_checks_all_tool_aliases_reports_bypass_and_keeps_hooks_active() {
         "skip_checks_all_tool_aliases_reports_bypass_and_keeps_hooks_active",
         true,
         |root| {
-            for executable in [env!("CARGO_BIN_EXE_gof"), env!("CARGO_BIN_EXE_git-oneflow")] {
+            for executable in [env!("CARGO_BIN_EXE_tgi"), env!("CARGO_BIN_EXE_twigsmith")] {
                 for alias in ["finish", "f"] {
                     let (repo, remote) = fixture(root);
                     configured(&repo, &[shell("Skipped", "touch .git/check-ran; exit 1")]);
@@ -889,7 +889,7 @@ fn fork_publication_retry_reruns_checks_and_preserves_rebase_recovery() {
                     "test -f project-update && printf checked\\n >> .git/runs",
                 )],
             );
-            let config_path = repo.path().join(".git/git-oneflow.config.toml");
+            let config_path = repo.path().join(".git/twigsmith.config.toml");
             let config = fs::read_to_string(&config_path).unwrap();
             fs::write(config_path, format!("base-remote='upstream'\n{config}")).unwrap();
             let hooks = fork.path().join(".git/hooks");
@@ -945,7 +945,7 @@ fn cancellation_stops_check_group_retains_preparation_and_blocks_publication() {
                 ],
             );
             let mut term = terminal::Terminal::start(
-                env!("CARGO_BIN_EXE_gof"),
+                env!("CARGO_BIN_EXE_tgi"),
                 repo.path(),
                 &["finish", "--mode", "review", "--update", "rebase"],
             );
@@ -1068,7 +1068,7 @@ fn check_output_without_newline_is_live_and_fragmented_credentials_are_redacted(
                 )],
             );
             let mut term = terminal::Terminal::start(
-                env!("CARGO_BIN_EXE_gof"),
+                env!("CARGO_BIN_EXE_tgi"),
                 repo.path(),
                 &["finish", "--mode", "review"],
             );
@@ -1112,7 +1112,7 @@ fn relative_executable_runs_from_discovered_linked_worktree_root() {
             repo.success(&["worktree", "add", "-b", "linked", linked.to_str().unwrap()]);
             let nested = linked.join("nested");
             fs::create_dir(&nested).unwrap();
-            let output = Command::new(env!("CARGO_BIN_EXE_gof"))
+            let output = Command::new(env!("CARGO_BIN_EXE_tgi"))
                 .current_dir(nested)
                 .arg("finish")
                 .args(["--mode", "review"])

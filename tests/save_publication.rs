@@ -2,7 +2,13 @@
 mod preservation;
 mod support;
 
-use git_oneflow::{
+use preservation::snapshot;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+use support::{Repository, isolated};
+use twigsmith::{
     git,
     save::{
         self, Plan, Request, SaveError,
@@ -13,12 +19,6 @@ use git_oneflow::{
     },
     settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
 };
-use preservation::snapshot;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-use support::{Repository, isolated};
 
 const BRANCH: &str = "Feature/Exact_Name";
 const REF: &str = "refs/heads/Feature/Exact_Name";
@@ -328,7 +328,7 @@ fn intended_head_settings_upstream_and_scope_are_revalidated() {
                         repo.success(&["switch", "-c", "another"]);
                     }
                     "settings" => fs::write(
-                        repo.path().join(".git/git-oneflow.config.toml"),
+                        repo.path().join(".git/twigsmith.config.toml"),
                         "base='trunk'",
                     )
                     .unwrap(),
@@ -788,7 +788,7 @@ fn normal_pre_push_hooks_run_and_failure_does_not_prove_rejection() {
                 let args = fs::read(repo.path().join(".git/hook-args")).unwrap();
                 assert_eq!(
                     args,
-                    format!("oneflow-finish-publication\n{}\n", remote.display()).as_bytes()
+                    format!("twigsmith-finish-publication\n{}\n", remote.display()).as_bytes()
                 );
                 let input = fs::read(repo.path().join(".git/hook-input")).unwrap();
                 assert!(input.windows(REF.len()).any(|w| w == REF.as_bytes()));
@@ -933,12 +933,12 @@ fn second_tracking_write_failure_preserves_and_reports_actual_config_effects() {
         "second_tracking_write_failure_preserves_and_reports_actual_config_effects",
         true,
         |root| {
-            if env::var_os("ONEFLOW_PUBLICATION_WRAPPER").is_none() {
+            if env::var_os("TWIGSMITH_PUBLICATION_WRAPPER").is_none() {
                 let wrapper = root.join("git-wrapper");
                 hook(
                     &wrapper,
                     "git",
-                    "#!/bin/sh\ncase \"$*\" in\n  *'config --local --add branch.Feature/Exact_Name.merge'*)\n    if test \"$ONEFLOW_FAIL_AFTER_EFFECT\" = 1; then \"$ONEFLOW_REAL_GIT\" \"$@\" || exit $?; fi\n    printf 'fixture second config failure\\n' >&2\n    exit 1;;\nesac\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"\n",
+                    "#!/bin/sh\ncase \"$*\" in\n  *'config --local --add branch.Feature/Exact_Name.merge'*)\n    if test \"$TWIGSMITH_FAIL_AFTER_EFFECT\" = 1; then \"$TWIGSMITH_REAL_GIT\" \"$@\" || exit $?; fi\n    printf 'fixture second config failure\\n' >&2\n    exit 1;;\nesac\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"\n",
                 );
                 let real = Command::new("sh")
                     .args(["-c", "command -v git"])
@@ -951,9 +951,9 @@ fn second_tracking_write_failure_preserves_and_reports_actual_config_effects() {
                     // Environment changes are confined to an isolated subprocess.
                     let output = Command::new(env::current_exe().unwrap())
                     .args(["--exact", "second_tracking_write_failure_preserves_and_reports_actual_config_effects", "--nocapture"])
-                    .env("PATH", &path).env("ONEFLOW_REAL_GIT", real.trim())
-                    .env("ONEFLOW_PUBLICATION_WRAPPER", "1")
-                    .env("ONEFLOW_FAIL_AFTER_EFFECT", after_effect).output().unwrap();
+                    .env("PATH", &path).env("TWIGSMITH_REAL_GIT", real.trim())
+                    .env("TWIGSMITH_PUBLICATION_WRAPPER", "1")
+                    .env("TWIGSMITH_FAIL_AFTER_EFFECT", after_effect).output().unwrap();
                     assert!(
                         output.status.success(),
                         "{}\n{}",
@@ -973,7 +973,7 @@ fn second_tracking_write_failure_preserves_and_reports_actual_config_effects() {
             ));
             assert_eq!(oid(&remote, REF), oid(repo.path(), "HEAD"));
             assert_eq!(has_config(&repo, "remote").unwrap(), b"origin\n");
-            if env::var("ONEFLOW_FAIL_AFTER_EFFECT").unwrap() == "1" {
+            if env::var("TWIGSMITH_FAIL_AFTER_EFFECT").unwrap() == "1" {
                 assert_eq!(report.tracking.state, TrackingState::Matching);
                 assert_eq!(
                     has_config(&repo, "merge").unwrap(),

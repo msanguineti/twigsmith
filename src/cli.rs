@@ -17,7 +17,7 @@ pub fn run() -> ExitCode {
         [] => print_help(),
         [arg] if arg == "--help" || arg == "-h" => print_help(),
         [arg] if arg == "--version" || arg == "-V" => {
-            println!("git-oneflow {}", env!("CARGO_PKG_VERSION"));
+            println!("twigsmith {}", env!("CARGO_PKG_VERSION"));
         }
         [arg] if arg == "status" => return run_status(),
         [command, arg] if command == "status" && (arg == "--help" || arg == "-h") => {
@@ -51,10 +51,10 @@ pub fn run() -> ExitCode {
 
 fn print_help() {
     println!(
-        "git-oneflow — start workstreams, save progress, and publish finished work
+        "Twigsmith — start workstreams, save progress, and publish finished work
 
-Usage: git-oneflow [OPTIONS]
-       git-oneflow <COMMAND> [ARGS]
+Usage: twigsmith [OPTIONS]
+       twigsmith <COMMAND> [ARGS]
 
 Commands:
   start, s         Create or resume a workstream
@@ -69,13 +69,13 @@ Options:
   -V, --version    Show version
 
 Examples:
-  gof start add-user-avatars
-  gof save
-  gof finish
-  gof status
-  gof config show
+  tgi start add-user-avatars
+  tgi save
+  tgi finish
+  tgi status
+  tgi config show
 
-The gof executable accepts the same commands and options.
+The tgi executable accepts the same commands and options.
 Use <command> --help for command details."
     );
 }
@@ -84,13 +84,13 @@ fn print_status_help() {
     println!(
         "Summarize local Git repository state.
 
-Usage: git-oneflow status
+Usage: twigsmith status
 
 Options:
   -h, --help       Show help
 
 Examples:
-  gof status
+  tgi status
 
 Details:
   Report HEAD/branch, change counts, active operations, and upstream information.

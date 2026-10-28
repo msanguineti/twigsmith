@@ -544,7 +544,7 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
     }
     integration::revalidate(root, plan, plan.evidence.as_ref()).map_err(|e| fail(&e))?;
     let mut file = tempfile::Builder::new()
-        .prefix("oneflow-message-")
+        .prefix("twigsmith-message-")
         .tempfile_in(&plan.repository.git_dir)
         .map_err(|e| fail(&e))?;
     writeln!(file, "{}", plan.message_suggestion()).map_err(|e| fail(&e))?;
@@ -557,7 +557,7 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!("{editor} \"$@\""))
-        .arg("oneflow-editor")
+        .arg("twigsmith-editor")
         .arg(file.path())
         .current_dir(root)
         .status()

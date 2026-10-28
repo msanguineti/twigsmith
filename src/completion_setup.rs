@@ -9,8 +9,8 @@ use std::{
     process::ExitCode,
 };
 
-const BEGIN: &str = "# >>> git-oneflow completion";
-const END: &str = "# <<< git-oneflow completion";
+const BEGIN: &str = "# >>> twigsmith completion";
+const END: &str = "# <<< twigsmith completion";
 const SHELLS: [&str; 4] = ["bash", "zsh", "fish", "powershell"];
 
 struct Request {
@@ -114,7 +114,7 @@ fn home() -> io::Result<PathBuf> {
 fn profile(request: &Request) -> io::Result<PathBuf> {
     let path = if let Some(path) = &request.file {
         if request.shell == "fish" && path.is_dir() {
-            path.join("conf.d/git-oneflow.fish")
+            path.join("conf.d/twigsmith.fish")
         } else {
             path.clone()
         }
@@ -130,7 +130,7 @@ fn profile(request: &Request) -> io::Result<PathBuf> {
                 .filter(|path| !path.is_empty())
                 .map(PathBuf::from)
                 .map_or_else(|| home().map(|home| home.join(".config")), Ok)?
-                .join("fish/conf.d/git-oneflow.fish"),
+                .join("fish/conf.d/twigsmith.fish"),
             _ => unreachable!("explicit PowerShell profile parsed above"),
         }
     };
@@ -144,10 +144,10 @@ fn profile(request: &Request) -> io::Result<PathBuf> {
 fn block(shell: &str) -> Vec<u8> {
     let loader = match shell {
         "bash" | "zsh" => format!(
-            "if command -v git-oneflow >/dev/null 2>&1; then\n    eval \"$(command git-oneflow completion {shell} 2>/dev/null)\"\nelif command -v gof >/dev/null 2>&1; then\n    eval \"$(command gof completion {shell} 2>/dev/null)\"\nfi"
+            "if command -v twigsmith >/dev/null 2>&1; then\n    eval \"$(command twigsmith completion {shell} 2>/dev/null)\"\nelif command -v tgi >/dev/null 2>&1; then\n    eval \"$(command tgi completion {shell} 2>/dev/null)\"\nfi"
         ),
-        "fish" => "if command -sq git-oneflow\n    command git-oneflow completion fish | source\nelse if command -sq gof\n    command gof completion fish | source\nend".into(),
-        "powershell" => "if (Get-Command git-oneflow -CommandType Application -ErrorAction SilentlyContinue) {\n    & (Get-Command git-oneflow -CommandType Application).Source completion powershell | Out-String | Invoke-Expression\n} elseif (Get-Command gof -CommandType Application -ErrorAction SilentlyContinue) {\n    & (Get-Command gof -CommandType Application).Source completion powershell | Out-String | Invoke-Expression\n}".into(),
+        "fish" => "if command -sq twigsmith\n    command twigsmith completion fish | source\nelse if command -sq tgi\n    command tgi completion fish | source\nend".into(),
+        "powershell" => "if (Get-Command twigsmith -CommandType Application -ErrorAction SilentlyContinue) {\n    & (Get-Command twigsmith -CommandType Application).Source completion powershell | Out-String | Invoke-Expression\n} elseif (Get-Command tgi -CommandType Application -ErrorAction SilentlyContinue) {\n    & (Get-Command tgi -CommandType Application).Source completion powershell | Out-String | Invoke-Expression\n}".into(),
         _ => unreachable!(),
     };
     // Own the preceding separator too, so removing an appended block restores
@@ -473,7 +473,7 @@ fn setup(request: &Request) -> io::Result<()> {
     if request.action == Action::Install {
         activation(&request.shell, &path);
         println!(
-            "Each shell startup loads completion from git-oneflow or gof on PATH, including executable upgrades. After moving the executable, update PATH before opening the shell."
+            "Each shell startup loads completion from twigsmith or tgi on PATH, including executable upgrades. After moving the executable, update PATH before opening the shell."
         );
     } else {
         println!("Open a new shell to stop using the previously loaded completion.");
@@ -490,11 +490,11 @@ fn activation(shell: &str, path: &Path) {
 
 fn print_help() {
     println!(
-        "Generate, register, or remove shell completion for git-oneflow and gof.
+        "Generate, register, or remove shell completion for twigsmith and tgi.
 
-Usage: git-oneflow completion <SHELL>
-       git-oneflow completion install <SHELL> [OPTIONS]
-       git-oneflow completion uninstall <SHELL> [OPTIONS]
+Usage: twigsmith completion <SHELL>
+       twigsmith completion install <SHELL> [OPTIONS]
+       twigsmith completion uninstall <SHELL> [OPTIONS]
 
 Arguments:
   SHELL            bash, zsh, fish, or powershell; select your active shell
@@ -502,23 +502,23 @@ Arguments:
 Options:
   --file PATH      Select the exact startup/profile file (install/uninstall)
                    For Fish, an existing configuration directory selects
-                   its conf.d/git-oneflow.fish file
+                   its conf.d/twigsmith.fish file
   --yes            Authorize the profile change without a prompt (install/uninstall)
   -h, --help       Show help
 
 Examples:
   Enable in the current session:
-  Bash:        eval \"$(gof completion bash)\"
-  Zsh:         eval \"$(gof completion zsh)\"
-  Fish:        gof completion fish | source
-  PowerShell:  gof completion powershell | Out-String | Invoke-Expression
+  Bash:        eval \"$(tgi completion bash)\"
+  Zsh:         eval \"$(tgi completion zsh)\"
+  Fish:        tgi completion fish | source
+  PowerShell:  tgi completion powershell | Out-String | Invoke-Expression
 
   Persist or remove registration:
-  gof completion install bash
-  gof completion install zsh --file ~/.config/zsh/.zshrc --yes
-  gof completion install fish
-  gof completion install powershell --file \"$PROFILE\"
-  gof completion uninstall bash
+  tgi completion install bash
+  tgi completion install zsh --file ~/.config/zsh/.zshrc --yes
+  tgi completion install fish
+  tgi completion install powershell --file \"$PROFILE\"
+  tgi completion uninstall bash
 
 Details:
   Session generation prints only a shell script and changes no profile.
@@ -531,12 +531,14 @@ Details:
   In Bash, complete with the cursor at the word end; Tab leaves trailing text
   after the cursor unchanged.
   Bash defaults to $HOME/.bashrc; Zsh uses $ZDOTDIR/.zshrc or $HOME/.zshrc.
-  Fish uses $XDG_CONFIG_HOME/fish/conf.d/git-oneflow.fish, falling back to
-  $HOME/.config/fish/conf.d/git-oneflow.fish. PowerShell requires --file:
+  Fish uses $XDG_CONFIG_HOME/fish/conf.d/twigsmith.fish, falling back to
+  $HOME/.config/fish/conf.d/twigsmith.fish. PowerShell requires --file:
   pass the actual $PROFILE, including any custom location.
   Installation shows the exact managed block and location before approval.
   Repeat installation preserves a matching registration. Removal deletes only
   an exact owned block; edited or duplicate markers require manual repair.
+  Legacy git-oneflow completion registrations are left in place. Remove their
+  profile block or Fish conf.d/git-oneflow.fish manually if no longer needed.
   Automatic profile changes require Linux metadata inspection and preserve
   owner, group and permission bits. Extended attributes or ACLs on the profile
   or inherited by its replacement require session completion or an ordinary
@@ -551,7 +553,7 @@ Details:
   completion system must be initialized first with your existing compinit setup.
   If needed, run autoload -Uz compinit; compinit before enabling Zsh completion.
   General shell key bindings stay unchanged.
-  Startup regenerates completion from git-oneflow or gof on PATH. Upgrades use
+  Startup regenerates completion from twigsmith or tgi on PATH. Upgrades use
   the new executable automatically; after moving it, update PATH. If neither
   name is on PATH, registration is inactive. No shell or execution policy changes
   are installed.

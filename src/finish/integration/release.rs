@@ -365,7 +365,7 @@ pub(super) fn for_plan(plan: &Plan, token: &str) -> Result<Option<Record>, Finis
                 .ok_or(invalid("release source missing"))?
                 .to_vec()
         },
-        action: format!("oneflow-release:{token}"),
+        action: format!("twigsmith-release:{token}"),
         tag_object: None,
         source_check: None,
         work_check: None,

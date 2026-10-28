@@ -2,8 +2,8 @@
 use super::*;
 use std::process::Output;
 
-const EXE: &str = env!("CARGO_BIN_EXE_gof");
-const SHARED: &str = "git-oneflow.config.toml";
+const EXE: &str = env!("CARGO_BIN_EXE_tgi");
+const SHARED: &str = "twigsmith.config.toml";
 
 fn run(repo: &Repository, args: &[&str]) -> Output {
     Command::new(EXE)
@@ -42,7 +42,7 @@ fn fixture(root: &Path) -> (Repository, Repository) {
     (local, remote)
 }
 fn optional_oid(repo: &Repository, reference: &str) -> Option<String> {
-    let output = git_oneflow::git::run(repo.path(), ["rev-parse", "--verify", reference]).unwrap();
+    let output = twigsmith::git::run(repo.path(), ["rev-parse", "--verify", reference]).unwrap();
     output
         .status
         .success()
@@ -434,7 +434,7 @@ fn reworded_published_config_check_failure_retries_without_reediting_or_duplicat
             let (local, remote) = fixture(root);
             let original = generated_checkpoint(&local, &remote);
             reword_editors(root, &local);
-            fs::write(local.path().join(".git/git-oneflow.config.toml"), "[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','echo check >> .git/check-count; test -f .git/check-pass']\n").unwrap();
+            fs::write(local.path().join(".git/twigsmith.config.toml"), "[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','echo check >> .git/check-count; test -f .git/check-pass']\n").unwrap();
             let args = [
                 "finish",
                 "--mode",
@@ -494,7 +494,7 @@ fn another_developer_publication_after_reword_preserves_both_work_versions() {
             let (local, remote) = fixture(root);
             let original = generated_checkpoint(&local, &remote);
             reword_editors(root, &local);
-            fs::write(local.path().join(".git/git-oneflow.config.toml"), "[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','test -f .git/check-pass']\n").unwrap();
+            fs::write(local.path().join(".git/twigsmith.config.toml"), "[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','test -f .git/check-pass']\n").unwrap();
             let args = [
                 "finish",
                 "--mode",

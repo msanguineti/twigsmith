@@ -9,7 +9,7 @@ fn cli_runs_outside_git_without_node_or_rust_tools() {
         "smoke checks require / outside Git"
     );
 
-    for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+    for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
         for args in [
             vec![],
             vec!["--help"],
@@ -31,10 +31,10 @@ fn cli_runs_outside_git_without_node_or_rust_tools() {
             if args == ["--version"] || args == ["-V"] {
                 assert_eq!(
                     stdout,
-                    concat!("git-oneflow ", env!("CARGO_PKG_VERSION"), "\n")
+                    concat!("twigsmith ", env!("CARGO_PKG_VERSION"), "\n")
                 );
             } else {
-                assert!(stdout.contains("Usage: git-oneflow [OPTIONS]"));
+                assert!(stdout.contains("Usage: twigsmith [OPTIONS]"));
                 assert!(stdout.contains("--help"));
                 assert!(stdout.contains("--version"));
                 assert!(stdout.contains("Commands:"));
@@ -92,7 +92,7 @@ fn ordinary_errors_use_red_headings_and_preserve_plain_diagnostics_and_exit_stat
         "ordinary_errors_use_red_headings_and_preserve_plain_diagnostics_and_exit_status",
         true,
         |root| {
-            let executable = env!("CARGO_BIN_EXE_git-oneflow");
+            let executable = env!("CARGO_BIN_EXE_twigsmith");
             let repo = support::Repository::new(root);
             for preference in [
                 None,
@@ -106,7 +106,7 @@ fn ordinary_errors_use_red_headings_and_preserve_plain_diagnostics_and_exit_stat
                     (vec!["save", "--publish-only", "--commit", "all"], 2),
                     (vec!["config", "show"], 1),
                 ] {
-                    let path = repo.path().join("git-oneflow.config.json");
+                    let path = repo.path().join("twigsmith.config.json");
                     if args[0] == "config" {
                         std::fs::write(&path, "invalid JSON").unwrap();
                     }

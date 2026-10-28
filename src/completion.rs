@@ -130,7 +130,7 @@ fn command_in(directory: &Path, policy: Option<settings::WorkstreamKind>) -> Com
     let completion = Command::new("completion")
         .arg(Arg::new("shell").value_parser(shells))
         .subcommands([registration("install"), registration("uninstall")]);
-    Command::new("git-oneflow")
+    Command::new("twigsmith")
         .version(env!("CARGO_PKG_VERSION"))
         .disable_help_subcommand(true)
         .subcommands([

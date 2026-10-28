@@ -5,13 +5,6 @@ mod support;
 #[path = "support/terminal.rs"]
 mod terminal;
 
-use git_oneflow::{
-    config::{self, ConfigError, Format},
-    git, repository,
-    settings::{
-        self, CONFIG_FILES, FinishRewrite, FinishUpdate, SavePlan, SettingSource, Settings,
-    },
-};
 use preservation::snapshot;
 use std::{
     fs,
@@ -19,10 +12,17 @@ use std::{
     process::{Command, Output, Stdio},
 };
 use support::{Repository, isolated};
+use twigsmith::{
+    config::{self, ConfigError, Format},
+    git, repository,
+    settings::{
+        self, CONFIG_FILES, FinishRewrite, FinishUpdate, SavePlan, SettingSource, Settings,
+    },
+};
 
 fn cases(name: &str, git_available: bool, test: impl Fn(&Path, &str)) {
     isolated(name, git_available, |root| {
-        for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+        for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
             let fixture = tempfile::tempdir_in(root).unwrap();
             test(fixture.path(), executable);
         }
@@ -248,7 +248,7 @@ fn inspection_reports_sources_and_locations_read_only() {
                 "base: trunk\npublish-remote: upstream\n",
             )
             .unwrap();
-            let local = repo.path().join(".git/git-oneflow.config.toml");
+            let local = repo.path().join(".git/twigsmith.config.toml");
             fs::write(&local, "publish-remote = 'private'\n").unwrap();
             let before = snapshot(repo.path());
             check(
@@ -271,7 +271,7 @@ fn inspection_reports_sources_and_locations_read_only() {
             check(
                 run(exe, &nested, &["config", "show"]),
                 1,
-                &["invalid settings", "git-oneflow.config.toml", "save-plan"],
+                &["invalid settings", "twigsmith.config.toml", "save-plan"],
             );
             fs::remove_file(&local).unwrap();
             fs::write(repo.path().join(CONFIG_FILES[0]), "").unwrap();
@@ -632,19 +632,19 @@ fn git_wrapper(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
     fs::create_dir(&wrapper).unwrap();
     let script = wrapper.join("git");
     fs::write(&script, r#"#!/bin/sh
-printf '%s\n' "$*" >> "$ONEFLOW_TEST_LOG"
-for staged in "$ONEFLOW_TEST_REPO"/.git-oneflow-config-*.tmp; do
+printf '%s\n' "$*" >> "$TWIGSMITH_TEST_LOG"
+for staged in "$TWIGSMITH_TEST_REPO"/.twigsmith-config-*.tmp; do
     if [ -f "$staged" ]; then
-        case "$ONEFLOW_TEST_MODE" in
-            collision) printf '%s\n' 'concurrent shared file' > "$ONEFLOW_TEST_REPO/git-oneflow.config.yml" ;;
+        case "$TWIGSMITH_TEST_MODE" in
+            collision) printf '%s\n' 'concurrent shared file' > "$TWIGSMITH_TEST_REPO/twigsmith.config.yml" ;;
             failure) echo 'injected discovery failure after staging' >&2; exit 99 ;;
-            context) exec "$ONEFLOW_REAL_GIT" -C "$ONEFLOW_OTHER_REPO" "$@" ;;
-            interrupt) printf '%s\n' "$$" > "$ONEFLOW_TEST_PID"; exec sleep 30 ;;
+            context) exec "$TWIGSMITH_REAL_GIT" -C "$TWIGSMITH_OTHER_REPO" "$@" ;;
+            interrupt) printf '%s\n' "$$" > "$TWIGSMITH_TEST_PID"; exec sleep 30 ;;
         esac
         break
     fi
 done
-exec "$ONEFLOW_REAL_GIT" "$@"
+exec "$TWIGSMITH_REAL_GIT" "$@"
 "#).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     (wrapper, real_git)
@@ -668,11 +668,11 @@ fn wrapped_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("PATH", std::env::join_paths(paths).unwrap())
-        .env("ONEFLOW_REAL_GIT", real_git)
-        .env("ONEFLOW_TEST_REPO", repo)
-        .env("ONEFLOW_TEST_MODE", mode)
-        .env("ONEFLOW_TEST_LOG", root.join("git-commands"))
-        .env("ONEFLOW_TEST_PID", root.join("blocked-git.pid"));
+        .env("TWIGSMITH_REAL_GIT", real_git)
+        .env("TWIGSMITH_TEST_REPO", repo)
+        .env("TWIGSMITH_TEST_MODE", mode)
+        .env("TWIGSMITH_TEST_LOG", root.join("git-commands"))
+        .env("TWIGSMITH_TEST_PID", root.join("blocked-git.pid"));
     command
 }
 
@@ -690,7 +690,7 @@ fn generation_rechecks_after_staging_and_cleans_up_on_failure() {
                 let before_git = snapshot(&repo.path().join(".git"));
                 let mut command =
                     wrapped_command(exe, repo.path(), root, &wrapper, &real_git, mode);
-                command.env("ONEFLOW_OTHER_REPO", other.path());
+                command.env("TWIGSMITH_OTHER_REPO", other.path());
                 let expected = match mode {
                     "collision" => "shared configuration already exists",
                     "failure" => "injected discovery failure after staging",
@@ -791,7 +791,7 @@ fn interruption_before_publication_exposes_no_recognized_configuration() {
                             .file_name()
                             .to_str()
                             .unwrap()
-                            .starts_with(".git-oneflow-config-")
+                            .starts_with(".twigsmith-config-")
                     );
                     assert_eq!(
                         fs::read_to_string(entry.path()).unwrap(),
@@ -862,7 +862,7 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                     commit(&repo);
                     if mutation.starts_with("private-") {
                         fs::write(
-                            repo.path().join(".git/git-oneflow.config.toml"),
+                            repo.path().join(".git/twigsmith.config.toml"),
                             "base = 'main'\n",
                         )
                         .unwrap();
@@ -878,26 +878,26 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                             fs::write(repo.path().join(CONFIG_FILES[2]), "base: trunk\n").unwrap()
                         }
                         "private" => fs::write(
-                            repo.path().join(".git/git-oneflow.config.toml"),
+                            repo.path().join(".git/twigsmith.config.toml"),
                             "base = 'trunk'\n",
                         )
                         .unwrap(),
                         "private-change" => {
                             fs::write(
-                                repo.path().join(".git/git-oneflow.config.toml"),
+                                repo.path().join(".git/twigsmith.config.toml"),
                                 "base = 'trunk'\n",
                             )
                             .unwrap();
                         }
                         "private-invalid" => {
                             fs::write(
-                                repo.path().join(".git/git-oneflow.config.toml"),
+                                repo.path().join(".git/twigsmith.config.toml"),
                                 "unknown = value\n",
                             )
                             .unwrap();
                         }
                         "private-remove" => {
-                            fs::remove_file(repo.path().join(".git/git-oneflow.config.toml"))
+                            fs::remove_file(repo.path().join(".git/twigsmith.config.toml"))
                                 .unwrap();
                         }
                         "remote" => {
@@ -993,9 +993,9 @@ fn config_show_reports_effective_finish_values_and_sources() {
                 "finish-update='merge'\nfinish-history-edit='interactive'\nfinish-rewrite='deny'\n",
             )
             .unwrap();
-            for filename in [CONFIG_FILES[3], "git-oneflow.config.toml"] {
+            for filename in [CONFIG_FILES[3], "twigsmith.config.toml"] {
                 let local = repo.path().join(".git").join(filename);
-                let contents = if filename == "git-oneflow.config.toml" {
+                let contents = if filename == "twigsmith.config.toml" {
                     "finish-rewrite='allow'\n"
                 } else {
                     "{\"finish-rewrite\":\"allow\"}"
@@ -1029,7 +1029,7 @@ fn config_show_identifies_remote_role_values_and_derived_sources() {
         |root, exe| {
             let repo = Repository::new(root);
             let shared = repo.path().join(CONFIG_FILES[0]);
-            let local = repo.path().join(".git/git-oneflow.config.toml");
+            let local = repo.path().join(".git/twigsmith.config.toml");
             check(
                 run(exe, repo.path(), &["config", "show"]),
                 0,
@@ -1091,7 +1091,7 @@ fn differing_remote_roles_preserve_finish_readiness_guards() {
             repo.success(&["switch", "-c", "work"]);
             fs::write(repo.path().join("tracked"), "dirty\n").unwrap();
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "publish-remote='personal'\nbase-remote='project'\n",
             )
             .unwrap();
@@ -1252,11 +1252,11 @@ fn inspection_reports_ordered_tag_identity_and_declared_active_release_read_only
             hotfix.integration_target = None;
             hotfix.integration_targets = Some(vec!["release/train".into(), "main".into()]);
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 config::render(Format::Toml, &proposed),
             )
             .unwrap();
-            let exe = env!("CARGO_BIN_EXE_git-oneflow");
+            let exe = env!("CARGO_BIN_EXE_twigsmith");
             let before = snapshot(root);
             check(
                 run(exe, repo.path(), &["config", "show"]),
@@ -1321,7 +1321,7 @@ fn inspection_reports_established_explicit_creation_commit_separately_from_defau
             let mut proposed = Settings::default();
             settings::oneflow_bundle(&mut proposed, None);
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 config::render(Format::Toml, &proposed),
             )
             .unwrap();
@@ -1394,7 +1394,7 @@ fn unattended_hosted_setup_is_editable_and_reports_effective_routes_in_every_for
                     .unwrap();
                 assert_eq!(effective.finish_mode, FinishMode::Review);
                 assert_eq!(effective.workstream.unwrap().review_remote, "origin");
-                let private = repo.path().join(".git/git-oneflow.config.json");
+                let private = repo.path().join(".git/twigsmith.config.json");
                 fs::write(&private, r#"{"workstreams":{"release":{"review-remote":"fork","merge-back-branch":"review/version"}}}"#).unwrap();
                 check(
                     run(exe, repo.path(), &["config", "show"]),
@@ -1450,7 +1450,7 @@ fn hosted_inspection_keeps_template_routes_independent_of_selected_branch_policy
                 ..Settings::default()
             };
             settings::oneflow_hosted_bundle(&mut proposed, None);
-            let private = repo.path().join(".git/git-oneflow.config.toml");
+            let private = repo.path().join(".git/twigsmith.config.toml");
             fs::write(&private, config::render(Format::Toml, &proposed)).unwrap();
             check(
                 run(
@@ -1498,7 +1498,7 @@ fn unattended_generation_audits_combined_private_policy_without_writing_invalid_
             // A merge update is valid for the private layer's untagged defaults, but
             // cannot combine with the generated tagged direct-integration policy.
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "[workstreams.release]\nfinish-update = 'merge'\n",
             )
             .unwrap();
@@ -1552,7 +1552,7 @@ fn guided_group_defaults_formats_exact_contents_and_private_isolation() {
             ("json", CONFIG_FILES[3]),
         ] {
             let repo = Repository::new(root);
-            let private = repo.path().join(".git/git-oneflow.config.toml");
+            let private = repo.path().join(".git/twigsmith.config.toml");
             fs::write(&private, "publish-remote='private'\nsave-plan=['stash:all']\nfinish-update='none'\nfinish-rewrite='deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
             let before = snapshot(&repo.path().join(".git"));
             let mut term =
@@ -1744,7 +1744,7 @@ fn guided_literal_checks_order_empty_arguments_and_private_replacement() {
             let repo = Repository::new(root);
             if replacement {
                 fs::write(
-                    repo.path().join(".git/git-oneflow.config.toml"),
+                    repo.path().join(".git/twigsmith.config.toml"),
                     "finish-checks=[]\n",
                 )
                 .unwrap();
@@ -1779,7 +1779,7 @@ fn guided_literal_checks_order_empty_arguments_and_private_replacement() {
                     term.output
                         .contains("finish checks replace the shared list")
                 );
-                fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+                fs::remove_file(repo.path().join(".git/twigsmith.config.toml")).unwrap();
             }
             assert_eq!(load(repo.path()).finish_checks, expected);
             assert!(!repo.path().join("NEVER").exists());
@@ -1839,7 +1839,7 @@ fn guided_bundle_structured_edit_and_relationship_correction() {
 fn guided_private_only_policy_audit_and_changed_override_review() {
     cases("guided_private_only_policy_audit", true, |root, exe| {
         let repo = Repository::new(root);
-        fs::write(repo.path().join(".git/git-oneflow.config.toml"), "save-plan=['stash:all']\n[workstreams.release]\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nrelease-marker='stable'\n").unwrap();
+        fs::write(repo.path().join(".git/twigsmith.config.toml"), "save-plan=['stash:all']\n[workstreams.release]\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nrelease-marker='stable'\n").unwrap();
         let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
         term.until("Remote receiving work");
         term.send(b"\n\nstable\nkeep\nkeep\nkeep\n");
@@ -1950,7 +1950,7 @@ fn guided_remote_roles_keep_literal_names_and_sparse_follow_relationship() {
         ] {
             let repo = Repository::new(root);
             fs::write(
-                repo.path().join(".git/git-oneflow.config.toml"),
+                repo.path().join(".git/twigsmith.config.toml"),
                 "publish-remote='private'\n",
             )
             .unwrap();
@@ -1962,7 +1962,7 @@ fn guided_remote_roles_keep_literal_names_and_sparse_follow_relationship() {
             assert_eq!(load(repo.path()).base, "cancel");
             let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
             assert_eq!(contents.contains("base-remote"), !follows);
-            fs::remove_file(repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+            fs::remove_file(repo.path().join(".git/twigsmith.config.toml")).unwrap();
             assert_eq!(
                 load(repo.path()).base_remote,
                 if follows { "work" } else { project }

@@ -438,13 +438,13 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             })
             .collect::<Result<Vec<_>, SaveError>>()?;
         let recovery =
-            trees.stash_object(root, approved, SaveScope::All, "git-oneflow save recovery")?;
+            trees.stash_object(root, approved, SaveScope::All, "twigsmith save recovery")?;
         let token = tempfile::Builder::new()
-            .prefix("gof-save-recovery-")
+            .prefix("twigsmith-save-recovery-")
             .tempfile_in(&approved.repository.git_dir)
             .map_err(SaveError::from)?;
         let reference = format!(
-            "refs/git-oneflow/save-recovery/{}",
+            "refs/twigsmith/save-recovery/{}",
             token.path().file_name().unwrap().to_string_lossy()
         );
         guard(root, approved)?;
@@ -453,7 +453,7 @@ pub fn execute(directory: impl AsRef<Path>, approved: &Plan) -> Report {
             "update-ref".into(),
             "--create-reflog".into(),
             "-m".into(),
-            "git-oneflow save original work".into(),
+            "twigsmith save original work".into(),
             reference.clone().into(),
             repository::os(&recovery)?,
             "".into(),

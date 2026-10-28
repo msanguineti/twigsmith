@@ -14,7 +14,7 @@ use support::{Repository, isolated};
 const LITERAL: &str = "literal;$'&()work";
 
 fn runtime(name: &str) -> PathBuf {
-    let variable = format!("ONEFLOW_TEST_{}", name.to_uppercase());
+    let variable = format!("TWIGSMITH_TEST_{}", name.to_uppercase());
     if let Some(path) = std::env::var_os(variable) {
         return path.into();
     }
@@ -31,7 +31,7 @@ fn runtime(name: &str) -> PathBuf {
 
 fn backend_path() -> std::ffi::OsString {
     let mut paths = vec![
-        Path::new(env!("CARGO_BIN_EXE_git-oneflow"))
+        Path::new(env!("CARGO_BIN_EXE_twigsmith"))
             .parent()
             .unwrap()
             .to_owned(),
@@ -55,7 +55,7 @@ fn fixture(root: &Path) -> Repository {
 
 fn artifact(root: &Path, shell: &str) -> PathBuf {
     let mut scripts = Vec::new();
-    for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+    for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
         let output = Command::new(executable)
             .args(["completion", shell])
             .output()
@@ -94,7 +94,7 @@ fn run_script(root: &Path, repository: &Repository, shell: &str, script: &str) {
         .arg(test)
         .arg(adapter)
         .env("PATH", backend_path())
-        .env("ONEFLOW_LITERAL", LITERAL)
+        .env("TWIGSMITH_LITERAL", LITERAL)
         .current_dir(repository.path())
         .output()
         .unwrap();
@@ -127,26 +127,26 @@ source "$1" || exit 1
 COMP_WORDBREAKS=$' \t\n"\'@><=;|&(:'
 check() {
     COMP_LINE=$1; COMP_POINT=${#COMP_LINE}
-    _git_oneflow "${COMP_LINE%% *}"
+    _twigsmith "${COMP_LINE%% *}"
     local actual
     actual=$(printf '%s\n' "${COMPREPLY[@]}")
     [[ $actual == "$2" ]] || { printf 'unexpected candidates: %s\n' "$actual" >&2; exit 1; }
 }
-check 'gof st' $'start\nstatus'
-check 'git-oneflow f --mode int' integrate
-check 'gof s feat/' $'feat/first\nfeat/second'
-check 'git-oneflow start --from-tag v' v1.2.3
-check 'gof s literal' "literal\\;\\\$\\'\\&\\(\\)work"
+check 'tgi st' $'start\nstatus'
+check 'twigsmith f --mode int' integrate
+check 'tgi s feat/' $'feat/first\nfeat/second'
+check 'twigsmith start --from-tag v' v1.2.3
+check 'tgi s literal' "literal\\;\\\$\\'\\&\\(\\)work"
 # Evaluate only fixture-owned returned insertion syntax, never a typed command.
 eval "set -- ${COMPREPLY[0]}"
-[[ $# == 1 && $1 == "$ONEFLOW_LITERAL" ]] || exit 1
-check 'gof save --message irr' ''
-check 'gof start irr' ''
-check 'gof start --from-tag irr' ''
-check 'gof save --message $(touch SENTINEL)' ''
-for name in gof git-oneflow; do
+[[ $# == 1 && $1 == "$TWIGSMITH_LITERAL" ]] || exit 1
+check 'tgi save --message irr' ''
+check 'tgi start irr' ''
+check 'tgi start --from-tag irr' ''
+check 'tgi save --message $(touch SENTINEL)' ''
+for name in tgi twigsmith; do
     registration=$(complete -p "$name")
-    [[ $registration == "complete -o noquote -F _git_oneflow $name" ]] || exit 1
+    [[ $registration == "complete -o noquote -F _twigsmith $name" ]] || exit 1
 done
 printf 'NATIVE_OK\n'
 "#,
@@ -172,29 +172,29 @@ fn macos_zsh_session_candidates_and_literal_syntax() {
 autoload -Uz compinit
 compinit -u -D
 source "$1" || exit 1
-[[ ${_comps[gof]} == _git_oneflow && ${_comps[git-oneflow]} == _git_oneflow ]] || exit 1
+[[ ${_comps[tgi]} == _twigsmith && ${_comps[twigsmith]} == _twigsmith ]] || exit 1
 # Capture candidate transport at compadd; Linux PTY tests exercise the editor.
 compadd() { shift; printf '%s\n' "$@"; }
 check() {
     words=("${(@s: :)1}"); CURRENT=${#words}; PREFIX=$words[-1]
-    local actual=$(_git_oneflow)
+    local actual=$(_twigsmith)
     [[ $actual == "$2" ]] || { print -ru2 -- "unexpected candidates: $actual"; exit 1; }
 }
-check 'gof st' $'start\nstatus'
-check 'git-oneflow f --mode int' integrate
-check 'gof s feat/' $'feat/first\nfeat/second'
-check 'git-oneflow start --from-tag v' v1.2.3
-check 'gof s literal' "$ONEFLOW_LITERAL"
+check 'tgi st' $'start\nstatus'
+check 'twigsmith f --mode int' integrate
+check 'tgi s feat/' $'feat/first\nfeat/second'
+check 'twigsmith start --from-tag v' v1.2.3
+check 'tgi s literal' "$TWIGSMITH_LITERAL"
 # Use Zsh's literal quoting and parse that fixture-owned insertion as one word.
-value=$ONEFLOW_LITERAL
+value=$TWIGSMITH_LITERAL
 quoted=${(q)value}
 eval "set -- $quoted"
-[[ $# == 1 && $1 == "$ONEFLOW_LITERAL" ]] || exit 1
-check 'gof save --message irr' ''
-check 'gof start irr' ''
-check 'gof start --from-tag irr' ''
-words=(gof save --message '$(touch SENTINEL)'); CURRENT=4; PREFIX=$words[-1]
-[[ -z $(_git_oneflow) ]] || exit 1
+[[ $# == 1 && $1 == "$TWIGSMITH_LITERAL" ]] || exit 1
+check 'tgi save --message irr' ''
+check 'tgi start irr' ''
+check 'tgi start --from-tag irr' ''
+words=(tgi save --message '$(touch SENTINEL)'); CURRENT=4; PREFIX=$words[-1]
+[[ -z $(_twigsmith) ]] || exit 1
 print -r -- NATIVE_OK
 "#,
             );
@@ -225,18 +225,18 @@ function check
         test "$actual[$i]" = "$argv[$i]"; or exit 1
     end
 end
-check 'gof st' start status
-check 'git-oneflow f --mode int' integrate
-check 'gof s feat/' feat/first feat/second
-check 'git-oneflow start --from-tag v' v1.2.3
-check 'gof s literal' "$ONEFLOW_LITERAL"
-set -l insertion (string escape -- "$ONEFLOW_LITERAL")
+check 'tgi st' start status
+check 'twigsmith f --mode int' integrate
+check 'tgi s feat/' feat/first feat/second
+check 'twigsmith start --from-tag v' v1.2.3
+check 'tgi s literal' "$TWIGSMITH_LITERAL"
+set -l insertion (string escape -- "$TWIGSMITH_LITERAL")
 set -l actual (eval "printf '%s' $insertion")
-test "$actual" = "$ONEFLOW_LITERAL"; or exit 1
-check 'gof save --message irr'
-check 'gof start irr'
-check 'gof start --from-tag irr'
-check 'gof save --message (touch SENTINEL)'
+test "$actual" = "$TWIGSMITH_LITERAL"; or exit 1
+check 'tgi save --message irr'
+check 'tgi start irr'
+check 'tgi start --from-tag irr'
+check 'tgi save --message (touch SENTINEL)'
 printf 'NATIVE_OK\n'
 "#,
             );
@@ -274,13 +274,13 @@ function Assert-Candidates([string]$Line, [string[]]$Expected) {
         if ($actual.Count -ne 1 -or [string]$actual[0] -cne $Expected[$i]) { throw 'literal insertion changed argument' }
     }
 }
-Assert-Candidates 'gof.exe st' @('start', 'status')
-Assert-Candidates 'git-oneflow.exe f --mode int' @('integrate')
-Assert-Candidates 'gof s feat/' @('feat/first', 'feat/second')
-Assert-Candidates 'git-oneflow start --from-tag v' @('v1.2.3')
-Assert-Candidates 'gof s literal' @($env:ONEFLOW_LITERAL)
-Assert-Candidates 'gof s ps' @('ps$(ni(SENTINEL))')
-foreach ($line in @('gof save --message irr', 'gof start irr', 'git-oneflow start --from-tag irr', 'gof save --message $(New-Item SENTINEL)')) {
+Assert-Candidates 'tgi.exe st' @('start', 'status')
+Assert-Candidates 'twigsmith.exe f --mode int' @('integrate')
+Assert-Candidates 'tgi s feat/' @('feat/first', 'feat/second')
+Assert-Candidates 'twigsmith start --from-tag v' @('v1.2.3')
+Assert-Candidates 'tgi s literal' @($env:TWIGSMITH_LITERAL)
+Assert-Candidates 'tgi s ps' @('ps$(ni(SENTINEL))')
+foreach ($line in @('tgi save --message irr', 'tgi start irr', 'twigsmith start --from-tag irr', 'tgi save --message $(New-Item SENTINEL)')) {
     Assert-Candidates $line @()
 }
 if ($global:PSNativeCommandArgumentPassing -ne 'Legacy') { throw 'changed native passing preference' }
@@ -302,7 +302,7 @@ fn native_profile_install_refuses_without_changing_bytes() {
             let profile = root.canonicalize().unwrap().join("profile with spaces");
             let original = b"# user profile\r\n# preserved without a final newline";
             fs::write(&profile, original).unwrap();
-            for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+            for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
                 for shell in ["bash", "zsh", "fish", "powershell"] {
                     let output = Command::new(executable)
                         .args(["completion", "install", shell, "--file"])

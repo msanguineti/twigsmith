@@ -120,7 +120,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 fn path(repo: &repository::RepositoryContext, branch: &[u8], association: bool) -> PathBuf {
     repo.git_dir
-        .join("oneflow-hosted")
+        .join("twigsmith-hosted")
         .join(if association {
             "associations"
         } else {
@@ -282,6 +282,7 @@ pub fn assess(root: &Path, supplied: &Request) -> Result<Plan, FinishError> {
     let repository::Head::Attached { branch, .. } = &state.head else {
         return Err(SaveError::DetachedHead.into());
     };
+    settings::legacy_branch_guard(root, branch).map_err(SaveError::from)?;
     let association = private_read(&repo, &path(&repo, branch, true))?;
     if association.is_none() && hosted_branch(root, branch)? {
         return Err(invalid(
@@ -575,7 +576,7 @@ fn verify_record(root: &Path, plan: &Plan, r: &Record) -> Result<(), FinishError
     if plan.tag_object != RefObservation::Absent || r.tag_object.is_some() {
         let oid = commit(&plan.tag_object)?;
         let lines = entries(plan.tag_log.as_deref().unwrap_or_default());
-        let action = format!("oneflow-hosted-tag:{} (", r.token);
+        let action = format!("twigsmith-hosted-tag:{} (", r.token);
         if r.tag_object
             .as_ref()
             .is_some_and(|expected| expected != &oid)
@@ -620,7 +621,7 @@ fn verify_record(root: &Path, plan: &Plan, r: &Record) -> Result<(), FinishError
                     }))
             })
             .collect();
-        let action = format!("oneflow-hosted-branch:{}", r.token);
+        let action = format!("twigsmith-hosted-branch:{}", r.token);
         if lines.is_empty()
             || lines.len() > 2
             || !transition(lines[0], &vec![b'0'; r.source.len()], &r.source)
@@ -654,7 +655,7 @@ fn verify_record(root: &Path, plan: &Plan, r: &Record) -> Result<(), FinishError
             }
             verify_pin(root, r, "prepare", &r.source)?;
             let action = lines[1].split(|b| *b == b'\t').nth(1).unwrap_or_default();
-            let marker = format!("oneflow-hosted-merge:{}", r.token);
+            let marker = format!("twigsmith-hosted-merge:{}", r.token);
             if action != marker.as_bytes()
                 && !action.starts_with(format!("{marker}: ").as_bytes())
                 && !action.starts_with(b"commit (merge): ")
@@ -1172,7 +1173,7 @@ pub fn execute(
             command(
                 root,
                 args,
-                Some(&format!("oneflow-hosted-tag:{}", record.token)),
+                Some(&format!("twigsmith-hosted-tag:{}", record.token)),
                 &mut report.commands,
             )?;
             plan = after(root, &plan)?;
@@ -1202,7 +1203,7 @@ pub fn execute(
                     "--no-deref".into(),
                     "--create-reflog".into(),
                     "-m".into(),
-                    format!("oneflow-hosted-branch:{}", record.token).into(),
+                    format!("twigsmith-hosted-branch:{}", record.token).into(),
                     format!("refs/heads/{}", record.merge_back).into(),
                     repository::os(&record.source)?,
                     repository::os(&vec![b'0'; record.source.len()])?,
@@ -1268,7 +1269,7 @@ pub fn execute(
                     "--".into(),
                     repository::os(&record.target_oid)?,
                 ],
-                Some(&format!("oneflow-hosted-merge:{}", record.token)),
+                Some(&format!("twigsmith-hosted-merge:{}", record.token)),
                 &mut report.commands,
             )?;
             plan = after(root, &plan)?;
@@ -1477,13 +1478,13 @@ fn hosted_branch(root: &Path, branch: &[u8]) -> Result<bool, FinishError> {
         entries(&bytes).iter().any(|line| {
             line.split(|b| *b == b'\t')
                 .nth(1)
-                .is_some_and(|message| message.starts_with(b"oneflow-hosted-branch:"))
+                .is_some_and(|message| message.starts_with(b"twigsmith-hosted-branch:"))
         })
     }))
 }
 
 fn pin_ref(record: &Record, kind: &str) -> String {
-    format!("refs/oneflow/hosted/{}/{kind}", record.token)
+    format!("refs/twigsmith/hosted/{}/{kind}", record.token)
 }
 fn verify_pin(root: &Path, record: &Record, kind: &str, oid: &[u8]) -> Result<(), FinishError> {
     let reference = pin_ref(record, kind);
@@ -1495,7 +1496,7 @@ fn verify_pin(root: &Path, record: &Record, kind: &str, oid: &[u8]) -> Result<()
     let bytes =
         log(root, reference.as_bytes())?.ok_or(invalid("hosted retained object reflog missing"))?;
     let lines = entries(&bytes);
-    let action = format!("oneflow-hosted-{kind}:{}", record.token);
+    let action = format!("twigsmith-hosted-{kind}:{}", record.token);
     if lines.len() != 1
         || !transition(lines[0], &vec![b'0'; oid.len()], oid)
         || lines[0].split(|b| *b == b'\t').nth(1) != Some(action.as_bytes())
@@ -1530,7 +1531,7 @@ fn retain_pin(
                 "--no-deref".into(),
                 "--create-reflog".into(),
                 "-m".into(),
-                format!("oneflow-hosted-{kind}:{}", record.token).into(),
+                format!("twigsmith-hosted-{kind}:{}", record.token).into(),
                 reference.clone().into(),
                 repository::os(oid)?,
                 repository::os(&vec![b'0'; oid.len()])?,

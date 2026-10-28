@@ -10,7 +10,7 @@ use std::{
 use support::{Repository, isolated};
 
 fn cli(repo: &Repository, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_gof"))
+    Command::new(env!("CARGO_BIN_EXE_tgi"))
         .current_dir(repo.path())
         .args(args)
         .stdin(Stdio::null())
@@ -83,7 +83,7 @@ impl Fixture {
         } else {
             ""
         };
-        fs::write(local.path().join(".git/git-oneflow.config.toml"), format!(
+        fs::write(local.path().join(".git/twigsmith.config.toml"), format!(
             "publish-remote='origin'\nbase-remote='origin'\nfinish-message='auto'\n[workstreams.{policy}]\n{active}creation-source='{creation}'\npreparation-source='preparation'\nintegration-targets=['main','maintenance']\nversion-tagging='required'\nversion-tag-identity='{identity}'\nrelease-marker='stable'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='{cleanup}'\nfinish-message='auto'\n"
         )).unwrap();
         if policy == "hotfix" {
@@ -290,7 +290,7 @@ fn failed_work_first_result_and_later_checks_preserve_selected_version() {
         true,
         |root| {
             let f = Fixture::new(root, "integrated-result", false, "local");
-            let config = f.local.path().join(".git/git-oneflow.config.toml");
+            let config = f.local.path().join(".git/twigsmith.config.toml");
             let settings = fs::read_to_string(&config).unwrap();
             fs::write(&config, format!("{settings}\n[[finish-checks]]\nname='Result gate'\ncommand=['sh','.git/check']\n")).unwrap();
             fs::write(f.local.path().join(".git/check"), "branch=$(git symbolic-ref --short HEAD)\necho \"$branch $(git rev-parse HEAD)\" >> .git/check-log\ntest -f \".git/allow-$branch\"\n").unwrap();
@@ -514,7 +514,7 @@ fn authorized_published_rebase_cleans_only_originally_observed_work() {
                 "--format=%(refname)",
                 "--points-at",
                 &original,
-                "refs/oneflow/integration",
+                "refs/twigsmith/integration",
             ]);
             let pins = String::from_utf8(pins.stdout).unwrap();
             let original_pin = pins
@@ -550,7 +550,7 @@ fn identical_first_result_reuses_successful_work_checks_but_not_bypass() {
                     remote.path().as_os_str(),
                 ]);
                 local.success(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
-                fs::write(local.path().join(".git/git-oneflow.config.toml"),
+                fs::write(local.path().join(".git/twigsmith.config.toml"),
                     "publish-remote='origin'\nfinish-checks=[{name='Exact commit gate',command=['sh','.git/check']}]\n[workstreams.release]\ncreation-source='main'\nintegration-target='main'\nversion-tagging='required'\nversion-tag-identity='integrated-result'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='ff-only'\nfinish-cleanup='keep'\n"
                 ).unwrap();
                 fs::write(

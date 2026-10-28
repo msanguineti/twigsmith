@@ -119,7 +119,7 @@ impl fmt::Display for ConfigError {
             Self::Settings(e) => write!(f, "{e}"),
             Self::OutsideRepository => f.write_str("current directory is outside a Git repository"),
             Self::NoWorkingTree => f.write_str("configuration generation requires a Git working tree; bare repositories have no shared configuration root"),
-            Self::ExistingShared(paths) => write!(f, "shared configuration already exists: {}; use gof config show to inspect, or edit the existing file", paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")),
+            Self::ExistingShared(paths) => write!(f, "shared configuration already exists: {}; use twigsmith config show to inspect, or edit the existing file", paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")),
             Self::ContextChanged => f.write_str("repository context changed before configuration publication; rerun setup from the intended working tree"),
             Self::ReviewChanged => f.write_str("reviewed repository hints or private overrides changed; rerun setup before creating configuration"),
             Self::Input(e) => write!(f, "cannot read terminal input: {e}"),
@@ -550,7 +550,7 @@ fn stage(
 ) -> Result<tempfile::NamedTempFile, ConfigError> {
     let write = || -> io::Result<tempfile::NamedTempFile> {
         let mut file = tempfile::Builder::new()
-            .prefix(".git-oneflow-config-")
+            .prefix(".twigsmith-config-")
             .suffix(".tmp")
             .tempfile_in(root)?;
         file.write_all(contents)?;

@@ -114,6 +114,6 @@ pub(crate) fn snapshot(directory: &Path, branch: &[u8]) -> Result<Snapshot, Insp
         upstream: upstream(directory, branch)?,
         push_remote: config(directory, &key(branch, b".pushRemote"))?,
         push_default: config(directory, b"remote.pushDefault")?,
-        policy_association: config(directory, &key(branch, b".oneflow-policy"))?,
+        policy_association: config(directory, &key(branch, b".twigsmith-policy"))?,
     })
 }

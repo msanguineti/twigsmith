@@ -28,7 +28,7 @@ pub(crate) fn destinations(
                 .map_or((e, None), |i| (&e[..i], Some(&e[i + 1..])))
         })
         .collect();
-    let mut name = "oneflow-finish-publication".to_owned();
+    let mut name = "twigsmith-finish-publication".to_owned();
     while entries
         .iter()
         .any(|(key, _)| key.starts_with(format!("remote.{name}.").as_bytes()))

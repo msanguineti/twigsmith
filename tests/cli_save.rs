@@ -5,7 +5,6 @@ mod support;
 #[path = "support/terminal.rs"]
 mod terminal;
 
-use git_oneflow::git;
 use preservation::snapshot;
 use std::{
     fs,
@@ -15,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 use support::{Repository, isolated};
+use twigsmith::git;
 
 #[derive(Clone, Copy)]
 struct Invocation {
@@ -56,7 +56,7 @@ impl Invocation {
 }
 fn cases(name: &str, git_available: bool, test: impl Fn(&Path, Invocation)) {
     isolated(name, git_available, |root| {
-        for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+        for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
             for command in ["save", "v"] {
                 let dir = tempfile::tempdir_in(root).unwrap();
                 test(
@@ -147,7 +147,7 @@ fn dirty(repo: &Repository, staged: bool, remaining: bool) {
 }
 fn settings(repo: &Repository, plan: &str) {
     fs::write(
-        repo.path().join(".git/git-oneflow.config.toml"),
+        repo.path().join(".git/twigsmith.config.toml"),
         format!("save-plan = [{plan}]\n"),
     )
     .unwrap();
@@ -164,7 +164,7 @@ fn save_help_and_invalid_syntax_work_without_git_or_repository() {
                     cli.run(root, &[arg]),
                     0,
                     &[
-                        "Usage: git-oneflow save",
+                        "Usage: twigsmith save",
                         "Alias: v",
                         "save-plan",
                         "--commit",
@@ -488,7 +488,7 @@ fn save_capable_keyboard_choice_and_cancel_restore_terminal() {
                 dirty(&repo, true, true);
                 let before = snapshot(repo.path());
                 let mut terminal = terminal::Terminal::start_capable(
-                    env!("CARGO_BIN_EXE_gof"),
+                    env!("CARGO_BIN_EXE_tgi"),
                     repo.path(),
                     &["save"],
                 );
@@ -650,7 +650,7 @@ fn save_reports_local_failed_step_effects_and_confirmed_publication_with_unfinis
                 repo.success(&[
                     "for-each-ref",
                     "--format=%(objectname)",
-                    "refs/git-oneflow/save-recovery/",
+                    "refs/twigsmith/save-recovery/",
                 ])
                 .stdout,
             )

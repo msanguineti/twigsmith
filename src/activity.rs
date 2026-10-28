@@ -62,7 +62,7 @@ impl Activity {
             && std::env::var_os("TERM").is_none_or(|value| value != "dumb");
         // A presentation failure must not prevent or change the Git operation.
         let worker = thread::Builder::new()
-            .name("oneflow-activity".into())
+            .name("twigsmith-activity".into())
             .spawn(move || present(receiver, label, animated))
             .ok()?;
         Some(Self {

@@ -35,20 +35,20 @@ impl SlowGit {
             r#"#!/bin/sh
 set -eu
 for argument in "$@"; do
-    if [ "$argument" = "$ONEFLOW_ACTIVITY_COMMAND" ] && [ ! -e "$ONEFLOW_ACTIVITY_MARKER" ]; then
-        : > "$ONEFLOW_ACTIVITY_MARKER"
+    if [ "$argument" = "$TWIGSMITH_ACTIVITY_COMMAND" ] && [ ! -e "$TWIGSMITH_ACTIVITY_MARKER" ]; then
+        : > "$TWIGSMITH_ACTIVITY_MARKER"
         sleep 1
-        if [ "$ONEFLOW_ACTIVITY_FAILURE" = 1 ]; then
+        if [ "$TWIGSMITH_ACTIVITY_FAILURE" = 1 ]; then
             echo 'controlled Git failure' >&2
             exit 42
         fi
-        if [ "$ONEFLOW_ACTIVITY_FAILURE" = signal ]; then
+        if [ "$TWIGSMITH_ACTIVITY_FAILURE" = signal ]; then
             kill -TERM "$$"
         fi
         break
     fi
 done
-exec "$ONEFLOW_REAL_GIT" "$@"
+exec "$TWIGSMITH_REAL_GIT" "$@"
 "#,
         )
         .unwrap();
@@ -66,10 +66,13 @@ exec "$ONEFLOW_REAL_GIT" "$@"
         paths.extend(env::split_paths(&env::var_os("PATH").unwrap()));
         command
             .env("PATH", env::join_paths(paths).unwrap())
-            .env("ONEFLOW_REAL_GIT", &self.real)
-            .env("ONEFLOW_ACTIVITY_COMMAND", operation)
-            .env("ONEFLOW_ACTIVITY_MARKER", &self.marker)
-            .env("ONEFLOW_ACTIVITY_FAILURE", if failure { "1" } else { "0" });
+            .env("TWIGSMITH_REAL_GIT", &self.real)
+            .env("TWIGSMITH_ACTIVITY_COMMAND", operation)
+            .env("TWIGSMITH_ACTIVITY_MARKER", &self.marker)
+            .env(
+                "TWIGSMITH_ACTIVITY_FAILURE",
+                if failure { "1" } else { "0" },
+            );
     }
 
     fn cli(
@@ -79,7 +82,7 @@ exec "$ONEFLOW_REAL_GIT" "$@"
         operation: &str,
         failure: bool,
     ) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_git-oneflow"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_twigsmith"));
         command
             .current_dir(repository.path())
             .args(args)
@@ -159,15 +162,15 @@ fn fast_cli_and_slow_library_inspection_stay_quiet() {
         "fast_cli_and_slow_library_inspection_stay_quiet",
         true,
         |root| {
-            if let Some(path) = env::var_os("ONEFLOW_ACTIVITY_LIBRARY_REPO") {
+            if let Some(path) = env::var_os("TWIGSMITH_ACTIVITY_LIBRARY_REPO") {
                 assert!(matches!(
-                    git_oneflow::repository::inspect(Path::new(&path)).unwrap(),
-                    git_oneflow::repository::Observation::Repository(_)
+                    twigsmith::repository::inspect(Path::new(&path)).unwrap(),
+                    twigsmith::repository::Observation::Repository(_)
                 ));
                 return;
             }
             let (local, _remote) = fixture(root);
-            let fast = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+            let fast = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
                 .current_dir(local.path())
                 .arg("status")
                 .output()
@@ -183,7 +186,7 @@ fn fast_cli_and_slow_library_inspection_stay_quiet() {
                     "fast_cli_and_slow_library_inspection_stay_quiet",
                     "--nocapture",
                 ])
-                .env("ONEFLOW_ACTIVITY_LIBRARY_REPO", local.path());
+                .env("TWIGSMITH_ACTIVITY_LIBRARY_REPO", local.path());
             slow.wrap(&mut command, "rev-parse", false);
             let output = command.output().unwrap();
             assert!(output.status.success(), "{output:?}");
@@ -214,7 +217,7 @@ fn terminal_slow_push_clears_activity_and_reports_process_outcome() {
                 let before = oid(&remote, "main");
                 let mut command = slow.cli(&local, &["save", "--publish-only"], "push", failure);
                 if mode == "signal" {
-                    command.env("ONEFLOW_ACTIVITY_FAILURE", "signal");
+                    command.env("TWIGSMITH_ACTIVITY_FAILURE", "signal");
                 }
                 command
                     .env("TERM", "xterm-256color")

@@ -196,10 +196,10 @@ test_shells() {
     missing_shells=''
     for shell_name in $shell_names; do
         case "$shell_name" in
-            bash) shell_path=${ONEFLOW_TEST_BASH:-$(command -v bash || true)} ;;
-            fish) shell_path=${ONEFLOW_TEST_FISH:-$(command -v fish || true)} ;;
-            zsh) shell_path=${ONEFLOW_TEST_ZSH:-$(command -v zsh || true)} ;;
-            pwsh) shell_path=${ONEFLOW_TEST_PWSH:-$(command -v pwsh || true)} ;;
+            bash) shell_path=${TWIGSMITH_TEST_BASH:-$(command -v bash || true)} ;;
+            fish) shell_path=${TWIGSMITH_TEST_FISH:-$(command -v fish || true)} ;;
+            zsh) shell_path=${TWIGSMITH_TEST_ZSH:-$(command -v zsh || true)} ;;
+            pwsh) shell_path=${TWIGSMITH_TEST_PWSH:-$(command -v pwsh || true)} ;;
         esac
         shell_ready=false
         if [ -x "$shell_path" ]; then

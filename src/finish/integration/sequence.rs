@@ -53,7 +53,7 @@ pub(super) fn assess_completed(root: &Path, plan: &mut Plan) -> Result<(), Finis
             || hint(root, done.pin.as_bytes())? != RefObservation::Commit(done.result.clone())
             || entries.len() != 1
             || !entries[0].starts_with(&prefix)
-            || entries[0].split(|b| *b == b'\t').nth(1) != Some(b"oneflow retain")
+            || entries[0].split(|b| *b == b'\t').nth(1) != Some(b"twigsmith retain")
         {
             plan.blockers
                 .push(Blocker::Recovery(recovery::Problem::ChangedTarget));

@@ -1,6 +1,14 @@
 #![cfg(unix)]
 mod support;
-use git_oneflow::{
+use std::{
+    ffi::OsString,
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
+};
+use support::{Repository, isolated};
+use twigsmith::{
     finish::{
         self, Plan, Recovery, Request, preparation,
         publication::{
@@ -11,14 +19,6 @@ use git_oneflow::{
     git,
     settings::{FinishRewrite, FinishUpdate},
 };
-use std::{
-    ffi::OsString,
-    fs,
-    os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
-    process::Command,
-};
-use support::{Repository, isolated};
 
 const BRANCH: &str = "feature/exact";
 const REF: &str = "refs/heads/feature/exact";
@@ -175,7 +175,7 @@ fn authorized_rebase_uses_exact_original_lease_and_retains_recovery() {
             let plan = rewrite(&local, &remote);
             let record = local
                 .path()
-                .join(".git/oneflow-finish/branches/feature/exact/rewrite.json");
+                .join(".git/twigsmith-finish/branches/feature/exact/rewrite.json");
             let bytes = fs::read(&record).unwrap();
             let report = publication::publish(local.path(), &plan);
             complete(&report, &[DestinationState::Rewritten]);
@@ -323,7 +323,7 @@ fn changed_local_context_stops_before_publication() {
                     }
                     "settings" => {
                         fs::write(
-                            local.path().join(".git/git-oneflow.config.toml"),
+                            local.path().join(".git/twigsmith.config.toml"),
                             "finish-rewrite = 'deny'\n",
                         )
                         .unwrap();
@@ -341,7 +341,7 @@ fn changed_local_context_stops_before_publication() {
                         fs::write(
                             local
                                 .path()
-                                .join(".git/oneflow-finish/branches/feature/exact/rewrite.json"),
+                                .join(".git/twigsmith-finish/branches/feature/exact/rewrite.json"),
                             "{}",
                         )
                         .unwrap();
@@ -528,7 +528,7 @@ fn publisher_child(local: &Repository, body: &str) -> std::process::Output {
         wrapper.path(),
         "git",
         &format!(
-            "for arg do\n if [ \"$arg\" = push ]; then\n{body}\n fi\ndone\nexec \"$ONEFLOW_REAL_GIT\" \"$@\""
+            "for arg do\n if [ \"$arg\" = push ]; then\n{body}\n fi\ndone\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\""
         ),
     );
     let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
@@ -542,8 +542,8 @@ fn publisher_child(local: &Repository, body: &str) -> std::process::Output {
     .unwrap();
     Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "publication_child", "--nocapture"])
-        .env("ONEFLOW_PUBLICATION_DIR", local.path())
-        .env("ONEFLOW_REAL_GIT", real)
+        .env("TWIGSMITH_PUBLICATION_DIR", local.path())
+        .env("TWIGSMITH_REAL_GIT", real)
         .env("PATH", paths)
         .output()
         .unwrap()
@@ -561,7 +561,7 @@ fn child_result(local: &Repository, body: &str) -> serde_json::Value {
 }
 #[test]
 fn publication_child() {
-    let Some(directory) = std::env::var_os("ONEFLOW_PUBLICATION_DIR") else {
+    let Some(directory) = std::env::var_os("TWIGSMITH_PUBLICATION_DIR") else {
         return;
     };
     let directory = Path::new(&directory);
@@ -617,7 +617,7 @@ fn exact_leases_reject_racing_rewrites_fast_forwards_and_competing_creation_even
                 };
                 let moved = String::from_utf8(moved).unwrap();
                 let body = format!(
-                    "\"$ONEFLOW_REAL_GIT\" -C {} update-ref {} {} || exit 91\n\"$ONEFLOW_REAL_GIT\" fetch origin >&2 || exit 92\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                    "\"$TWIGSMITH_REAL_GIT\" -C {} update-ref {} {} || exit 91\n\"$TWIGSMITH_REAL_GIT\" fetch origin >&2 || exit 92\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
                     quote(remote.path().to_str().unwrap()),
                     REF,
                     moved
@@ -682,9 +682,9 @@ fn lost_acknowledgement_and_interrupted_transport_are_uncertain_and_retry_observ
         true,
         |root| {
             for body in [
-                "\"$ONEFLOW_REAL_GIT\" \"$@\" > /dev/null\nexit 0",
-                "\"$ONEFLOW_REAL_GIT\" \"$@\" > /dev/null\nexit 1",
-                "\"$ONEFLOW_REAL_GIT\" \"$@\" > /dev/null\nkill -TERM \"$$\"",
+                "\"$TWIGSMITH_REAL_GIT\" \"$@\" > /dev/null\nexit 0",
+                "\"$TWIGSMITH_REAL_GIT\" \"$@\" > /dev/null\nexit 1",
+                "\"$TWIGSMITH_REAL_GIT\" \"$@\" > /dev/null\nkill -TERM \"$$\"",
                 "exit 1",
             ] {
                 let (local, remote) = fixture(root);
@@ -723,7 +723,7 @@ fn killed_executor_after_first_destination_recovers_in_another_process() {
             let p = prepared(&local, FinishUpdate::Rebase);
             let out = publisher_child(
                 &local,
-                "\"$ONEFLOW_REAL_GIT\" \"$@\" > /dev/null\nkill -KILL \"$PPID\"\nexit 0",
+                "\"$TWIGSMITH_REAL_GIT\" \"$@\" > /dev/null\nkill -KILL \"$PPID\"\nexit 0",
             );
             assert!(!out.status.success());
             assert_eq!(oid(&remote, REF), p.commit);
@@ -733,7 +733,7 @@ fn killed_executor_after_first_destination_recovers_in_another_process() {
                     .unwrap()
                     .contains("[branch")
             );
-            let retry = child_result(&local, "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+            let retry = child_result(&local, "exec \"$TWIGSMITH_REAL_GIT\" \"$@\"");
             assert_eq!(retry["state"], "Complete", "{retry}");
             assert_eq!(retry["destinations"][0]["state"], "Unchanged");
             assert_eq!(retry["destinations"][0]["pushes"], 0);
@@ -754,7 +754,7 @@ fn partial_lost_acknowledgement_and_failed_process_with_acknowledgement_retain_e
                 let second = Repository::new(root);
                 destinations(&local, &[&remote, &second]);
                 let body = format!(
-                    "if [ ! -f .git/handled ]; then\n touch .git/handled\n \"$ONEFLOW_REAL_GIT\" \"$@\" {}\n exit 1\nfi\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                    "if [ ! -f .git/handled ]; then\n touch .git/handled\n \"$TWIGSMITH_REAL_GIT\" \"$@\" {}\n exit 1\nfi\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
                     if lose_ack { "> /dev/null" } else { "" }
                 );
                 let result = child_result(&local, &body);
@@ -812,7 +812,7 @@ fn explicit_push_urls_do_not_get_rewritten_again_and_transport_options_are_prese
             local.success(&[
                 "remote",
                 "add",
-                "oneflow-finish-publication",
+                "twigsmith-finish-publication",
                 wrong.path().to_str().unwrap(),
             ]);
             complete(&publish(&local), &[DestinationState::Created]);
@@ -935,7 +935,7 @@ fn unexpected_porcelain_is_unconfirmed_despite_a_successful_process() {
                     if response == "duplicate" { &line } else { "" }
                 );
                 let body = format!(
-                    "\"$ONEFLOW_REAL_GIT\" \"$@\" > /dev/null || exit 1\nprintf '%s' {}\nexit 0",
+                    "\"$TWIGSMITH_REAL_GIT\" \"$@\" > /dev/null || exit 1\nprintf '%s' {}\nexit 0",
                     quote(&output)
                 );
                 let r = child_result(&local, &body);

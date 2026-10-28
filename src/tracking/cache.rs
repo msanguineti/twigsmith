@@ -475,7 +475,7 @@ fn transaction(
             "--no-deref",
             "--create-reflog",
             "-m",
-            "oneflow: verified remote cache",
+            "twigsmith: verified remote cache",
             "--stdin",
             "-z",
         ])

@@ -514,7 +514,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn terminal_prompt_probe() {
-        if std::env::var_os("ONEFLOW_PRESENTATION_PROBE").is_none() {
+        if std::env::var_os("TWIGSMITH_PRESENTATION_PROBE").is_none() {
             return;
         }
         section("Repository");
@@ -618,7 +618,7 @@ mod tests {
                     "presentation::tests::terminal_prompt_probe",
                     "--nocapture",
                 ])
-                .env("ONEFLOW_PRESENTATION_PROBE", "1")
+                .env("TWIGSMITH_PRESENTATION_PROBE", "1")
                 .env("TERM", "xterm-256color")
                 .env_remove("NO_COLOR")
                 .env_remove("CLICOLOR");

@@ -1,7 +1,14 @@
 #[path = "support/snapshot.rs"]
 mod preservation;
 mod support;
-use git_oneflow::{
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+use support::{Repository, isolated};
+use tempfile::TempDir;
+use twigsmith::{
     finish::{
         DestinationEvidence, RefObservation,
         integration::{
@@ -13,13 +20,6 @@ use git_oneflow::{
     git,
     settings::{FinishCheckout, FinishCleanup, FinishIntegration, FinishUpdate},
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
-use support::{Repository, isolated};
-use tempfile::TempDir;
 
 struct Fixture {
     repo: Repository,
@@ -65,7 +65,7 @@ fn fixture(root: &Path) -> Fixture {
     }
     repo.success(&["remote", "add", "project", project.path().to_str().unwrap()]);
     repo.success(&["remote", "add", "fork", fork.path().to_str().unwrap()]);
-    fs::write(repo.path().join(".git/git-oneflow.config.toml"), "base-remote='project'\npublish-remote='fork'\nfinish-message='auto'\nfinish-mode='integrate'\n").unwrap();
+    fs::write(repo.path().join(".git/twigsmith.config.toml"), "base-remote='project'\npublish-remote='fork'\nfinish-message='auto'\nfinish-mode='integrate'\n").unwrap();
     repo.success(&["switch", "-c", "A"]);
     commit(&repo, "work", "work A");
     Fixture {
@@ -344,7 +344,7 @@ fn no_op_and_meaningful_choices() {
         req.integration = Some(FinishIntegration::Merge);
         req.update = Some(FinishUpdate::None);
         req.cleanup = None;
-        let config = f.repo.path().join(".git/git-oneflow.config.toml");
+        let config = f.repo.path().join(".git/twigsmith.config.toml");
         fs::write(
             config,
             "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
@@ -386,7 +386,7 @@ fn guarded_choice_resolution_rejects_changes_during_input() {
                 if changed {
                     assert!(matches!(
                         resolved,
-                        Err(git_oneflow::finish::FinishError::ContextChanged)
+                        Err(twigsmith::finish::FinishError::ContextChanged)
                     ));
                 } else {
                     assert!(resolved.unwrap().is_ready());
@@ -405,7 +405,7 @@ fn preparation_resolves_integration_and_message_against_actual_graph() {
             let f = fixture(root);
             diverge(&f, false);
             fs::write(
-                f.repo.path().join(".git/git-oneflow.config.toml"),
+                f.repo.path().join(".git/twigsmith.config.toml"),
                 "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
             )
             .unwrap();
@@ -461,7 +461,7 @@ fn retained_intent_supports_omitted_choices_and_blocks_conflicts_or_changed_sett
             ] {
                 let f = fixture(root);
                 fs::write(
-                    f.repo.path().join(".git/git-oneflow.config.toml"),
+                    f.repo.path().join(".git/twigsmith.config.toml"),
                     "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
                 )
                 .unwrap();
@@ -511,7 +511,7 @@ fn retained_intent_supports_omitted_choices_and_blocks_conflicts_or_changed_sett
                     assert!(blocked.permitted_effects().is_empty());
                 }
                 fs::write(
-                    f.repo.path().join(".git/git-oneflow.config.toml"),
+                    f.repo.path().join(".git/twigsmith.config.toml"),
                     "base-remote='project'\npublish-remote='fork'\nfinish-message='auto'\n",
                 )
                 .unwrap();
@@ -822,7 +822,7 @@ fn recovery_rejects_missing_stale_malformed_and_inconsistent_proof() {
                     }
                     "settings" => {
                         fs::write(
-                            f.repo.path().join(".git/git-oneflow.config.toml"),
+                            f.repo.path().join(".git/twigsmith.config.toml"),
                             "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
                         )
                         .unwrap();
@@ -1122,7 +1122,7 @@ fn local_versions_settings_and_worktree_scope_are_revalidated() {
                         use std::io::Write;
                         let mut file = fs::OpenOptions::new()
                             .append(true)
-                            .open(f.repo.path().join(".git/git-oneflow.config.toml"))
+                            .open(f.repo.path().join(".git/twigsmith.config.toml"))
                             .unwrap();
                         writeln!(file, "finish-rewrite='ask'").unwrap();
                     }
@@ -1301,7 +1301,7 @@ fn ordinary_published_reword_cleans_only_the_retained_original_version() {
             let original = oid(&f.repo, "A");
             let req = Request {
                 update: Some(FinishUpdate::Rebase),
-                history_edit: Some(git_oneflow::settings::HistoryEdit::Interactive),
+                history_edit: Some(twigsmith::settings::HistoryEdit::Interactive),
                 cleanup: Some(FinishCleanup::Both),
                 ..request(FinishIntegration::FfOnly)
             };
@@ -1387,10 +1387,10 @@ fn ordinary_integration_preserves_settings_across_tracked_configuration_checkout
             ] {
                 let f = fixture(root);
                 // The work commit introduces the shared routes; main has no file.
-                let config = fs::read(f.repo.path().join(".git/git-oneflow.config.toml")).unwrap();
-                fs::remove_file(f.repo.path().join(".git/git-oneflow.config.toml")).unwrap();
-                fs::write(f.repo.path().join("git-oneflow.config.toml"), &config).unwrap();
-                f.repo.success(&["add", "git-oneflow.config.toml"]);
+                let config = fs::read(f.repo.path().join(".git/twigsmith.config.toml")).unwrap();
+                fs::remove_file(f.repo.path().join(".git/twigsmith.config.toml")).unwrap();
+                fs::write(f.repo.path().join("twigsmith.config.toml"), &config).unwrap();
+                f.repo.success(&["add", "twigsmith.config.toml"]);
                 f.repo.success(&["commit", "-m", "Shared project settings"]);
                 let req = request(method);
                 let before = integration::assess(f.repo.path(), &req, None)
@@ -1405,7 +1405,7 @@ fn ordinary_integration_preserves_settings_across_tracked_configuration_checkout
                 );
                 assert_eq!(prepared.plan.as_ref().unwrap().settings, before);
                 assert_eq!(
-                    fs::read(f.repo.path().join("git-oneflow.config.toml")).unwrap(),
+                    fs::read(f.repo.path().join("twigsmith.config.toml")).unwrap(),
                     config
                 );
                 let delivered = integration::publication::publish(
@@ -1429,7 +1429,7 @@ fn ordinary_preparation_imports_shared_configuration_without_changing_accepted_c
                 f.repo.success(&["switch", "main"]);
                 commit(
                     &f.repo,
-                    "git-oneflow.config.toml",
+                    "twigsmith.config.toml",
                     "[[finish-checks]]\nname='New project check'\ncommand=['sh','-c','exit 99']\n",
                 );
                 publish(&f);
@@ -1454,7 +1454,7 @@ fn ordinary_preparation_imports_shared_configuration_without_changing_accepted_c
                         .finish_checks
                         .is_empty()
                 );
-                assert!(f.repo.path().join("git-oneflow.config.toml").exists());
+                assert!(f.repo.path().join("twigsmith.config.toml").exists());
                 let delivered = integration::publication::publish(
                     f.repo.path(),
                     prepared.plan.as_ref().unwrap(),
@@ -1475,11 +1475,11 @@ fn ordinary_integration_keeps_ignored_shared_configuration_masked_by_private_set
             fs::create_dir_all(f.repo.path().join(".git/info")).unwrap();
             fs::write(
                 f.repo.path().join(".git/info/exclude"),
-                "git-oneflow.config.toml\n",
+                "twigsmith.config.toml\n",
             )
             .unwrap();
             let shared = "publish-remote='other'\nbase-remote='other'\n";
-            fs::write(f.repo.path().join("git-oneflow.config.toml"), shared).unwrap();
+            fs::write(f.repo.path().join("twigsmith.config.toml"), shared).unwrap();
             let req = request(FinishIntegration::FfOnly);
             let prepared = prepare_local(&f, &req);
             assert!(
@@ -1489,7 +1489,7 @@ fn ordinary_integration_keeps_ignored_shared_configuration_masked_by_private_set
                 prepared.plan.as_ref().map(|p| &p.blockers)
             );
             assert_eq!(
-                fs::read_to_string(f.repo.path().join("git-oneflow.config.toml")).unwrap(),
+                fs::read_to_string(f.repo.path().join("twigsmith.config.toml")).unwrap(),
                 shared
             );
             let refreshed = integration::assess(f.repo.path(), &Request::default(), None).unwrap();
@@ -1512,17 +1512,17 @@ fn tagged_integration_binds_ignored_shared_configuration_across_recovery() {
         true,
         |root| {
             let f = fixture(root);
-            fs::remove_file(f.repo.path().join(".git/git-oneflow.config.toml")).unwrap();
+            fs::remove_file(f.repo.path().join(".git/twigsmith.config.toml")).unwrap();
             fs::create_dir_all(f.repo.path().join(".git/info")).unwrap();
             fs::write(
                 f.repo.path().join(".git/info/exclude"),
-                "git-oneflow.config.toml\n",
+                "twigsmith.config.toml\n",
             )
             .unwrap();
-            let path = f.repo.path().join("git-oneflow.config.toml");
+            let path = f.repo.path().join("twigsmith.config.toml");
             let config = "base-remote='project'\npublish-remote='fork'\nfinish-message='auto'\nfinish-mode='integrate'\n[workstreams.release]\ncreation-source='main'\nintegration-target='main'\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\n";
             fs::write(&path, config).unwrap();
-            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+            let started = Command::new(env!("CARGO_BIN_EXE_tgi"))
                 .current_dir(f.repo.path())
                 .args(["start", "A", "--policy", "release"])
                 .output()
@@ -1875,7 +1875,7 @@ fn local_executor_hooks_messages_and_unresolved_input_preserve_state() {
             }
             let f = fixture(root);
             fs::write(
-                f.repo.path().join(".git/git-oneflow.config.toml"),
+                f.repo.path().join(".git/twigsmith.config.toml"),
                 "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
             )
             .unwrap();
@@ -1927,7 +1927,7 @@ fn configure_checks(f: &Fixture, commands: &[&str]) {
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
         .append(true)
-        .open(f.repo.path().join(".git/git-oneflow.config.toml"))
+        .open(f.repo.path().join(".git/twigsmith.config.toml"))
         .unwrap();
     for command in commands {
         writeln!(
@@ -2011,10 +2011,10 @@ fn evidence_at(path: &Path, req: &Request) -> RemoteEvidence {
 }
 #[test]
 fn local_executor_new_process_recovers_a_completed_unacknowledged_commit() {
-    if let Some(path) = std::env::var_os("ONEFLOW_RESUME_REPO") {
+    if let Some(path) = std::env::var_os("TWIGSMITH_RESUME_REPO") {
         let path = Path::new(&path);
         let req = request(
-            if std::env::var("ONEFLOW_RESUME_METHOD").unwrap() == "merge" {
+            if std::env::var("TWIGSMITH_RESUME_METHOD").unwrap() == "merge" {
                 FinishIntegration::Merge
             } else {
                 FinishIntegration::Squash
@@ -2081,8 +2081,8 @@ fn local_executor_new_process_recovers_a_completed_unacknowledged_commit() {
                         "local_executor_new_process_recovers_a_completed_unacknowledged_commit",
                         "--nocapture",
                     ])
-                    .env("ONEFLOW_RESUME_REPO", f.repo.path())
-                    .env("ONEFLOW_RESUME_METHOD", method.as_str())
+                    .env("TWIGSMITH_RESUME_REPO", f.repo.path())
+                    .env("TWIGSMITH_RESUME_METHOD", method.as_str())
                     .output()
                     .unwrap();
                 assert!(
@@ -2212,7 +2212,7 @@ fn preparation_can_resolve_final_message_after_git_recovery() {
             let f = fixture(root);
             diverge(&f, false);
             fs::write(
-                f.repo.path().join(".git/git-oneflow.config.toml"),
+                f.repo.path().join(".git/twigsmith.config.toml"),
                 "base-remote='project'\npublish-remote='fork'\nfinish-message='ask'\n",
             )
             .unwrap();
@@ -2362,7 +2362,7 @@ fn local_effects_survive_a_hook_invalidating_configuration() {
             hook(
                 &f,
                 "post-merge",
-                "printf 'invalid = [' > \"$(git rev-parse --git-common-dir)/git-oneflow.config.toml\"",
+                "printf 'invalid = [' > \"$(git rev-parse --git-common-dir)/twigsmith.config.toml\"",
             );
             let r = prepare_local(&f, &req);
             assert!(r.error.is_some());
@@ -2742,7 +2742,7 @@ fn target_child(f: &Fixture, operation: &str, command: &str, body: &str) -> std:
     use std::os::unix::fs::PermissionsExt;
     let wrapper = tempfile::tempdir().unwrap();
     let executable = wrapper.path().join("git");
-    fs::write(&executable, format!("#!/bin/sh\nfor arg do\n if [ \"$arg\" = {command} ]; then\n{body}\n fi\ndone\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"\n")).unwrap();
+    fs::write(&executable, format!("#!/bin/sh\nfor arg do\n if [ \"$arg\" = {command} ]; then\n{body}\n fi\ndone\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"\n")).unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
     let path = std::env::var_os("PATH").unwrap();
     let real = std::env::split_paths(&path)
@@ -2755,9 +2755,9 @@ fn target_child(f: &Fixture, operation: &str, command: &str, body: &str) -> std:
     .unwrap();
     Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "target_transport_child", "--nocapture"])
-        .env("ONEFLOW_TARGET_DIR", f.repo.path())
-        .env("ONEFLOW_TARGET_OPERATION", operation)
-        .env("ONEFLOW_REAL_GIT", real)
+        .env("TWIGSMITH_TARGET_DIR", f.repo.path())
+        .env("TWIGSMITH_TARGET_OPERATION", operation)
+        .env("TWIGSMITH_REAL_GIT", real)
         .env("PATH", paths)
         .output()
         .unwrap()
@@ -2780,11 +2780,11 @@ fn target_child_result(
 }
 #[test]
 fn target_transport_child() {
-    let Some(directory) = std::env::var_os("ONEFLOW_TARGET_DIR") else {
+    let Some(directory) = std::env::var_os("TWIGSMITH_TARGET_DIR") else {
         return;
     };
     let directory = Path::new(&directory);
-    let operation = std::env::var("ONEFLOW_TARGET_OPERATION").unwrap();
+    let operation = std::env::var("TWIGSMITH_TARGET_OPERATION").unwrap();
     let req = if operation.starts_with("complete") {
         let mut req = completion_request(
             FinishIntegration::Squash,
@@ -2813,7 +2813,7 @@ fn target_transport_child() {
     };
     let initial = integration::assess(directory, &req, None).unwrap();
     let refreshed = target_remote::refresh(directory, &initial);
-    let data = if std::env::var("ONEFLOW_TARGET_OPERATION").unwrap() == "refresh" {
+    let data = if std::env::var("TWIGSMITH_TARGET_OPERATION").unwrap() == "refresh" {
         serde_json::json!({
             "error": format!("{:?}", refreshed.error),
             "evidence": refreshed.evidence.is_some(),
@@ -2890,7 +2890,7 @@ fn remote_refresh_refuses_unavailable_objects_and_detects_observation_fetch_race
                 .success()
             );
             let body = format!(
-                "\"$ONEFLOW_REAL_GIT\" -C {} update-ref refs/heads/main {} || exit 91\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                "\"$TWIGSMITH_REAL_GIT\" -C {} update-ref refs/heads/main {} || exit 91\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
                 shell_quote(f.project.path().to_str().unwrap()),
                 text(&moved)
             );
@@ -2913,16 +2913,16 @@ fn target_publication_lost_and_nonzero_acknowledgements_retry_in_another_process
         |root| {
             for (body, delivered, acknowledged) in [
                 (
-                    "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null\nexit 0",
+                    "\"$TWIGSMITH_REAL_GIT\" \"$@\" >/dev/null\nexit 0",
                     true,
                     false,
                 ),
                 (
-                    "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null\nexit 1",
+                    "\"$TWIGSMITH_REAL_GIT\" \"$@\" >/dev/null\nexit 1",
                     true,
                     false,
                 ),
-                ("\"$ONEFLOW_REAL_GIT\" \"$@\"\nexit 1", true, true),
+                ("\"$TWIGSMITH_REAL_GIT\" \"$@\"\nexit 1", true, true),
                 ("exit 1", false, false),
             ] {
                 let f = fixture(root);
@@ -2946,8 +2946,12 @@ fn target_publication_lost_and_nonzero_acknowledgements_retry_in_another_process
                         == RefObservation::Commit(p.result.clone().unwrap()),
                     delivered
                 );
-                let retry =
-                    target_child_result(&f, "publish", "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+                let retry = target_child_result(
+                    &f,
+                    "publish",
+                    "push",
+                    "exec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
+                );
                 assert_eq!(retry["complete"], true, "{retry}");
                 assert_eq!(
                     retry["destinations"][0]["pushes"],
@@ -2978,7 +2982,7 @@ fn target_publication_killed_between_destinations_reuses_retained_result() {
                 &f,
                 "publish",
                 "push",
-                "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null\nkill -KILL \"$PPID\"\nexit 0",
+                "\"$TWIGSMITH_REAL_GIT\" \"$@\" >/dev/null\nkill -KILL \"$PPID\"\nexit 0",
             );
             assert!(!output.status.success());
             assert_eq!(
@@ -2989,7 +2993,8 @@ fn target_publication_killed_between_destinations_reuses_retained_result() {
                 observed(second.path(), b"refs/heads/main"),
                 RefObservation::Commit(p.result.clone().unwrap())
             );
-            let r = target_child_result(&f, "publish", "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+            let r =
+                target_child_result(&f, "publish", "push", "exec \"$TWIGSMITH_REAL_GIT\" \"$@\"");
             assert_eq!(r["complete"], true, "{r}");
             assert_eq!(r["destinations"][0]["pushes"], 0);
             assert_eq!(r["destinations"][1]["pushes"], 1);
@@ -3021,7 +3026,7 @@ fn target_publication_exact_lease_rejects_remote_race_even_after_tracking_refres
             );
             let p = remote_candidate(&f, &request(FinishIntegration::Squash));
             let body = format!(
-                "\"$ONEFLOW_REAL_GIT\" -C {} update-ref refs/heads/main {} || exit 91\n\"$ONEFLOW_REAL_GIT\" fetch project >&2 || exit 92\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                "\"$TWIGSMITH_REAL_GIT\" -C {} update-ref refs/heads/main {} || exit 91\n\"$TWIGSMITH_REAL_GIT\" fetch project >&2 || exit 92\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
                 shell_quote(f.project.path().to_str().unwrap()),
                 text(&moved)
             );
@@ -3057,7 +3062,7 @@ fn target_publication_stops_between_effects_when_hook_invalidates_context() {
         |root| {
             for script in [
                 "git commit --allow-empty -m hook-change",
-                "rm .git/oneflow-integration/branches/A/attempt.json",
+                "rm .git/twigsmith-integration/branches/A/attempt.json",
             ] {
                 let f = fixture(root);
                 let second = second_target(root, &f);
@@ -3135,7 +3140,7 @@ fn remote_refresh_rejects_ambiguous_advertisements_and_changed_endpoint_resoluti
                 ),
             ] {
                 let body = format!(
-                    "for option do\n [ \"$option\" != --get-url ] || exec \"$ONEFLOW_REAL_GIT\" \"$@\"\ndone\nprintf '%s' {}\nexit 0",
+                    "for option do\n [ \"$option\" != --get-url ] || exec \"$TWIGSMITH_REAL_GIT\" \"$@\"\ndone\nprintf '%s' {}\nexit 0",
                     shell_quote(&output)
                 );
                 let r = target_child_result(&f, "refresh", "ls-remote", &body);
@@ -3146,7 +3151,7 @@ fn remote_refresh_rejects_ambiguous_advertisements_and_changed_endpoint_resoluti
                 &f,
                 "refresh",
                 "ls-remote",
-                "for option do\n if [ \"$option\" = --get-url ]; then printf '%s\\n' wrong-endpoint; exit 0; fi\ndone\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                "for option do\n if [ \"$option\" = --get-url ]; then printf '%s\\n' wrong-endpoint; exit 0; fi\ndone\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
             );
             assert_eq!(r["evidence"], false);
             assert_eq!(r["error"], "Some(EndpointChanged)");
@@ -3200,7 +3205,7 @@ fn target_publication_rejects_forged_non_descendant_even_when_work_rewrite_is_al
             writeln!(
                 fs::OpenOptions::new()
                     .append(true)
-                    .open(f.repo.path().join(".git/git-oneflow.config.toml"))
+                    .open(f.repo.path().join(".git/twigsmith.config.toml"))
                     .unwrap(),
                 "finish-rewrite='allow'"
             )
@@ -3397,7 +3402,7 @@ fn completion_methods_policies_and_observational_retry() {
                     f.repo.success(&["push", "fork", "A"]);
                     let req = completion_request(method, cleanup, checkout);
                     let p = delivered(&f, &req);
-                    let pins = f.repo.success(&["for-each-ref", "refs/oneflow/"]).stdout;
+                    let pins = f.repo.success(&["for-each-ref", "refs/twigsmith/"]).stdout;
                     let result = p.result.clone().unwrap();
                     let r = completion::complete(f.repo.path(), &p);
                     assert!(
@@ -3435,7 +3440,7 @@ fn completion_methods_policies_and_observational_retry() {
                     );
                     assert_eq!(
                         pins,
-                        f.repo.success(&["for-each-ref", "refs/oneflow/"]).stdout
+                        f.repo.success(&["for-each-ref", "refs/twigsmith/"]).stdout
                     );
                     assert_eq!(
                         f.repo.success(&["config", "branch.A.description"]).stdout,
@@ -3475,8 +3480,12 @@ fn completion_recovers_prepared_source_after_deletion_and_rejects_recreation() {
                 } else {
                     "complete-local-rebase"
                 };
-                let data =
-                    target_child_result(&f, operation, "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+                let data = target_child_result(
+                    &f,
+                    operation,
+                    "push",
+                    "exec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
+                );
                 assert_eq!(data["complete"], true, "{data}");
                 assert!(data["effects"].as_array().unwrap().is_empty());
                 f.repo.success(&["branch", "A", text(&source)]);
@@ -3721,11 +3730,11 @@ fn completion_process_interruptions_and_lost_acknowledgements_resume() {
                     "push"
                 };
                 let body = if point == "lost-local" {
-                    "\"$ONEFLOW_REAL_GIT\" \"$@\" | while IFS= read -r line; do case \"$line\" in commit:*) ;; *) printf '%s\\n' \"$line\" ;; esac; done; exit 1"
+                    "\"$TWIGSMITH_REAL_GIT\" \"$@\" | while IFS= read -r line; do case \"$line\" in commit:*) ;; *) printf '%s\\n' \"$line\" ;; esac; done; exit 1"
                 } else if point.starts_with("lost") {
-                    "\"$ONEFLOW_REAL_GIT\" \"$@\" >/dev/null; exit 1"
+                    "\"$TWIGSMITH_REAL_GIT\" \"$@\" >/dev/null; exit 1"
                 } else {
-                    "\"$ONEFLOW_REAL_GIT\" \"$@\"; kill -KILL \"$PPID\"; exit 0"
+                    "\"$TWIGSMITH_REAL_GIT\" \"$@\"; kill -KILL \"$PPID\"; exit 0"
                 };
                 let output = target_child(&f, operation, command, body);
                 if point.starts_with("lost") {
@@ -3754,8 +3763,12 @@ fn completion_process_interruptions_and_lost_acknowledgements_resume() {
                         RefObservation::Commit(_)
                     ));
                 }
-                let data =
-                    target_child_result(&f, operation, "push", "exec \"$ONEFLOW_REAL_GIT\" \"$@\"");
+                let data = target_child_result(
+                    &f,
+                    operation,
+                    "push",
+                    "exec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
+                );
                 assert_eq!(data["complete"], true, "{point}: {data}");
                 assert!(
                     !data["effects"].as_array().unwrap().iter().any(|v| v
@@ -3821,12 +3834,12 @@ fn completion_conditional_local_delete_rejects_races_and_transaction_hooks() {
                 };
                 let body = match race {
                     "advance" => {
-                        "\"$ONEFLOW_REAL_GIT\" update-ref refs/heads/A refs/heads/main; exec \"$ONEFLOW_REAL_GIT\" \"$@\""
+                        "\"$TWIGSMITH_REAL_GIT\" update-ref refs/heads/A refs/heads/main; exec \"$TWIGSMITH_REAL_GIT\" \"$@\""
                     }
                     "symbolic" => {
-                        "\"$ONEFLOW_REAL_GIT\" symbolic-ref refs/heads/A refs/heads/alias; exec \"$ONEFLOW_REAL_GIT\" \"$@\""
+                        "\"$TWIGSMITH_REAL_GIT\" symbolic-ref refs/heads/A refs/heads/alias; exec \"$TWIGSMITH_REAL_GIT\" \"$@\""
                     }
-                    _ => "exec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                    _ => "exec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
                 };
                 let data = target_child_result(&f, "complete", "update-ref", body);
                 assert_eq!(data["complete"], race == "verbose", "{race}: {data}");
@@ -4123,7 +4136,7 @@ fn completion_unavailable_target_observation_does_not_reuse_delivery_report() {
                 &f,
                 "complete",
                 "ls-remote",
-                "if [ -f .git/completion-boundary ]; then exit 1; fi; exec \"$ONEFLOW_REAL_GIT\" \"$@\"",
+                "if [ -f .git/completion-boundary ]; then exit 1; fi; exec \"$TWIGSMITH_REAL_GIT\" \"$@\"",
             );
             assert_eq!(data["complete"], false, "{data}");
             assert_eq!(data["plan_ready"], false, "{data}");
@@ -4198,11 +4211,11 @@ fn tagged_library_completion_requires_tag_and_marker_at_every_endpoint() {
         true,
         |root| {
             let f = fixture(root);
-            let path = f.repo.path().join(".git/git-oneflow.config.toml");
+            let path = f.repo.path().join(".git/twigsmith.config.toml");
             let mut config = fs::read_to_string(&path).unwrap();
             config.push_str("\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-target='main'\nversion-tagging='required'\nrelease-marker='stable'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='both'\nfinish-message='auto'\n");
             fs::write(&path, config).unwrap();
-            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+            let started = Command::new(env!("CARGO_BIN_EXE_tgi"))
                 .current_dir(f.repo.path())
                 .args(["start", "A", "--policy", "release"])
                 .output()
@@ -4293,11 +4306,11 @@ fn tagged_source_rejects_replacement_tree_even_with_clean_matching_head() {
         true,
         |root| {
             let f = fixture(root);
-            let path = f.repo.path().join(".git/git-oneflow.config.toml");
+            let path = f.repo.path().join(".git/twigsmith.config.toml");
             let mut config = fs::read_to_string(&path).unwrap();
             config.push_str("\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-target='main'\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='both'\nfinish-message='auto'\n");
             fs::write(&path, config).unwrap();
-            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+            let started = Command::new(env!("CARGO_BIN_EXE_tgi"))
                 .current_dir(f.repo.path())
                 .args(["start", "A", "--policy", "release"])
                 .output()
@@ -4364,11 +4377,11 @@ fn tagged_creation_rejects_same_source_tag_on_separate_fetch_endpoint() {
                 "project",
                 f.fork.path().to_str().unwrap(),
             ]);
-            let path = f.repo.path().join(".git/git-oneflow.config.toml");
+            let path = f.repo.path().join(".git/twigsmith.config.toml");
             let mut config = fs::read_to_string(&path).unwrap();
             config.push_str("\n[workstreams.release]\ncreation-source='main'\npreparation-source='main'\nintegration-target='main'\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nfinish-integration='merge'\nfinish-cleanup='both'\nfinish-message='auto'\n");
             fs::write(&path, config).unwrap();
-            let started = Command::new(env!("CARGO_BIN_EXE_gof"))
+            let started = Command::new(env!("CARGO_BIN_EXE_tgi"))
                 .current_dir(f.repo.path())
                 .args(["start", "A", "--policy", "release"])
                 .output()

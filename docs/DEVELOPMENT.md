@@ -200,20 +200,20 @@ not goals; keep full validation comprehensive and focused selections useful.
 ## Run a build
 
 ```sh
-./target/debug/git-oneflow --help
-./target/debug/gof status
+./target/debug/twigsmith --help
+./target/debug/tgi status
 ./dev cargo run --locked -- start add-user-avatars
-./dev cargo run --locked --bin gof -- --help
+./dev cargo run --locked --bin tgi -- --help
 ```
 
-Cargo defaults to `git-oneflow`. The development launcher runs from this
+Cargo defaults to `twigsmith`. The development launcher runs from this
 project's root. To use another checkout, run a built executable from that checkout.
 
 ### Shell completion
 
 Build with `./dev build` and put `target/debug` on PATH. Follow the
 [user manual](USAGE.md#shell-completion) to load or register completion for Bash,
-Zsh, Fish or PowerShell. The sourceable `completions/git-oneflow.bash` is the Bash
+Zsh, Fish or PowerShell. The sourceable `completions/twigsmith.bash` is the Bash
 adapter used by executable-generated session setup; it needs a built executable
 on PATH. Grammar and repository candidates live in Rust.
 
@@ -249,8 +249,8 @@ For optimized executables:
 
 ```sh
 ./dev build --release
-./target/release/git-oneflow --help
-./target/release/gof --version
+./target/release/twigsmith --help
+./target/release/tgi --version
 ```
 
 ## Troubleshooting

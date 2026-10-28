@@ -1,13 +1,13 @@
 use std::{env, fs, path::Path, process::Command};
 
-use git_oneflow::git;
 use tempfile::{Builder, TempDir};
+use twigsmith::git;
 
 /// Re-execute only this test in a clean child environment. Never mutate the
 /// test runner's environment: tests may run concurrently.
 pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
-    if env::var("ONEFLOW_ISOLATED_TEST").as_deref() == Ok(name) {
-        let root = env::var_os("ONEFLOW_TEST_ROOT").expect("isolated test root");
+    if env::var("TWIGSMITH_ISOLATED_TEST").as_deref() == Ok(name) {
+        let root = env::var_os("TWIGSMITH_TEST_ROOT").expect("isolated test root");
         test(Path::new(&root));
         return;
     }
@@ -26,12 +26,12 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     let mut child = Command::new(env::current_exe().unwrap());
     child.env_clear();
     for name in [
-        "ONEFLOW_TEST_BASH",
-        "ONEFLOW_TEST_ZSH",
-        "ONEFLOW_TEST_FISH",
-        "ONEFLOW_TEST_PWSH",
-        "ONEFLOW_TEST_ZSH_MODULE_PATH",
-        "ONEFLOW_TEST_ZSH_FUNCTION_PATH",
+        "TWIGSMITH_TEST_BASH",
+        "TWIGSMITH_TEST_ZSH",
+        "TWIGSMITH_TEST_FISH",
+        "TWIGSMITH_TEST_PWSH",
+        "TWIGSMITH_TEST_ZSH_MODULE_PATH",
+        "TWIGSMITH_TEST_ZSH_FUNCTION_PATH",
     ] {
         if let Some(value) = env::var_os(name) {
             child.env(name, value);
@@ -46,8 +46,8 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     let output = child
         .args(["--exact", name, "--include-ignored", "--nocapture"])
         .current_dir(root.path())
-        .env("ONEFLOW_ISOLATED_TEST", name)
-        .env("ONEFLOW_TEST_ROOT", root.path())
+        .env("TWIGSMITH_ISOLATED_TEST", name)
+        .env("TWIGSMITH_TEST_ROOT", root.path())
         .env(
             "PATH",
             if git_available {

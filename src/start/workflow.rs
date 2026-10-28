@@ -524,7 +524,7 @@ impl Workflow<'_> {
             "config",
             "--local",
             "--add",
-            &format!("branch.{}.oneflow-policy", self.request.target),
+            &format!("branch.{}.twigsmith-policy", self.request.target),
             &json,
         ])?;
         self.routing.policy_association = vec![json.into_bytes()];
@@ -697,7 +697,7 @@ impl Workflow<'_> {
             // verified commit ID, not ambiguous names, tags, or revision input.
             if self.request.settings.workstream.is_some() {
                 let token = tempfile::Builder::new()
-                    .prefix("oneflow-start-")
+                    .prefix("twigsmith-start-")
                     .tempfile()
                     .map_err(StartError::Io)?;
                 let message = token.path().file_name().unwrap().to_string_lossy();

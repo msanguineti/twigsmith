@@ -1,14 +1,6 @@
 #![cfg(unix)]
 mod support;
 
-use git_oneflow::{
-    finish::{
-        self, Constraint, Plan, PublicationMode, Recovery, RefObservation, Request, RequiredInput,
-        preparation, publication,
-    },
-    git,
-    settings::{FinishRewrite, FinishUpdate},
-};
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
@@ -16,6 +8,14 @@ use std::{
     process::{Command, Output},
 };
 use support::{Repository, isolated};
+use twigsmith::{
+    finish::{
+        self, Constraint, Plan, PublicationMode, Recovery, RefObservation, Request, RequiredInput,
+        preparation, publication,
+    },
+    git,
+    settings::{FinishRewrite, FinishUpdate},
+};
 
 const PROJECT: &str = "team/project";
 const PUBLISH: &str = "personal/publish";
@@ -64,7 +64,7 @@ fn prepared(local: &Repository, update: FinishUpdate) -> Plan {
     report.plan.unwrap()
 }
 fn cli(local: &Repository, update: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+    Command::new(env!("CARGO_BIN_EXE_twigsmith"))
         .current_dir(local.path())
         .args([
             "finish",
@@ -161,7 +161,7 @@ impl Fixture {
     }
     fn settings(&self, base: &str, publish: &str) {
         fs::write(
-            self.local.path().join(".git/git-oneflow.config.toml"),
+            self.local.path().join(".git/twigsmith.config.toml"),
             format!("base-remote = {base:?}\npublish-remote = {publish:?}\n"),
         )
         .unwrap();
@@ -169,7 +169,7 @@ impl Fixture {
     fn record(&self) -> PathBuf {
         self.local
             .path()
-            .join(".git/oneflow-finish/branches/feature/work/rewrite.json")
+            .join(".git/twigsmith-finish/branches/feature/work/rewrite.json")
     }
 }
 
@@ -747,7 +747,7 @@ fn split_role_executor_death_and_lost_acknowledgement_need_no_final_write() {
                         .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
                 )
                 .unwrap();
-                let out = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+                let out = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
                     .current_dir(f.local.path())
                     .args([
                         "finish",
@@ -884,7 +884,7 @@ fn base_endpoint_rewrites_and_role_diagnostics_keep_credentials_redacted() {
                 stderr.contains("<redacted>@example.invalid/project"),
                 "{stderr}"
             );
-            let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+            let output = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
                 .current_dir(f.local.path())
                 .args([
                     "finish",

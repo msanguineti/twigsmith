@@ -5,13 +5,13 @@ mod support;
 #[allow(dead_code)]
 mod terminal;
 
-use git_oneflow::{config, settings};
 use std::{
     fs,
     path::Path,
     process::{Command, Output, Stdio},
 };
 use support::{Repository, isolated};
+use twigsmith::{config, settings};
 
 struct Fixture {
     local: Repository,
@@ -19,7 +19,7 @@ struct Fixture {
 }
 
 fn run(local: &Repository, command: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+    Command::new(env!("CARGO_BIN_EXE_twigsmith"))
         .current_dir(local.path())
         .arg(command)
         .args(args)
@@ -65,7 +65,7 @@ impl Fixture {
             document["redact-credentials"] = redact.into();
         }
         fs::write(
-            local.path().join(".git/git-oneflow.config.json"),
+            local.path().join(".git/twigsmith.config.json"),
             document.to_string(),
         )
         .unwrap();
@@ -119,7 +119,7 @@ fn hosted_cancel_eof_and_context_changes_stop_before_effects() {
                 let before = fixture.local.success(&["show-ref"]).stdout;
                 let index = fs::read(fixture.local.path().join(".git/index")).unwrap();
                 let mut terminal = terminal::Terminal::start(
-                    env!("CARGO_BIN_EXE_git-oneflow"),
+                    env!("CARGO_BIN_EXE_twigsmith"),
                     fixture.local.path(),
                     &args,
                 );
@@ -140,7 +140,7 @@ fn hosted_cancel_eof_and_context_changes_stop_before_effects() {
                     fs::read_to_string(fixture.local.path().join("base")).unwrap(),
                     "approved source\n"
                 );
-                assert!(!fixture.local.path().join(".git/oneflow-hosted").exists());
+                assert!(!fixture.local.path().join(".git/twigsmith-hosted").exists());
             }
         },
     );
@@ -187,7 +187,7 @@ fn hosted_capable_names_stay_correctable_and_navigation_delivers_version() {
             let fixture = Fixture::new(root, settings::FinishUpdate::Ask, None);
             let source = fixture.local.success(&["rev-parse", "HEAD"]).stdout;
             let mut terminal = terminal::Terminal::start_capable(
-                env!("CARGO_BIN_EXE_git-oneflow"),
+                env!("CARGO_BIN_EXE_twigsmith"),
                 fixture.local.path(),
                 &["finish"],
             );
@@ -233,7 +233,7 @@ fn hosted_capable_names_stay_correctable_and_navigation_delivers_version() {
                 "refs/heads/release/source",
             ] {
                 assert_eq!(
-                    git_oneflow::git::run(fixture._project.path(), ["rev-parse", reference])
+                    twigsmith::git::run(fixture._project.path(), ["rev-parse", reference])
                         .unwrap()
                         .stdout,
                     source,

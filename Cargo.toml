@@ -1,9 +1,9 @@
 [package]
-name = "git-oneflow"
+name = "twigsmith"
 version = "0.0.0-dev"
 edition = "2024"
 publish = false
-default-run = "git-oneflow"
+default-run = "twigsmith"
 license = "MIT"
 description = "Git workflow CLI for starting, saving, and finishing work"
 

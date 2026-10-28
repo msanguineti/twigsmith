@@ -255,7 +255,7 @@ impl Record {
     }
     pub fn marker(&self) -> String {
         format!(
-            "oneflow-integrate:{}:{}:{}:{}",
+            "twigsmith-integrate:{}:{}:{}:{}",
             self.token,
             String::from_utf8_lossy(&self.source),
             String::from_utf8_lossy(&self.target_before),
@@ -295,12 +295,12 @@ fn valid_ref(directory: &Path, reference: &[u8]) -> Result<bool, FinishError> {
 pub fn record_path(repository: &repository::RepositoryContext, source_branch: &str) -> PathBuf {
     repository
         .git_dir
-        .join("oneflow-integration/branches")
+        .join("twigsmith-integration/branches")
         .join(source_branch)
         .join("attempt.json")
 }
 pub fn selection_path(repository: &repository::RepositoryContext) -> PathBuf {
-    repository.git_dir.join("oneflow-integration/active.json")
+    repository.git_dir.join("twigsmith-integration/active.json")
 }
 /// Explicit policy start establishes new workstream intent on a named branch.
 /// Retain all attempt records; retire only a different source's active selector.
@@ -368,6 +368,44 @@ pub(super) fn select(
     state: &repository::RepositoryState,
     target: &[u8],
 ) -> Result<Selected, FinishError> {
+    // A legacy selector can associate an interrupted source with the currently
+    // checked-out destination. Do not mistake that destination for fresh work.
+    let legacy_selector = repository.git_dir.join("oneflow-integration/active.json");
+    let legacy = private_read(&repository.git_dir, &legacy_selector)
+        .map_err(|_| FinishError::InvalidEvidence("unsafe legacy integration evidence; recover with the prior Rust version and preserve evidence"))?;
+    if let Some(bytes) = legacy {
+        let selection: Selection = serde_json::from_slice(&bytes)
+            .map_err(|_| FinishError::InvalidEvidence("invalid legacy integration evidence; recover with the prior Rust version and preserve evidence"))?;
+        let branch = std::str::from_utf8(selection.source_ref.strip_prefix(b"refs/heads/").ok_or(
+            FinishError::InvalidEvidence("invalid legacy integration source"),
+        )?)
+        .map_err(|_| FinishError::InvalidEvidence("invalid legacy integration source"))?;
+        let path = repository
+            .git_dir
+            .join("oneflow-integration/branches")
+            .join(branch)
+            .join("attempt.json");
+        let record = private_read(&repository.git_dir, &path)
+            .map_err(|_| FinishError::InvalidEvidence("unsafe legacy integration record; recover with the prior Rust version and preserve evidence"))?
+            .and_then(|data| serde_json::from_slice::<Record>(&data).ok());
+        let head = current_ref(state);
+        let relevant = head.as_ref().is_some_and(|head| {
+            *head == selection.source_ref
+                || record.as_ref().is_some_and(|record| {
+                    *head == record.target.reference
+                        || record
+                            .completed
+                            .iter()
+                            .any(|item| *head == item.target.reference)
+                })
+                || (record.is_none() && head.as_slice() == target)
+        });
+        if relevant {
+            return Err(FinishError::InvalidEvidence(
+                "unfinished legacy integration: recover with the prior Rust version and preserve its evidence before establishing Twigsmith associations",
+            ));
+        }
+    }
     let mut selected = Selected {
         source_ref: current_ref(state),
         path: None,
@@ -685,7 +723,7 @@ pub(super) fn assess(
             || entries.len() != 1
             || entries[0].old != vec![b'0'; expected.len()]
             || entries[0].new != expected
-            || entries[0].message != b"oneflow retain"
+            || entries[0].message != b"twigsmith retain"
         {
             fail(plan, Problem::InvalidResult);
             return Ok(());
@@ -1124,7 +1162,7 @@ fn target_unintegrated(record: &Record, plan: &Plan) -> bool {
 
 impl Record {
     pub(super) fn release_action(&self) -> String {
-        format!("oneflow-release:{}", self.token)
+        format!("twigsmith-release:{}", self.token)
     }
     pub(super) fn preparation_base(&self) -> &[u8] {
         self.preparation
@@ -1132,20 +1170,20 @@ impl Record {
             .map_or(&self.target_before, |p| &p.base)
     }
     pub(super) fn prepare_marker(&self) -> String {
-        format!("oneflow-prepare-{}", self.token)
+        format!("twigsmith-prepare-{}", self.token)
     }
     pub(super) fn base_marker(&self) -> String {
-        format!("oneflow-base-{}", self.token)
+        format!("twigsmith-base-{}", self.token)
     }
     pub fn original_ref(&self) -> String {
-        format!("refs/oneflow/integration/{}/original", self.token)
+        format!("refs/twigsmith/integration/{}/original", self.token)
     }
     pub fn result_ref(&self) -> String {
         if self.completed.is_empty() {
-            format!("refs/oneflow/integration/{}/result", self.token)
+            format!("refs/twigsmith/integration/{}/result", self.token)
         } else {
             format!(
-                "refs/oneflow/integration/{}/result-{}",
+                "refs/twigsmith/integration/{}/result-{}",
                 self.token,
                 self.completed.len()
             )

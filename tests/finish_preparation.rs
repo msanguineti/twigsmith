@@ -1,6 +1,8 @@
 #![cfg(unix)]
 mod support;
-use git_oneflow::{
+use std::{fs, path::Path, process::Command};
+use support::{Repository, isolated};
+use twigsmith::{
     finish::{
         self, Constraint, PublicationMode, Recovery, RefObservation, Request, RequiredInput,
         preparation::{self, Effect, PreparationError},
@@ -9,8 +11,6 @@ use git_oneflow::{
     repository::{Head, Observation},
     settings::{FinishRewrite, FinishUpdate},
 };
-use std::{fs, path::Path, process::Command};
-use support::{Repository, isolated};
 
 fn oid(repo: &Repository, reference: &str) -> Vec<u8> {
     repo.success(&["rev-parse", reference])
@@ -89,7 +89,7 @@ fn ancestor(local: &Repository, older: &[u8], newer: &[u8]) -> bool {
 fn record_path(local: &Repository) -> std::path::PathBuf {
     local
         .path()
-        .join(".git/oneflow-finish/branches/work/rewrite.json")
+        .join(".git/twigsmith-finish/branches/work/rewrite.json")
 }
 fn hooks(local: &Repository, name: &str, body: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -333,7 +333,7 @@ fn guards_and_revalidation_stop_before_updates() {
                         local.success(&["config", "remote.origin.pushurl", "/changed"]);
                     }
                     "settings" => fs::write(
-                        local.path().join(".git/git-oneflow.config.toml"),
+                        local.path().join(".git/twigsmith.config.toml"),
                         "finish-update = 'merge'\n",
                     )
                     .unwrap(),
@@ -365,11 +365,7 @@ fn changed_configuration_during_update_requires_fresh_assessment() {
         |root| {
             for update in [FinishUpdate::Rebase, FinishUpdate::Merge] {
                 let (local, remote, _, _) = fixture(root, false, false);
-                commit(
-                    &remote,
-                    "git-oneflow.config.toml",
-                    "finish-update = 'none'\n",
-                );
+                commit(&remote, "twigsmith.config.toml", "finish-update = 'none'\n");
                 let report = prepare(&local, &request(update, FinishRewrite::Allow));
                 assert!(
                     matches!(
@@ -474,8 +470,8 @@ fn merge_conflict_retains_operation_and_supports_git_recovery() {
 fn child(local: &Repository, mode: &str) {
     let out = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "preparation_child", "--nocapture"])
-        .env("ONEFLOW_PREP_DIRECTORY", local.path())
-        .env("ONEFLOW_PREP_MODE", mode)
+        .env("TWIGSMITH_PREP_DIRECTORY", local.path())
+        .env("TWIGSMITH_PREP_MODE", mode)
         .output()
         .unwrap();
     assert!(
@@ -487,10 +483,10 @@ fn child(local: &Repository, mode: &str) {
 }
 #[test]
 fn preparation_child() {
-    let Some(path) = std::env::var_os("ONEFLOW_PREP_DIRECTORY") else {
+    let Some(path) = std::env::var_os("TWIGSMITH_PREP_DIRECTORY") else {
         return;
     };
-    let mode = std::env::var("ONEFLOW_PREP_MODE").unwrap();
+    let mode = std::env::var("TWIGSMITH_PREP_MODE").unwrap();
     let path = Path::new(&path);
     let req = request(FinishUpdate::Rebase, FinishRewrite::Allow);
     let initial = finish::assess(path, &req, None).unwrap();
@@ -559,8 +555,8 @@ fn interrupted_parent_after_rewrite_can_retry_in_new_process() {
             .unwrap();
             let out = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "preparation_child", "--nocapture"])
-                .env("ONEFLOW_PREP_DIRECTORY", local.path())
-                .env("ONEFLOW_PREP_MODE", "killed")
+                .env("TWIGSMITH_PREP_DIRECTORY", local.path())
+                .env("TWIGSMITH_PREP_MODE", "killed")
                 .env("PATH", paths)
                 .output()
                 .unwrap();
@@ -862,7 +858,7 @@ fn committed_configuration_changes_are_checked_from_nested_invocations() {
         true,
         |root| {
             let remote = Repository::new(root);
-            commit(&remote, "git-oneflow.config.toml", "# original\n");
+            commit(&remote, "twigsmith.config.toml", "# original\n");
             let local = Repository::new(root);
             local.success(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
             local.success(&["fetch", "origin"]);
@@ -871,7 +867,7 @@ fn committed_configuration_changes_are_checked_from_nested_invocations() {
             commit(&local, "nested/work", "local work");
             commit(
                 &remote,
-                "git-oneflow.config.toml",
+                "twigsmith.config.toml",
                 "# changed formatting, same settings\n",
             );
             let req = request(FinishUpdate::Rebase, FinishRewrite::Allow);
@@ -963,7 +959,7 @@ fn interactive_request() -> Request {
     Request {
         update: Some(FinishUpdate::Rebase),
         rewrite: Some(FinishRewrite::Allow),
-        history_edit: Some(git_oneflow::settings::HistoryEdit::Interactive),
+        history_edit: Some(twigsmith::settings::HistoryEdit::Interactive),
     }
 }
 fn interactive_editors(local: &Repository) {
@@ -1005,7 +1001,7 @@ fn interactive_recovery_rejects_reset_changed_context_and_missing_retention() {
                         let refs = local.success(&[
                             "for-each-ref",
                             "--format=%(refname)",
-                            "refs/oneflow/finish/",
+                            "refs/twigsmith/finish/",
                         ]);
                         let reference = std::str::from_utf8(&refs.stdout).unwrap().trim();
                         local.success(&["update-ref", "-d", reference]);

@@ -867,10 +867,10 @@ impl From<InspectionError> for SettingsError {
 pub(crate) mod checkout;
 
 pub const CONFIG_FILES: [&str; 4] = [
-    "git-oneflow.config.toml",
-    "git-oneflow.config.yaml",
-    "git-oneflow.config.yml",
-    "git-oneflow.config.json",
+    "twigsmith.config.toml",
+    "twigsmith.config.yaml",
+    "twigsmith.config.yml",
+    "twigsmith.config.json",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1232,7 +1232,7 @@ impl<'de> Deserialize<'de> for Layer {
         impl<'de> Visitor<'de> for LayerVisitor {
             type Value = Layer;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a mapping of recognized Oneflow settings")
+                f.write_str("a mapping of recognized Twigsmith settings")
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Layer, M::Error> {
                 let mut layer = Layer::default();
@@ -1304,7 +1304,22 @@ fn exists(path: &Path) -> Result<bool, SettingsError> {
         }),
     }
 }
+fn legacy_config_guard(root: &Path) -> Result<(), SettingsError> {
+    // A previous Rust version's configuration must never be silently ignored,
+    // including when setup is about to create a new file.
+    for suffix in ["toml", "yaml", "yml", "json"] {
+        let legacy = root.join(format!("git-oneflow.config.{suffix}"));
+        if exists(&legacy)? {
+            return Err(SettingsError::InvalidSettings(format!(
+                "legacy configuration {} found; finish or recover outstanding operations with the prior Rust version, preserve recovery evidence, then move the old configuration aside and establish Twigsmith configuration",
+                legacy.display()
+            )));
+        }
+    }
+    Ok(())
+}
 pub(crate) fn recognized_paths(root: &Path) -> Result<Vec<PathBuf>, SettingsError> {
+    legacy_config_guard(root)?;
     let mut paths = Vec::new();
     for name in CONFIG_FILES {
         let path = root.join(name);
@@ -1768,6 +1783,9 @@ pub(crate) fn load_for_branch_from_shared_tree(
     commit: &[u8],
     reconstruct_absent: bool,
 ) -> Result<Option<LoadedSettings>, SettingsError> {
+    if let Some(root) = repository.working_tree_root.as_deref() {
+        legacy_config_guard(root)?;
+    }
     let mut arguments = vec![
         "--no-replace-objects".into(),
         "ls-tree".into(),
@@ -1829,18 +1847,71 @@ pub(crate) fn load_for_branch_from_shared_tree(
     apply_branch_policy(directory, branch, &mut loaded.settings)?;
     Ok(Some(loaded))
 }
+/// Refuse only legacy records associated with the branch being operated on.
+/// Historical reflogs and independent save-recovery refs are not ownership records.
+pub(crate) fn legacy_branch_guard(directory: &Path, branch: &[u8]) -> Result<(), SettingsError> {
+    let legacy_key = crate::tracking::key(branch, b".oneflow-policy");
+    let old_policy = !crate::tracking::config(directory, &legacy_key)?.is_empty();
+    let repository = crate::repository::discover(directory)?;
+    let mut old_record = false;
+    if let Some(repository) = repository {
+        let branch_path = crate::repository::os(branch)?;
+        let hex: String = branch.iter().map(|b| format!("{b:02x}")).collect();
+        let paths = [
+            repository
+                .git_dir
+                .join("oneflow-finish")
+                .join("branches")
+                .join(&branch_path)
+                .join("rewrite.json"),
+            repository
+                .git_dir
+                .join("oneflow-integration")
+                .join("branches")
+                .join(&branch_path)
+                .join("attempt.json"),
+            repository
+                .git_dir
+                .join("oneflow-hosted")
+                .join("attempts")
+                .join(&hex),
+            repository
+                .git_dir
+                .join("oneflow-hosted")
+                .join("associations")
+                .join(&hex),
+        ];
+        for path in paths {
+            if exists(&path)? {
+                old_record = true;
+                break;
+            }
+        }
+    }
+    if old_policy || old_record {
+        return Err(SettingsError::InvalidSettings(format!(
+            "legacy branch association or unfinished recovery state for {}: finish or recover the operation using the prior Rust version and preserve its evidence; then remove the obsolete association only after recovery and establish a Twigsmith association",
+            crate::status::display(branch)
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn branch_policy(
     directory: &Path,
     branch: &[u8],
 ) -> Result<Option<BranchPolicy>, SettingsError> {
-    let values =
-        crate::tracking::config(directory, &crate::tracking::key(branch, b".oneflow-policy"))?;
+    legacy_branch_guard(directory, branch)?;
+    let values = crate::tracking::config(
+        directory,
+        &crate::tracking::key(branch, b".twigsmith-policy"),
+    )?;
     match values.as_slice() {
         [] => Ok(None),
         [value] => serde_json::from_slice(value)
             .map(Some)
             .map_err(|e| {
-                let key = crate::tracking::key(branch, b".oneflow-policy");
+                let key = crate::tracking::key(branch, b".twigsmith-policy");
                 let correction = match std::str::from_utf8(&key) {
                     Ok(key) => format!("git config --local --unset-all '{}'", key.replace('\'', "'\\''")),
                     Err(_) => format!("Git's local configuration editor, removing the exact obsolete association key {}", crate::status::display(&key)),

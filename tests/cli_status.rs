@@ -2,7 +2,6 @@
 mod preservation;
 mod support;
 
-use git_oneflow::git;
 use preservation::snapshot;
 use std::{
     fs,
@@ -10,6 +9,7 @@ use std::{
     process::{Command, Output},
 };
 use support::{Repository, isolated};
+use twigsmith::git;
 
 fn run(directory: &Path, args: &[&str]) -> Output {
     let invoke = |executable| {
@@ -19,8 +19,8 @@ fn run(directory: &Path, args: &[&str]) -> Output {
             .output()
             .unwrap()
     };
-    let output = invoke(env!("CARGO_BIN_EXE_git-oneflow"));
-    let alias = invoke(env!("CARGO_BIN_EXE_gof"));
+    let output = invoke(env!("CARGO_BIN_EXE_twigsmith"));
+    let alias = invoke(env!("CARGO_BIN_EXE_tgi"));
     assert_eq!(output.status.code(), alias.status.code());
     assert_eq!(output.stdout, alias.stdout);
     assert_eq!(output.stderr, alias.stderr);
@@ -319,7 +319,7 @@ fn cli_missing_git_and_status_help() {
             contains(
                 &String::from_utf8(help.stdout).unwrap(),
                 &[
-                    "Usage: git-oneflow status",
+                    "Usage: twigsmith status",
                     "locally available references/history only",
                     "Options:",
                     "Examples:",

@@ -1,7 +1,10 @@
 #[path = "support/snapshot.rs"]
 mod preservation;
 mod support;
-use git_oneflow::{
+use preservation::snapshot;
+use std::{fs, path::Path};
+use support::{Repository, isolated};
+use twigsmith::{
     finish::{
         self, ChoiceSource, Constraint, DestinationEvidence, FinishError, PublicationMode,
         RefObservation, Relationship, RemoteEvidence, Request, RequiredInput,
@@ -10,9 +13,6 @@ use git_oneflow::{
     save::SaveError,
     settings::{FinishRewrite, FinishUpdate},
 };
-use preservation::snapshot;
-use std::{fs, path::Path};
-use support::{Repository, isolated};
 
 fn commit(repo: &Repository, text: &str) -> Vec<u8> {
     fs::write(repo.path().join("tracked"), text).unwrap();
@@ -659,14 +659,14 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
                     }
                     "settings" => {
                         fs::write(
-                            repo.path().join(".git/git-oneflow.config.toml"),
+                            repo.path().join(".git/twigsmith.config.toml"),
                             "finish-rewrite='allow'\n",
                         )
                         .unwrap();
                     }
                     "source" => {
                         fs::write(
-                            repo.path().join(".git/git-oneflow.config.toml"),
+                            repo.path().join(".git/twigsmith.config.toml"),
                             "finish-update='ask'\n",
                         )
                         .unwrap();
@@ -715,7 +715,7 @@ fn meaningful_local_or_remote_changes_invalidate_plans() {
             }
             // Formatting-only changes preserve settings values and sources.
             let (repo, base) = fixture(root);
-            let path = repo.path().join(".git/git-oneflow.config.toml");
+            let path = repo.path().join(".git/twigsmith.config.toml");
             fs::write(&path, "finish-update='none'\n").unwrap();
             let remote = evidence(base, RefObservation::Absent);
             let plan = assess(root, &repo, &Request::default(), Some(&remote)).unwrap();
@@ -736,7 +736,7 @@ fn finish_request_overrides_config_without_hiding_invalid_settings() {
             repo.success(&["switch", "main"]);
             let base = commit(&repo, "base update");
             repo.success(&["switch", "Feature/Exact_Name"]);
-            let path = repo.path().join(".git/git-oneflow.config.toml");
+            let path = repo.path().join(".git/twigsmith.config.toml");
             fs::write(&path, "finish-update='rebase'\nfinish-rewrite='allow'\n").unwrap();
             let remote = evidence(base, RefObservation::Commit(work));
             let configured = assess(root, &repo, &Request::default(), Some(&remote)).unwrap();
@@ -883,18 +883,15 @@ fn review_preparation_route_is_independent_of_submission_target() {
             repo.success(&["switch", "-c", "preparation", "main"]);
             let preparation = commit(&repo, "preparation advance");
             repo.success(&["switch", "Feature/Exact_Name"]);
-            fs::write(repo.path().join(".git/git-oneflow.config.toml"), "[workstreams.ordinary]\npreparation-source='preparation'\nintegration-target='main'\nfinish-mode='review'\nfinish-update='merge'\n").unwrap();
-            let options = git_oneflow::start::Options {
-                policy: Some(git_oneflow::settings::WorkstreamKind::Ordinary),
+            fs::write(repo.path().join(".git/twigsmith.config.toml"), "[workstreams.ordinary]\npreparation-source='preparation'\nintegration-target='main'\nfinish-mode='review'\nfinish-update='merge'\n").unwrap();
+            let options = twigsmith::start::Options {
+                policy: Some(twigsmith::settings::WorkstreamKind::Ordinary),
                 ..Default::default()
             };
-            let prepared = git_oneflow::start::prepare_with_options(
-                repo.path(),
-                "Feature/Exact_Name",
-                &options,
-            )
-            .unwrap();
-            git_oneflow::start::execute(repo.path(), &prepared).unwrap();
+            let prepared =
+                twigsmith::start::prepare_with_options(repo.path(), "Feature/Exact_Name", &options)
+                    .unwrap();
+            twigsmith::start::execute(repo.path(), &prepared).unwrap();
             let mut remote = evidence(preparation, RefObservation::Absent);
             remote.base_ref = b"refs/heads/preparation".to_vec();
             let plan = assess(

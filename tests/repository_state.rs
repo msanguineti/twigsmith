@@ -5,14 +5,14 @@ use preservation::snapshot;
 
 use std::{fs, path::Path, time::SystemTime};
 
-use git_oneflow::{
+use support::{Repository, isolated};
+use twigsmith::{
     git,
     repository::{
         self, Change, ChangeKind, Divergence, Head, InspectionError, Observation, Operations,
         RepositoryKind, RepositoryState, SubmoduleState, Upstream, UpstreamReference,
     },
 };
-use support::{Repository, isolated};
 
 fn state(directory: &Path) -> RepositoryState {
     match repository::inspect(directory).unwrap() {

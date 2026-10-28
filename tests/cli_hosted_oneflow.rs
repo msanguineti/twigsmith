@@ -1,13 +1,13 @@
 //! Tagged hosted review preparation through real Git and fresh CLI processes.
 mod support;
 
-use git_oneflow::git;
 use std::{
     fs,
     path::Path,
     process::{Command, Output, Stdio},
 };
 use support::{Repository, isolated};
+use twigsmith::git;
 
 #[derive(Clone, Copy, Debug)]
 struct Cli {
@@ -60,7 +60,7 @@ fn cases(name: &str, test: impl Fn(&Path, Cli)) {
         test(
             directory.path(),
             Cli {
-                executable: env!("CARGO_BIN_EXE_git-oneflow"),
+                executable: env!("CARGO_BIN_EXE_twigsmith"),
                 aliases: false,
             },
         );
@@ -69,7 +69,7 @@ fn cases(name: &str, test: impl Fn(&Path, Cli)) {
 
 fn entrypoint_cases(name: &str, test: impl Fn(&Path, Cli)) {
     isolated(name, true, |root| {
-        for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+        for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
             for aliases in [false, true] {
                 let directory = tempfile::tempdir_in(root).unwrap();
                 println!("lifecycle wiring: executable={executable}, aliases={aliases}");
@@ -177,7 +177,7 @@ fn hook(path: &Path, name: &str, body: &str) -> std::path::PathBuf {
 }
 
 fn configure(f: &Fixture, review: &str, active: &str) {
-    fs::write(f.local.path().join(".git/git-oneflow.config.toml"), format!(
+    fs::write(f.local.path().join(".git/twigsmith.config.toml"), format!(
         "publish-remote='personal'\nbase-remote='project'\nfinish-mode='review'\nfinish-update='none'\nfinish-integration='ff-only'\nfinish-checkout='work'\nfinish-cleanup='keep'\n\
          [workstreams.ordinary]\nversion-tagging='disabled'\n\
          [workstreams.release]\ncreation-source='main'\nintegration-target='main'\npublish-remote='project'\nbase-remote='project'\nreview-remote='{review}'\nversion-tagging='required'\nrelease-marker='released'\nfinish-mode='review'\nfinish-update='merge'\nfinish-integration='merge'\nfinish-cleanup='keep'\nfinish-checkout='work'\nfinish-rewrite='deny'\n\
@@ -203,7 +203,7 @@ fn hosted_release_project_fork_and_exact_version_history() {
                 "config",
                 &["--oneflow-hosted", "--yes", "--marker", "released"],
             );
-            let config_path = f.local.path().join("git-oneflow.config.toml");
+            let config_path = f.local.path().join("twigsmith.config.toml");
             let generated = fs::read_to_string(&config_path).unwrap();
             let configured = generated
                 .replace("origin", "project")
@@ -220,7 +220,7 @@ fn hosted_release_project_fork_and_exact_version_history() {
             fs::create_dir_all(f.local.path().join(".git/info")).unwrap();
             fs::write(
                 f.local.path().join(".git/info/exclude"),
-                "git-oneflow.config.toml\n",
+                "twigsmith.config.toml\n",
             )
             .unwrap();
             let settings = cli.success(&f.local, "config", &["show"]);

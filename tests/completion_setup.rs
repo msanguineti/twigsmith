@@ -32,7 +32,7 @@ fn check(output: &Output, code: i32) {
     assert_eq!(output.status.code(), Some(code), "{output:?}");
 }
 fn executables() -> [&'static str; 2] {
-    [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")]
+    [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")]
 }
 
 #[test]
@@ -439,7 +439,7 @@ fn defaults_custom_fish_directory_and_explicit_powershell_profile() {
         for (shell, relative) in [
             ("bash", ".bashrc"),
             ("zsh", "zsh/.zshrc"),
-            ("fish", "xdg/fish/conf.d/git-oneflow.fish"),
+            ("fish", "xdg/fish/conf.d/twigsmith.fish"),
         ] {
             check(
                 &run(
@@ -468,7 +468,7 @@ fn defaults_custom_fish_directory_and_explicit_powershell_profile() {
             ),
             0,
         );
-        assert!(config.join("conf.d/git-oneflow.fish").is_file());
+        assert!(config.join("conf.d/twigsmith.fish").is_file());
         let profile = root.path().join("custom-profile.ps1");
         check(
             &run(
@@ -486,6 +486,33 @@ fn defaults_custom_fish_directory_and_explicit_powershell_profile() {
             0,
         );
         assert!(profile.is_file());
+    }
+}
+
+#[test]
+fn legacy_registrations_are_preserved_across_install_and_uninstall() {
+    for executable in executables() {
+        for shell in ["bash", "zsh", "fish", "powershell"] {
+            let root = tempfile::tempdir().unwrap();
+            let profile = root.path().join("profile");
+            let path = profile.to_str().unwrap();
+            let legacy = format!(
+                "# unrelated\n# >>> git-oneflow completion {shell} >>>\nlegacy loader\n# <<< git-oneflow completion {shell} <<<\n"
+            );
+            fs::write(&profile, &legacy).unwrap();
+            for action in ["install", "install", "uninstall", "uninstall"] {
+                check(
+                    &run(
+                        executable,
+                        root.path(),
+                        &["completion", action, shell, "--file", path, "--yes"],
+                    ),
+                    0,
+                );
+                assert!(fs::read(&profile).unwrap().starts_with(legacy.as_bytes()));
+            }
+            assert_eq!(fs::read(&profile).unwrap(), legacy.as_bytes());
+        }
     }
 }
 
@@ -526,8 +553,8 @@ fn edited_duplicated_and_malformed_blocks_are_never_replaced_or_removed() {
         for bytes in [
             edited,
             duplicate,
-            b"# >>> git-oneflow completion bash >>>\n# unfinished\n".to_vec(),
-            b"# <<< git-oneflow completion bash <<<\n".to_vec(),
+            b"# >>> twigsmith completion bash >>>\n# unfinished\n".to_vec(),
+            b"# <<< twigsmith completion bash <<<\n".to_vec(),
         ] {
             fs::write(&profile, &bytes).unwrap();
             for action in ["install", "uninstall"] {
@@ -636,7 +663,7 @@ fn fresh_bash_loads_registration_through_path_and_tracks_executable_changes() {
     let bin = root.path().join("bin");
     fs::create_dir(&bin).unwrap();
     // Only the short executable name is on PATH, exercising startup fallback.
-    let executable = bin.join("gof");
+    let executable = bin.join("tgi");
     symlink(executables()[1], &executable).unwrap();
     check(
         &run(
@@ -657,7 +684,7 @@ fn fresh_bash_loads_registration_through_path_and_tracks_executable_changes() {
                 profile.to_str().unwrap(),
                 "-i",
                 "-c",
-                "complete -p git-oneflow gof",
+                "complete -p twigsmith tgi",
             ])
             .env("HOME", root.path())
             .env("PATH", &bin)
@@ -668,7 +695,7 @@ fn fresh_bash_loads_registration_through_path_and_tracks_executable_changes() {
     check(&output, 0);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("git-oneflow") && stdout.contains("gof"),
+        stdout.contains("twigsmith") && stdout.contains("tgi"),
         "{output:?}"
     );
     // Startup reads the executable afresh, rather than a pinned generated script
@@ -676,7 +703,7 @@ fn fresh_bash_loads_registration_through_path_and_tracks_executable_changes() {
     fs::remove_file(&executable).unwrap();
     fs::write(
         &executable,
-        b"#!/bin/bash\nprintf '%s\\n' 'complete -W upgraded git-oneflow gof'\n",
+        b"#!/bin/bash\nprintf '%s\\n' 'complete -W upgraded twigsmith tgi'\n",
     )
     .unwrap();
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
@@ -738,7 +765,7 @@ fn failed_atomic_staging_leaves_existing_profile_and_directory_intact() {
 mod support;
 
 fn runtime(name: &str) -> Option<std::path::PathBuf> {
-    let variable = format!("ONEFLOW_TEST_{}", name.to_uppercase());
+    let variable = format!("TWIGSMITH_TEST_{}", name.to_uppercase());
     if let Some(path) = std::env::var_os(variable) {
         return Some(path.into());
     }
@@ -810,13 +837,13 @@ fn fresh_fish_reads_persistent_registration_and_live_refs() {
                 &[
                     "-c",
                     r#"
-for line in 'gof star' 'git-oneflow finish --mode int' 'gof s feat/'
+for line in 'tgi star' 'twigsmith finish --mode int' 'tgi s feat/'
     echo CASE
     complete -C "$line"
 end
 command git branch feat/second
 echo CASE
-complete -C 'gof s feat/sec'
+complete -C 'tgi s feat/sec'
 "#,
                 ],
             )
@@ -860,13 +887,13 @@ fn fresh_powershell_reads_selected_profile_and_live_refs() {
                 r#"
 param($ProfilePath)
 . $ProfilePath
-foreach ($line in @('gof star', 'git-oneflow finish --mode int', 'gof s feat/')) {
+foreach ($line in @('tgi star', 'twigsmith finish --mode int', 'tgi s feat/')) {
     Write-Output 'CASE'
     (TabExpansion2 $line $line.Length).CompletionMatches | ForEach-Object { $_.CompletionText }
 }
 git branch feat/second
 Write-Output 'CASE'
-$line = 'gof s feat/sec'
+$line = 'tgi s feat/sec'
 (TabExpansion2 $line $line.Length).CompletionMatches | ForEach-Object { $_.CompletionText }
 "#,
             )
@@ -907,13 +934,13 @@ fn fresh_zsh_reads_persistent_registration_and_live_refs() {
             let profile = zshdir.join(".zshrc");
             let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
             let mut init = String::new();
-            if let Some(path) = std::env::var_os("ONEFLOW_TEST_ZSH_MODULE_PATH") {
+            if let Some(path) = std::env::var_os("TWIGSMITH_TEST_ZSH_MODULE_PATH") {
                 init.push_str(&format!(
                     "module_path=({} $module_path)\n",
                     quote(path.to_str().unwrap())
                 ));
             }
-            if let Some(path) = std::env::var_os("ONEFLOW_TEST_ZSH_FUNCTION_PATH") {
+            if let Some(path) = std::env::var_os("TWIGSMITH_TEST_ZSH_FUNCTION_PATH") {
                 init.push_str(&format!(
                     "fpath=({}/**/*(/) $fpath)\n",
                     quote(path.to_str().unwrap())
@@ -931,7 +958,7 @@ fn fresh_zsh_reads_persistent_registration_and_live_refs() {
             );
             let capture = root.join("arguments");
             let mut contents = fs::read(&profile).unwrap();
-            contents.extend_from_slice(format!("\nPS1='REGISTRATION_READY> '\ncount=0\ngof() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ngit-oneflow() {{ gof \"$@\"; }}\n", quote(capture.to_str().unwrap())).as_bytes());
+            contents.extend_from_slice(format!("\nPS1='REGISTRATION_READY> '\ncount=0\ntgi() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ntwigsmith() {{ tgi \"$@\"; }}\n", quote(capture.to_str().unwrap())).as_bytes());
             fs::write(&profile, contents).unwrap();
             let mut invocation = command(shell.to_str().unwrap(), root, &["-d", "-i"]);
             invocation
@@ -941,13 +968,10 @@ fn fresh_zsh_reads_persistent_registration_and_live_refs() {
             let mut terminal = terminal::Terminal::start_command(invocation);
             terminal.until("REGISTRATION_READY> ");
             for (index, (line, expected)) in [
-                ("gof star", "start\0"),
-                (
-                    "git-oneflow finish --mode int",
-                    "finish\0--mode\0integrate\0",
-                ),
-                ("gof s feat/fir", "s\0feat/first\0"),
-                ("gof s feat/sec", "s\0feat/second\0"),
+                ("tgi star", "start\0"),
+                ("twigsmith finish --mode int", "finish\0--mode\0integrate\0"),
+                ("tgi s feat/fir", "s\0feat/first\0"),
+                ("tgi s feat/sec", "s\0feat/second\0"),
             ]
             .iter()
             .enumerate()
@@ -994,7 +1018,7 @@ fn interactive_install_applies_only_submitted_install_choice() {
         assert!(
             fs::read_to_string(&profile)
                 .unwrap()
-                .contains("# >>> git-oneflow completion bash >>>")
+                .contains("# >>> twigsmith completion bash >>>")
         );
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }

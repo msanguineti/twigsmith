@@ -69,7 +69,7 @@ fn lifecycle(root: &Path, exe: &str, split: bool, base_tracking: bool) {
         local.success(&["remote", "add", base, project.path().to_str().unwrap()]);
     }
     fs::write(
-        local.path().join(".git/git-oneflow.config.toml"),
+        local.path().join(".git/twigsmith.config.toml"),
         if split {
             "publish-remote='personal'\nbase-remote='project'\n"
         } else {
@@ -92,7 +92,7 @@ fn lifecycle(root: &Path, exe: &str, split: bool, base_tracking: bool) {
         value(&project, &["rev-parse", "main"])
     );
     assert!(
-        !git_oneflow::git::run(
+        !twigsmith::git::run(
             local.path(),
             ["config", "--get", "branch.work/parser-fix.remote"]
         )
@@ -234,9 +234,9 @@ fn public_cli_project_and_fork_lifecycles_preserve_both_tracking_styles() {
             for split in [false, true] {
                 for base_tracking in [false, true] {
                     let exe = if base_tracking {
-                        env!("CARGO_BIN_EXE_gof")
+                        env!("CARGO_BIN_EXE_tgi")
                     } else {
-                        env!("CARGO_BIN_EXE_git-oneflow")
+                        env!("CARGO_BIN_EXE_twigsmith")
                     };
                     lifecycle(root, exe, split, base_tracking);
                 }
@@ -259,7 +259,7 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
         |root| {
             // Format parsing and configured checks have distinct contracts;
             // repeating this complete journey for the alias binary adds none.
-            let exe = env!("CARGO_BIN_EXE_git-oneflow");
+            let exe = env!("CARGO_BIN_EXE_twigsmith");
             for format in ["toml", "yaml", "json"] {
                 let project = Repository::new(root);
                 commit(&project, "base", "initial\n");
@@ -269,7 +269,7 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
                 local.success(&["reset", "--hard", "FETCH_HEAD"]);
                 let log = local.path().join(".git/check-order");
                 let checks = vec![
-                        git_oneflow::settings::FinishCheck {
+                        twigsmith::settings::FinishCheck {
                             name: "Prepared base and literal arguments".into(),
                             command: vec![
                                 "sh".into(), "-c".into(),
@@ -277,7 +277,7 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
                                 "check".into(), "two words".into(), "".into(), log.to_str().unwrap().into(),
                             ],
                         },
-                        git_oneflow::settings::FinishCheck {
+                        twigsmith::settings::FinishCheck {
                             name: "Second check".into(),
                             command: vec![
                                 "sh".into(), "-c".into(),

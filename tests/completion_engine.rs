@@ -4,8 +4,8 @@ mod support;
 
 use std::{ffi::OsString, fs, path::Path, process::Command};
 
-use git_oneflow::completion;
 use support::{Repository, isolated};
+use twigsmith::completion;
 
 fn complete(directory: &Path, words: &[&str]) -> Vec<String> {
     let words: Vec<_> = words.iter().map(OsString::from).collect();
@@ -18,7 +18,7 @@ fn grammar_and_values_work_without_repository_or_git() {
         "grammar_and_values_work_without_repository_or_git",
         false,
         |root| {
-            let words = complete(root, &["gof", ""]);
+            let words = complete(root, &["tgi", ""]);
             for word in [
                 "start",
                 "s",
@@ -83,7 +83,7 @@ fn grammar_and_values_work_without_repository_or_git() {
                 ("status", vec!["--help"]),
             ] {
                 assert_eq!(
-                    complete(root, &["git-oneflow", command, "--"]),
+                    complete(root, &["twigsmith", command, "--"]),
                     options
                         .into_iter()
                         .map(str::to_owned)
@@ -108,40 +108,40 @@ fn grammar_and_values_work_without_repository_or_git() {
                 ("finish", "--history-edit", vec!["interactive", "none"]),
                 ("config", "--format", vec!["json", "toml", "yaml"]),
             ] {
-                assert_eq!(complete(root, &["gof", command, option, ""]), values);
+                assert_eq!(complete(root, &["tgi", command, option, ""]), values);
             }
-            let repeated = complete(root, &["gof", "save", "--commit", "staged", "--"]);
+            let repeated = complete(root, &["tgi", "save", "--commit", "staged", "--"]);
             assert!(repeated.contains(&"--commit".into()));
             assert!(repeated.contains(&"--stash".into()));
             assert!(!repeated.contains(&"--publish-only".into()));
-            assert!(complete(root, &["gof", "save", "--stash-message", ""]).is_empty());
-            assert!(complete(root, &["gof", "start", "new"]).is_empty());
-            assert!(complete(root, &["gof", "finish", "--mode=int"]).is_empty());
-            assert!(complete(root, &["gof", "save", "--message", ""]).is_empty());
+            assert!(complete(root, &["tgi", "save", "--stash-message", ""]).is_empty());
+            assert!(complete(root, &["tgi", "start", "new"]).is_empty());
+            assert!(complete(root, &["tgi", "finish", "--mode=int"]).is_empty());
+            assert!(complete(root, &["tgi", "save", "--message", ""]).is_empty());
             assert_eq!(
-                complete(root, &["gof", "completion", "install", "p"]),
+                complete(root, &["tgi", "completion", "install", "p"]),
                 ["powershell"]
             );
             assert!(
-                !complete(root, &["gof", "save", "--publish-only", "--"])
+                !complete(root, &["tgi", "save", "--publish-only", "--"])
                     .iter()
                     .any(|value| ["--commit", "--stash", "--publish-only", "--help"]
                         .contains(&value.as_str()))
             );
             assert!(
-                !complete(root, &["gof", "finish", "--allow-rewrite", "--"])
+                !complete(root, &["tgi", "finish", "--allow-rewrite", "--"])
                     .contains(&"--no-rewrite".into())
             );
             assert!(
-                !complete(root, &["gof", "config", "--oneflow", "--"])
+                !complete(root, &["tgi", "config", "--oneflow", "--"])
                     .contains(&"--oneflow-hosted".into())
             );
             assert!(
-                !complete(root, &["gof", "start", "new", "--from", "HEAD", "--"])
+                !complete(root, &["tgi", "start", "new", "--from", "HEAD", "--"])
                     .contains(&"--from-tag".into())
             );
-            assert!(complete(root, &["gof", "config", "show", ""]).is_empty());
-            assert!(complete(root, &["gof", "finish", "--help", ""]).is_empty());
+            assert!(complete(root, &["tgi", "config", "show", ""]).is_empty());
+            assert!(complete(root, &["tgi", "finish", "--help", ""]).is_empty());
         },
     );
 }
@@ -194,14 +194,14 @@ fn branches_follow_roles_mapping_exclusions_and_live_refs() {
                 "refs/cache/origin/feat/remote",
             ]);
             fs::write(
-                repo.path().join("git-oneflow.config.toml"),
+                repo.path().join("twigsmith.config.toml"),
                 "base-remote = 'upstream'\n",
             )
             .unwrap();
             let before = repo.success(&["show-ref"]).stdout;
             let config_before = fs::read(repo.path().join(".git/config")).unwrap();
             let snapshot_before = snapshot::snapshot(repo.path());
-            let branches = complete(repo.path(), &["gof", "start", ""]);
+            let branches = complete(repo.path(), &["tgi", "start", ""]);
             for expected in [
                 "feat/avatars",
                 "feat/login",
@@ -223,10 +223,10 @@ fn branches_follow_roles_mapping_exclusions_and_live_refs() {
                 assert!(!branches.contains(&excluded.into()), "{branches:?}");
             }
             assert_eq!(
-                complete(repo.path(), &["gof", "start", "feat/"]),
+                complete(repo.path(), &["tgi", "start", "feat/"]),
                 ["feat/avatars", "feat/login", "feat/remote"]
             );
-            let targets = complete(repo.path(), &["gof", "start", "new", "--target", ""]);
+            let targets = complete(repo.path(), &["tgi", "start", "new", "--target", ""]);
             assert!(targets.contains(&"target".into()));
             assert!(!targets.contains(&"feat/remote".into()));
             assert_eq!(before, repo.success(&["show-ref"]).stdout);
@@ -240,20 +240,20 @@ fn branches_follow_roles_mapping_exclusions_and_live_refs() {
             let nested = repo.path().join("nested/path");
             fs::create_dir_all(&nested).unwrap();
             assert_eq!(
-                complete(&nested, &["git-oneflow", "s", "feat/"]),
+                complete(&nested, &["twigsmith", "s", "feat/"]),
                 ["feat/avatars", "feat/new", "feat/remote"]
             );
             // A malformed settings layer limits mapped hints, never local grammar.
             fs::write(
-                repo.path().join("git-oneflow.config.toml"),
+                repo.path().join("twigsmith.config.toml"),
                 "invalid = true\n",
             )
             .unwrap();
             assert_eq!(
-                complete(&nested, &["gof", "start", "feat/"]),
+                complete(&nested, &["tgi", "start", "feat/"]),
                 ["feat/avatars", "feat/new"]
             );
-            assert!(complete(&nested, &["gof", "start", "--p"]).contains(&"--policy".into()));
+            assert!(complete(&nested, &["tgi", "start", "--p"]).contains(&"--policy".into()));
         },
     );
 }
@@ -263,7 +263,7 @@ fn installed_help_and_completion_option_vocabulary_match() {
     use std::collections::BTreeSet;
     let directory = tempfile::tempdir().unwrap();
     for command in ["start", "save", "finish", "status", "config"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_gof"))
+        let output = Command::new(env!("CARGO_BIN_EXE_tgi"))
             .args([command, "--help"])
             .output()
             .unwrap();
@@ -282,7 +282,7 @@ fn installed_help_and_completion_option_vocabulary_match() {
                 }
             }
         }
-        let completed: BTreeSet<_> = complete(directory.path(), &["gof", command, "-"])
+        let completed: BTreeSet<_> = complete(directory.path(), &["tgi", command, "-"])
             .into_iter()
             .collect();
         assert_eq!(completed, options, "{command} help/completion mismatch");
@@ -323,12 +323,12 @@ fn every_completion_git_process_uses_inspection_guards() {
             let path = std::env::join_paths(paths).unwrap();
             let before = snapshot::snapshot(repo.path());
             for words in [
-                vec!["gof", "start", ""],
-                vec!["gof", "start", "new", "--from", ""],
-                vec!["gof", "start", "new", "--from-tag", ""],
-                vec!["gof", "finish", "--merge-back", ""],
+                vec!["tgi", "start", ""],
+                vec!["tgi", "start", "new", "--from", ""],
+                vec!["tgi", "start", "new", "--from-tag", ""],
+                vec!["tgi", "finish", "--merge-back", ""],
             ] {
-                let output = Command::new(env!("CARGO_BIN_EXE_gof"))
+                let output = Command::new(env!("CARGO_BIN_EXE_tgi"))
                     .current_dir(repo.path())
                     .args([
                         "__complete",
@@ -393,17 +393,17 @@ fn sources_are_commit_refs_and_tag_names_are_separate() {
             let blob = std::str::from_utf8(&blob.stdout).unwrap().trim();
             repo.success(&["tag", "blob-tag", blob]);
             repo.success(&["tag", "-a", "annotated-blob", blob, "-m", "blob"]);
-            let sources = complete(repo.path(), &["gof", "start", "new", "--from", ""]);
+            let sources = complete(repo.path(), &["tgi", "start", "new", "--from", ""]);
             assert!(sources.contains(&"HEAD".into()));
             assert!(sources.contains(&"refs/heads/same".into()));
             assert!(sources.contains(&"refs/tags/same".into()));
             assert!(!sources.contains(&"same".into()));
             assert!(!sources.iter().any(|source| source.contains("blob")));
             assert_eq!(
-                complete(repo.path(), &["gof", "start", "new", "--from-tag", ""]),
+                complete(repo.path(), &["tgi", "start", "new", "--from-tag", ""]),
                 ["same", "version/1"]
             );
-            assert!(complete(repo.path(), &["gof", "finish", "--tag", ""]).is_empty());
+            assert!(complete(repo.path(), &["tgi", "finish", "--tag", ""]).is_empty());
         },
     );
 }
@@ -419,12 +419,12 @@ fn pending_tag_values_preserve_option_spelling() {
             repo.success(&["update-ref", "refs/tags/--version=one", "HEAD"]);
             for prefix in ["", "--version="] {
                 assert_eq!(
-                    complete(repo.path(), &["gof", "start", "new", "--from-tag", prefix]),
+                    complete(repo.path(), &["tgi", "start", "new", "--from-tag", prefix]),
                     ["--version=one"]
                 );
             }
-            assert!(complete(repo.path(), &["gof", "finish", "--mode=int"]).is_empty());
-            let result = Command::new(env!("CARGO_BIN_EXE_gof"))
+            assert!(complete(repo.path(), &["tgi", "finish", "--mode=int"]).is_empty());
+            let result = Command::new(env!("CARGO_BIN_EXE_tgi"))
                 .current_dir(repo.path())
                 .args([
                     "start",
@@ -454,7 +454,7 @@ fn backend_is_silent_and_identical_for_both_executables() {
         "backend_is_silent_and_identical_for_both_executables",
         false,
         |root| {
-            for executable in [env!("CARGO_BIN_EXE_gof"), env!("CARGO_BIN_EXE_git-oneflow")] {
+            for executable in [env!("CARGO_BIN_EXE_tgi"), env!("CARGO_BIN_EXE_twigsmith")] {
                 let result = Command::new(executable)
                     .current_dir(root)
                     .args([
@@ -464,7 +464,7 @@ fn backend_is_silent_and_identical_for_both_executables() {
                         "--index",
                         "3",
                         "--",
-                        "gof",
+                        "tgi",
                         "finish",
                         "--mode",
                         "i",
@@ -502,7 +502,7 @@ fn invalid_utf8_refs_are_omitted_without_lossy_conversion() {
                 OsString::from_vec(b"invalid/\xff".to_vec()),
             ]);
             assert!(
-                !complete(repo.path(), &["gof", "start", ""])
+                !complete(repo.path(), &["tgi", "start", ""])
                     .iter()
                     .any(|value| value.contains("invalid"))
             );

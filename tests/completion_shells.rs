@@ -14,7 +14,7 @@ use std::{
 use support::{Repository, isolated};
 
 fn shell(name: &str) -> Option<PathBuf> {
-    let variable = format!("ONEFLOW_TEST_{}", name.to_uppercase());
+    let variable = format!("TWIGSMITH_TEST_{}", name.to_uppercase());
     if let Some(path) = std::env::var_os(variable) {
         return Some(path.into());
     }
@@ -25,7 +25,7 @@ fn shell(name: &str) -> Option<PathBuf> {
 
 fn backend_path() -> std::ffi::OsString {
     let mut paths = vec![
-        Path::new(env!("CARGO_BIN_EXE_git-oneflow"))
+        Path::new(env!("CARGO_BIN_EXE_twigsmith"))
             .parent()
             .unwrap()
             .to_owned(),
@@ -37,7 +37,7 @@ fn backend_path() -> std::ffi::OsString {
 }
 
 fn artifact(root: &Path, name: &str) -> PathBuf {
-    let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+    let output = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
         .args(["completion", name])
         .output()
         .unwrap();
@@ -83,11 +83,11 @@ fn fish_native_completion_preserves_literals_and_context() {
             let script = artifact(root, "fish");
             let output = Command::new(&shell).args(["--no-config", "-c", r#"
 source "$argv[1]"
-for line in 'gof st' 'git-oneflow f --mode int' 'gof s feat/' 'gof start --from-tag v' 'gof s 中' 'gof s \'shell' 'gof s "shell' 'gof s equals=' 'gof s mail@'
+for line in 'tgi st' 'twigsmith f --mode int' 'tgi s feat/' 'tgi start --from-tag v' 'tgi s 中' 'tgi s \'shell' 'tgi s "shell' 'tgi s equals=' 'tgi s mail@'
     echo CASE
     complete -C "$line"
 end
-complete -C 'gof save --message (touch SENTINEL)' >/dev/null
+complete -C 'tgi save --message (touch SENTINEL)' >/dev/null
 "#, script.to_str().unwrap()]).env("PATH", backend_path()).current_dir(repository.path()).output().unwrap();
             assert!(output.status.success(), "{output:?}");
             assert!(output.stderr.is_empty(), "{output:?}");
@@ -133,7 +133,7 @@ param($Script)
 . $Script
 $global:PSNativeCommandArgumentPassing = 'Legacy'
 function Capture-Oneflow { $args[0] }
-$cases = @('gof st', 'git-oneflow f --mode int', 'gof s feat/', 'gof start --from-tag v', 'gof s 中', "gof s 'shell", 'gof s "shell', 'gof s equals=', 'gof s mail@', 'gof finish --mode ', 'gof s ps')
+$cases = @('tgi st', 'twigsmith f --mode int', 'tgi s feat/', 'tgi start --from-tag v', 'tgi s 中', "tgi s 'shell", 'tgi s "shell', 'tgi s equals=', 'tgi s mail@', 'tgi finish --mode ', 'tgi s ps')
 foreach ($line in $cases) {
     Write-Output 'CASE'
     (TabExpansion2 $line $line.Length).CompletionMatches | ForEach-Object {
@@ -145,8 +145,8 @@ foreach ($line in $cases) {
     }
 }
 Write-Output 'CASE'
-(TabExpansion2 'gof finish --mode int --cleanup keep' 21).CompletionMatches | ForEach-Object { $_.CompletionText }
-foreach ($line in @('gof s equals=wZZ tail', 'gof s "equals=wZZ" tail')) {
+(TabExpansion2 'tgi finish --mode int --cleanup keep' 21).CompletionMatches | ForEach-Object { $_.CompletionText }
+foreach ($line in @('tgi s equals=wZZ tail', 'tgi s "equals=wZZ" tail')) {
     $cursor = $line.IndexOf('ZZ')
     $result = TabExpansion2 $line $cursor
     if ($result.CompletionMatches.Count -ne 1) { throw 'missing middle-token candidate' }
@@ -156,9 +156,9 @@ foreach ($line in @('gof s equals=wZZ tail', 'gof s "equals=wZZ" tail')) {
     $elements = $ast.EndBlock.Statements[0].PipelineElements[0].CommandElements
     if ($elements.Count -ne 4 -or $elements[2].Value -cne 'equals=work' -or $elements[3].Value -cne 'tail') { throw 'middle-token replacement changed arguments' }
 }
-(TabExpansion2 'gof save --message $(New-Item SENTINEL)' 39) | Out-Null
+(TabExpansion2 'tgi save --message $(New-Item SENTINEL)' 39) | Out-Null
 if ($global:PSNativeCommandArgumentPassing -ne 'Legacy') { throw 'completion changed native passing preference' }
-foreach ($line in @('gof save --message irr', 'gof start irr', 'git-oneflow start --from-tag irr', 'gof save --message ')) {
+foreach ($line in @('tgi save --message irr', 'tgi start irr', 'twigsmith start --from-tag irr', 'tgi save --message ')) {
     $result = TabExpansion2 $line $line.Length
     if ($result.CompletionMatches.Count -ne 0) { throw "unrelated completion fallback: $line" }
 }
@@ -239,7 +239,7 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
                     quote(functions.to_str().unwrap())
                 ));
             }
-            init.push_str(&format!("autoload -Uz compinit\ncompinit -D\nsource {}\nPS1='ONEFLOW_READY> '\ncount=0\ngof() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ngit-oneflow() {{ gof \"$@\"; }}\n", quote(script.to_str().unwrap()), quote(capture.to_str().unwrap())));
+            init.push_str(&format!("autoload -Uz compinit\ncompinit -D\nsource {}\nPS1='TWIGSMITH_READY> '\ncount=0\ntgi() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ntwigsmith() {{ tgi \"$@\"; }}\n", quote(script.to_str().unwrap()), quote(capture.to_str().unwrap())));
             fs::write(&rc, init).unwrap();
             let mut command = Command::new("setsid");
             command
@@ -250,15 +250,15 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
                 .env("LC_ALL", "C.UTF-8")
                 .current_dir(repository.path());
             let mut terminal = terminal::Terminal::start_command(command);
-            terminal.until("ONEFLOW_READY> ");
+            terminal.until("TWIGSMITH_READY> ");
             for (index, (line, expected)) in [
-                ("gof s 中", "s\0中文工作\0"),
-                ("git-oneflow start shell", "start\0shell;$'\"`&(){}!work\0"),
-                ("gof s 'shell", "s\0shell;$'\"`&(){}!work\0"),
-                ("gof s \"shell", "s\0shell;$'\"`&(){}!work\0"),
-                ("gof s equals=", "s\0equals=work\0"),
-                ("gof s mail@", "s\0mail@work\0"),
-                ("gof f --mode int", "f\0--mode\0integrate\0"),
+                ("tgi s 中", "s\0中文工作\0"),
+                ("twigsmith start shell", "start\0shell;$'\"`&(){}!work\0"),
+                ("tgi s 'shell", "s\0shell;$'\"`&(){}!work\0"),
+                ("tgi s \"shell", "s\0shell;$'\"`&(){}!work\0"),
+                ("tgi s equals=", "s\0equals=work\0"),
+                ("tgi s mail@", "s\0mail@work\0"),
+                ("tgi f --mode int", "f\0--mode\0integrate\0"),
             ]
             .iter()
             .enumerate()
@@ -283,7 +283,7 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
                 );
             }
             terminal.output.clear();
-            terminal.send(b"gof s equals=wZZ tail");
+            terminal.send(b"tgi s equals=wZZ tail");
             terminal.send(b"\x01");
             for _ in 0..14 {
                 terminal.send(b"\x1b[C");
@@ -297,7 +297,7 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
                 terminal.output
             );
             terminal.output.clear();
-            terminal.send(b"gof s \"equals=w\" tail");
+            terminal.send(b"tgi s \"equals=w\" tail");
             terminal.send(b"\x01");
             for _ in 0..15 {
                 terminal.send(b"\x1b[C");
@@ -341,7 +341,7 @@ fn fish_tab_inserts_literal_names() {
             String::new()
         };
         let init = format!(
-            "{setup}source {}; function fish_prompt; printf 'ONEFLOW_READY> '; end; set -g count 0; function gof; printf '%s\\0' $argv > {}; set -g count (math $count + 1); printf 'DONE:%s\\n' $count; end; function git-oneflow; gof $argv; end",
+            "{setup}source {}; function fish_prompt; printf 'TWIGSMITH_READY> '; end; set -g count 0; function tgi; printf '%s\\0' $argv > {}; set -g count (math $count + 1); printf 'DONE:%s\\n' $count; end; function twigsmith; tgi $argv; end",
             quote(script.to_str().unwrap()),
             quote(capture.to_str().unwrap())
         );
@@ -360,15 +360,15 @@ fn fish_tab_inserts_literal_names() {
             .env("LC_ALL", "C.UTF-8")
             .current_dir(repository.path());
         let mut terminal = terminal::Terminal::start_command(command);
-        terminal.until("ONEFLOW_READY> ");
+        terminal.until("TWIGSMITH_READY> ");
         for (index, (line, expected)) in [
-            ("gof s 中", "s\0中文工作\0"),
-            ("git-oneflow start shell", "start\0shell;$'\"`&(){}!work\0"),
-            ("gof s 'shell", "s\0shell;$'\"`&(){}!work\0"),
-            ("gof s \"shell", "s\0shell;$'\"`&(){}!work\0"),
-            ("gof s equals=", "s\0equals=work\0"),
-            ("gof s mail@", "s\0mail@work\0"),
-            ("gof f --mode int", "f\0--mode\0integrate\0"),
+            ("tgi s 中", "s\0中文工作\0"),
+            ("twigsmith start shell", "start\0shell;$'\"`&(){}!work\0"),
+            ("tgi s 'shell", "s\0shell;$'\"`&(){}!work\0"),
+            ("tgi s \"shell", "s\0shell;$'\"`&(){}!work\0"),
+            ("tgi s equals=", "s\0equals=work\0"),
+            ("tgi s mail@", "s\0mail@work\0"),
+            ("tgi f --mode int", "f\0--mode\0integrate\0"),
         ]
         .iter()
         .enumerate()
@@ -393,7 +393,7 @@ fn fish_tab_inserts_literal_names() {
             );
         }
         terminal.output.clear();
-        terminal.send(b"gof s equals=wZZ tail");
+        terminal.send(b"tgi s equals=wZZ tail");
         terminal.send(b"\x01");
         for _ in 0..14 {
             terminal.send(b"\x1b[C");
@@ -407,7 +407,7 @@ fn fish_tab_inserts_literal_names() {
             terminal.output
         );
         terminal.output.clear();
-        terminal.send(b"gof s \"equals=w\" tail");
+        terminal.send(b"tgi s \"equals=w\" tail");
         terminal.send(b"\x01");
         for _ in 0..15 {
             terminal.send(b"\x1b[C");
@@ -471,11 +471,11 @@ function global:TabExpansion2 {
 # Redirection targets belong to PowerShell. Capture its native results before
 # registration rather than prescribing filenames, quoting or replacement ranges.
 $redirectionCases = @(
-    @{ Line = 'gof status > Cargo'; Cursor = -1 },
-    @{ Line = 'gof status > '; Cursor = -1 },
-    @{ Line = 'git-oneflow status 2>> Cargo'; Cursor = -1 },
-    @{ Line = 'gof status > "Cargo name"'; Cursor = 19 },
-    @{ Line = 'gof status > Cargo.lock trailing'; Cursor = 16 }
+    @{ Line = 'tgi status > Cargo'; Cursor = -1 },
+    @{ Line = 'tgi status > '; Cursor = -1 },
+    @{ Line = 'twigsmith status 2>> Cargo'; Cursor = -1 },
+    @{ Line = 'tgi status > "Cargo name"'; Cursor = 19 },
+    @{ Line = 'tgi status > Cargo.lock trailing'; Cursor = 16 }
 )
 foreach ($case in $redirectionCases) {
     if ($case.Cursor -lt 0) { $case.Cursor = $case.Line.Length }
@@ -493,9 +493,9 @@ foreach ($case in $redirectionCases) {
         $result.CurrentMatchIndex -ne $expected.CurrentMatchIndex) { throw "redirection completion changed: $($case.Line) at $($case.Cursor)" }
 }
 # A completed redirection does not turn later application arguments into paths.
-$result = TabExpansion2 'gof > output sta'
+$result = TabExpansion2 'tgi > output sta'
 if ((@($result.CompletionMatches | ForEach-Object ListItemText) -join ',') -cne 'start,status') { throw 'argument completion after redirection changed' }
-$result = TabExpansion2 'gof > output start irr'
+$result = TabExpansion2 'tgi > output start irr'
 if ($result.CompletionMatches.Count -ne 0) { throw 'argument fallback after redirection' }
 $first = (Get-Command TabExpansion2).ScriptBlock
 . $Script
@@ -503,9 +503,9 @@ if (-not [object]::ReferenceEquals($first, (Get-Command TabExpansion2).ScriptBlo
 if (-not (Get-Command TabExpansion2).Parameters.ContainsKey('Marker')) { throw 'custom parameter lost' }
 if ((Get-Command TabExpansion2).OutputType.Count -ne 2) { throw 'output type metadata lost' }
 # Similar names and a new command after a newline retain native file suggestions.
-Set-Content -LiteralPath 'gof.txt' -Value 'fixture'
-Set-Content -LiteralPath 'gof.ps1' -Value 'fixture'
-foreach ($line in @('./gof.txt irr', './gof.ps1 irr', "gof start irr`n", 'gof save --message $(echo irr')) {
+Set-Content -LiteralPath 'tgi.txt' -Value 'fixture'
+Set-Content -LiteralPath 'tgi.ps1' -Value 'fixture'
+foreach ($line in @('./tgi.txt irr', './tgi.ps1 irr', "tgi start irr`n", 'tgi save --message $(echo irr')) {
     $expected = & $global:__TestOriginalExpansion $line $line.Length
     $result = TabExpansion2 $line $line.Length
     $before = @($expected.CompletionMatches | ForEach-Object { $_.CompletionText }) -join "`0"
@@ -513,7 +513,7 @@ foreach ($line in @('./gof.txt irr', './gof.ps1 irr', "gof start irr`n", 'gof sa
     if ($before -cne $after -or $result.ReplacementIndex -ne $expected.ReplacementIndex -or
         $result.ReplacementLength -ne $expected.ReplacementLength) { throw "unrelated context changed: $line" }
 }
-$line = 'gof start irr'
+$line = 'tgi start irr'
 $opts = @{ RelativePaths = $false }
 $result = TabExpansion2 $line -options $opts -Marker custom -ErrorAction Stop
 if ($result.CompletionMatches.Count -ne 0 -or $global:__TestMarker -ne 'custom' -or
@@ -530,7 +530,7 @@ if (-not ($result.CompletionMatches | Where-Object ResultType -eq ProviderItem))
 $line = "& './irr'"
 $result = TabExpansion2 $line
 if (-not ($result.CompletionMatches | Where-Object ResultType -eq ProviderItem)) { throw 'command-position completion changed' }
-$result = TabExpansion2 'gof start irr' -Marker object
+$result = TabExpansion2 'tgi start irr' -Marker object
 if ($result.Value -ne 'preserved') { throw 'custom output changed' }
 # A subsequent user replacement is retained as the next wrapper's delegate.
 $previous = (Get-Command TabExpansion2).ScriptBlock
@@ -544,7 +544,7 @@ $replacement = {
 Set-Item Function:global:TabExpansion2 $replacement
 . $Script
 $before = $global:__TestExpansionCalls
-$result = TabExpansion2 'gof start irr' -Marker replacement
+$result = TabExpansion2 'tgi start irr' -Marker replacement
 if ($result.CompletionMatches.Count -ne 0 -or $global:__TestReplacementCalls -ne 1 -or
     $global:__TestExpansionCalls -ne $before + 1 -or $global:__TestMarker -ne 'replacement') { throw 'replacement delegate recursion or loss' }
 "#).unwrap();
@@ -556,7 +556,7 @@ if ($result.CompletionMatches.Count -ne 0 -or $global:__TestReplacementCalls -ne
                     "-File",
                     test.to_str().unwrap(),
                     script.to_str().unwrap(),
-                    env!("CARGO_BIN_EXE_git-oneflow"),
+                    env!("CARGO_BIN_EXE_twigsmith"),
                 ])
                 .env("PATH", backend_path())
                 .current_dir(repository.path())
@@ -564,6 +564,67 @@ if ($result.CompletionMatches.Count -ne 0 -or $global:__TestReplacementCalls -ne
                 .unwrap();
             assert!(output.status.success(), "{output:?}");
             assert!(output.stderr.is_empty(), "{output:?}");
+        },
+    );
+}
+
+#[test]
+#[ignore = "requires pwsh; run explicitly on a provisioned machine"]
+fn powershell_legacy_and_twigsmith_adapters_coexist_in_both_load_orders() {
+    let runtime = shell("pwsh").expect("required pwsh runtime is unavailable");
+    isolated(
+        "powershell_legacy_and_twigsmith_adapters_coexist_in_both_load_orders",
+        true,
+        |root| {
+            let repository = fixture(root);
+            fs::write(repository.path().join("irrelevant"), b"file").unwrap();
+            let current = artifact(root, "powershell");
+            // The pre-rename adapter differs only in executable spelling and its
+            // private wrapper names. Recreate its script as an isolated fixture.
+            let legacy = root.join("legacy.ps1");
+            let old = fs::read_to_string(&current)
+                .unwrap()
+                .replace("__twigsmith", "__gitOneflow")
+                .replace("twigsmith", "git-oneflow")
+                .replace("tgi", "gof");
+            fs::write(&legacy, old).unwrap();
+            let test = root.join("coexistence.ps1");
+            fs::write(&test, r#"
+param($First, $Second, $Current, $Legacy)
+$ErrorActionPreference = 'Stop'
+. $First
+$initial = (Get-Command TabExpansion2).ScriptBlock
+. $First
+if (-not [object]::ReferenceEquals($initial, (Get-Command TabExpansion2).ScriptBlock)) { throw 'same adapter wrapped twice' }
+. $Second
+$secondWrapper = (Get-Command TabExpansion2).ScriptBlock
+. $Second
+if (-not [object]::ReferenceEquals($secondWrapper, (Get-Command TabExpansion2).ScriptBlock)) { throw 'second adapter wrapped twice' }
+# Alternate loads to verify the independently named closures remain safe.
+. $First
+. $Second
+foreach ($line in @('twigsmith start irr', 'tgi start irr', 'git-oneflow start irr', 'gof start irr')) {
+    $result = TabExpansion2 $line
+    if ($result.CompletionMatches.Count -ne 0) { throw "provider fallback retained for $line" }
+}
+$result = TabExpansion2 'echo irr'
+if (-not ($result.CompletionMatches | Where-Object ResultType -eq ProviderItem)) { throw 'unrelated provider completion lost' }
+"#).unwrap();
+            for (first, second) in [(&current, &legacy), (&legacy, &current)] {
+                let output = Command::new(&runtime)
+                    .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                    .arg(&test)
+                    .arg(first)
+                    .arg(second)
+                    .arg(&current)
+                    .arg(&legacy)
+                    .env("PATH", backend_path())
+                    .current_dir(repository.path())
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{output:?}");
+                assert!(output.stderr.is_empty(), "{output:?}");
+            }
         },
     );
 }
@@ -584,8 +645,8 @@ fn powershell_console_tab_preserves_native_arguments_and_empty_results() {
             let capture = root.join("arguments");
             let bin = root.join("bin");
             fs::create_dir(&bin).unwrap();
-            let stub = bin.join("gof");
-            fs::write(&stub, "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$ONEFLOW_COMPLETION_CAPTURE\"\nprintf 'CAPTURE_DONE\\n'\n").unwrap();
+            let stub = bin.join("tgi");
+            fs::write(&stub, "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$TWIGSMITH_COMPLETION_CAPTURE\"\nprintf 'CAPTURE_DONE\\n'\n").unwrap();
             fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
             let mut paths = vec![bin];
             paths.extend(std::env::split_paths(&backend_path()));
@@ -593,7 +654,7 @@ fn powershell_console_tab_preserves_native_arguments_and_empty_results() {
             fs::write(
                 &init,
                 format!(
-                    ". '{}'\nfunction global:prompt {{ 'ONEFLOW_READY> ' }}\n",
+                    ". '{}'\nfunction global:prompt {{ 'TWIGSMITH_READY> ' }}\n",
                     script.to_str().unwrap().replace('\'', "''")
                 ),
             )
@@ -610,16 +671,16 @@ fn powershell_console_tab_preserves_native_arguments_and_empty_results() {
                     init.to_str().unwrap(),
                 ])
                 .env("PATH", std::env::join_paths(paths).unwrap())
-                .env("ONEFLOW_COMPLETION_CAPTURE", &capture)
+                .env("TWIGSMITH_COMPLETION_CAPTURE", &capture)
                 .env("TERM", "xterm-256color")
                 .env("LC_ALL", "C.UTF-8")
                 .current_dir(repository.path());
             let mut terminal = terminal::Terminal::start_command(command);
-            terminal.until_with_cursor_reports("ONEFLOW_READY> ");
+            terminal.until_with_cursor_reports("TWIGSMITH_READY> ");
             for (line, expected) in [
-                ("gof s 中", "s\0中文工作\0"),
-                ("gof s shell", "s\0shell;$'\"`&(){}!work\0"),
-                ("gof start irr", "start\0irr\0"),
+                ("tgi s 中", "s\0中文工作\0"),
+                ("tgi s shell", "s\0shell;$'\"`&(){}!work\0"),
+                ("tgi start irr", "start\0irr\0"),
             ] {
                 terminal.output.clear();
                 terminal.send(format!("{line}\t\r").as_bytes());
@@ -630,7 +691,7 @@ fn powershell_console_tab_preserves_native_arguments_and_empty_results() {
                     "{}",
                     terminal.output
                 );
-                terminal.until_with_cursor_reports("ONEFLOW_READY> ");
+                terminal.until_with_cursor_reports("TWIGSMITH_READY> ");
             }
             terminal.send(b"exit\r");
             assert!(
@@ -640,4 +701,79 @@ fn powershell_console_tab_preserves_native_arguments_and_empty_results() {
             );
         },
     );
+}
+
+#[test]
+fn adapters_use_short_executable_when_only_it_is_on_path() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    symlink(env!("CARGO_BIN_EXE_tgi"), bin.join("tgi")).unwrap();
+    for (shell_name, runtime, snippet) in [
+        (
+            "bash",
+            Some(PathBuf::from("/bin/bash")),
+            "source \"$1\"; COMP_LINE='twigsmith st'; COMP_POINT=${#COMP_LINE}; _twigsmith twigsmith; printf '%s\\n' \"${COMPREPLY[@]}\"",
+        ),
+        (
+            "zsh",
+            shell("zsh"),
+            "[[ -z $TWIGSMITH_TEST_ZSH_MODULE_PATH ]] || module_path=($TWIGSMITH_TEST_ZSH_MODULE_PATH $module_path); function compdef {} ; function compadd { print -rl -- $@ }; source $1; words=(twigsmith st); CURRENT=2; PREFIX=st; _twigsmith",
+        ),
+        (
+            "fish",
+            shell("fish"),
+            "source $argv[1]; complete -C 'twigsmith st'",
+        ),
+        (
+            "powershell",
+            shell("pwsh"),
+            ". $env:TWIGSMITH_TEST_SCRIPT; (TabExpansion2 'twigsmith st').CompletionMatches | ForEach-Object { $_.ListItemText }",
+        ),
+    ] {
+        let Some(runtime) = runtime else { continue };
+        let script = artifact(root.path(), shell_name);
+        let mut cmd = Command::new(runtime);
+        match shell_name {
+            "bash" => {
+                cmd.args(["--noprofile", "--norc", "-c", snippet, "test"]);
+            }
+            "zsh" => {
+                cmd.args(["-f", "-c", snippet, "test"]);
+            }
+            "fish" => {
+                cmd.args(["--no-config", "-c", snippet]);
+            }
+            "powershell" => {
+                cmd.args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    snippet,
+                ]);
+            }
+            _ => unreachable!(),
+        }
+        if shell_name != "powershell" {
+            cmd.arg(&script);
+        }
+        let output = cmd
+            .env("TWIGSMITH_TEST_SCRIPT", &script)
+            .env("PATH", &bin)
+            .current_dir(root.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{shell_name}: {output:?}");
+        let out = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            out.lines().any(|line| line.trim() == "start"),
+            "{shell_name}: {output:?}"
+        );
+        assert!(
+            out.lines().any(|line| line.trim() == "status"),
+            "{shell_name}: {output:?}"
+        );
+    }
 }

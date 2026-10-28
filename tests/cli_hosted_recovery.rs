@@ -1,20 +1,20 @@
 //! Hosted preparation retries operate only on their retained version and publication refs.
 mod support;
 
-use git_oneflow::{
-    config::{self, Format},
-    git,
-    settings::{self, FinishCheck, Settings},
-};
 use std::{
     fs,
     path::Path,
     process::{Command, Output, Stdio},
 };
 use support::{Repository, isolated};
+use twigsmith::{
+    config::{self, Format},
+    git,
+    settings::{self, FinishCheck, Settings},
+};
 
 fn run(repo: &Repository, command: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+    Command::new(env!("CARGO_BIN_EXE_twigsmith"))
         .current_dir(repo.path())
         .arg(command)
         .args(args)
@@ -121,7 +121,7 @@ impl Fixture {
     }
     fn write_settings(&self) {
         fs::write(
-            self.local.path().join(".git/git-oneflow.config.toml"),
+            self.local.path().join(".git/twigsmith.config.toml"),
             config::render(Format::Toml, &self.settings),
         )
         .unwrap();
@@ -447,7 +447,7 @@ fn hosted_retry_refuses_changed_instances_tag_objects_settings_and_endpoints() {
                             &[
                                 "for-each-ref",
                                 "--format=%(refname)",
-                                "refs/oneflow/hosted/",
+                                "refs/twigsmith/hosted/",
                             ],
                         );
                         let reference = pins
@@ -464,7 +464,7 @@ fn hosted_retry_refuses_changed_instances_tag_objects_settings_and_endpoints() {
                         ]);
                     }
                     "missing-record" => {
-                        let attempts = fixture.local.path().join(".git/oneflow-hosted/attempts");
+                        let attempts = fixture.local.path().join(".git/twigsmith-hosted/attempts");
                         let record = fs::read_dir(attempts)
                             .unwrap()
                             .next()
@@ -581,7 +581,7 @@ fn hosted_missing_recovery_evidence_cannot_fall_through_to_ordinary_or_direct_fi
                 fixture.write_settings();
                 let released = fixture.start();
                 fixture.first(&[], 0);
-                let git_dir = fixture.local.path().join(".git/oneflow-hosted");
+                let git_dir = fixture.local.path().join(".git/twigsmith-hosted");
                 let directory = git_dir.join(if missing == "association" {
                     "associations"
                 } else {

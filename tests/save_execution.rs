@@ -2,7 +2,13 @@
 mod preservation;
 mod support;
 
-use git_oneflow::{
+use preservation::snapshot;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+use support::{Repository, isolated};
+use twigsmith::{
     git,
     repository::{Head, Observation},
     save::{
@@ -12,12 +18,6 @@ use git_oneflow::{
     },
     settings::{SaveKind, SaveOperation, SavePlan, SaveScope},
 };
-use preservation::snapshot;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-use support::{Repository, isolated};
 
 const BRANCH: &str = "work";
 const BRANCH_REF: &str = "refs/heads/work";
@@ -464,11 +464,11 @@ fn reconciliation_failure_retains_native_recovery_of_unselected_work() {
     use std::{env, os::unix::fs::PermissionsExt, process::Command};
     const TEST: &str = "reconciliation_failure_retains_native_recovery_of_unselected_work";
     isolated(TEST, true, |root| {
-        if env::var_os("ONEFLOW_EXECUTION_WRAPPER").is_none() {
+        if env::var_os("TWIGSMITH_EXECUTION_WRAPPER").is_none() {
             let wrapper = root.join("git-wrapper");
             fs::create_dir(&wrapper).unwrap();
             let script = wrapper.join("git");
-            fs::write(&script, "#!/bin/sh\ncase \"$*\" in *' read-tree --reset -u '*) if test -f .git/fail-command; then \"$ONEFLOW_REAL_GIT\" \"$@\" || exit $?; exit 1; fi;; esac\nexec \"$ONEFLOW_REAL_GIT\" \"$@\"\n").unwrap();
+            fs::write(&script, "#!/bin/sh\ncase \"$*\" in *' read-tree --reset -u '*) if test -f .git/fail-command; then \"$TWIGSMITH_REAL_GIT\" \"$@\" || exit $?; exit 1; fi;; esac\nexec \"$TWIGSMITH_REAL_GIT\" \"$@\"\n").unwrap();
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
             let real = Command::new("sh")
                 .args(["-c", "command -v git"])
@@ -481,10 +481,10 @@ fn reconciliation_failure_retains_native_recovery_of_unselected_work() {
                     format!("{}:{}", wrapper.display(), env::var("PATH").unwrap()),
                 )
                 .env(
-                    "ONEFLOW_REAL_GIT",
+                    "TWIGSMITH_REAL_GIT",
                     String::from_utf8(real.stdout).unwrap().trim(),
                 )
-                .env("ONEFLOW_EXECUTION_WRAPPER", "1")
+                .env("TWIGSMITH_EXECUTION_WRAPPER", "1")
                 .output()
                 .unwrap();
             assert!(
@@ -649,11 +649,11 @@ fn selected_index_path_is_used_for_lock_guards_and_observations() {
     use std::{env, process::Command};
     const TEST: &str = "selected_index_path_is_used_for_lock_guards_and_observations";
     isolated(TEST, true, |root| {
-        if env::var_os("ONEFLOW_CUSTOM_INDEX").is_none() {
+        if env::var_os("TWIGSMITH_CUSTOM_INDEX").is_none() {
             let out = Command::new(env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
                 .env("GIT_INDEX_FILE", root.join("selected.index"))
-                .env("ONEFLOW_CUSTOM_INDEX", "1")
+                .env("TWIGSMITH_CUSTOM_INDEX", "1")
                 .output()
                 .unwrap();
             assert!(
@@ -760,12 +760,12 @@ fn identical_stash_oid_remains_recoverable_without_disturbing_entries() {
     use std::{env, process::Command};
     const TEST: &str = "identical_stash_oid_remains_recoverable_without_disturbing_entries";
     isolated(TEST, true, |root| {
-        if env::var_os("ONEFLOW_FIXED_DATE").is_none() {
+        if env::var_os("TWIGSMITH_FIXED_DATE").is_none() {
             let out = Command::new(env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
                 .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
                 .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
-                .env("ONEFLOW_FIXED_DATE", "1")
+                .env("TWIGSMITH_FIXED_DATE", "1")
                 .output()
                 .unwrap();
             assert!(
@@ -833,7 +833,7 @@ fn stale_approval_refuses_changed_context_and_content_before_writes() {
                         repo.success(&["config", "branch.work.remote", "another"]);
                     }
                     "settings" => fs::write(
-                        repo.path().join(".git/git-oneflow.config.toml"),
+                        repo.path().join(".git/twigsmith.config.toml"),
                         "save-plan = 'stash'\n",
                     )
                     .unwrap(),
@@ -1011,9 +1011,9 @@ fn changed_scope_or_context_from_commit_hooks_stops_before_next_mutation() {
                 "printf 'unapproved\\n' > tracked",
                 "printf 'new scope\\n' > new-file",
                 "git config branch.work.remote other",
-                "printf 'save-action = \"stash\"\\n' > .git/git-oneflow.config.toml",
-                "printf '{\"save-plan\":\"stash\"}' > .git/git-oneflow.config.json",
-                "printf 'save-action = \"stash\"\\n' > git-oneflow.config.toml",
+                "printf 'save-action = \"stash\"\\n' > .git/twigsmith.config.toml",
+                "printf '{\"save-plan\":\"stash\"}' > .git/twigsmith.config.json",
+                "printf 'save-action = \"stash\"\\n' > twigsmith.config.toml",
                 "git switch -c other",
                 "git config remote.origin.fetch '+refs/heads/*:refs/heads/*'",
             ] {
@@ -1311,8 +1311,7 @@ fn independent_partial_file_obeys_every_composable_assignment_and_order() {
                     .collect::<Vec<_>>();
                 assert_eq!(actual_labels, requested_labels);
                 assert!(!report.recovery.as_ref().unwrap().retained);
-                let recoveries =
-                    output(&repo, &["for-each-ref", "refs/git-oneflow/save-recovery/"]);
+                let recoveries = output(&repo, &["for-each-ref", "refs/twigsmith/save-recovery/"]);
                 assert!(recoveries.is_empty());
             }
         },
@@ -1536,11 +1535,11 @@ fn group_derivation_uses_selected_sha256_object_store() {
     use std::{env, process::Command};
     const TEST: &str = "group_derivation_uses_selected_sha256_object_store";
     isolated(TEST, true, |root| {
-        if env::var_os("ONEFLOW_SHA256_TEST").is_none() {
+        if env::var_os("TWIGSMITH_SHA256_TEST").is_none() {
             let output = Command::new(env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
                 .env("GIT_DEFAULT_HASH", "sha256")
-                .env("ONEFLOW_SHA256_TEST", "1")
+                .env("TWIGSMITH_SHA256_TEST", "1")
                 .output()
                 .unwrap();
             assert!(

@@ -46,7 +46,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install bash fish git
-          echo "ONEFLOW_TEST_BASH=$(brew --prefix bash)/bin/bash" >> "$GITHUB_ENV"
+          echo "TWIGSMITH_TEST_BASH=$(brew --prefix bash)/bin/bash" >> "$GITHUB_ENV"
           command -v bash fish zsh git
           fish --version
           zsh --version
@@ -67,7 +67,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $env:ONEFLOW_TEST_PWSH = (Get-Command pwsh.exe -ErrorAction Stop).Source
+          $env:TWIGSMITH_TEST_PWSH = (Get-Command pwsh.exe -ErrorAction Stop).Source
           if ($PSVersionTable.PSVersion -lt [version]'7.3') { throw 'PowerShell 7.3 or newer is required for this environment' }
           $PSVersionTable.PSVersion
           git --version

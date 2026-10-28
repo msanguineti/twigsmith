@@ -12,12 +12,12 @@ use std::{fs, path::Path, process::Command};
 use support::{Repository, isolated};
 
 fn artifact() -> &'static str {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/completions/git-oneflow.bash")
+    concat!(env!("CARGO_MANIFEST_DIR"), "/completions/twigsmith.bash")
 }
 
 fn backend_path() -> std::ffi::OsString {
     let mut paths = vec![
-        Path::new(env!("CARGO_BIN_EXE_git-oneflow"))
+        Path::new(env!("CARGO_BIN_EXE_twigsmith"))
             .parent()
             .unwrap()
             .to_path_buf(),
@@ -41,7 +41,7 @@ fn complete_at(directory: &Path, line: &str, point: usize) -> Vec<String> {
             "-c",
             r#"source "$1"
 COMP_LINE=$2; COMP_POINT=$4
-_git_oneflow "$3"
+_twigsmith "$3"
 if ((${#COMPREPLY[@]})); then printf '%s\0' "${COMPREPLY[@]}"; fi"#,
             "completion-test",
             artifact(),
@@ -69,7 +69,7 @@ fn static_completion_is_contextual_outside_a_repository() {
         "static_completion_is_contextual_outside_a_repository",
         true,
         |root| {
-            for executable in ["git-oneflow", "gof"] {
+            for executable in ["twigsmith", "tgi"] {
                 assert_eq!(
                     complete(root, &format!("{executable} st")),
                     ["start", "status"]
@@ -96,29 +96,29 @@ fn static_completion_is_contextual_outside_a_repository() {
                     );
                 }
             }
-            assert_eq!(complete(root, "gof config sh"), ["show"]);
+            assert_eq!(complete(root, "tgi config sh"), ["show"]);
             assert_eq!(
-                complete_at(root, "gof finish --mode int --cleanup keep", 21),
+                complete_at(root, "tgi finish --mode int --cleanup keep", 21),
                 ["integrate"]
             );
-            assert!(complete(root, "gof finish --mode=int").is_empty());
-            assert!(complete(root, "gof save --message $(touch SENTINEL)").is_empty());
+            assert!(complete(root, "tgi finish --mode=int").is_empty());
+            assert!(complete(root, "tgi save --message $(touch SENTINEL)").is_empty());
             assert!(!root.join("SENTINEL").exists());
             assert_eq!(
-                complete(root, "gof v --sta"),
+                complete(root, "tgi v --sta"),
                 ["--stash", "--stash-message"]
             );
-            assert_eq!(complete(root, "gof start --from main --pol"), ["--policy"]);
-            assert!(complete(root, "gof start --policy ordinary ").contains(&"--target".into()));
-            assert!(complete(root, "gof config show ").is_empty());
-            assert!(complete(root, "gof status --help ").is_empty());
+            assert_eq!(complete(root, "tgi start --from main --pol"), ["--policy"]);
+            assert!(complete(root, "tgi start --policy ordinary ").contains(&"--target".into()));
+            assert!(complete(root, "tgi config show ").is_empty());
+            assert!(complete(root, "tgi status --help ").is_empty());
             for line in [
-                "gof start chosen second",
-                "gof save --message ",
-                "gof finish -m ",
-                "gof finish --tag ",
-                "gof finish --tag-message ",
-                "gof start --from-tag ",
+                "tgi start chosen second",
+                "tgi save --message ",
+                "tgi finish -m ",
+                "tgi finish --tag ",
+                "tgi finish --tag-message ",
+                "tgi start --from-tag ",
             ] {
                 assert!(complete(root, line).is_empty(), "{line}");
             }
@@ -156,7 +156,7 @@ fn refs(root: &Path) -> Repository {
         "refs/remotes/cache/remote-work",
     ]);
     fs::write(
-        repository.path().join("git-oneflow.config.toml"),
+        repository.path().join("twigsmith.config.toml"),
         "publish-remote = \"company/upstream\"\nbase-remote = \"company/upstream\"\n",
     )
     .unwrap();
@@ -172,45 +172,45 @@ fn branch_tag_and_source_candidates_use_local_refs_without_effects() {
             let repository = refs(root);
             let before = preservation::snapshot(root);
             assert_eq!(
-                complete(repository.path(), "gof start remote-"),
+                complete(repository.path(), "tgi start remote-"),
                 ["remote-work"]
             );
             assert_eq!(
-                complete(repository.path(), "git-oneflow s local"),
+                complete(repository.path(), "twigsmith s local"),
                 ["local-work"]
             );
             assert_eq!(
-                complete(repository.path(), "gof s remote\\&"),
+                complete(repository.path(), "tgi s remote\\&"),
                 ["remote\\&work"]
             );
-            assert!(complete(repository.path(), "gof s excluded").is_empty());
-            assert!(complete(repository.path(), "gof s HEAD").is_empty());
+            assert!(complete(repository.path(), "tgi s excluded").is_empty());
+            assert!(complete(repository.path(), "tgi s HEAD").is_empty());
             assert_eq!(
-                complete(repository.path(), "gof start --target remote-"),
+                complete(repository.path(), "tgi start --target remote-"),
                 ["remote-work"]
             );
             assert_eq!(
-                complete(repository.path(), "gof finish --merge-back local"),
+                complete(repository.path(), "tgi finish --merge-back local"),
                 ["local-work"]
             );
             assert_eq!(
-                complete(repository.path(), "gof config --marker local"),
+                complete(repository.path(), "tgi config --marker local"),
                 ["local-work"]
             );
             assert_eq!(
-                complete(repository.path(), "gof start --from-tag v"),
+                complete(repository.path(), "tgi start --from-tag v"),
                 ["v1.2.3"]
             );
             assert_eq!(
-                complete(repository.path(), "gof start --from cache/remote-"),
+                complete(repository.path(), "tgi start --from cache/remote-"),
                 ["cache/remote-work"]
             );
             assert_eq!(
-                complete(repository.path(), "gof start --from v"),
+                complete(repository.path(), "tgi start --from v"),
                 ["v1.2.3"]
             );
-            assert!(complete(repository.path(), "gof start work --from-tag local").is_empty());
-            assert!(complete(repository.path(), "gof finish --tag local").is_empty());
+            assert!(complete(repository.path(), "tgi start work --from-tag local").is_empty());
+            assert!(complete(repository.path(), "tgi finish --tag local").is_empty());
             assert_eq!(preservation::snapshot(root), before);
         },
     );
@@ -234,12 +234,12 @@ fn ref_inspection_is_bounded_and_static_choices_require_no_git() {
             fs::set_permissions(&spy, fs::Permissions::from_mode(0o755)).unwrap();
             let log = root.join("git-calls");
             let script = r#"source "$1"
-COMP_LINE='gof finish --mode '; COMP_POINT=${#COMP_LINE}
-_git_oneflow gof
+COMP_LINE='tgi finish --mode '; COMP_POINT=${#COMP_LINE}
+_twigsmith tgi
 [[ ${COMPREPLY[*]} == 'integrate review' ]] || exit 1
 [[ ! -e $SPY_LOG ]] || exit 2
-COMP_LINE='gof start work'; COMP_POINT=${#COMP_LINE}
-_git_oneflow gof
+COMP_LINE='tgi start work'; COMP_POINT=${#COMP_LINE}
+_twigsmith tgi
 [[ ${#COMPREPLY[@]} == 0 ]]"#;
             let output = Command::new("/bin/bash")
                 .args(["--noprofile", "--norc", "-c", script, "test", artifact()])
@@ -247,9 +247,7 @@ _git_oneflow gof
                     "PATH",
                     std::env::join_paths([
                         bin.as_path(),
-                        Path::new(env!("CARGO_BIN_EXE_git-oneflow"))
-                            .parent()
-                            .unwrap(),
+                        Path::new(env!("CARGO_BIN_EXE_twigsmith")).parent().unwrap(),
                     ])
                     .unwrap(),
                 )
@@ -292,7 +290,7 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
             fs::write(
                 &rc,
                 format!(
-                    "source {}\nPS1='ONEFLOW_READY> '\ncount=0\ngof() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ngit-oneflow() {{ gof \"$@\"; }}\n",
+                    "source {}\nPS1='TWIGSMITH_READY> '\ncount=0\ntgi() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ntwigsmith() {{ tgi \"$@\"; }}\n",
                     shell_quote(artifact()),
                     shell_quote(capture.to_str().unwrap()),
                 ),
@@ -305,22 +303,19 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                 .env("PATH", backend_path())
                 .env("TERM", "dumb");
             let mut terminal = terminal::Terminal::start_command(command);
-            terminal.until("ONEFLOW_READY> ");
+            terminal.until("TWIGSMITH_READY> ");
             for (index, (line, expected_arguments)) in [
-                ("gof s 中", "s\0中文工作\0"),
-                ("git-oneflow start shell", "start\0shell;$'\"`&(){}!work\0"),
-                ("gof s 'shell", "s\0shell;$'\"`&(){}!work\0"),
-                ("gof s \"shell", "s\0shell;$'\"`&(){}!work\0"),
-                ("gof s equals=", "s\0equals=work\0"),
-                ("gof s mail@", "s\0mail@work\0"),
-                ("gof s dire", "s\0directory\0"),
-                ("gof s remote\\&", "s\0remote&work\0"),
-                ("gof stat", "status\0"),
-                (
-                    "git-oneflow finish --mo\treview",
-                    "finish\0--mode\0review\0",
-                ),
-                ("gof f --mode int", "f\0--mode\0integrate\0"),
+                ("tgi s 中", "s\0中文工作\0"),
+                ("twigsmith start shell", "start\0shell;$'\"`&(){}!work\0"),
+                ("tgi s 'shell", "s\0shell;$'\"`&(){}!work\0"),
+                ("tgi s \"shell", "s\0shell;$'\"`&(){}!work\0"),
+                ("tgi s equals=", "s\0equals=work\0"),
+                ("tgi s mail@", "s\0mail@work\0"),
+                ("tgi s dire", "s\0directory\0"),
+                ("tgi s remote\\&", "s\0remote&work\0"),
+                ("tgi stat", "status\0"),
+                ("twigsmith finish --mo\treview", "finish\0--mode\0review\0"),
+                ("tgi f --mode int", "f\0--mode\0integrate\0"),
             ]
             .iter()
             .enumerate()
@@ -335,7 +330,7 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                     terminal.output
                 );
             }
-            terminal.send(b"gof s equals=wZZ tail");
+            terminal.send(b"tgi s equals=wZZ tail");
             terminal.send(b"\x01");
             for _ in 0..14 {
                 terminal.send(b"\x1b[C");
@@ -349,7 +344,7 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                 "{}",
                 terminal.output
             );
-            terminal.send(b"gof s \"equals=wZZ\" tail");
+            terminal.send(b"tgi s \"equals=wZZ\" tail");
             terminal.send(b"\x01");
             for _ in 0..15 {
                 terminal.send(b"\x1b[C");

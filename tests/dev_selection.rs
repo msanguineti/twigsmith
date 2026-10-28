@@ -27,9 +27,9 @@ fn run(root: &tempfile::TempDir, args: &[&str]) -> std::process::Output {
     Command::new("sh")
         .arg(root.path().join("dev"))
         .args(args)
-        .env("ONEFLOW_TEST_FISH", root.path().join("missing-fish"))
-        .env("ONEFLOW_TEST_ZSH", root.path().join("missing-zsh"))
-        .env("ONEFLOW_TEST_PWSH", root.path().join("missing-pwsh"))
+        .env("TWIGSMITH_TEST_FISH", root.path().join("missing-fish"))
+        .env("TWIGSMITH_TEST_ZSH", root.path().join("missing-zsh"))
+        .env("TWIGSMITH_TEST_PWSH", root.path().join("missing-pwsh"))
         .output()
         .unwrap()
 }
@@ -222,9 +222,9 @@ fn native_runtime_selection_distinguishes_unavailable_setup_from_execution() {
     let output = Command::new("sh")
         .arg(root.path().join("dev"))
         .arg("test-shells")
-        .env("ONEFLOW_TEST_FISH", runtime)
-        .env("ONEFLOW_TEST_ZSH", root.path().join("missing-zsh"))
-        .env("ONEFLOW_TEST_PWSH", root.path().join("missing-pwsh"))
+        .env("TWIGSMITH_TEST_FISH", runtime)
+        .env("TWIGSMITH_TEST_ZSH", root.path().join("missing-zsh"))
+        .env("TWIGSMITH_TEST_PWSH", root.path().join("missing-pwsh"))
         .output()
         .unwrap();
     assert_eq!(
@@ -259,9 +259,9 @@ fn unsupported_shell_is_unavailable_before_native_tests_start() {
             command.arg("--require-all");
         }
         let output = command
-            .env("ONEFLOW_TEST_FISH", root.path().join("missing-fish"))
-            .env("ONEFLOW_TEST_ZSH", root.path().join("missing-zsh"))
-            .env("ONEFLOW_TEST_PWSH", &runtime)
+            .env("TWIGSMITH_TEST_FISH", root.path().join("missing-fish"))
+            .env("TWIGSMITH_TEST_ZSH", root.path().join("missing-zsh"))
+            .env("TWIGSMITH_TEST_PWSH", &runtime)
             .output()
             .unwrap();
         assert_eq!(output.status.success(), !required, "{output:?}");

@@ -1,11 +1,11 @@
-# Bash completion for git-oneflow and gof. Source this file in an interactive
+# Bash completion for twigsmith and tgi. Source this file in an interactive
 # Bash shell; it does not depend on the bash-completion package.
 
 # Read shell words without evaluating shell input. Readline splits words at
 # characters such as '=' and '@', which are valid inside a Git branch name.
 # Retain the whole literal word for matching and its replacement suffix for
 # Readline. The caller owns these dynamically scoped locals.
-_git_oneflow_words() {
+_twigsmith_words() {
     local line=${COMP_LINE:0:COMP_POINT} char next word='' active=0 i
     words=() quote='' suffix=0
     for ((i=0; i<${#line}; i++)); do
@@ -45,7 +45,7 @@ _git_oneflow_words() {
     cur=$word
 }
 
-_git_oneflow_add() {
+_twigsmith_add() {
     local candidate=$1 reply char encoded='' i
     [[ $candidate == "$cur"* ]] || return 0
     # Only replace the fragment Readline is completing, not the prefix before a
@@ -74,7 +74,7 @@ _git_oneflow_add() {
     COMPREPLY+=("$reply")
 }
 
-_git_oneflow() {
+_twigsmith() {
     local -a words=()
     local LC_ALL=C
     local cur quote suffix candidate executable i
@@ -86,16 +86,16 @@ _git_oneflow() {
         ''|' '|$'\t'|$'\n') ;;
         *) return 0 ;;
     esac
-    _git_oneflow_words
+    _twigsmith_words
     # Ignore assignments or wrappers before Bash's completed executable.
     for ((i=0; i<${#words[@]}-1; i++)); do
         if [[ ${words[i]} == "$1" ]]; then words=("${words[@]:i}"); break; fi
     done
-    executable=$(type -P git-oneflow) || executable=$(type -P gof) || return 0
+    executable=$(type -P twigsmith) || executable=$(type -P tgi) || return 0
     while IFS= read -r candidate; do
-        _git_oneflow_add "$candidate"
+        _twigsmith_add "$candidate"
     done < <(command "$executable" __complete --shell bash --index "$((${#words[@]}-1))" -- "${words[@]}" 2>/dev/null)
     return 0
 }
 
-complete -o noquote -F _git_oneflow git-oneflow gof
+complete -o noquote -F _twigsmith twigsmith tgi

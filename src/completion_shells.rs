@@ -4,7 +4,7 @@
 
 pub fn script(shell: &str) -> Result<String, String> {
     match shell {
-        "bash" => Ok(include_str!("../completions/git-oneflow.bash").to_owned()),
+        "bash" => Ok(include_str!("../completions/twigsmith.bash").to_owned()),
         "zsh" => Ok(ZSH.to_owned()),
         "fish" => Ok(FISH.to_owned()),
         "powershell" => Ok(POWERSHELL.to_owned()),
@@ -12,13 +12,13 @@ pub fn script(shell: &str) -> Result<String, String> {
     }
 }
 
-const ZSH: &str = r#"# git-oneflow and gof completion
+const ZSH: &str = r#"# twigsmith and tgi completion
 # Register after the user has initialized Zsh's normal completion system.
 if (( $+functions[compdef] )); then
-_git_oneflow() {
+_twigsmith() {
     local executable candidate
     local -a literal candidates
-    executable=$(whence -p git-oneflow) || executable=$(whence -p gof) || return 0
+    executable=$(whence -p twigsmith) || executable=$(whence -p tgi) || return 0
     [[ -n $executable ]] || return 0
     # (Q) removes shell quoting without evaluating substitutions or parameters.
     literal=("${(@Q)words[1,CURRENT]}")
@@ -27,14 +27,14 @@ _git_oneflow() {
     (( ${#candidates} )) && compadd -- "${candidates[@]}"
     return 0
 }
-compdef _git_oneflow git-oneflow gof
+compdef _twigsmith twigsmith tgi
 fi
 "#;
 
-const FISH: &str = r#"# git-oneflow and gof completion
+const FISH: &str = r#"# twigsmith and tgi completion
 # Decode quoting as literal text. commandline -x expands variables and globs;
 # this scanner intentionally performs neither expansion nor substitution.
-function __git_oneflow_complete
+function __twigsmith_complete
     set -l line (commandline -pc)
     set -l words
     set -l word ''
@@ -96,27 +96,27 @@ function __git_oneflow_complete
         set i (math $i + 1)
     end
     set -a words "$word"
-    set -l executable (command -s git-oneflow)
+    set -l executable (command -s twigsmith)
     if test -z "$executable"
-        set executable (command -s gof)
+        set executable (command -s tgi)
     end
     test -n "$executable"; or return 0
     command "$executable" __complete --shell fish --index (math (count $words) - 1) -- $words 2>/dev/null
 end
-complete -c git-oneflow -f -a '(__git_oneflow_complete)'
-complete -c gof -f -a '(__git_oneflow_complete)'
+complete -c twigsmith -f -a '(__twigsmith_complete)'
+complete -c tgi -f -a '(__twigsmith_complete)'
 "#;
 
-const POWERSHELL: &str = r#"# git-oneflow and gof completion (PowerShell 7.3 or newer)
+const POWERSHELL: &str = r#"# twigsmith and tgi completion (PowerShell 7.3 or newer)
 if ($PSVersionTable.PSVersion -ge [version]'7.3') {
-Register-ArgumentCompleter -Native -CommandName git-oneflow,gof,git-oneflow.exe,gof.exe -ScriptBlock {
+Register-ArgumentCompleter -Native -CommandName twigsmith,tgi,twigsmith.exe,tgi.exe -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
     # Local scope preserves the user's preference while retaining empty words
     # and embedded quotes in the backend's literal native argument vector.
     $PSNativeCommandArgumentPassing = 'Standard'
-    $executable = Get-Command git-oneflow -CommandType Application -ErrorAction Ignore | Select-Object -First 1
+    $executable = Get-Command twigsmith -CommandType Application -ErrorAction Ignore | Select-Object -First 1
     if (-not $executable) {
-        $executable = Get-Command gof -CommandType Application -ErrorAction Ignore | Select-Object -First 1
+        $executable = Get-Command tgi -CommandType Application -ErrorAction Ignore | Select-Object -First 1
     }
     if (-not $executable) { return }
     # Parse only the prefix at the cursor. AST values are decoded literal tokens;
@@ -153,19 +153,19 @@ Register-ArgumentCompleter -Native -CommandName git-oneflow,gof,git-oneflow.exe,
 }
 # PowerShell falls back to filenames when a native completer returns no values.
 # Wrap the host entry point, preserving its parameter metadata and implementation,
-# and remove only that fallback for literal git-oneflow/gof argument contexts.
+# and remove only that fallback for literal twigsmith/tgi argument contexts.
 # TabExpansion2 overrides are a documented, unsupported host customization.
-$__gitOneflowPriorCommand = Get-Command TabExpansion2 -CommandType Function -ErrorAction Ignore
-if ($__gitOneflowPriorCommand -and -not $__gitOneflowPriorCommand.ScriptBlock.PSObject.Properties['__gitOneflowProviderFilter']) {
-    $__gitOneflowPriorBlock = $__gitOneflowPriorCommand.ScriptBlock
-    $__gitOneflowMetadata = [System.Management.Automation.CommandMetadata]::new($__gitOneflowPriorCommand)
-    $__gitOneflowBinding = [System.Management.Automation.ProxyCommand]::GetCmdletBindingAttribute($__gitOneflowMetadata)
-    $__gitOneflowParameters = [System.Management.Automation.ProxyCommand]::GetParamBlock($__gitOneflowMetadata)
-    $__gitOneflowOutputNames = @($__gitOneflowPriorCommand.OutputType | ForEach-Object { "'" + $_.Name.Replace("'", "''") + "'" })
-    $__gitOneflowOutputAttribute = if ($__gitOneflowOutputNames.Count) { '[OutputType(' + ($__gitOneflowOutputNames -join ',') + ')]' } else { '' }
-    $__gitOneflowBody = @'
+$__twigsmithPriorCommand = Get-Command TabExpansion2 -CommandType Function -ErrorAction Ignore
+if ($__twigsmithPriorCommand -and -not $__twigsmithPriorCommand.ScriptBlock.PSObject.Properties['__twigsmithProviderFilter']) {
+    $__twigsmithPriorBlock = $__twigsmithPriorCommand.ScriptBlock
+    $__twigsmithMetadata = [System.Management.Automation.CommandMetadata]::new($__twigsmithPriorCommand)
+    $__twigsmithBinding = [System.Management.Automation.ProxyCommand]::GetCmdletBindingAttribute($__twigsmithMetadata)
+    $__twigsmithParameters = [System.Management.Automation.ProxyCommand]::GetParamBlock($__twigsmithMetadata)
+    $__twigsmithOutputNames = @($__twigsmithPriorCommand.OutputType | ForEach-Object { "'" + $_.Name.Replace("'", "''") + "'" })
+    $__twigsmithOutputAttribute = if ($__twigsmithOutputNames.Count) { '[OutputType(' + ($__twigsmithOutputNames -join ',') + ')]' } else { '' }
+    $__twigsmithBody = @'
     $delegateArguments = @{} + $PSBoundParameters
-    & $__gitOneflowPriorBlock @delegateArguments | ForEach-Object {
+    & $__twigsmithPriorBlock @delegateArguments | ForEach-Object {
         $completion = $_
         if (-not ($completion -is [System.Management.Automation.CommandCompletion])) {
             $completion
@@ -195,7 +195,7 @@ if ($__gitOneflowPriorCommand -and -not $__gitOneflowPriorCommand.ScriptBlock.PS
                 $name = $command.GetCommandName()
                 if ($name) {
                     $name = [System.IO.Path]::GetFileName($name)
-                    $targetArgument = ($name -iin @('gof', 'git-oneflow', 'gof.exe', 'git-oneflow.exe')) -and
+                    $targetArgument = ($name -iin @('tgi', 'twigsmith', 'tgi.exe', 'twigsmith.exe')) -and
                         $cursor -gt $command.CommandElements[0].Extent.EndOffset
                 }
                 if ($targetArgument) {
@@ -233,9 +233,9 @@ if ($__gitOneflowPriorCommand -and -not $__gitOneflowPriorCommand.ScriptBlock.PS
 '@
     # The generated text consists only of trusted adapter code and metadata for
     # the existing function. Command input is passed as data to the saved delegate.
-    $__gitOneflowWrapper = [scriptblock]::Create($__gitOneflowBinding + "`n" + $__gitOneflowOutputAttribute + "`nparam(" + $__gitOneflowParameters + ")`n" + $__gitOneflowBody).GetNewClosure()
-    $__gitOneflowWrapper | Add-Member -NotePropertyName __gitOneflowProviderFilter -NotePropertyValue $true
-    Set-Item -Path Function:global:TabExpansion2 -Value $__gitOneflowWrapper
+    $__twigsmithWrapper = [scriptblock]::Create($__twigsmithBinding + "`n" + $__twigsmithOutputAttribute + "`nparam(" + $__twigsmithParameters + ")`n" + $__twigsmithBody).GetNewClosure()
+    $__twigsmithWrapper | Add-Member -NotePropertyName __twigsmithProviderFilter -NotePropertyValue $true
+    Set-Item -Path Function:global:TabExpansion2 -Value $__twigsmithWrapper
 }
 
 }

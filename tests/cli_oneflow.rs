@@ -5,13 +5,13 @@ mod support;
 #[allow(dead_code)]
 mod terminal;
 
-use git_oneflow::git;
 use std::{
     fs,
     path::Path,
     process::{Command, Output, Stdio},
 };
 use support::{Repository, isolated};
+use twigsmith::git;
 
 #[derive(Clone, Copy, Debug)]
 struct Cli {
@@ -64,7 +64,7 @@ fn cases(name: &str, test: impl Fn(&Path, Cli)) {
         test(
             directory.path(),
             Cli {
-                executable: env!("CARGO_BIN_EXE_git-oneflow"),
+                executable: env!("CARGO_BIN_EXE_twigsmith"),
                 aliases: false,
             },
         );
@@ -73,7 +73,7 @@ fn cases(name: &str, test: impl Fn(&Path, Cli)) {
 
 fn entrypoint_cases(name: &str, test: impl Fn(&Path, Cli)) {
     isolated(name, true, |root| {
-        for executable in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+        for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
             for aliases in [false, true] {
                 let directory = tempfile::tempdir_in(root).unwrap();
                 println!("lifecycle wiring: executable={executable}, aliases={aliases}");
@@ -182,7 +182,7 @@ fn hook(path: &Path, name: &str, body: &str) -> std::path::PathBuf {
 
 fn configure(fixture: &Fixture, marker: &str, active_release: &str, work_remote: &str) {
     fs::write(
-        fixture.local.path().join(".git/git-oneflow.config.toml"),
+        fixture.local.path().join(".git/twigsmith.config.toml"),
         format!(
             "publish-remote='personal'\nbase-remote='project'\nfinish-message='auto'\n\
              [workstreams.ordinary]\nversion-tagging='disabled'\nfinish-mode='integrate'\n\
@@ -234,7 +234,7 @@ fn ordinary_lifecycle_executable_and_alias_wiring() {
         |root, cli| {
             let fixture = Fixture::new(root);
             fs::write(
-                fixture.local.path().join(".git/git-oneflow.config.toml"),
+                fixture.local.path().join(".git/twigsmith.config.toml"),
                 "publish-remote='personal'\nbase-remote='project'\nfinish-mode='review'\n\
              finish-update='none'\nfinish-integration='ff-only'\nfinish-message='auto'\n\
              finish-checkout='work'\nfinish-cleanup='keep'\n",
@@ -355,11 +355,11 @@ fn configured_direct_release_uses_selected_cutoff_and_publishes_version() {
                 "config",
                 &["--oneflow", "--yes", "--marker", "released"],
             );
-            let config = fixture.local.path().join("git-oneflow.config.toml");
+            let config = fixture.local.path().join("twigsmith.config.toml");
             let generated = fs::read_to_string(&config).unwrap();
             assert!(generated.contains("origin"));
             fs::write(&config, generated.replace("origin", "project")).unwrap();
-            fixture.local.success(&["add", "git-oneflow.config.toml"]);
+            fixture.local.success(&["add", "twigsmith.config.toml"]);
             fixture
                 .local
                 .success(&["commit", "-m", "Configure direct workflow"]);
@@ -1128,7 +1128,7 @@ fn first_destination_conflict_preserves_selected_identity_through_native_resolut
             for identity in ["work-source", "integrated-result"] {
                 let fixture = Fixture::new(root);
                 configure(&fixture, "released", "none", "project");
-                let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+                let config = fixture.local.path().join(".git/twigsmith.config.toml");
                 fs::write(
                     &config,
                     fs::read_to_string(&config).unwrap().replace(
@@ -1237,7 +1237,7 @@ fn retry_rejects_changed_settings_and_same_commit_tag_object_substitution() {
                 let original_tag = oid(fixture.local.path(), "refs/tags/retained-version").unwrap();
                 fs::remove_file(reject).unwrap();
                 if context == "settings" {
-                    let private = fixture.local.path().join(".git/git-oneflow.config.toml");
+                    let private = fixture.local.path().join(".git/twigsmith.config.toml");
                     let config = fs::read_to_string(&private).unwrap();
                     fs::write(
                         private,
@@ -1320,7 +1320,7 @@ fn bypassed_release_checks_do_not_authorize_later_unbypassed_retry() {
         |root, cli| {
             let fixture = Fixture::new(root);
             configure(&fixture, "none", "none", "project");
-            let private = fixture.local.path().join(".git/git-oneflow.config.toml");
+            let private = fixture.local.path().join(".git/twigsmith.config.toml");
             let config = fs::read_to_string(&private).unwrap();
             // Insert the global check before workstream tables so this checks
             // both the approved released source and its integration candidate.
@@ -1376,7 +1376,7 @@ fn ordinary_preparation_source_is_independent_of_integration_target() {
         |root, cli| {
             let fixture = Fixture::new(root);
             configure(&fixture, "none", "none", "project");
-            let private = fixture.local.path().join(".git/git-oneflow.config.toml");
+            let private = fixture.local.path().join(".git/twigsmith.config.toml");
             let config = fs::read_to_string(&private).unwrap().replace(
                 "[workstreams.ordinary]\n",
                 "[workstreams.ordinary]\ncreation-source='main'\npreparation-source='staging'\nintegration-target='main'\n",
@@ -1753,7 +1753,7 @@ fn ordered_release_destinations_integrate_fixed_source_with_selected_tag_identit
                 fixture.local.success(&["branch", "stable"]);
                 fixture.local.success(&["push", "project", "stable"]);
                 configure(&fixture, "released", "none", "personal");
-                let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+                let config = fixture.local.path().join(".git/twigsmith.config.toml");
                 let check_log = root.join(format!("ordered-{identity}-checks"));
                 let checks = format!(
                     "finish-checks=[{{name='record',command=['sh','-c','echo checked >> \"$1\"','sh',{}]}}]\n",
@@ -1846,7 +1846,7 @@ fn integrated_result_review_publishes_only_work_and_requires_manual_tagging() {
         |root, cli| {
             let fixture = Fixture::new(root);
             configure(&fixture, "released", "none", "personal");
-            let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+            let config = fixture.local.path().join(".git/twigsmith.config.toml");
             let content = fs::read_to_string(&config)
                 .unwrap()
                 .replace(
@@ -1922,7 +1922,7 @@ fn ordered_review_override_fails_before_publication() {
         |root, cli| {
             let fixture = Fixture::new(root);
             configure(&fixture, "none", "none", "personal");
-            let config = fixture.local.path().join(".git/git-oneflow.config.toml");
+            let config = fixture.local.path().join(".git/twigsmith.config.toml");
             fs::write(
                 &config,
                 fs::read_to_string(&config).unwrap().replace(

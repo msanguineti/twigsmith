@@ -2,8 +2,8 @@ mod support;
 
 use std::{fs, io};
 
-use git_oneflow::git;
 use support::{Repository, isolated};
+use twigsmith::git;
 
 #[test]
 fn working_directory_and_literal_arguments() {

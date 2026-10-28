@@ -40,9 +40,9 @@ fn fixture(root: &Path, settings: &str, policy: bool) -> (Repository, Repository
     local.success(&["remote", "add", "origin", remote.path().to_str().unwrap()]);
     local.success(&["fetch", "origin"]);
     local.success(&["switch", "--no-track", "-c", "main", "origin/main"]);
-    fs::write(local.path().join(".git/git-oneflow.config.toml"), settings).unwrap();
+    fs::write(local.path().join(".git/twigsmith.config.toml"), settings).unwrap();
     if policy {
-        let output = Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+        let output = Command::new(env!("CARGO_BIN_EXE_twigsmith"))
             .current_dir(local.path())
             .args(["start", WORK, "--policy", "ordinary"])
             .stdin(Stdio::null())
@@ -89,7 +89,7 @@ fn native_history_flags_reach_both_executables_and_aliases_with_real_publication
         "native_history_flags_reach_both_executables_and_aliases_with_real_publication",
         true,
         |root| {
-            for binary in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+            for binary in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
                 for alias in ["finish", "f"] {
                     let dir = tempfile::tempdir_in(root).unwrap();
                     let (local, remote) = fixture(dir.path(), "", false);
@@ -160,7 +160,7 @@ fn explicit_history_none_overrides_configured_editing_and_workstream_overrides_g
                     "message",
                     "printf 'Configured edit\\n' > \"$1\"",
                 );
-                let output = command(&local, env!("CARGO_BIN_EXE_git-oneflow"), "finish", &extra)
+                let output = command(&local, env!("CARGO_BIN_EXE_twigsmith"), "finish", &extra)
                     .env(
                         "GIT_SEQUENCE_EDITOR",
                         if edited { &sequence } else { "false" },
@@ -210,7 +210,7 @@ fn native_git_sequence_and_commit_editor_preferences_and_environment_precedence(
                 if selection != "core-fallback" {
                     local.success(&["config", "sequence.editor", &sequence]);
                 }
-                let mut cmd = command(&local, env!("CARGO_BIN_EXE_git-oneflow"), "finish", &[]);
+                let mut cmd = command(&local, env!("CARGO_BIN_EXE_twigsmith"), "finish", &[]);
                 if selection == "environment" {
                     local.success(&["config", "core.editor", "false"]);
                     local.success(&["config", "sequence.editor", "false"]);
@@ -278,7 +278,7 @@ fn failed_or_cancelled_editors_hooks_and_signing_cannot_publish() {
                     local.success(&["config", "commit.gpgSign", "true"]);
                     local.success(&["config", "gpg.program", "false"]);
                 }
-                let output = command(&local, env!("CARGO_BIN_EXE_git-oneflow"), "finish", &[])
+                let output = command(&local, env!("CARGO_BIN_EXE_twigsmith"), "finish", &[])
                     .env("GIT_SEQUENCE_EDITOR", sequence)
                     .env("GIT_EDITOR", message)
                     .output()
@@ -318,7 +318,7 @@ fn scripted_native_editor_failure_diagnostics_respect_credential_presentation() 
                 );
                 let output = command(
                     &local,
-                    env!("CARGO_BIN_EXE_git-oneflow"),
+                    env!("CARGO_BIN_EXE_twigsmith"),
                     "finish",
                     if show { &["--show-credentials"] } else { &[] },
                 )
@@ -364,7 +364,7 @@ fn native_editor_receives_terminal_input_without_a_redundant_confirmation() {
             local.success(&["config", "sequence.editor", &sequence]);
             local.success(&["config", "core.editor", &message]);
             let mut terminal = terminal::Terminal::start_capable(
-                env!("CARGO_BIN_EXE_git-oneflow"),
+                env!("CARGO_BIN_EXE_twigsmith"),
                 local.path(),
                 &["finish", "--update", "rebase", "--no-rewrite"],
             );

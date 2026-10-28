@@ -4,13 +4,13 @@ mod support;
 #[cfg(target_os = "linux")]
 #[path = "support/terminal.rs"]
 mod terminal;
-use git_oneflow::git;
 use std::{
     fs,
     path::Path,
     process::{Command, Output, Stdio},
 };
 use support::{Repository, isolated};
+use twigsmith::git;
 
 const BRANCH: &str = "fix/deployment-bug";
 const REF: &str = "refs/heads/fix/deployment-bug";
@@ -19,12 +19,12 @@ const REF: &str = "refs/heads/fix/deployment-bug";
 fn cases(name: &str, available: bool, test: impl Fn(&Path, &str)) {
     isolated(name, available, |root| {
         let dir = tempfile::tempdir_in(root).unwrap();
-        test(dir.path(), env!("CARGO_BIN_EXE_git-oneflow"));
+        test(dir.path(), env!("CARGO_BIN_EXE_twigsmith"));
     });
 }
 fn entrypoint_cases(name: &str, available: bool, test: impl Fn(&Path, &str)) {
     isolated(name, available, |root| {
-        for exe in [env!("CARGO_BIN_EXE_git-oneflow"), env!("CARGO_BIN_EXE_gof")] {
+        for exe in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
             let dir = tempfile::tempdir_in(root).unwrap();
             println!("finish grammar: executable={exe}");
             test(dir.path(), exe);
@@ -104,7 +104,7 @@ fn seed(local: &Repository, remote: &Repository) {
 }
 fn settings(repo: &Repository, update: &str, rewrite: &str) {
     fs::write(
-        repo.path().join(".git/git-oneflow.config.toml"),
+        repo.path().join(".git/twigsmith.config.toml"),
         format!("finish-update='{update}'\nfinish-rewrite='{rewrite}'\n"),
     )
     .unwrap();
@@ -140,7 +140,7 @@ fn finish_credential_redaction_defaults_local_override_and_flag_precedence() {
             );
 
             fs::write(
-                local.path().join(".git/git-oneflow.config.toml"),
+                local.path().join(".git/twigsmith.config.toml"),
                 "redact-credentials=false\n",
             )
             .unwrap();
@@ -922,13 +922,13 @@ fn completion_mode_layers_flag_precedence_review_conflicts_and_inactive_validati
             for command in ["finish", "f"] {
                 let (local, remote) = fixture(root, false, false);
                 fs::write(
-                    local.path().join("git-oneflow.config.toml"),
+                    local.path().join("twigsmith.config.toml"),
                     "finish-mode='integrate'\n",
                 )
                 .unwrap();
-                local.success(&["add", "git-oneflow.config.toml"]);
+                local.success(&["add", "twigsmith.config.toml"]);
                 local.success(&["commit", "-m", "shared completion"]);
-                let private = local.path().join(".git/git-oneflow.config.json");
+                let private = local.path().join(".git/twigsmith.config.json");
                 fs::write(&private, r#"{"finish-mode":"review","finish-integration":"squash","finish-message":"auto","finish-checkout":"work","finish-cleanup":"both"}"#).unwrap();
                 let before = preservation::snapshot(root);
                 check(
@@ -1007,7 +1007,7 @@ fn completion_terminal_mode_choices_cancellation_and_settings_revalidation() {
                 let mut term = terminal::Terminal::start(exe, local.path(), &[command]);
                 term.until("How should this work be delivered?");
                 fs::write(
-                    local.path().join(".git/git-oneflow.config.toml"),
+                    local.path().join(".git/twigsmith.config.toml"),
                     "finish-mode='integrate'\n",
                 )
                 .unwrap();
@@ -1059,7 +1059,7 @@ fn integration_fixture(root: &Path, advanced: bool) -> IntegrationFixture {
             "HEAD:refs/heads/main",
         ]);
     }
-    fs::write(local.path().join(".git/git-oneflow.config.toml"),
+    fs::write(local.path().join(".git/twigsmith.config.toml"),
         "finish-mode='integrate'\nfinish-message='auto'\nbase-remote='project'\npublish-remote='personal'\n").unwrap();
     IntegrationFixture {
         local,
@@ -1254,7 +1254,7 @@ fn integration_literal_multiline_and_already_incorporated_work() {
                 .success(&["push", "project", "HEAD:refs/heads/main"]);
             // Method, update and message defaults are ask; incorporated work needs none.
             fs::write(
-                f.local.path().join(".git/git-oneflow.config.toml"),
+                f.local.path().join(".git/twigsmith.config.toml"),
                 "finish-mode='integrate'\nbase-remote='project'\npublish-remote='personal'\n",
             )
             .unwrap();
@@ -1274,7 +1274,7 @@ fn integration_check_failure_reuses_result_and_delivered_retry_skips_effects() {
             for skip in [false, true] {
                 let f = integration_fixture(root, false);
                 let base = remote_oid(f.project.path(), "main");
-                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let private = f.local.path().join(".git/twigsmith.config.toml");
                 let mut config = fs::read_to_string(&private).unwrap();
                 config.push_str("[[finish-checks]]\nname='Candidate gate'\ncommand=['sh','-c','echo check >> .git/check-count; echo streamed-candidate-output; test -f .git/check-pass']\n");
                 fs::write(private, config).unwrap();
@@ -1494,7 +1494,7 @@ fn integration_terminal_choices_are_relevant_and_context_bound() {
                         _ => unreachable!(),
                     };
                     if choice == "mode" {
-                        let private = f.local.path().join(".git/git-oneflow.config.toml");
+                        let private = f.local.path().join(".git/twigsmith.config.toml");
                         let settings = fs::read_to_string(&private)
                             .unwrap()
                             .replace("finish-mode='integrate'", "finish-mode='ask'");
@@ -1637,7 +1637,7 @@ fn integration_git_editor_suggestion_multiline_failure_and_context_guard() {
         |root, exe| {
             for scenario in ["accepted", "failed", "blank", "nul", "non-utf8", "changed"] {
                 let f = integration_fixture(root, false);
-                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let private = f.local.path().join(".git/twigsmith.config.toml");
                 fs::write(
                     &private,
                     fs::read_to_string(&private)
@@ -1696,7 +1696,7 @@ fn integration_git_editor_suggestion_multiline_failure_and_context_guard() {
             }
             // GIT_EDITOR overrides core.editor; no separate oneflow editor preference is needed.
             let f = integration_fixture(root, false);
-            let private = f.local.path().join(".git/git-oneflow.config.toml");
+            let private = f.local.path().join(".git/twigsmith.config.toml");
             fs::write(
                 &private,
                 fs::read_to_string(&private)
@@ -1740,7 +1740,7 @@ fn integration_cancelled_editor_after_preparation_retains_work_and_retries() {
         true,
         |root, exe| {
             let f = integration_fixture(root, true);
-            let private = f.local.path().join(".git/git-oneflow.config.toml");
+            let private = f.local.path().join(".git/twigsmith.config.toml");
             fs::write(
                 &private,
                 fs::read_to_string(&private)
@@ -1785,7 +1785,7 @@ fn integration_streamed_credentials_follow_default_private_and_flag_preferences(
         |root, exe| {
             for preference in ["default", "private", "flag"] {
                 let f = integration_fixture(root, false);
-                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let private = f.local.path().join(".git/twigsmith.config.toml");
                 let mut config = fs::read_to_string(&private).unwrap();
                 if preference == "private" {
                     config.push_str("redact-credentials=false\n");
@@ -1871,7 +1871,7 @@ fn integration_editor_respects_git_message_cleanup_and_comment_preferences() {
         |root, exe| {
             for policy in ["whitespace", "verbatim", "scissors", "comment-aliases"] {
                 let f = integration_fixture(root, false);
-                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let private = f.local.path().join(".git/twigsmith.config.toml");
                 fs::write(
                     &private,
                     fs::read_to_string(&private)
@@ -1938,7 +1938,7 @@ fn integration_interrupted_before_result_retention_recovers_without_reintegratio
         |root, exe| {
             for externally_delivered in [false, true] {
                 let f = integration_fixture(root, false);
-                let private = f.local.path().join(".git/git-oneflow.config.toml");
+                let private = f.local.path().join(".git/twigsmith.config.toml");
                 let mut config = fs::read_to_string(&private).unwrap();
                 config.push_str("[[finish-checks]]\nname='Recovered candidate'\ncommand=['sh','-c','echo checked >> .git/recovered-checks']\n");
                 fs::write(private, config).unwrap();
@@ -1970,7 +1970,7 @@ fn integration_interrupted_before_result_retention_recovers_without_reintegratio
                             .success(&[
                                 "for-each-ref",
                                 "--format=%(refname)",
-                                "refs/oneflow/integration/"
+                                "refs/twigsmith/integration/"
                             ])
                             .stdout
                     )

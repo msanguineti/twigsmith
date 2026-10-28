@@ -2,14 +2,14 @@
 mod preservation;
 mod support;
 
-use git_oneflow::{
+use preservation::snapshot;
+use std::{fs, path::Path};
+use support::{Repository, isolated};
+use twigsmith::{
     git,
     repository::{Head, Observation, RepositoryKind, Upstream},
     start::{self, Action, Effect, Failure, Outcome, StartError},
 };
-use preservation::snapshot;
-use std::{fs, path::Path};
-use support::{Repository, isolated};
 
 fn commit(repo: &Repository, file: &str, contents: &str) -> String {
     fs::write(repo.path().join(file), contents).unwrap();
@@ -41,7 +41,7 @@ fn start(directory: &Path, name: &str) -> Result<Outcome, Box<Failure>> {
     let request = start::prepare(directory, name).unwrap();
     start::execute(directory, &request)
 }
-fn branch(state: &git_oneflow::repository::RepositoryState, name: &str, commit: &str) {
+fn branch(state: &twigsmith::repository::RepositoryState, name: &str, commit: &str) {
     assert_eq!(
         state.head,
         Head::Attached {
@@ -57,7 +57,7 @@ fn preserved_failure(root: &Path, directory: &Path, name: &str) -> Box<Failure> 
     assert!(failure.effects.is_empty());
     failure
 }
-fn remaining(f: &Failure) -> &git_oneflow::repository::RepositoryState {
+fn remaining(f: &Failure) -> &twigsmith::repository::RepositoryState {
     match f.remaining.repository.as_ref().unwrap() {
         Observation::Repository(s) => s,
         _ => panic!("not repository"),
@@ -100,14 +100,10 @@ fn local_resume_preserves_history_upstream_and_never_contacts_remote() {
             fs::create_dir(repo.path().join(".git/info")).unwrap();
             fs::write(
                 repo.path().join(".git/info/exclude"),
-                "git-oneflow.config.toml\n",
+                "twigsmith.config.toml\n",
             )
             .unwrap();
-            fs::write(
-                repo.path().join("git-oneflow.config.toml"),
-                "base=\"main\"\n",
-            )
-            .unwrap();
+            fs::write(repo.path().join("twigsmith.config.toml"), "base=\"main\"\n").unwrap();
             repo.success(&["switch", "main"]);
             let config = fs::read(repo.path().join(".git/config")).unwrap();
             let refs = repo.success(&["show-ref"]).stdout;
@@ -122,7 +118,7 @@ fn local_resume_preserves_history_upstream_and_never_contacts_remote() {
             branch(&outcome.state, "release/V1", &target);
             assert_eq!(fs::read(repo.path().join(".git/config")).unwrap(), config);
             assert_eq!(
-                fs::read_to_string(repo.path().join("git-oneflow.config.toml")).unwrap(),
+                fs::read_to_string(repo.path().join("twigsmith.config.toml")).unwrap(),
                 "base=\"main\"\n"
             );
             assert_eq!(repo.success(&["show-ref"]).stdout, refs);
@@ -148,18 +144,18 @@ fn local_resume_restores_and_removes_tracked_shared_configuration() {
                 commit(&repo, "tracked", "base\n");
                 repo.success(&["branch", "without-config"]);
                 repo.success(&["switch", "-c", "work"]);
-                let contents = git_oneflow::config::render(
-                    git_oneflow::config::Format::Toml,
-                    &git_oneflow::settings::Settings::default(),
+                let contents = twigsmith::config::render(
+                    twigsmith::config::Format::Toml,
+                    &twigsmith::settings::Settings::default(),
                 );
-                let work = commit(&repo, "git-oneflow.config.toml", &contents);
+                let work = commit(&repo, "twigsmith.config.toml", &contents);
                 repo.success(&["switch", "main"]);
                 let config = fs::read(repo.path().join(".git/config")).unwrap();
                 let outcome = start(repo.path(), "work").unwrap();
                 assert_eq!(outcome.action, Action::ResumeLocal);
                 branch(&outcome.state, "work", &work);
                 assert_eq!(
-                    fs::read_to_string(repo.path().join("git-oneflow.config.toml")).unwrap(),
+                    fs::read_to_string(repo.path().join("twigsmith.config.toml")).unwrap(),
                     if crlf {
                         contents.replace('\n', "\r\n")
                     } else {
@@ -169,7 +165,7 @@ fn local_resume_restores_and_removes_tracked_shared_configuration() {
                 assert_eq!(fs::read(repo.path().join(".git/config")).unwrap(), config);
                 let outcome = start(repo.path(), "without-config").unwrap();
                 assert_eq!(outcome.action, Action::ResumeLocal);
-                assert!(!repo.path().join("git-oneflow.config.toml").exists());
+                assert!(!repo.path().join("twigsmith.config.toml").exists());
                 assert_eq!(fs::read(repo.path().join(".git/config")).unwrap(), config);
             }
         },
@@ -187,7 +183,7 @@ fn restored_settings_do_not_change_start_authority() {
             repo.success(&["switch", "-c", "work"]);
             let work = commit(
                 &repo,
-                "git-oneflow.config.toml",
+                "twigsmith.config.toml",
                 "base=\"work\"\npublish-remote=\"elsewhere\"\n",
             );
             repo.success(&["switch", "main"]);
@@ -224,16 +220,16 @@ fn checkout_configuration_transition_rejects_hook_changes() {
                 let repo = Repository::new(root);
                 commit(&repo, "tracked", "base\n");
                 repo.success(&["switch", "-c", "work"]);
-                commit(&repo, "git-oneflow.config.toml", "base=\"main\"\n");
+                commit(&repo, "twigsmith.config.toml", "base=\"main\"\n");
                 repo.success(&["switch", "main"]);
                 let hooks = repo.path().join(".git/start-hooks");
                 fs::create_dir(&hooks).unwrap();
                 let mutation = match scenario {
-                    "shared" => "printf '# hook change\\n' >> git-oneflow.config.toml",
-                    "shared-addition" => "printf '{}\\n' > git-oneflow.config.json",
-                    "private" => "printf '{}\\n' > .git/git-oneflow.config.json",
+                    "shared" => "printf '# hook change\\n' >> twigsmith.config.toml",
+                    "shared-addition" => "printf '{}\\n' > twigsmith.config.json",
+                    "private" => "printf '{}\\n' > .git/twigsmith.config.json",
                     "routing" => "git config branch.work.pushRemote elsewhere",
-                    _ => "git config branch.work.oneflow-policy invalid",
+                    _ => "git config branch.work.twigsmith-policy invalid",
                 };
                 executable(
                     &hooks.join("post-checkout"),
@@ -261,21 +257,21 @@ fn checkout_configuration_transition_rejects_hook_changes() {
                 );
                 match scenario {
                     "shared" => assert!(
-                        fs::read_to_string(repo.path().join("git-oneflow.config.toml"))
+                        fs::read_to_string(repo.path().join("twigsmith.config.toml"))
                             .unwrap()
                             .contains("# hook change")
                     ),
                     "shared-addition" => {
-                        assert!(repo.path().join("git-oneflow.config.json").exists())
+                        assert!(repo.path().join("twigsmith.config.json").exists())
                     }
-                    "private" => assert!(repo.path().join(".git/git-oneflow.config.json").exists()),
+                    "private" => assert!(repo.path().join(".git/twigsmith.config.json").exists()),
                     "routing" => assert_eq!(
                         repo.success(&["config", "--get", "branch.work.pushRemote"])
                             .stdout,
                         b"elsewhere\n"
                     ),
                     _ => assert_eq!(
-                        repo.success(&["config", "--get", "branch.work.oneflow-policy"])
+                        repo.success(&["config", "--get", "branch.work.twigsmith-policy"])
                             .stdout,
                         b"invalid\n"
                     ),
@@ -331,7 +327,7 @@ fn fresh_custom_base_leaves_local_base_and_unrelated_refs_untouched() {
             remote.success(&["tag", "feature/new"]); // A tag is never a branch counterpart.
             remote.success(&["branch", "unrelated"]);
             fs::write(
-                local.path().join(".git/git-oneflow.config.toml"),
+                local.path().join(".git/twigsmith.config.toml"),
                 "publish-remote='team/upstream'\nbase='trunk'\n",
             )
             .unwrap();
@@ -615,7 +611,7 @@ fn real_operations_block_start_and_preserve_all_state() {
                 }
                 if matches!(operation, "am" | "bisect") {
                     let before = snapshot(root);
-                    let output = std::process::Command::new(env!("CARGO_BIN_EXE_git-oneflow"))
+                    let output = std::process::Command::new(env!("CARGO_BIN_EXE_twigsmith"))
                         .current_dir(repo.path())
                         .arg("status")
                         .output()
@@ -631,7 +627,7 @@ fn real_operations_block_start_and_preserve_all_state() {
                 for target in ["main", "new"] {
                     // Choose main as target by changing the protected base setting.
                     fs::write(
-                        repo.path().join(".git/git-oneflow.config.toml"),
+                        repo.path().join(".git/twigsmith.config.toml"),
                         "base='trunk'\n",
                     )
                     .unwrap();
@@ -869,7 +865,7 @@ fn old_or_forged_requests_are_revalidated() {
         commit(&repo, "tracked", "base\n");
         let request = start::prepare(repo.path(), "target").unwrap();
         fs::write(
-            repo.path().join(".git/git-oneflow.config.toml"),
+            repo.path().join(".git/twigsmith.config.toml"),
             "base='trunk'\n",
         )
         .unwrap();
@@ -1007,7 +1003,7 @@ fn execution_rechecks_changes_after_remote_inspection_and_fetch() {
                     ),
                     _ => format!(
                         "printf 'base=\"trunk\"\\n' > {}",
-                        shell_path(&local.path().join(".git/git-oneflow.config.toml"))
+                        shell_path(&local.path().join(".git/twigsmith.config.toml"))
                     ),
                 };
                 transport_probe(&local, &on_fetch);
@@ -1148,7 +1144,7 @@ fn nested_directory_removed_by_switch_still_reports_the_remaining_state() {
 
 #[test]
 fn established_absent_workstream_policy_stops_start_before_recreation() {
-    use git_oneflow::settings::{self, WorkstreamKind};
+    use twigsmith::settings::{self, WorkstreamKind};
     isolated(
         "established_absent_workstream_policy_stops_start_before_recreation",
         true,
@@ -1157,8 +1153,8 @@ fn established_absent_workstream_policy_stops_start_before_recreation() {
             let mut settings = settings::Settings::default();
             settings::oneflow_bundle(&mut settings, None);
             fs::write(
-                local.path().join(".git/git-oneflow.config.toml"),
-                git_oneflow::config::render(git_oneflow::config::Format::Toml, &settings),
+                local.path().join(".git/twigsmith.config.toml"),
+                twigsmith::config::render(twigsmith::config::Format::Toml, &settings),
             )
             .unwrap();
             let options = start::Options {
@@ -1188,7 +1184,7 @@ fn established_absent_workstream_policy_stops_start_before_recreation() {
 
 #[test]
 fn configured_hotfix_exact_version_tag_is_explicit_creation_input() {
-    use git_oneflow::settings::{self, WorkstreamKind};
+    use twigsmith::settings::{self, WorkstreamKind};
     isolated(
         "configured_hotfix_exact_version_tag_is_explicit_creation_input",
         true,
@@ -1214,8 +1210,8 @@ fn configured_hotfix_exact_version_tag_is_explicit_creation_input() {
                     .unwrap()
                     .creation_source = Some(format!("refs/tags/{tag}"));
                 fs::write(
-                    local.path().join(".git/git-oneflow.config.toml"),
-                    git_oneflow::config::render(git_oneflow::config::Format::Toml, &settings),
+                    local.path().join(".git/twigsmith.config.toml"),
+                    twigsmith::config::render(twigsmith::config::Format::Toml, &settings),
                 )
                 .unwrap();
                 let branch = format!("hotfix/{tag}");
@@ -1235,7 +1231,7 @@ fn configured_hotfix_exact_version_tag_is_explicit_creation_input() {
 
 #[test]
 fn established_hotfix_route_change_and_raw_save_association_change_are_guarded() {
-    use git_oneflow::{
+    use twigsmith::{
         save,
         settings::{self, WorkstreamKind},
     };
@@ -1247,9 +1243,8 @@ fn established_hotfix_route_change_and_raw_save_association_change_are_guarded()
             let mut proposed = settings::Settings::default();
             settings::oneflow_bundle(&mut proposed, None);
             local.success(&["tag", "Train-version"]);
-            let path = local.path().join(".git/git-oneflow.config.toml");
-            let original =
-                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed);
+            let path = local.path().join(".git/twigsmith.config.toml");
+            let original = twigsmith::config::render(twigsmith::config::Format::Toml, &proposed);
             fs::write(&path, &original).unwrap();
             let options = start::Options {
                 policy: Some(WorkstreamKind::Hotfix),
@@ -1266,7 +1261,7 @@ fn established_hotfix_route_change_and_raw_save_association_change_are_guarded()
                 .active_release = Some("release/train".into());
             fs::write(
                 &path,
-                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+                twigsmith::config::render(twigsmith::config::Format::Toml, &proposed),
             )
             .unwrap();
             let before = snapshot(root);
@@ -1279,7 +1274,7 @@ fn established_hotfix_route_change_and_raw_save_association_change_are_guarded()
             assert_eq!(snapshot(root), before);
             fs::write(path, original).unwrap();
             let plan = save::assess(local.path(), &save::Request::default()).unwrap();
-            let key = "branch.hotfix/train.oneflow-policy";
+            let key = "branch.hotfix/train.twigsmith-policy";
             let raw = local.success(&["config", "--get", key]).stdout;
             let mut record: serde_json::Value = serde_json::from_slice(&raw).unwrap();
             record["creation_input"] =
@@ -1306,7 +1301,7 @@ fn established_hotfix_route_change_and_raw_save_association_change_are_guarded()
 
 #[test]
 fn advanced_published_hotfix_resume_selects_policy_without_new_creation_input() {
-    use git_oneflow::settings::{self, WorkstreamKind};
+    use twigsmith::settings::{self, WorkstreamKind};
     isolated(
         "advanced_published_hotfix_resume_selects_policy_without_new_creation_input",
         true,
@@ -1329,8 +1324,8 @@ fn advanced_published_hotfix_resume_selects_policy_without_new_creation_input() 
                     .unwrap()
                     .creation_source = configured.map(str::to_owned);
                 fs::write(
-                    local.path().join(".git/git-oneflow.config.toml"),
-                    git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+                    local.path().join(".git/twigsmith.config.toml"),
+                    twigsmith::config::render(twigsmith::config::Format::Toml, &proposed),
                 )
                 .unwrap();
                 let options = start::Options {
@@ -1344,7 +1339,7 @@ fn advanced_published_hotfix_resume_selects_policy_without_new_creation_input() 
                 assert_eq!(oid(&local, "HEAD"), published);
                 assert_eq!(oid(&local, "main"), base);
                 let raw = local
-                    .success(&["config", "--get", "branch.hotfix/train.oneflow-policy"])
+                    .success(&["config", "--get", "branch.hotfix/train.twigsmith-policy"])
                     .stdout;
                 let record: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                 assert_eq!(record["policy"]["kind"], "hotfix");
@@ -1365,7 +1360,7 @@ fn advanced_published_hotfix_resume_selects_policy_without_new_creation_input() 
 
 #[test]
 fn fresh_hotfix_without_explicit_version_stops_before_fetch_or_branch_creation() {
-    use git_oneflow::settings::{self, WorkstreamKind};
+    use twigsmith::settings::{self, WorkstreamKind};
     isolated(
         "fresh_hotfix_without_explicit_version_stops_before_fetch_or_branch_creation",
         true,
@@ -1374,8 +1369,8 @@ fn fresh_hotfix_without_explicit_version_stops_before_fetch_or_branch_creation()
             let mut proposed = settings::Settings::default();
             settings::oneflow_bundle(&mut proposed, None);
             fs::write(
-                local.path().join(".git/git-oneflow.config.toml"),
-                git_oneflow::config::render(git_oneflow::config::Format::Toml, &proposed),
+                local.path().join(".git/twigsmith.config.toml"),
+                twigsmith::config::render(twigsmith::config::Format::Toml, &proposed),
             )
             .unwrap();
             let options = start::Options {
