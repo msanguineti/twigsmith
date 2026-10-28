@@ -15,9 +15,11 @@ pub struct FileState {
 
 pub fn snapshot(root: &Path) -> BTreeMap<PathBuf, FileState> {
     fn visit(root: &Path, path: &Path, result: &mut BTreeMap<PathBuf, FileState>) {
-        let metadata = fs::symlink_metadata(path).unwrap();
+        let metadata = fs::symlink_metadata(path)
+            .unwrap_or_else(|error| panic!("snapshot metadata {}: {error}", path.display()));
         let content = if metadata.is_file() {
-            fs::read(path).unwrap()
+            fs::read(path)
+                .unwrap_or_else(|error| panic!("snapshot read {}: {error}", path.display()))
         } else if metadata.file_type().is_symlink() {
             fs::read_link(path)
                 .unwrap()

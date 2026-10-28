@@ -18,10 +18,12 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
         .expect("temporary test root");
     let home = root.path().join("home");
     let config = root.path().join("config");
-    let empty_config = root.path().join("empty.gitconfig");
+    let fixture_config = root.path().join("fixture.gitconfig");
     fs::create_dir(&home).unwrap();
     fs::create_dir(&config).unwrap();
-    fs::write(&empty_config, "").unwrap();
+    // Background maintenance may outlive a Git command and mutate fixture
+    // metadata during a subsequent whole-tree observation.
+    fs::write(&fixture_config, "[maintenance]\n\tauto = false\n").unwrap();
 
     let mut child = Command::new(env::current_exe().unwrap());
     child.env_clear();
@@ -60,8 +62,8 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", &config)
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_SYSTEM", &empty_config)
-        .env("GIT_CONFIG_GLOBAL", &empty_config)
+        .env("GIT_CONFIG_SYSTEM", &fixture_config)
+        .env("GIT_CONFIG_GLOBAL", &fixture_config)
         .env("GIT_ATTR_NOSYSTEM", "1")
         // ./dev puts temporary directories inside the project checkout. Stop
         // discovery at the fixture parent instead of inspecting that checkout.

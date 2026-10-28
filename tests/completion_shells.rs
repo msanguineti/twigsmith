@@ -239,7 +239,7 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
                     quote(functions.to_str().unwrap())
                 ));
             }
-            init.push_str(&format!("autoload -Uz compinit\ncompinit -D\nsource {}\nPS1='TWIGSMITH_READY> '\ncount=0\ntgi() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ntwigsmith() {{ tgi \"$@\"; }}\n", quote(script.to_str().unwrap()), quote(capture.to_str().unwrap())));
+            init.push_str(&format!("autoload -Uz compinit\ncompinit -i -D\nsource {}\nPS1='TWIGSMITH_READY> '\ncount=0\ntgi() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ntwigsmith() {{ tgi \"$@\"; }}\n", quote(script.to_str().unwrap()), quote(capture.to_str().unwrap())));
             fs::write(&rc, init).unwrap();
             let mut command = Command::new("setsid");
             command

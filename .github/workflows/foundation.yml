@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+env:
+  TWIGSMITH_DEV_FAIL_FAST: '1'
+
 jobs:
   check:
     runs-on: ubuntu-24.04
@@ -41,6 +44,7 @@ jobs:
           bash --version
           fish --version
           zsh --version
+          zsh -dfc 'autoload -Uz compaudit; compaudit || true'
           pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion; if ($PSVersionTable.PSVersion -lt [version]"7.3") { exit 1 }'
       - name: Provision macOS shells
         if: runner.os == 'macOS'

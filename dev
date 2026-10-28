@@ -33,6 +33,14 @@ export CARGO_BUILD_RUSTC_WRAPPER=""
 export CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=""
 unset CLIPPY_DRIVER_PATH
 
+# CI opts in explicitly; ordinary local runs collect independent test failures.
+test_fail_fast=${TWIGSMITH_DEV_FAIL_FAST:-0}
+case "$test_fail_fast" in
+    0) cargo_failure_mode=--no-fail-fast ;;
+    1) cargo_failure_mode='' ;;
+    *) echo 'error: TWIGSMITH_DEV_FAIL_FAST must be 0 or 1' >&2; exit 2 ;;
+esac
+
 usage() {
     cat <<'EOF'
 Usage: ./dev COMMAND [ARGS]
@@ -51,6 +59,8 @@ Usage: ./dev COMMAND [ARGS]
   cargo [ARGS]    Invoke repository-local Cargo (e.g. cargo run -- --help)
   rustc [ARGS]    Invoke the pinned repository-local compiler
   help            Show these development commands
+
+Set TWIGSMITH_DEV_FAIL_FAST=1 to stop full and native-shell runs after a failed stage.
 EOF
 }
 
@@ -117,7 +127,7 @@ test_group() {
     esac
 }
 
-# Record failures without hiding command output or stopping later test stages.
+# Record failures without hiding command output. CI stops before later stages.
 failed_tests=''
 run_test() {
     test_label=$1
@@ -128,6 +138,9 @@ run_test() {
         test_status=$?
         failed_tests="${failed_tests}
   $test_label (exit $test_status)"
+        if [ "$test_fail_fast" = 1 ]; then
+            finish_tests || exit 1
+        fi
     fi
 }
 
@@ -159,9 +172,9 @@ full_tests() {
     executed_targets=' '
     for full_target in $ordered_targets; do
         if [ "$full_target" = @units ]; then
-            run_test 'library and binary unit tests' "$cargo" test --locked --no-fail-fast --lib --bins
+            run_test 'library and binary unit tests' "$cargo" test --locked ${cargo_failure_mode:+"$cargo_failure_mode"} --lib --bins
         elif [ -f "tests/$full_target.rs" ] || [ -f "tests/$full_target/main.rs" ]; then
-            run_test "$full_target" "$cargo" test --locked --no-fail-fast --test "$full_target"
+            run_test "$full_target" "$cargo" test --locked ${cargo_failure_mode:+"$cargo_failure_mode"} --test "$full_target"
             executed_targets="$executed_targets$full_target "
         fi
     done
@@ -175,10 +188,10 @@ full_tests() {
         case "$executed_targets" in
             *" $full_target "*) continue ;;
         esac
-        run_test "$full_target" "$cargo" test --locked --no-fail-fast --test "$full_target"
+        run_test "$full_target" "$cargo" test --locked ${cargo_failure_mode:+"$cargo_failure_mode"} --test "$full_target"
         executed_targets="$executed_targets$full_target "
     done
-    run_test doctests "$cargo" test --locked --no-fail-fast --doc
+    run_test doctests "$cargo" test --locked ${cargo_failure_mode:+"$cargo_failure_mode"} --doc
     test_shells
     finish_tests
 }
@@ -225,7 +238,7 @@ test_shells() {
         esac
         shell_filter=$shell_name
         [ "$shell_name" != pwsh ] || shell_filter=powershell
-        set -- test --locked --no-fail-fast
+        set -- test --locked ${cargo_failure_mode:+"$cargo_failure_mode"}
         for shell_target in $shell_targets; do
             set -- "$@" --test "$shell_target"
         done
@@ -317,7 +330,7 @@ case "$command" in
         if [ "$#" -eq 0 ]; then
             full_tests
         else
-            run_test "regular suite" "$cargo" test --locked --no-fail-fast "$@"
+            run_test "regular suite" "$cargo" test --locked ${cargo_failure_mode:+"$cargo_failure_mode"} "$@"
             test_shells
             finish_tests
         fi

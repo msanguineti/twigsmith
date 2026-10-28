@@ -221,8 +221,10 @@ function check
     set -l actual (complete -C "$argv[1]" | string split -f 1 \t)
     set -e argv[1]
     test (count $actual) -eq (count $argv); or exit 1
-    for i in (seq (count $argv))
+    set -l i 1
+    while test $i -le (count $argv)
         test "$actual[$i]" = "$argv[$i]"; or exit 1
+        set i (math $i + 1)
     end
 end
 check 'tgi st' start status

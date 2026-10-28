@@ -45,7 +45,7 @@ also the Linux foundation CI entry point: it checks formatting, builds both
 executables, runs Clippy with warnings treated as errors, runs the regular suite,
 and then selects external-shell tests whose runtimes are available locally.
 Formatting, build, and lint failures stop the check before tests start. Once
-running tests, complete `./dev test` and `./dev check` use Cargo's
+running tests locally, complete `./dev test` and `./dev check` use Cargo's
 `--no-fail-fast`: test failures do not stop later suites. Full runs execute
 CLI smoke/activity, configuration, shared foundations/status/completion, start,
 save, finish/history, and finally end-to-end lifecycle/direct/hosted suites.
@@ -59,6 +59,15 @@ compiles its ordinary targets, including examples, before the ordered run. `./de
 `./dev test-group completion` also collect failures across their test stages.
 Cargo reports failed targets and individual tests; the launcher ends with a
 failed-stage/runtime summary and exits unsuccessfully if any stage failed.
+CI sets `TWIGSMITH_DEV_FAIL_FAST=1` for Unix launcher invocations: full runs,
+native-shell runs, and an unfiltered `test-group completion` stop after the first
+failed test suite or stage, report that failure, and exit unsuccessfully. Each
+suite keeps its normal internal test parallelism and completes its test harness;
+later Cargo targets and native runtimes do not start. Successful runs retain the
+same coverage. Reproduce that mode locally with
+`TWIGSMITH_DEV_FAIL_FAST=1 ./dev check`; leave the variable unset or set it to `0`
+to collect failures across test stages. The native-completion OS matrix keeps
+independent jobs running when another platform fails.
 Focused test invocations preserve Cargo's default failure behavior and forward
 caller arguments unchanged; pass `--no-fail-fast` when collecting all failures
 in a focused selection. Compilation errors can still prevent Cargo from starting

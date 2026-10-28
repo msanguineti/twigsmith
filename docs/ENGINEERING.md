@@ -1422,7 +1422,10 @@ hooks, signing failures, linked worktrees, unusual byte paths, remote races, and
 interrupted processes. Whole-fixture snapshot tests compare file content,
 permissions, timestamps, and directory entries around assessment/revalidation,
 including metadata; [snapshot support](../tests/support/snapshot.rs) implements
-those checks. Terminal fixtures exercise complete-line input and live output.
+those checks. The isolated test Git configuration disables automatic maintenance
+so a background maintenance process cannot change metadata during an observation;
+application Git configuration remains the developer's own. Terminal fixtures
+exercise complete-line input and live output.
 These tests establish the covered behavior; they do not establish hosted-provider
 authentication compatibility or universal Git-version/platform support. The
 documented development path is Linux, with recovery fixtures grounded in Git

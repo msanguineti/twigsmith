@@ -946,7 +946,7 @@ fn fresh_zsh_reads_persistent_registration_and_live_refs() {
                     quote(path.to_str().unwrap())
                 ));
             }
-            init.push_str("autoload -Uz compinit\ncompinit -D\n");
+            init.push_str("autoload -Uz compinit\ncompinit -i -D\n");
             fs::write(&profile, init).unwrap();
             check(
                 &run(

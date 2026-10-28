@@ -4094,17 +4094,17 @@ fn completion_conditional_local_delete_rejects_races_and_transaction_hooks() {
                     "prepared-change" => Some(hook(
                         &f,
                         "reference-transaction",
-                        "if [ \"$1\" = prepared ]; then git config remote.fork.pushurl /changed; fi",
+                        "if [ \"$1\" = prepared ] && grep -Eq '^[^ ]+ 0+ refs/heads/A$'; then git config remote.fork.pushurl /changed; fi",
                     )),
                     "prepared-reject" => Some(hook(
                         &f,
                         "reference-transaction",
-                        "if [ \"$1\" = prepared ]; then exit 1; fi",
+                        "if [ \"$1\" = prepared ] && grep -Eq '^[^ ]+ 0+ refs/heads/A$'; then exit 1; fi",
                     )),
                     "verbose" => Some(hook(
                         &f,
                         "reference-transaction",
-                        "if [ \"$1\" = prepared ]; then head -c 131072 /dev/zero >&2; fi",
+                        "if [ \"$1\" = prepared ] && grep -Eq '^[^ ]+ 0+ refs/heads/A$'; then head -c 131072 /dev/zero >&2; fi",
                     )),
                     _ => None,
                 };
