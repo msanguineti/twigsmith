@@ -52,7 +52,9 @@ Usage: ./dev COMMAND [ARGS]
                   Build an isolated optimized native archive and provenance files
   verify-native ARCHIVE [--extract-to DIR]
                   Verify native archive integrity and optionally extract it
-  test-packaging  Run native packaging format and failure regression checks
+  package-npm ARCHIVE OUTPUT --archive-sha256 HASH --payload-sha256 HASH
+                  Package a verified native candidate for npm
+  test-packaging  Run native and npm packaging format and failure regression checks
   native-qualify [ARGS]
                   Run extracted-artifact workflow/runtime qualification
   test-shells [--require-all]
@@ -295,7 +297,11 @@ case "$command" in
         ;;
     package-native) exec python3 "$repo_dir/tools/native_package.py" build "$@" ;;
     verify-native) exec python3 "$repo_dir/tools/native_package.py" verify "$@" ;;
-    test-packaging) exec python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@" ;;
+    package-npm) exec python3 "$repo_dir/tools/npm_package.py" "$@" ;;
+    test-packaging)
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@"
+        exec python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_package.py' "$@"
+        ;;
     native-qualify) exec python3 "$repo_dir/tools/qualify_native.py" "$@" ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
     *) usage >&2; exit 2 ;;
