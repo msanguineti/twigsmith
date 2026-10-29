@@ -39,7 +39,7 @@ signing/transport helpers, and project-check tools are needed when you select th
 features. Optional completion shells have their own requirements below.
 
 The current candidate target is Linux x86_64 GNU. The selected build baseline is
-Ubuntu 22.04 with glibc 2.35. CI qualifies the exact artifact on Ubuntu
+Ubuntu 22.04 with glibc 2.35. Candidate preparation qualifies the exact artifact on Ubuntu
 22.04/24.04/26.04. A Debian development-host run alone establishes no
 Ubuntu or universal Linux compatibility. Ordinary standard-support and community-LTS
 systems are eligible for qualification; paid extended-support-only releases are

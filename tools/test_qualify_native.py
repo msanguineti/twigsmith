@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -37,7 +38,7 @@ class QualificationTests(unittest.TestCase):
         self.fake.write_text(f"#!/bin/sh\nif [ \"$1\" = --list ]; then echo '{listing}'; else echo '{result}'; fi\n")
         self.fake.chmod(0o755)
         driver.write_json(self.harness / "harnesses.json", {
-            "driver_sha256": driver.digest(driver.__file__), "executables": {"fake": driver.digest(self.fake)}})
+            "source_revision": "fixture-revision", "source_dirty": False})
 
     def run_driver(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -51,6 +52,7 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual(len(report["tests"]), 7)
         self.assertTrue(report["gaps"])
         self.assertNotIn("cargo", report["runtime_tools"])
+        self.assertEqual(report["source"]["source_revision"], "fixture-revision")
 
     def test_missing_or_linked_alias_never_falls_back(self):
         alias = self.artifact / "tgi"
@@ -69,11 +71,6 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertIn("error", report)
 
-    def test_changed_harness_cannot_inherit_preparation(self):
-        self.fake.write_text("#!/bin/sh\nexit 0\n")
-        with self.assertRaisesRegex(ValueError, "changed harness"):
-            self.run_driver()
-
     def test_absent_selected_fixture_is_an_error(self):
         self.set_harness("other: test", "1 passed; 0 failed")
         with self.assertRaisesRegex(ValueError, "selected fixture absent"):
@@ -83,6 +80,25 @@ class QualificationTests(unittest.TestCase):
         self.set_harness("fixture: test", "0 passed; 0 failed")
         self.assertEqual(self.run_driver(), 1)
         self.assertFalse(json.loads((self.args.evidence_dir / "qualification.json").read_text())["passed"])
+
+    def test_empty_selection_cannot_pass_from_diagnostic_probes(self):
+        with patch.object(driver, "cases", return_value={}):
+            with self.assertRaisesRegex(ValueError, "no qualification fixtures selected"):
+                self.run_driver()
+
+    def test_fixture_listing_failure_keeps_diagnostics(self):
+        self.fake.write_text("#!/bin/sh\necho 'fixture loader failure' >&2\nexit 3\n")
+        with self.assertRaisesRegex(RuntimeError, "fixture listing failed"):
+            self.run_driver()
+        self.assertIn("fixture loader failure", (self.args.evidence_dir / "fake--list.log").read_text())
+
+    def test_timed_out_fixture_keeps_partial_log(self):
+        log = Path(self.temp.name) / "timeout.log"
+        timeout = subprocess.TimeoutExpired([str(self.fake)], 300, output=b"partial diagnostics\n")
+        with patch.object(driver.subprocess, "run", side_effect=timeout):
+            with self.assertRaisesRegex(RuntimeError, "fixture timed out"):
+                driver.fixture_output([str(self.fake)], log, {}, Path(self.temp.name))
+        self.assertIn("partial diagnostics", log.read_text())
 
 
 if __name__ == "__main__":

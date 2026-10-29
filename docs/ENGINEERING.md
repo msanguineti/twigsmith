@@ -135,36 +135,28 @@ shared Rust dispatcher; the archive stores two regular executable files so eithe
 name works after ordinary extraction. CLI syntax, settings and Git semantics remain
 owned by the application. The archive adds no consumer wrapper or install script.
 
-Packaging uses a fresh locked release build for the explicit Linux x86_64 GNU
-target and validates the pinned native compiler and matching package/lock versions.
-It binds bytes to a Git commit/tree and a hash of tracked and nonignored untracked
-source paths, modes and contents; the before/after comparison rejects source changes
-during the build. Clean source is the normal candidate contract. Explicit dirty
-probes retain their dirty flag and snapshot identity. Build outputs live in ignored
-scratch and publish through a completed-directory rename, preventing stale or
-partial output from appearing as a successful candidate.
+Packaging uses a fresh locked release build for Linux x86_64 GNU and validates
+the pinned compiler and matching package/lock versions. CI candidates come from a
+controlled clean checkout of the selected commit; local packages are labelled
+development probes. The manifest records commit, tree, toolchain and CI run where
+available. Ordinary Git status is not an unrestricted filesystem attestation. A
+completed-directory rename prevents failed builds from presenting partial output.
 
-The manifest binds the archive and four exact members to toolchain, build and
-machine identity. The verifier rejects duplicate, traversing, linked, nonregular,
-wrong-mode and mismatched members before writing extracted bytes. It checks the
-ELF class/machine and expected native executable type; runtime qualification owns
-loader/shared-library and symbol-version inspection plus actual launch/workflow
-behavior. Hash consistency supplies no independent publisher authentication.
-The manifest explicitly selects the `twigsmith` payload for later npm packaging;
-that channel must consume accepted bytes by hash rather than rebuild them.
+The verifier checks archive and member hashes, exact names, modes and ELF
+architecture, and rejects traversal, links, duplicate or nonregular members before
+extraction. Hash consistency does not independently authenticate a publisher. The
+manifest identifies the `twigsmith` payload for later npm work; that channel must
+consume accepted bytes by hash rather than rebuild them.
 
-CI builds on Ubuntu 22.04/glibc 2.35 with the pinned Rust toolchain and qualifies
-the same archive on Ubuntu 22.04/24.04/26.04. Each runtime job verifies archive
-identity and inspects the extracted payload before executing the selected fixtures. Linux x86_64 GNU is a
-bounded target, not a promise for every Linux distribution or kernel. Ordinary
-standard-support and community-LTS userspaces are eligible; Git 2.45 remains a
-separate prerequisite that users may upgrade. Modern development tools present on
-a CI host are excluded from consumer PATH and their absence from application
-dependencies is checked at the ELF and runtime boundaries. The selected runner
-kernels bound the demonstrated platform behavior. The
-[development guide](DEVELOPMENT.md#native-candidate-packaging) owns packaging and
-qualification commands; the [user guide](USAGE.md#native-archive-candidates) owns
-extraction and runtime prerequisites.
+Normal CI checks source and completion behavior. Explicit candidate preparation
+builds on Ubuntu 22.04 and qualifies the same archive on Ubuntu 22.04/24.04/26.04.
+Qualification checks loader, dependencies and runtime search paths and executes
+representative real-Git workflows using extracted binaries and an isolated PATH.
+Its results bind source, run and payload hashes; compatibility is limited to the
+observed environments and kernels. Git 2.45 remains a separate prerequisite.
+The [development guide](DEVELOPMENT.md#native-candidate-packaging) owns packaging
+and qualification commands; the [user guide](USAGE.md#native-archive-candidates)
+owns extraction and runtime prerequisites.
 
 ## Shell completion
 

@@ -25,19 +25,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 archive="git-$version.tar.xz"
 source_url="https://cdn.kernel.org/pub/software/scm/git/$archive"
-checksum_url=https://www.kernel.org/pub/software/scm/git/sha256sums.asc
 
-# Pins were read independently from this upstream checksum document on 2026-10-29.
-# Fetch the document separately from the source download and retain it. We check
-# its exact release record and the pinned digest, not an unauthenticated local
-# hash alone. This is HTTPS/upstream-checksum verification, not PGP verification.
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-    --retry 3 "$checksum_url" -o "$evidence/upstream-sha256sums.asc"
+# Reviewed against the upstream checksum document on 2026-10-29. The pinned
+# digest checks the HTTPS source archive; it does not assert PGP authentication.
 printf '%s  %s\n' "$expected" "$archive" > "$evidence/selected-source.sha256"
-if ! grep -Fxq "$expected  $archive" "$evidence/upstream-sha256sums.asc"; then
-    echo 'error: upstream checksum record does not match the reviewed Git pin' >&2
-    exit 1
-fi
 curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
     --retry 3 "$source_url" -o "$work/$archive"
 (cd "$work" && sha256sum --check "$evidence/selected-source.sha256")
@@ -52,21 +43,20 @@ make -C "$work/git-$version" prefix="$prefix" \
     > "$evidence/install.log" 2>&1 || { cat "$evidence/install.log" >&2; exit 1; }
 test "$("$prefix/bin/git" --version)" = "git version $version"
 "$prefix/bin/git" --no-lazy-fetch --version
-python3 - "$evidence" "$version" "$prefix" "$expected" "$source_url" "$checksum_url" <<'PY'
+python3 - "$evidence" "$version" "$prefix" "$expected" "$source_url" <<'PY'
 import hashlib
 import json
 import pathlib
 import subprocess
 import sys
 
-evidence, version, prefix, digest, source_url, checksum_url = sys.argv[1:]
+evidence, version, prefix, digest, source_url = sys.argv[1:]
 git = pathlib.Path(prefix) / "bin/git"
 record = {
     "version": version,
     "source_url": source_url,
     "source_sha256": digest,
-    "checksum_url": checksum_url,
-    "verification": "HTTPS upstream checksum record and reviewed SHA-256 pin; PGP not verified",
+    "verification": "HTTPS source archive and reviewed SHA-256 pin; PGP not verified",
     "pin_checked_on": "2026-10-29",
     "build_flags": ["NO_RUST=YesPlease", "NO_GETTEXT=YesPlease", "NO_TCLTK=YesPlease"],
     "prefix": prefix,

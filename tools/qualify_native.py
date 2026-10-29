@@ -115,21 +115,20 @@ def prepare(args):
             if message.get("rendered"):
                 print(message["rendered"], file=sys.stderr, end="")
         raise RuntimeError("fixture harness compilation failed")
-    executables = {}
+    executables = set()
     for line in build.stdout.splitlines():
         item = json.loads(line)
         name = item.get("target", {}).get("name")
         if item.get("reason") == "compiler-artifact" and item.get("executable") and name in suites:
             target = directory / name
             shutil.copy2(item["executable"], target)
-            executables[name] = digest(target)
+            executables.add(name)
     if set(executables) != set(suites):
         raise RuntimeError(f"missing compiled harnesses: {set(suites) - set(executables)}")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True)
     write_json(directory / "harnesses.json", {
-        "schema": 1, "source_revision": revision, "source_dirty": bool(dirty),
-        "driver_sha256": digest(__file__), "executables": executables,
+        "source_revision": revision, "source_dirty": bool(dirty),
     })
     print(f"Prepared {len(executables)} fixture harnesses in {directory}")
 
@@ -155,22 +154,21 @@ def qualify(args, evidence):
     artifact = args.artifact_dir.resolve()
     harness = args.harness_dir.resolve()
     manifest = json.loads((harness / "harnesses.json").read_text())
-    if manifest["driver_sha256"] != digest(__file__):
-        raise ValueError("harness selection driver differs from prepared source")
     binaries = {name: checked_file(artifact / name) for name in ["twigsmith", "tgi"]}
     hashes = {name: digest(path) for name, path in binaries.items()}
     selected = cases(args.profile)
+    if not any(selected.values()):
+        raise ValueError("no qualification fixtures selected")
     for suite in selected:
-        path = checked_file(harness / suite)
-        if digest(path) != manifest["executables"][suite]:
-            raise ValueError(f"changed harness: {suite}")
+        checked_file(harness / suite)
     git = Path(args.git).resolve()
     checked_file(git)
     report = {
         "schema": 1, "profile": args.profile, "artifact_sha256": hashes,
-        "harness_manifest": manifest, "platform": platform.platform(),
-        "uname": list(platform.uname()), "libc": os.confstr("CS_GNU_LIBC_VERSION"),
-        "os_release": Path("/etc/os-release").read_text(),
+        "source": manifest, "platform": platform.platform(),
+        "run": {name.removeprefix("GITHUB_").lower(): os.environ[name]
+                for name in ["GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"]
+                if name in os.environ},
         "git": str(git), "git_version": subprocess.check_output([str(git), "--version"], text=True).strip(),
         "git_exec_path": subprocess.check_output([str(git), "--exec-path"], text=True).strip(),
         "tests": [], "gaps": list(GAPS),
@@ -183,12 +181,12 @@ def qualify(args, evidence):
         temporary = Path(temporary)
         runtime = temporary / "runtime-bin"
         runtime.mkdir()
-        tools = {}
+        tools = []
         for name in UTILITIES:
             source = shutil.which(name, path=os.defpath)
             if source:
                 (runtime / name).symlink_to(source)
-                tools[name] = source
+                tools.append(name)
         (runtime / "git").symlink_to(git)
         report["runtime_tools"] = tools
         env = {"PATH": str(runtime), "TWIGSMITH_ARTIFACT_DIR": str(artifact),
@@ -214,15 +212,15 @@ def qualify(args, evidence):
                 report["tests"].append({"suite": name, "name": label, "passed": passed, "exit": output.returncode})
         for suite, names in selected.items():
             executable = str(harness / suite)
-            listing = subprocess.check_output([executable, "--list"], env=env, cwd=temporary, text=True)
+            listing = fixture_output([executable, "--list"], evidence / f"{suite}--list.log", env, temporary)
+            if listing.returncode:
+                raise RuntimeError(f"fixture listing failed: {suite} (exit {listing.returncode})")
             for name in names:
-                if f"{name}: test\n" not in listing:
+                if f"{name}: test\n" not in listing.stdout:
                     raise ValueError(f"selected fixture absent: {suite}::{name}")
                 started = time.monotonic()
-                output = subprocess.run([executable, "--exact", name, "--include-ignored", "--nocapture"],
-                                        env=env, cwd=temporary, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                        text=True, timeout=300)
-                (evidence / f"{suite}--{name.replace('::', '--')}.log").write_text(output.stdout)
+                output = fixture_output([executable, "--exact", name, "--include-ignored", "--nocapture"],
+                                        evidence / f"{suite}--{name.replace('::', '--')}.log", env, temporary)
                 passed = output.returncode == 0 and "1 passed; 0 failed" in output.stdout
                 report["tests"].append({"suite": suite, "name": name, "passed": passed,
                                         "exit": output.returncode, "seconds": round(time.monotonic() - started, 3)})
@@ -233,6 +231,24 @@ def qualify(args, evidence):
     report["passed"] = all(test["passed"] for test in report["tests"])
     write_json(evidence / "qualification.json", report)
     return 0 if report["passed"] else 1
+
+
+def fixture_output(command, log, env, cwd):
+    """Keep diagnostics even when a fixture cannot start or times out."""
+    try:
+        output = subprocess.run(command, env=env, cwd=cwd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, timeout=300)
+    except subprocess.TimeoutExpired as error:
+        partial = error.stdout or b""
+        if isinstance(partial, bytes):
+            partial = partial.decode(errors="replace")
+        log.write_text(partial + "\nfixture timed out after 300 seconds\n")
+        raise RuntimeError(f"fixture timed out: {command[0]}; see {log}") from error
+    except OSError as error:
+        log.write_text(f"fixture could not start: {error}\n")
+        raise
+    log.write_text(output.stdout)
+    return output
 
 
 def main():

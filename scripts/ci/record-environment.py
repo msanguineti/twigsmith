@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record actual CI identity and userspace; a container shares its host kernel."""
+"""Record the actual qualification host and CI run identity."""
 import json
 import os
 from pathlib import Path
@@ -30,12 +30,9 @@ record = {
         "GITHUB_SHA", "GITHUB_REF", "GITHUB_HEAD_REF", "GITHUB_BASE_REF",
         "GITHUB_REPOSITORY", "GITHUB_WORKFLOW", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA",
         "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_JOB", "RUNNER_OS",
-        "RUNNER_ARCH", "RUNNER_NAME", "ImageOS", "ImageVersion", "ImageRelease",
-        "TWIGSMITH_CONTAINER_DIGEST")},
+        "RUNNER_ARCH", "ImageOS", "ImageVersion")},
     "observations": [observe(argv) for argv in (
-        ["uname", "-a"], ["ldd", "--version"], ["readlink", "-f", "/bin/sh"],
-        ["dpkg-query", "-W", "libc6", "libgcc-s1", "libstdc++6", "dash", "bash"],
-        ["bash", "--version"], ["cc", "--version"], ["git", "--version"],
+        ["ldd", "--version"],
     )],
 }
 output.write_text(json.dumps(record, indent=2) + "\n")

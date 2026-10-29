@@ -265,66 +265,48 @@ For optimized executables:
 
 ## Native candidate packaging
 
-The native package format targets `x86_64-unknown-linux-gnu`. The local candidate
-version is **0.1.0-beta.1**, taken from matching `Cargo.toml` and `Cargo.lock` package
-identities. Use the pinned toolchain through `./dev`. On the selected Ubuntu 22.04
-build runner, after bootstrap, run:
+Normal push and pull-request CI runs `./dev check`, packaging regression tests,
+and the native completion checks. Manual candidate preparation builds a single
+Linux x86_64 GNU archive on Ubuntu 22.04 and qualifies those same bytes on Ubuntu
+22.04, 24.04 and 26.04. It does not publish them. Manual dispatch requires the
+workflow to be enabled for dispatch on the repository's default branch.
+
+For a local development probe, use a fresh output and extraction directory:
 
 ```sh
-./dev package-native .dev/tmp/native-candidate
-./dev verify-native .dev/tmp/native-candidate/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
+./dev package-native .dev/tmp/native-probe --allow-dirty
+./dev verify-native .dev/tmp/native-probe/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith probe"
 ./dev test-packaging
 ```
 
-The output directory and extraction directory must not exist. Packaging requires
-clean, committed source by default. `--allow-dirty` permits an explicitly labelled
-local probe; it does not create a source-attested release candidate. A target
-option accepts only `--target x86_64-unknown-linux-gnu`. The launcher creates a new,
-private Cargo output directory, builds both optimized executables with `--locked`,
-checks their version output, and removes that build directory afterward. Ordinary
-`target/` outputs and incompatible previous build caches are not reused. Rust,
-compiler/linker and release-profile environment overrides are rejected where they
-could change the recorded build recipe. Existing output is never overwritten; a
-failed build or verification publishes no output directory. Keep package outputs
-under ignored `.dev/` so they do not change source identity during packaging.
+The version comes from matching `Cargo.toml` and `Cargo.lock` identities. The
+only target is `x86_64-unknown-linux-gnu`. Packaging uses a fresh optimized
+build with the pinned Rust toolchain and locked dependencies. It checks both
+executable versions and publishes a complete output directory only after successful
+verification; existing output is never overwritten. Local builds are labelled
+`development-probe`; `--allow-dirty` permits uncommitted source for a probe.
+CI candidates use a controlled clean checkout of the selected commit and record the
+commit, tree, toolchain and CI run. This is provenance information, not independent
+publisher authentication or a guarantee of reproducible builds.
 
-A successful output directory contains three files sharing the version/target stem:
+The output contains a `.tar.gz` with both regular executables, the MIT license and
+extraction guidance, a `.manifest.json` with member and archive hashes and build
+metadata, and a `.sha256` file for the archive and manifest. Keep the three files
+together. `verify-native` checks identity, hashes, archive members, modes and ELF
+architecture, and optionally extracts into a new directory. It runs without Rust.
+The current verifier handles the current manifest format; earlier retained
+candidates can be verified with the tooling from their source revision.
 
-- `.tar.gz`: regular executable entries `twigsmith` and `tgi`, `LICENSE`, and
-  `README.txt` within the named package directory.
-- `.manifest.json`: archive and file hashes/modes, selected future npm payload
-  (`twigsmith`), exact commit/tree and source snapshot, dirty flag, pinned compiler
-  and Cargo versions, build arguments/profile, libc/OS/kernel and available runner
-  image/run identity.
-- `.sha256`: hashes of the intact archive and manifest. These establish consistency,
-  independently of publisher authenticity.
-
-`verify-native` works before Rust bootstrap. It verifies checksums, package identity,
-source/build provenance, exact member names and types, executable permissions,
-payload hashes and ELF architecture, license and extraction guidance. It extracts
-verified bytes with explicit modes into a new directory, including paths with
-spaces. Transfer the intact archive and both sidecars between qualification jobs;
-repacking changes its identity. Package byte reproducibility across independent
-compiler runs is not asserted.
-
-`./dev native-qualify --help` describes artifact-driven runtime checks. Its Cargo
-harnesses are test infrastructure; the consumer commands execute the extracted
-candidate bytes through an isolated PATH. The CI qualification helper requires
-`readelf` from binutils and inspects each extracted executable’s loader, libraries
-and mandatory and weak symbol requirements against the runtime userspace. It retains
-hash-bound inspection and startup diagnostics. Runtime evidence records selected
-Git, userspace, kernel and runner identity. Tool installation on a
-hosted runner does not establish a consumer dependency or a minimal runtime.
-
-CI builds the candidate on the native `ubuntu-22.04` hosted runner and qualifies
-the same archive on Ubuntu 22.04/24.04/26.04. Each run retains the source-bound
-archive and qualification evidence. Development-host results are supplemental.
-The minimum-series Git sample is 2.45.4 and the reference sample is 2.56.0. The
-feature floor remains Git 2.45. Build environment and archive qualification are
-separate: a successful package command on another host proves package creation,
-not the baseline ABI contract. Preserve the glibc 2.35 baseline when migrating
-away from the deprecated 22.04 runner before its first March 2027 brownout or
-earlier unavailability; runner retirement and OS maintenance are separate dates.
+`./dev native-qualify --help` describes extracted-artifact runtime checks. The
+fixture harnesses use real Git and select the extracted executables through an
+isolated PATH without Rust or Node/npm. CI checks executable architecture, loader,
+dependencies and runtime search paths, then performs actual startup and workflow
+checks. It records the selected Git version, source, run and payload hashes along
+with failure diagnostics. The Git feature floor is 2.45; the minimum-series sample
+is 2.45.4 and the reference sample is 2.56.0. Results on a development host do
+not establish compatibility with the selected Ubuntu runners. Preserve the glibc
+2.35 build baseline when replacing the Ubuntu 22.04 runner; its retirement is
+separate from Ubuntu's maintenance lifecycle.
 
 ## Troubleshooting
 

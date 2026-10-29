@@ -35,6 +35,9 @@ Optional completion shells have separate compatibility requirements.
 Verify the adjacent .sha256 and .manifest.json with the repository's
 ./dev verify-native command before using a candidate. SHA-256 establishes
 consistency with those files; it does not independently authenticate a publisher.
+The manifest labels CI candidates and local development probes and records the
+checkout, toolchain and available CI run. It does not attest arbitrary local
+source bytes or establish reproducible compiler output.
 See the repository docs/USAGE.md for configuration and recovery guidance.
 """
 
@@ -47,68 +50,29 @@ def run(args, cwd=None, env=None):
     return subprocess.check_output(args, cwd=cwd, env=env, text=True).strip()
 
 
-def git_output(repo, *arguments, text=True):
-    # Provenance describes stored commits, never a local replacement view of
-    # them. Keep every metadata/object/index read on this same Git boundary.
-    output = subprocess.check_output(
-        ["git", "--no-replace-objects", *arguments], cwd=repo, text=text
-    )
-    return output.strip() if text else output
+def git_output(repo, *arguments):
+    return run(["git", *arguments], repo)
 
 
 def identity(repo):
-    revision = git_output(repo, "rev-parse", "HEAD")
-    tree = git_output(repo, "rev-parse", f"{revision}^{{tree}}")
-    if git_output(repo, "rev-parse", "--show-object-format") != "sha1":
-        raise ValueError("unsupported Git object format for native package provenance")
-    dirty = bool(git_output(repo, "status", "--porcelain", "--untracked-files=all"))
-    # Git status can deliberately trust the index for assume-unchanged and
-    # skip-worktree entries. Read committed objects and actual filesystem bytes
-    # independently: those flags must never attest changed input as clean.
-    committed = {}
-    entries = git_output(repo, "ls-tree", "-rz", "--full-tree", revision, text=False).split(b"\0")
-    for entry in filter(None, entries):
-        metadata, name = entry.split(b"\t", 1)
-        mode, kind, object_id = metadata.split(b" ")
-        if kind != b"blob" or mode not in (b"100644", b"100755", b"120000"):
-            raise ValueError(f"unsupported committed source entry: {os.fsdecode(name)}")
-        committed[name] = mode, object_id.decode("ascii")
-    paths = git_output(repo, "ls-files", "--cached", "--others", "--exclude-standard", "-z", text=False).split(b"\0")
-    state = hashlib.sha256()
-    for name in sorted(set(paths).union(committed) - {b""}):
-        path = repo / os.fsdecode(name)
-        for parent in path.relative_to(repo).parents:
-            ancestor = repo / parent
-            if ancestor.is_symlink():
-                raise ValueError(f"unsupported symlinked source directory: {ancestor}")
-        state.update(name + b"\0")
-        expected = committed.get(name)
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            state.update(b"deleted")
-            dirty = True
-            continue
-        if stat.S_ISLNK(metadata.st_mode):
-            data = os.fsencode(os.readlink(path))
-            state.update(b"symlink\0" + data)
-            mode = b"120000"
-        elif stat.S_ISREG(metadata.st_mode):
-            permissions = stat.S_IMODE(metadata.st_mode)
-            data = path.read_bytes()
-            state.update(str(permissions).encode() + b"\0")
-            state.update(hashlib.sha256(data).digest())
-            # Git records executable versus nonexecutable regular files. Be
-            # conservative about partial execute masks the tree cannot express.
-            executable = permissions & 0o111
-            mode = b"100755" if executable == 0o111 else b"100644" if not executable else None
-        else:
-            raise ValueError(f"unsupported source entry: {path}")
-        object_id = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-        if expected != (mode, object_id):
-            dirty = True
-    return {"revision": revision, "tree": tree, "dirty": dirty,
-            "snapshot_sha256": state.hexdigest()}
+    # CI supplies a controlled checkout. Ordinary Git metadata records that
+    # source; local status is useful context, not filesystem attestation.
+    return {"revision": git_output(repo, "rev-parse", "HEAD"),
+            "tree": git_output(repo, "rev-parse", "HEAD^{tree}"),
+            "dirty": bool(git_output(repo, "status", "--porcelain", "--untracked-files=all"))}
+
+
+def provenance_kind(source):
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return "development-probe"
+    if source["dirty"]:
+        raise ValueError("CI candidate requires a clean checkout")
+    if source["revision"] != os.environ.get("GITHUB_SHA"):
+        raise ValueError("CI candidate HEAD differs from selected GITHUB_SHA")
+    if not all(os.environ.get(name) for name in
+               ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")):
+        raise ValueError("CI candidate requires repository and run identity")
+    return "ci-candidate"
 
 
 def package_metadata(repo):
@@ -150,7 +114,7 @@ def write_bundle(output, version, payloads, provenance, epoch):
                     entry.mtime = epoch
                     tar.addfile(entry, io.BytesIO(files[name]))
     manifest = {
-        "schema": 1, "name": "twigsmith", "version": version, "target": TARGET,
+        "schema": 2, "name": "twigsmith", "version": version, "target": TARGET,
         "archive": {"name": archive.name, "sha256": digest(archive.read_bytes())},
         "files": {name: {"sha256": digest(data), "size": len(data),
                          "mode": format(MEMBERS[name], "04o")} for name, data in files.items()},
@@ -186,7 +150,7 @@ def verify(archive, extract_to=None):
     version = manifest["version"]
     if not isinstance(version, str) or not VERSION.fullmatch(version):
         raise ValueError("invalid manifest version")
-    if (manifest.get("schema") != 1 or manifest.get("name") != "twigsmith"
+    if (manifest.get("schema") != 2 or manifest.get("name") != "twigsmith"
             or manifest.get("target") != TARGET
             or stem != f"twigsmith-{version}-{TARGET}"
             or manifest.get("archive") != {"name": archive.name, "sha256": digest(archive_data)}
@@ -197,14 +161,20 @@ def verify(archive, extract_to=None):
     source = provenance["source"]
     if (not re.fullmatch(r"[a-f0-9]{40}", source["revision"])
             or not re.fullmatch(r"[a-f0-9]{40}", source["tree"])
-            or not re.fullmatch(r"[a-f0-9]{64}", source["snapshot_sha256"])
             or not isinstance(source["dirty"], bool)
+            or provenance["kind"] not in ("ci-candidate", "development-probe")
             or provenance["build"]["target"] != TARGET
             or provenance["build"]["profile"] != "release"
             or not provenance["toolchain"]["rustc"]
             or not provenance["toolchain"]["cargo"]
             or not provenance["environment"]["system"]):
         raise ValueError("incomplete source/build provenance")
+    if provenance["kind"] == "ci-candidate":
+        ci = provenance["environment"]["ci"]
+        if (source["dirty"] or ci.get("GITHUB_SHA") != source["revision"]
+                or not all(ci.get(name) for name in
+                           ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))):
+            raise ValueError("incomplete CI candidate source/run provenance")
     contents = {}
     with tarfile.open(fileobj=io.BytesIO(archive_data), mode="r:gz") as tar:
         entries = tar.getmembers()
@@ -255,6 +225,7 @@ def build(repo, output, allow_dirty, target):
     source = identity(repo)
     if source["dirty"] and not allow_dirty:
         raise ValueError("source is dirty; commit it or use --allow-dirty for a labelled probe")
+    kind = provenance_kind(source)
     version = package_metadata(repo)
     for name, value in os.environ.items():
         if value and (name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_BOOTSTRAP", "CC", "CFLAGS", "LDFLAGS")
@@ -270,7 +241,7 @@ def build(repo, output, allow_dirty, target):
         raise ValueError("compiler differs from the pinned native toolchain")
     epoch = int(git_output(repo, "show", "-s", "--format=%ct", source["revision"]))
     output.parent.mkdir(parents=True, exist_ok=True)
-    scratch = repo / ".dev/tmp/distribution-phase-2"
+    scratch = repo / ".dev/tmp/native-build"
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="native-build-", dir=scratch) as temporary:
         target_dir = Path(temporary) / "target"
@@ -291,7 +262,7 @@ def build(repo, output, allow_dirty, target):
         if source != identity(repo):
             raise ValueError("source changed during packaging; no candidate published")
         provenance = {
-            "source": source,
+            "kind": kind, "source": source,
             "toolchain": {"pin": pin, "rustc": rustc, "cargo": cargo},
             "build": {"target": TARGET, "profile": "release", "locked": True,
                       "arguments": arguments[1:], "rustflags": "", "source_date_epoch": epoch,
@@ -316,7 +287,8 @@ def main():
     package = commands.add_parser("build")
     package.add_argument("output")
     package.add_argument("--target", default=TARGET)
-    package.add_argument("--allow-dirty", action="store_true")
+    package.add_argument("--allow-dirty", action="store_true",
+                         help="allow uncommitted source for a local development probe")
     check = commands.add_parser("verify")
     check.add_argument("archive")
     check.add_argument("--extract-to")
@@ -327,7 +299,7 @@ def main():
         else:
             manifest = verify(args.archive, args.extract_to)
             print(f"verified {manifest['archive']['name']}: source {manifest['provenance']['source']['revision']}"
-                  + (" (dirty probe)" if manifest['provenance']['source']['dirty'] else ""))
+                  + f" ({manifest['provenance']['kind']})")
     except (ValueError, KeyError, IndexError, TypeError, AttributeError, OSError,
             tarfile.TarError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")

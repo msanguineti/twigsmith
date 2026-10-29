@@ -13,40 +13,69 @@ env:
 
 jobs:
   check:
-    # Preserve this build userspace until its replacement is explicitly selected.
-    # ubuntu-22.04 runner retirement is distinct from Ubuntu's OS maintenance.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Provision baseline build prerequisites
+      - name: Check available Git and build prerequisites
         run: |
+          git --no-lazy-fetch --version
           sudo apt-get update
-          sudo apt-get install --yes build-essential ca-certificates curl xz-utils python3 binutils perl libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev
-      - name: Build checksum-verified reference Git
-        run: |
-          sh scripts/ci/provision-git.sh 2.56.0 "$RUNNER_TEMP/git-2.56.0" "$RUNNER_TEMP/build-evidence/git-source"
-          echo "$RUNNER_TEMP/git-2.56.0/bin" >> "$GITHUB_PATH"
-      - name: Record baseline runner and userspace
-        run: python3 scripts/ci/record-environment.py "$RUNNER_TEMP/build-evidence/runner.json"
+          sudo apt-get install --yes build-essential python3 binutils
       - name: Bootstrap repository-local Rust
         run: ./dev bootstrap
-      - name: Check foundation
+      - name: Check source and inexpensive packaging regressions
         run: ./dev check
-      - name: Package identified native source
+
+  candidate:
+    if: github.event_name == 'workflow_dispatch'
+    # The hosted runner lifecycle is distinct from Ubuntu's maintenance dates.
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out the selected candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Provision build and qualification prerequisites
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          sudo apt-get update
+          sudo apt-get install --yes build-essential ca-certificates curl xz-utils python3 binutils perl libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev
+      - name: Select reference Git
+        id: git
+        run: |
+          if [ "$(git --version)" = 'git version 2.56.0' ]; then
+            echo "executable=$(command -v git)" >> "$GITHUB_OUTPUT"
+          else
+            sh scripts/ci/provision-git.sh 2.56.0 "$RUNNER_TEMP/reference-git" "$RUNNER_TEMP/build-evidence/git-source"
+            echo "executable=$RUNNER_TEMP/reference-git/bin/git" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Bootstrap repository-local Rust
+        run: ./dev bootstrap
+      - name: Check selected source
+        env:
+          REFERENCE_GIT: ${{ steps.git.outputs.executable }}
+        run: |
+          export PATH="$(dirname "$REFERENCE_GIT"):$PATH"
+          ./dev check
+      - name: Build one native candidate
         id: package
         run: ./dev package-native "$RUNNER_TEMP/native-candidate"
-      - name: Prepare reusable artifact fixture harnesses
+      - name: Prepare reusable fixture harnesses and reference Git
         run: |
           ./dev native-qualify prepare --harness-dir "$RUNNER_TEMP/native-harness"
           tar -czf "$RUNNER_TEMP/native-candidate/harness.tar.gz" -C "$RUNNER_TEMP/native-harness" .
-          cd "$RUNNER_TEMP/native-candidate"
-          sha256sum harness.tar.gz > harness.tar.gz.sha256
-      - name: Qualify the extracted baseline artifact with reference Git
-        run: sh scripts/ci/qualify-candidate.sh "$RUNNER_TEMP/native-candidate" "$RUNNER_TEMP/baseline-runtime" broad "$RUNNER_TEMP/git-2.56.0/bin/git"
-      - name: Retain intact candidate and reusable fixture bytes
+          if [ -d "$RUNNER_TEMP/reference-git" ]; then
+            tar -czf "$RUNNER_TEMP/native-candidate/reference-git.tar.gz" -C "$RUNNER_TEMP/reference-git" .
+          fi
+      - name: Qualify baseline bytes with reference Git
+        run: sh scripts/ci/qualify-candidate.sh "$RUNNER_TEMP/native-candidate" "$RUNNER_TEMP/baseline-runtime" broad '${{ steps.git.outputs.executable }}'
+      - name: Retain candidate and same-run qualification tools
         if: always() && steps.package.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -55,7 +84,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
-      - name: Retain baseline qualification and provisioning evidence
+      - name: Retain baseline qualification and provisioning logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -68,7 +97,7 @@ jobs:
 
   native-runtime:
     name: Native artifact (${{ matrix.os }}, Git ${{ matrix.git }})
-    needs: check
+    needs: candidate
     strategy:
       fail-fast: false
       matrix:
@@ -84,31 +113,42 @@ jobs:
             profile: representative
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Check out qualification tools at the same revision
+      - name: Check out qualification tools at the candidate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Download the baseline candidate without rebuilding it
+      - name: Download candidate and same-run fixture tools
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: native-candidate-${{ github.sha }}
           path: ${{ runner.temp }}/native-candidate
           digest-mismatch: error
-      - name: Provision Git build and qualification tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes build-essential ca-certificates curl xz-utils python3 binutils perl libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev
-      - name: Build independently selected checksum-verified Git
+      - name: Select qualification Git
+        id: git
         env:
           QUALIFICATION_GIT: ${{ matrix.git }}
         run: |
-          sh scripts/ci/provision-git.sh "$QUALIFICATION_GIT" "$RUNNER_TEMP/qualification-git" "$RUNNER_TEMP/runtime-evidence/git-source"
-          echo "$RUNNER_TEMP/qualification-git/bin" >> "$GITHUB_PATH"
-      - name: Qualify the identical extracted candidate
+          if [ "$(git --version)" = "git version $QUALIFICATION_GIT" ]; then
+            selected=$(command -v git)
+          elif [ "$QUALIFICATION_GIT" = 2.56.0 ] && [ -f "$RUNNER_TEMP/native-candidate/reference-git.tar.gz" ]; then
+            mkdir "$RUNNER_TEMP/reference-git"
+            tar -xzf "$RUNNER_TEMP/native-candidate/reference-git.tar.gz" -C "$RUNNER_TEMP/reference-git"
+            selected="$RUNNER_TEMP/reference-git/bin/git"
+          else
+            sudo apt-get update
+            sudo apt-get install --yes build-essential ca-certificates curl xz-utils perl libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev
+            sh scripts/ci/provision-git.sh "$QUALIFICATION_GIT" "$RUNNER_TEMP/qualification-git" "$RUNNER_TEMP/runtime-evidence/git-source"
+            selected="$RUNNER_TEMP/qualification-git/bin/git"
+          fi
+          test "$("$selected" --version)" = "git version $QUALIFICATION_GIT"
+          "$selected" --no-lazy-fetch --version
+          echo "executable=$selected" >> "$GITHUB_OUTPUT"
+      - name: Qualify identical extracted candidate bytes
         env:
           QUALIFICATION_PROFILE: ${{ matrix.profile }}
-        run: sh scripts/ci/qualify-candidate.sh "$RUNNER_TEMP/native-candidate" "$RUNNER_TEMP/runtime" "$QUALIFICATION_PROFILE" "$RUNNER_TEMP/qualification-git/bin/git"
-      - name: Retain userspace, source-integrity and workflow evidence
+        run: sh scripts/ci/qualify-candidate.sh "$RUNNER_TEMP/native-candidate" "$RUNNER_TEMP/runtime" "$QUALIFICATION_PROFILE" '${{ steps.git.outputs.executable }}'
+      - name: Retain qualification and provisioning logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -120,6 +160,7 @@ jobs:
           retention-days: 30
 
   native-completion:
+    if: github.event_name != 'workflow_dispatch'
     name: Native completion (${{ matrix.os }})
     strategy:
       fail-fast: false
