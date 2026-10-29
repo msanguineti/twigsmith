@@ -271,8 +271,8 @@ identities. Use the pinned toolchain through `./dev`. On the selected Ubuntu 22.
 build runner, after bootstrap, run:
 
 ```sh
-./dev package-native .dev/tmp/distribution-phase-2/candidate
-./dev verify-native .dev/tmp/distribution-phase-2/candidate/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
+./dev package-native .dev/tmp/native-candidate
+./dev verify-native .dev/tmp/native-candidate/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
 ./dev test-packaging
 ```
 
@@ -315,11 +315,10 @@ and mandatory and weak symbol requirements against the runtime userspace. It ret
 hash-bound inspection and startup diagnostics. Runtime evidence records selected
 Git, userspace, kernel and runner identity. Tool installation on a
 hosted runner does not establish a consumer dependency or a minimal runtime.
-Container userspace tests share the host kernel and do not qualify older kernels.
 
-The selected baseline build uses the native `ubuntu-22.04` hosted runner. The same
-archive is intended for qualification on Ubuntu 22.04/24.04/26.04 and Debian 12;
-these results remain pending. Debian 13 development-host results are supplemental.
+CI builds the candidate on the native `ubuntu-22.04` hosted runner and qualifies
+the same archive on Ubuntu 22.04/24.04/26.04. Each run retains the source-bound
+archive and qualification evidence. Development-host results are supplemental.
 The minimum-series Git sample is 2.45.4 and the reference sample is 2.56.0. The
 feature floor remains Git 2.45. Build environment and archive qualification are
 separate: a successful package command on another host proves package creation,

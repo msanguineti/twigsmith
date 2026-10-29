@@ -119,47 +119,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  debian-runtime:
-    name: Native artifact (Debian 12 userspace, Git 2.56.0)
-    needs: check
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Check out qualification tools at the same revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Download the baseline candidate without rebuilding it
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: native-candidate-${{ github.sha }}
-          path: ${{ runner.temp }}/native-candidate
-          digest-mismatch: error
-      - name: Qualify in the recorded Debian 12 userspace
-        run: |
-          mkdir "$RUNNER_TEMP/debian-evidence"
-          python3 scripts/ci/record-environment.py "$RUNNER_TEMP/debian-evidence/host-runner.json"
-          docker pull debian:12
-          docker image inspect debian:12 > "$RUNNER_TEMP/debian-evidence/container-image.json"
-          image=$(docker image inspect --format '{{index .RepoDigests 0}}' debian:12)
-          docker run --rm --workdir /work \
-            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/work,readonly" \
-            --mount "type=bind,source=$RUNNER_TEMP/native-candidate,target=/candidate,readonly" \
-            --mount "type=bind,source=$RUNNER_TEMP/debian-evidence,target=/runtime" \
-            -e GITHUB_SHA -e GITHUB_REF -e GITHUB_HEAD_REF -e GITHUB_BASE_REF \
-            -e GITHUB_REPOSITORY -e GITHUB_WORKFLOW -e GITHUB_WORKFLOW_REF -e GITHUB_WORKFLOW_SHA \
-            -e GITHUB_RUN_ID -e GITHUB_RUN_ATTEMPT -e GITHUB_JOB \
-            -e RUNNER_OS -e RUNNER_ARCH -e RUNNER_NAME -e ImageOS -e ImageVersion -e ImageRelease \
-            -e "TWIGSMITH_CONTAINER_DIGEST=$image" \
-            "$image" sh scripts/ci/debian-runtime.sh
-      - name: Retain image digest, source-integrity and workflow evidence
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-evidence-debian-12-git-2.56.0-${{ github.sha }}
-          path: ${{ runner.temp }}/debian-evidence/
-          if-no-files-found: warn
-          retention-days: 30
-
   native-completion:
     name: Native completion (${{ matrix.os }})
     strategy:

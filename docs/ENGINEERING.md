@@ -153,14 +153,15 @@ behavior. Hash consistency supplies no independent publisher authentication.
 The manifest explicitly selects the `twigsmith` payload for later npm packaging;
 that channel must consume accepted bytes by hash rather than rebuild them.
 
-The selected build baseline is Ubuntu 22.04/glibc 2.35 with the pinned Rust toolchain;
-its CI artifact/runtime qualification remains pending. Linux x86_64 GNU is a
+CI builds on Ubuntu 22.04/glibc 2.35 with the pinned Rust toolchain and qualifies
+the same archive on Ubuntu 22.04/24.04/26.04. Each runtime job verifies archive
+identity and inspects the extracted payload before executing the selected fixtures. Linux x86_64 GNU is a
 bounded target, not a promise for every Linux distribution or kernel. Ordinary
 standard-support and community-LTS userspaces are eligible; Git 2.45 remains a
 separate prerequisite that users may upgrade. Modern development tools present on
 a CI host are excluded from consumer PATH and their absence from application
-dependencies is checked at the ELF and runtime boundaries. Shared container kernels
-limit what userspace qualification can establish. The
+dependencies is checked at the ELF and runtime boundaries. The selected runner
+kernels bound the demonstrated platform behavior. The
 [development guide](DEVELOPMENT.md#native-candidate-packaging) owns packaging and
 qualification commands; the [user guide](USAGE.md#native-archive-candidates) owns
 extraction and runtime prerequisites.
