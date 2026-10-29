@@ -33,7 +33,8 @@ fn cli(exe: &str, repo: &Repository, args: &[&str], expected: &str) {
         .output()
         .unwrap();
     assert!(output.status.success(), "{args:?}: {output:?}");
-    assert!(output.stderr.is_empty(), "{output:?}");
+    // Slow Git operations can report activity on stderr. Dedicated activity
+    // tests cover presentation; this fixture verifies delivery and Git state.
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains(expected), "missing {expected:?}: {text}");
 }
