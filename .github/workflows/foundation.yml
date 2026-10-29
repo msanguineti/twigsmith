@@ -32,9 +32,22 @@ jobs:
 
   candidate:
     if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      actions: read
     # The hosted runner lifecycle is distinct from Ubuntu's maintenance dates.
     runs-on: ubuntu-22.04
     steps:
+      - name: Require successful normal CI for the selected commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          verified_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/foundation.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=1" --jq '.workflow_runs[0].html_url // empty')
+          if [ -z "$verified_run" ]; then
+            echo '::error::The selected commit needs a successful normal push CI run before candidate preparation.'
+            exit 1
+          fi
+          echo "Source already checked: $verified_run"
       - name: Check out the selected candidate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -57,12 +70,6 @@ jobs:
           fi
       - name: Bootstrap repository-local Rust
         run: ./dev bootstrap
-      - name: Check selected source
-        env:
-          REFERENCE_GIT: ${{ steps.git.outputs.executable }}
-        run: |
-          export PATH="$(dirname "$REFERENCE_GIT"):$PATH"
-          ./dev check
       - name: Build one native candidate
         id: package
         run: ./dev package-native "$RUNNER_TEMP/native-candidate"

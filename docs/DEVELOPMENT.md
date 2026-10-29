@@ -266,10 +266,14 @@ For optimized executables:
 ## Native candidate packaging
 
 Normal push and pull-request CI runs `./dev check`, packaging regression tests,
-and the native completion checks. Manual candidate preparation builds a single
+and the native completion checks. Manual candidate preparation requires a successful
+normal push CI run for the exact selected commit and reuses that source result;
+it does not rerun the full suite. It builds a single
 Linux x86_64 GNU archive on Ubuntu 22.04 and qualifies those same bytes on Ubuntu
 22.04, 24.04 and 26.04. It does not publish them. Manual dispatch requires the
 workflow to be enabled for dispatch on the repository's default branch.
+Fixture preparation compiles only the harnesses needed for packaged-binary checks;
+the candidate run executes selected workflows against the extracted executables.
 
 For a local development probe, use a fresh output and extraction directory:
 

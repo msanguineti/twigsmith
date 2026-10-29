@@ -149,7 +149,9 @@ manifest identifies the `twigsmith` payload for later npm work; that channel mus
 consume accepted bytes by hash rather than rebuild them.
 
 Normal CI checks source and completion behavior. Explicit candidate preparation
-builds on Ubuntu 22.04 and qualifies the same archive on Ubuntu 22.04/24.04/26.04.
+requires a successful normal push run for the same commit instead of repeating
+the source suite. It builds on Ubuntu 22.04 and qualifies the same archive on
+Ubuntu 22.04/24.04/26.04.
 Qualification checks loader, dependencies and runtime search paths and executes
 representative real-Git workflows using extracted binaries and an isolated PATH.
 Its results bind source, run and payload hashes; compatibility is limited to the
