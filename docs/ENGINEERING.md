@@ -148,8 +148,8 @@ extraction. Hash consistency does not independently authenticate a publisher. Th
 manifest identifies the `twigsmith` payload for later npm work; that channel must
 consume accepted bytes by hash rather than rebuild them.
 
-Normal CI checks source and completion behavior. Explicit candidate preparation
-requires a successful normal push run for the same commit instead of repeating
+Pull-request CI checks the proposed integration for source and completion behavior.
+Explicit release preparation reuses eligible source validation without repeating
 the source suite. It builds on Ubuntu 22.04 and qualifies the same archive on
 Ubuntu 22.04/24.04/26.04.
 Qualification checks loader, dependencies and runtime search paths and executes

@@ -42,7 +42,7 @@ of these paths.
 For implementation, dependency, configuration, or tooling changes, run
 one complete `./dev check` against the final result. Repeat it after subsequent
 changes, failures, or unresolved concerns that warrant fresh validation. This is
-also the Linux foundation CI entry point: it checks formatting, builds both
+also the Linux pull-request CI entry point: it checks formatting, builds both
 executables, runs Clippy with warnings treated as errors, runs the regular suite,
 and then selects external-shell tests whose runtimes are available locally.
 Formatting, build, and lint failures stop the check before tests start. Once
@@ -265,15 +265,26 @@ For optimized executables:
 
 ## Native candidate packaging
 
-Normal push and pull-request CI runs `./dev check`, packaging regression tests,
-and the native completion checks. Manual candidate preparation requires a successful
-normal push CI run for the exact selected commit and reuses that source result;
-it does not rerun the full suite. It builds a single
-Linux x86_64 GNU archive on Ubuntu 22.04 and qualifies those same bytes on Ubuntu
-22.04, 24.04 and 26.04. It does not publish them. Manual dispatch requires the
-workflow to be enabled for dispatch on the repository's default branch.
-Fixture preparation compiles only the harnesses needed for packaged-binary checks;
-the candidate run executes selected workflows against the extracted executables.
+Pull requests targeting `main` run `./dev check` and native completion checks
+against the proposed integration. Superseded runs for the same pull request are
+cancelled. Merging an unchanged, validated pull request does not repeat the source
+suite or start artifact qualification.
+
+The release workflow prepares candidates on manual dispatch from `main` or on a
+GitHub `release: published` event, including prereleases. Manual dispatch selects
+the `main` commit at dispatch; a release event selects the commit named by its tag. The
+selected commit must be the recorded migration baseline or a later first-parent
+`main` integration associated with a merged pull request and a successful
+foundation pull-request run for its head. Missing eligibility fails the run rather
+than repeating source validation. This relies on the repository's protected-main
+rules requiring current, passing checks before integration.
+
+The workflow builds one Linux x86_64 GNU archive on Ubuntu 22.04 and qualifies the
+same bytes on Ubuntu 22.04, 24.04 and 26.04. It does not publish artifacts or attach
+them to a release. A published release is already visible before its event triggers
+qualification. Manual dispatch requires the workflow to be available on the default
+branch. Fixture preparation compiles only the harnesses needed for packaged-binary
+checks; qualification executes selected workflows against the extracted executables.
 
 For a local development probe, use a fresh output and extraction directory:
 

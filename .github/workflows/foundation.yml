@@ -1,19 +1,21 @@
 name: Rust foundation
 
 on:
-  push:
   pull_request:
-  workflow_dispatch:
+    branches: [main]
 
 permissions:
   contents: read
+
+concurrency:
+  group: foundation-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 env:
   TWIGSMITH_DEV_FAIL_FAST: '1'
 
 jobs:
   check:
-    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-22.04
     steps:
       - name: Check out repository
@@ -25,149 +27,14 @@ jobs:
           git --no-lazy-fetch --version
           sudo apt-get update
           sudo apt-get install --yes build-essential python3 binutils
+      - name: Check release source selection
+        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py'
       - name: Bootstrap repository-local Rust
         run: ./dev bootstrap
       - name: Check source and inexpensive packaging regressions
         run: ./dev check
 
-  candidate:
-    if: github.event_name == 'workflow_dispatch'
-    permissions:
-      contents: read
-      actions: read
-    # The hosted runner lifecycle is distinct from Ubuntu's maintenance dates.
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Require successful normal CI for the selected commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          verified_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/foundation.yml/runs?head_sha=$GITHUB_SHA&event=push&status=success&per_page=1" --jq '.workflow_runs[0].html_url // empty')
-          if [ -z "$verified_run" ]; then
-            echo '::error::The selected commit needs a successful normal push CI run before candidate preparation.'
-            exit 1
-          fi
-          echo "Source already checked: $verified_run"
-      - name: Check out the selected candidate commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Provision build and qualification prerequisites
-        run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain)"
-          sudo apt-get update
-          sudo apt-get install --yes build-essential ca-certificates curl xz-utils python3 binutils perl libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev
-      - name: Select reference Git
-        id: git
-        run: |
-          if [ "$(git --version)" = 'git version 2.56.0' ]; then
-            echo "executable=$(command -v git)" >> "$GITHUB_OUTPUT"
-          else
-            sh scripts/ci/provision-git.sh 2.56.0 "$RUNNER_TEMP/reference-git" "$RUNNER_TEMP/build-evidence/git-source"
-            echo "executable=$RUNNER_TEMP/reference-git/bin/git" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Bootstrap repository-local Rust
-        run: ./dev bootstrap
-      - name: Build one native candidate
-        id: package
-        run: ./dev package-native "$RUNNER_TEMP/native-candidate"
-      - name: Prepare reusable fixture harnesses and reference Git
-        run: |
-          ./dev native-qualify prepare --harness-dir "$RUNNER_TEMP/native-harness"
-          tar -czf "$RUNNER_TEMP/native-candidate/harness.tar.gz" -C "$RUNNER_TEMP/native-harness" .
-          if [ -d "$RUNNER_TEMP/reference-git" ]; then
-            tar -czf "$RUNNER_TEMP/native-candidate/reference-git.tar.gz" -C "$RUNNER_TEMP/reference-git" .
-          fi
-      - name: Qualify baseline bytes with reference Git
-        run: sh scripts/ci/qualify-candidate.sh "$RUNNER_TEMP/native-candidate" "$RUNNER_TEMP/baseline-runtime" broad '${{ steps.git.outputs.executable }}'
-      - name: Retain candidate and same-run qualification tools
-        if: always() && steps.package.outcome == 'success'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-candidate-${{ github.sha }}
-          path: ${{ runner.temp }}/native-candidate/
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-      - name: Retain baseline qualification and provisioning logs
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-evidence-baseline-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/build-evidence/
-            ${{ runner.temp }}/baseline-runtime/evidence/
-          if-no-files-found: warn
-          retention-days: 30
-
-  native-runtime:
-    name: Native artifact (${{ matrix.os }}, Git ${{ matrix.git }})
-    needs: candidate
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            git: 2.45.4
-            profile: floor
-          - os: ubuntu-24.04
-            git: 2.56.0
-            profile: representative
-          - os: ubuntu-26.04
-            git: 2.56.0
-            profile: representative
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Check out qualification tools at the candidate commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Download candidate and same-run fixture tools
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: native-candidate-${{ github.sha }}
-          path: ${{ runner.temp }}/native-candidate
-          digest-mismatch: error
-      - name: Select qualification Git
-        id: git
-        env:
-          QUALIFICATION_GIT: ${{ matrix.git }}
-        run: |
-          if [ "$(git --version)" = "git version $QUALIFICATION_GIT" ]; then
-            selected=$(command -v git)
-          elif [ "$QUALIFICATION_GIT" = 2.56.0 ] && [ -f "$RUNNER_TEMP/native-candidate/reference-git.tar.gz" ]; then
-            mkdir "$RUNNER_TEMP/reference-git"
-            tar -xzf "$RUNNER_TEMP/native-candidate/reference-git.tar.gz" -C "$RUNNER_TEMP/reference-git"
-            selected="$RUNNER_TEMP/reference-git/bin/git"
-          else
-            sudo apt-get update
-            sudo apt-get install --yes build-essential ca-certificates curl xz-utils perl libcurl4-openssl-dev libssl-dev zlib1g-dev libexpat1-dev
-            sh scripts/ci/provision-git.sh "$QUALIFICATION_GIT" "$RUNNER_TEMP/qualification-git" "$RUNNER_TEMP/runtime-evidence/git-source"
-            selected="$RUNNER_TEMP/qualification-git/bin/git"
-          fi
-          test "$("$selected" --version)" = "git version $QUALIFICATION_GIT"
-          "$selected" --no-lazy-fetch --version
-          echo "executable=$selected" >> "$GITHUB_OUTPUT"
-      - name: Qualify identical extracted candidate bytes
-        env:
-          QUALIFICATION_PROFILE: ${{ matrix.profile }}
-        run: sh scripts/ci/qualify-candidate.sh "$RUNNER_TEMP/native-candidate" "$RUNNER_TEMP/runtime" "$QUALIFICATION_PROFILE" '${{ steps.git.outputs.executable }}'
-      - name: Retain qualification and provisioning logs
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-evidence-${{ matrix.os }}-git-${{ matrix.git }}-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/runtime-evidence/
-            ${{ runner.temp }}/runtime/evidence/
-          if-no-files-found: warn
-          retention-days: 30
-
   native-completion:
-    if: github.event_name != 'workflow_dispatch'
     name: Native completion (${{ matrix.os }})
     strategy:
       fail-fast: false
