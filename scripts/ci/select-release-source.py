@@ -24,11 +24,16 @@ def eligible_pull(pulls, pages, sha):
                 or pr.get('base', {}).get('ref') != 'main'):
             continue
         number, head = pr['number'], pr['head']['sha']
+        branch = pr['head'].get('ref')
+        repository = (pr['head'].get('repo') or {}).get('full_name')
+        if not head or not branch or not repository:
+            continue
         for page in pages:
             for run in page.get('workflow_runs', []):
                 if (run.get('event') == 'pull_request' and run.get('head_sha') == head
                         and run.get('conclusion') == 'success'
-                        and any(p.get('number') == number for p in run.get('pull_requests', []))):
+                        and run.get('head_branch') == branch
+                        and (run.get('head_repository') or {}).get('full_name') == repository):
                     return number, run['html_url']
     return None
 

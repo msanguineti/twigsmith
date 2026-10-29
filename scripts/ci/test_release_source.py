@@ -12,18 +12,22 @@ spec.loader.exec_module(source)
 
 class SelectionTests(unittest.TestCase):
     def setUp(self):
-        self.pr = {'number': 7, 'head': {'sha': 'head'}, 'base': {'ref': 'main'},
+        self.pr = {'number': 7, 'head': {'sha': 'head', 'ref': 'branch', 'repo': {'full_name': 'o/r'}}, 'base': {'ref': 'main'},
                    'merged_at': 'now', 'merge_commit_sha': 'squash'}
         self.run = {'event': 'pull_request', 'head_sha': 'head', 'conclusion': 'success',
-                    'pull_requests': [{'number': 7}], 'html_url': 'run'}
+                    'pull_requests': [], 'head_branch': 'branch', 'head_repository': {'full_name': 'o/r'}, 'html_url': 'run'}
 
     def test_squash_identity_and_missing_validation(self):
         self.assertEqual(source.eligible_pull([self.pr], [{'workflow_runs': [self.run]}], 'squash'), (7, 'run'))
         for changes in ({'conclusion': 'failure'}, {'head_sha': 'different'},
-                        {'pull_requests': []}, {'event': 'push'}):
+                        {'head_branch': 'other'}, {'head_repository': {'full_name': 'other/repo'}}, {'event': 'push'}):
             run = self.run | changes
             self.assertIsNone(source.eligible_pull([self.pr], [{'workflow_runs': [run]}], 'squash'))
         self.assertIsNone(source.eligible_pull([self.pr], [{'workflow_runs': [self.run]}], 'other'))
+        for missing in (None, ''):
+            pr = self.pr | {'head': self.pr['head'] | {'sha': missing}}
+            run = self.run | {'head_sha': missing}
+            self.assertIsNone(source.eligible_pull([pr], [{'workflow_runs': [run]}], 'squash'))
 
     def test_entry_points_and_main_ancestry(self):
         with tempfile.TemporaryDirectory() as d:
