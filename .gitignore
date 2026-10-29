@@ -11,3 +11,7 @@
 
 # Local agent configuration
 /.codex/
+
+# Python packaging and qualification helpers
+/tools/__pycache__/
+/scripts/ci/__pycache__/

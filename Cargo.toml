@@ -1,6 +1,6 @@
 [package]
 name = "twigsmith"
-version = "0.0.0-dev"
+version = "0.1.0-beta.1"
 edition = "2024"
 publish = false
 default-run = "twigsmith"

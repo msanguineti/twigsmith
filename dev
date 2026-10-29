@@ -48,6 +48,13 @@ Usage: ./dev COMMAND [ARGS]
   bootstrap       Install the pinned Rust toolchain, rustfmt, and Clippy locally
   build [ARGS]    Build both native executables (pass --release for optimization)
   test [ARGS]     Run the Rust tests and CLI smoke checks
+  package-native OUTPUT [--allow-dirty] [--target x86_64-unknown-linux-gnu]
+                  Build an isolated optimized native archive and provenance files
+  verify-native ARCHIVE [--extract-to DIR]
+                  Verify native archive integrity and optionally extract it
+  test-packaging  Run native packaging format and failure regression checks
+  native-qualify [ARGS]
+                  Run extracted-artifact workflow/runtime qualification
   test-shells [--require-all]
                   Run native shell tests available on this host
   test-groups     List focused test groups and their Cargo targets
@@ -90,7 +97,7 @@ test_group() {
             ;;
         shared)
             group_description='Development launcher, Git boundary, observation, settings, tracking, roles, and exact publication'
-            group_targets='dev_selection bash_completion git_execution cli_activity repository_state settings remote_roles finish_roles finish_checks save_publication finish_publication'
+            group_targets='dev_selection native_packaging bash_completion git_execution cli_activity repository_state settings remote_roles finish_roles finish_checks save_publication finish_publication'
             ;;
         lifecycle)
             group_description='CLI smoke and end-to-end project/fork lifecycles'
@@ -161,7 +168,7 @@ full_tests() {
     ordered_targets='
         cli_smoke cli_activity
         settings cli_config
-        @units dev_selection git_execution repository_state remote_roles cli_status
+        @units dev_selection native_packaging git_execution repository_state remote_roles cli_status
         bash_completion completion_engine completion_setup completion_shells native_completion
         start_resolution start_workflow cli_start
         save_planning save_execution save_publication cli_save
@@ -286,6 +293,10 @@ case "$command" in
             *) echo 'error: usage: ./dev test-shells [--require-all]' >&2; exit 2 ;;
         esac
         ;;
+    package-native) exec python3 "$repo_dir/tools/native_package.py" build "$@" ;;
+    verify-native) exec python3 "$repo_dir/tools/native_package.py" verify "$@" ;;
+    test-packaging) exec python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@" ;;
+    native-qualify) exec python3 "$repo_dir/tools/qualify_native.py" "$@" ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
     *) usage >&2; exit 2 ;;
 esac

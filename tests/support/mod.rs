@@ -1,3 +1,52 @@
+/// Select installed artifact bytes for qualification, or Cargo binaries for the
+/// ordinary suite. An explicit artifact directory never falls back to Cargo.
+#[allow(dead_code)]
+pub fn executable(name: &str) -> &'static str {
+    use std::sync::OnceLock;
+    static EXECUTABLES: OnceLock<[String; 2]> = OnceLock::new();
+    let paths = EXECUTABLES.get_or_init(|| {
+        let Some(directory) = std::env::var_os("TWIGSMITH_ARTIFACT_DIR") else {
+            return [
+                env!("CARGO_BIN_EXE_twigsmith").into(),
+                env!("CARGO_BIN_EXE_tgi").into(),
+            ];
+        };
+        let directory = std::path::PathBuf::from(directory);
+        assert!(
+            directory.is_absolute(),
+            "artifact directory must be absolute"
+        );
+        ["twigsmith", "tgi"].map(|name| {
+            let path = directory.join(name);
+            let metadata = std::fs::symlink_metadata(&path)
+                .unwrap_or_else(|error| panic!("artifact {}: {error}", path.display()));
+            assert!(
+                metadata.is_file(),
+                "artifact must be a regular file: {}",
+                path.display()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_ne!(
+                    metadata.permissions().mode() & 0o111,
+                    0,
+                    "artifact must be executable: {}",
+                    path.display()
+                );
+            }
+            path.into_os_string()
+                .into_string()
+                .expect("UTF-8 artifact path")
+        })
+    });
+    match name {
+        "twigsmith" => &paths[0],
+        "tgi" => &paths[1],
+        _ => panic!("unknown fixture executable: {name}"),
+    }
+}
+
 use std::{env, fs, path::Path, process::Command};
 
 use tempfile::{Builder, TempDir};
@@ -28,6 +77,8 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     let mut child = Command::new(env::current_exe().unwrap());
     child.env_clear();
     for name in [
+        "TWIGSMITH_ARTIFACT_DIR",
+        "GIT_EXEC_PATH",
         "TWIGSMITH_TEST_BASH",
         "TWIGSMITH_TEST_ZSH",
         "TWIGSMITH_TEST_FISH",

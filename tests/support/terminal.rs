@@ -196,6 +196,10 @@ impl Terminal {
     pub fn interrupt(&self) {
         kill_process(Pid::from_raw(self.child.id() as i32).unwrap(), Signal::INT).unwrap();
     }
+    #[allow(dead_code)]
+    pub fn terminate(&self) {
+        kill_process(Pid::from_raw(self.child.id() as i32).unwrap(), Signal::TERM).unwrap();
+    }
     pub fn finish(&mut self) -> ExitStatus {
         self.finish_with_timeout(Duration::from_secs(10))
     }

@@ -234,9 +234,9 @@ fn public_cli_project_and_fork_lifecycles_preserve_both_tracking_styles() {
             for split in [false, true] {
                 for base_tracking in [false, true] {
                     let exe = if base_tracking {
-                        env!("CARGO_BIN_EXE_tgi")
+                        support::executable("tgi")
                     } else {
-                        env!("CARGO_BIN_EXE_twigsmith")
+                        support::executable("twigsmith")
                     };
                     lifecycle(root, exe, split, base_tracking);
                 }
@@ -259,7 +259,7 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
         |root| {
             // Format parsing and configured checks have distinct contracts;
             // repeating this complete journey for the alias binary adds none.
-            let exe = env!("CARGO_BIN_EXE_twigsmith");
+            let exe = support::executable("twigsmith");
             for format in ["toml", "yaml", "json"] {
                 let project = Repository::new(root);
                 commit(&project, "base", "initial\n");

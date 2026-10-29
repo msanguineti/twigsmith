@@ -19,12 +19,12 @@ const REF: &str = "refs/heads/fix/deployment-bug";
 fn cases(name: &str, available: bool, test: impl Fn(&Path, &str)) {
     isolated(name, available, |root| {
         let dir = tempfile::tempdir_in(root).unwrap();
-        test(dir.path(), env!("CARGO_BIN_EXE_twigsmith"));
+        test(dir.path(), support::executable("twigsmith"));
     });
 }
 fn entrypoint_cases(name: &str, available: bool, test: impl Fn(&Path, &str)) {
     isolated(name, available, |root| {
-        for exe in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
+        for exe in [support::executable("twigsmith"), support::executable("tgi")] {
             let dir = tempfile::tempdir_in(root).unwrap();
             println!("finish grammar: executable={exe}");
             test(dir.path(), exe);
@@ -2749,6 +2749,56 @@ fn finish_capable_navigation_review_and_integration_delivery_cancel_and_failure(
             assert_eq!(oid(&f.local, REF), work);
             assert_eq!(remote_oid(f.fork.path(), REF), work);
             assert_eq!(fs::read(f.local.path().join("work")).unwrap(), b"feature\n");
+            assert_eq!(remote_oid(f.project.path(), "main"), target);
+        },
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn integration_missing_path_shell_retains_work_and_reports_editor_failure() {
+    cases(
+        "integration_missing_path_shell_retains_work_and_reports_editor_failure",
+        true,
+        |root, exe| {
+            let f = integration_fixture(root, false);
+            let before = work_snapshot(&f.local);
+            let target = remote_oid(f.project.path(), "main");
+            let private = f.local.path().join(".git/twigsmith.config.toml");
+            fs::write(
+                &private,
+                fs::read_to_string(&private)
+                    .unwrap()
+                    .replace("finish-message='auto'", "finish-message='ask'"),
+            )
+            .unwrap();
+            let git_only = root.join("git-only-path");
+            fs::create_dir(&git_only).unwrap();
+            let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|directory| directory.join("git"))
+                .find(|path| path.is_file())
+                .expect("fixture Git");
+            std::os::unix::fs::symlink(fs::canonicalize(git).unwrap(), git_only.join("git"))
+                .unwrap();
+            let mut command = Command::new(exe);
+            command
+                .current_dir(f.local.path())
+                .args(["finish", "--integration", "merge", "--cleanup", "keep"])
+                .env("PATH", git_only)
+                .env("GIT_EDITOR", "true")
+                .env("TERM", "dumb");
+            let mut term = terminal::Terminal::start_command(command);
+            assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+            contains(
+                &term.output,
+                &[
+                    "integration message editing failed",
+                    "No such file or directory",
+                    "supply -m/--message",
+                ],
+            );
+            term.assert_restored();
+            unchanged_work(&f.local, &before);
             assert_eq!(remote_oid(f.project.path(), "main"), target);
         },
     );

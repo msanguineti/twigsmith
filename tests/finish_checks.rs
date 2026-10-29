@@ -503,7 +503,7 @@ fn cli_inspects_literal_checks_start_and_save_ignore_them() {
         "cli_inspects_literal_checks_start_and_save_ignore_them",
         true,
         |root| {
-            for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
+            for executable in [support::executable("twigsmith"), support::executable("tgi")] {
                 for (index, filename) in CONFIG_FILES.iter().enumerate() {
                     let (repo, remote) = fixture(root);
                     let checks = vec![
@@ -557,7 +557,7 @@ fn cli_inspects_literal_checks_start_and_save_ignore_them() {
 }
 
 fn finish_cli(repo: &Repository, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_tgi"))
+    Command::new(support::executable("tgi"))
         .current_dir(repo.path())
         .arg("finish")
         .args(["--mode", "review"])
@@ -615,7 +615,7 @@ fn real_checks_use_literal_arguments_root_environment_and_order() {
             );
             let nested = repo.path().join("nested/deeper");
             fs::create_dir_all(&nested).unwrap();
-            let output = Command::new(env!("CARGO_BIN_EXE_tgi"))
+            let output = Command::new(support::executable("tgi"))
                 .current_dir(&nested)
                 .env("CHECK_ENV", "inherited value")
                 .arg("f")
@@ -931,7 +931,7 @@ fn skip_checks_all_tool_aliases_reports_bypass_and_keeps_hooks_active() {
         "skip_checks_all_tool_aliases_reports_bypass_and_keeps_hooks_active",
         true,
         |root| {
-            for executable in [env!("CARGO_BIN_EXE_tgi"), env!("CARGO_BIN_EXE_twigsmith")] {
+            for executable in [support::executable("tgi"), support::executable("twigsmith")] {
                 for alias in ["finish", "f"] {
                     let (repo, remote) = fixture(root);
                     configured(&repo, &[shell("Skipped", "touch .git/check-ran; exit 1")]);
@@ -1038,44 +1038,51 @@ fn cancellation_stops_check_group_retains_preparation_and_blocks_publication() {
         "cancellation_stops_check_group_retains_preparation_and_blocks_publication",
         true,
         |root| {
-            let (repo, remote) = fixture(root);
-            commit(&remote, "advanced-base");
-            let original = repo.success(&["rev-parse", "HEAD"]).stdout;
-            configured(
-                &repo,
-                &[
-                    shell(
-                        "Long check",
-                        "echo $$ > .git/leader; sh -c 'trap \"\" INT TERM; echo $$ > .git/descendant; printf \"CHECK-RE%s\\n\" ADY; while :; do sleep 1; done' & wait",
-                    ),
-                    shell("Later", "touch .git/later"),
-                ],
-            );
-            let mut term = terminal::Terminal::start(
-                env!("CARGO_BIN_EXE_tgi"),
-                repo.path(),
-                &["finish", "--mode", "review", "--update", "rebase"],
-            );
-            term.until("CHECK-READY");
-            term.interrupt();
-            assert_eq!(term.finish().code(), Some(1), "{}", term.output);
-            assert!(term.output.contains("check interrupted"), "{}", term.output);
-            assert!(
-                term.output
-                    .contains("Prepared history and check effects are retained")
-            );
-            assert_ne!(repo.success(&["rev-parse", "HEAD"]).stdout, original);
-            assert!(absent(&remote, "work"));
-            assert!(!repo.path().join(".git/later").exists());
-            for name in ["leader", "descendant"] {
-                let pid = fs::read_to_string(repo.path().join(format!(".git/{name}"))).unwrap();
-                if let Ok(status) = fs::read_to_string(format!("/proc/{}/status", pid.trim())) {
-                    assert!(
-                        status
-                            .lines()
-                            .any(|line| line.starts_with("State:") && line.contains("Z (zombie)")),
-                        "check process still running: {status}"
-                    );
+            for terminate in [false, true] {
+                let (repo, remote) = fixture(root);
+                commit(&remote, "advanced-base");
+                let original = repo.success(&["rev-parse", "HEAD"]).stdout;
+                configured(
+                    &repo,
+                    &[
+                        shell(
+                            "Long check",
+                            "echo $$ > .git/leader; sh -c 'trap \"\" INT TERM; echo $$ > .git/descendant; printf \"CHECK-RE%s\\n\" ADY; while :; do sleep 1; done' & wait",
+                        ),
+                        shell("Later", "touch .git/later"),
+                    ],
+                );
+                let mut term = terminal::Terminal::start(
+                    support::executable("tgi"),
+                    repo.path(),
+                    &["finish", "--mode", "review", "--update", "rebase"],
+                );
+                term.until("CHECK-READY");
+                if terminate {
+                    term.terminate();
+                } else {
+                    term.interrupt();
+                }
+                assert_eq!(term.finish().code(), Some(1), "{}", term.output);
+                assert!(term.output.contains("check interrupted"), "{}", term.output);
+                assert!(
+                    term.output
+                        .contains("Prepared history and check effects are retained")
+                );
+                assert_ne!(repo.success(&["rev-parse", "HEAD"]).stdout, original);
+                assert!(absent(&remote, "work"));
+                assert!(!repo.path().join(".git/later").exists());
+                for name in ["leader", "descendant"] {
+                    let pid = fs::read_to_string(repo.path().join(format!(".git/{name}"))).unwrap();
+                    if let Ok(status) = fs::read_to_string(format!("/proc/{}/status", pid.trim())) {
+                        assert!(
+                            status
+                                .lines()
+                                .any(|line| line.starts_with("State:")
+                                    && line.contains("Z (zombie)")),
+                            "check process still running: {status}"
+                        );
+                    }
                 }
             }
         },
@@ -1175,7 +1182,7 @@ fn check_output_without_newline_is_live_and_fragmented_credentials_are_redacted(
                 )],
             );
             let mut term = terminal::Terminal::start(
-                env!("CARGO_BIN_EXE_tgi"),
+                support::executable("tgi"),
                 repo.path(),
                 &["finish", "--mode", "review"],
             );
@@ -1219,7 +1226,7 @@ fn relative_executable_runs_from_discovered_linked_worktree_root() {
             repo.success(&["worktree", "add", "-b", "linked", linked.to_str().unwrap()]);
             let nested = linked.join("nested");
             fs::create_dir(&nested).unwrap();
-            let output = Command::new(env!("CARGO_BIN_EXE_tgi"))
+            let output = Command::new(support::executable("tgi"))
                 .current_dir(nested)
                 .arg("finish")
                 .args(["--mode", "review"])

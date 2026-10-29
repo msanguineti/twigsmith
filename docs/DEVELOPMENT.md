@@ -2,11 +2,12 @@
 
 ## Setup
 
-On Linux, you need a POSIX shell, standard Unix utilities, `curl` with HTTPS
+On Linux, you need Python 3.10 or newer for packaging regression checks, a POSIX
+shell, standard Unix utilities, `curl` with HTTPS
 support, and a C compiler/linker driver available as `cc`, with system headers
 and libc development files. Bootstrap requires internet access.
 On Debian/Ubuntu, install the native prerequisites with
-`sudo apt-get install build-essential curl ca-certificates git`.
+`sudo apt-get install build-essential curl ca-certificates git python3`.
 Git on PATH with `--no-lazy-fetch` support is required (Git 2.45 or newer).
 Check your installed version with `git --version`.
 
@@ -123,7 +124,7 @@ ordered destination delivery, selected version identity, and one-time preparatio
 recovery.
 `history-edit` selects ordinary native history editing and fresh-process recovery.
 `hosted-oneflow` selects version publication, separate merge-back preparation, and
-fresh-process recovery for manual submission. `shared` covers the development launcher, Git boundary, repository observation,
+fresh-process recovery for manual submission. `shared` covers the development launcher, native packaging/qualification tooling, Git boundary, repository observation,
 settings, tracking, remote roles, CLI activity, finish-check configuration, and exact save/finish
 publication. `lifecycle` includes CLI smoke checks, end-to-end project/fork
 workflows, and direct and hosted release/hotfix delivery and recovery; this broad group
@@ -261,6 +262,70 @@ For optimized executables:
 ./target/release/twigsmith --help
 ./target/release/tgi --version
 ```
+
+## Native candidate packaging
+
+The native package format targets `x86_64-unknown-linux-gnu`. The local candidate
+version is **0.1.0-beta.1**, taken from matching `Cargo.toml` and `Cargo.lock` package
+identities. Use the pinned toolchain through `./dev`. On the selected Ubuntu 22.04
+build runner, after bootstrap, run:
+
+```sh
+./dev package-native .dev/tmp/distribution-phase-2/candidate
+./dev verify-native .dev/tmp/distribution-phase-2/candidate/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
+./dev test-packaging
+```
+
+The output directory and extraction directory must not exist. Packaging requires
+clean, committed source by default. `--allow-dirty` permits an explicitly labelled
+local probe; it does not create a source-attested release candidate. A target
+option accepts only `--target x86_64-unknown-linux-gnu`. The launcher creates a new,
+private Cargo output directory, builds both optimized executables with `--locked`,
+checks their version output, and removes that build directory afterward. Ordinary
+`target/` outputs and incompatible previous build caches are not reused. Rust,
+compiler/linker and release-profile environment overrides are rejected where they
+could change the recorded build recipe. Existing output is never overwritten; a
+failed build or verification publishes no output directory. Keep package outputs
+under ignored `.dev/` so they do not change source identity during packaging.
+
+A successful output directory contains three files sharing the version/target stem:
+
+- `.tar.gz`: regular executable entries `twigsmith` and `tgi`, `LICENSE`, and
+  `README.txt` within the named package directory.
+- `.manifest.json`: archive and file hashes/modes, selected future npm payload
+  (`twigsmith`), exact commit/tree and source snapshot, dirty flag, pinned compiler
+  and Cargo versions, build arguments/profile, libc/OS/kernel and available runner
+  image/run identity.
+- `.sha256`: hashes of the intact archive and manifest. These establish consistency,
+  independently of publisher authenticity.
+
+`verify-native` works before Rust bootstrap. It verifies checksums, package identity,
+source/build provenance, exact member names and types, executable permissions,
+payload hashes and ELF architecture, license and extraction guidance. It extracts
+verified bytes with explicit modes into a new directory, including paths with
+spaces. Transfer the intact archive and both sidecars between qualification jobs;
+repacking changes its identity. Package byte reproducibility across independent
+compiler runs is not asserted.
+
+`./dev native-qualify --help` describes artifact-driven runtime checks. Its Cargo
+harnesses are test infrastructure; the consumer commands execute the extracted
+candidate bytes through an isolated PATH. The CI qualification helper requires
+`readelf` from binutils and inspects each extracted executable’s loader, libraries
+and mandatory and weak symbol requirements against the runtime userspace. It retains
+hash-bound inspection and startup diagnostics. Runtime evidence records selected
+Git, userspace, kernel and runner identity. Tool installation on a
+hosted runner does not establish a consumer dependency or a minimal runtime.
+Container userspace tests share the host kernel and do not qualify older kernels.
+
+The selected baseline build uses the native `ubuntu-22.04` hosted runner. The same
+archive is intended for qualification on Ubuntu 22.04/24.04/26.04 and Debian 12;
+these results remain pending. Debian 13 development-host results are supplemental.
+The minimum-series Git sample is 2.45.4 and the reference sample is 2.56.0. The
+feature floor remains Git 2.45. Build environment and archive qualification are
+separate: a successful package command on another host proves package creation,
+not the baseline ABI contract. Preserve the glibc 2.35 baseline when migrating
+away from the deprecated 22.04 runner before its first March 2027 brownout or
+earlier unavailability; runner retirement and OS maintenance are separate dates.
 
 ## Troubleshooting
 

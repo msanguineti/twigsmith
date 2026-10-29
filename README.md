@@ -5,8 +5,10 @@ finished work, releases, and hotfixes. Invoke it as `twigsmith` or the equivalen
 shorthand `tgi`; both share settings and recovery state.
 
 The native Rust version is under development. Its documented build and validation
-environment is Linux. It currently provides `start`,
-`save`, `finish`, `status`, `config`, and `completion`. Build it from this repository using the [development guide](docs/DEVELOPMENT.md).
+environment is Linux. Native candidate packaging targets Linux x86_64 GNU;
+release downloads and npm installation are not published. It currently provides `start`,
+`save`, `finish`, `status`, `config`, and `completion`. Build it from this repository using the [development guide](docs/DEVELOPMENT.md),
+or extract a locally produced [native candidate](docs/USAGE.md#native-archive-candidates).
 
 ## Quick start
 

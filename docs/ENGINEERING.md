@@ -127,6 +127,44 @@ for integrate mode, including relevant choices, message editing, delivery, and
 completion. Review plans cannot be passed to the integration executor or used as
 target publication authority.
 
+## Native package boundary
+
+[`tools/native_package.py`](../tools/native_package.py), invoked through `./dev`,
+owns native packaging and integrity verification. Both executable entries use the
+shared Rust dispatcher; the archive stores two regular executable files so either
+name works after ordinary extraction. CLI syntax, settings and Git semantics remain
+owned by the application. The archive adds no consumer wrapper or install script.
+
+Packaging uses a fresh locked release build for the explicit Linux x86_64 GNU
+target and validates the pinned native compiler and matching package/lock versions.
+It binds bytes to a Git commit/tree and a hash of tracked and nonignored untracked
+source paths, modes and contents; the before/after comparison rejects source changes
+during the build. Clean source is the normal candidate contract. Explicit dirty
+probes retain their dirty flag and snapshot identity. Build outputs live in ignored
+scratch and publish through a completed-directory rename, preventing stale or
+partial output from appearing as a successful candidate.
+
+The manifest binds the archive and four exact members to toolchain, build and
+machine identity. The verifier rejects duplicate, traversing, linked, nonregular,
+wrong-mode and mismatched members before writing extracted bytes. It checks the
+ELF class/machine and expected native executable type; runtime qualification owns
+loader/shared-library and symbol-version inspection plus actual launch/workflow
+behavior. Hash consistency supplies no independent publisher authentication.
+The manifest explicitly selects the `twigsmith` payload for later npm packaging;
+that channel must consume accepted bytes by hash rather than rebuild them.
+
+The selected build baseline is Ubuntu 22.04/glibc 2.35 with the pinned Rust toolchain;
+its CI artifact/runtime qualification remains pending. Linux x86_64 GNU is a
+bounded target, not a promise for every Linux distribution or kernel. Ordinary
+standard-support and community-LTS userspaces are eligible; Git 2.45 remains a
+separate prerequisite that users may upgrade. Modern development tools present on
+a CI host are excluded from consumer PATH and their absence from application
+dependencies is checked at the ELF and runtime boundaries. Shared container kernels
+limit what userspace qualification can establish. The
+[development guide](DEVELOPMENT.md#native-candidate-packaging) owns packaging and
+qualification commands; the [user guide](USAGE.md#native-archive-candidates) owns
+extraction and runtime prerequisites.
+
 ## Shell completion
 
 [`completion.rs`](../src/completion.rs) supplies a shell-neutral Clap command

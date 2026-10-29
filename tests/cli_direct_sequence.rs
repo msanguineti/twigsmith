@@ -10,7 +10,7 @@ use std::{
 use support::{Repository, isolated};
 
 fn cli(repo: &Repository, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tgi"))
+    Command::new(support::executable("tgi"))
         .current_dir(repo.path())
         .args(args)
         .stdin(Stdio::null())

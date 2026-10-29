@@ -17,6 +17,41 @@ In this manual: [a working session](#a-working-session),
 [guarantees and limits](#guarantees-and-practical-limits),
 [automation](#automation), and [troubleshooting](#troubleshooting-and-recovery).
 
+## Native archive candidates
+
+A locally produced native candidate contains regular executables `twigsmith` and
+`tgi`, the MIT license, and extraction guidance. No installation script is needed.
+Keep the archive together with its `.manifest.json` and `.sha256` files. With the
+source repository available, verify and extract into a new directory:
+
+```sh
+./dev verify-native /path/to/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
+export PATH="/tmp/twigsmith candidate/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu:$PATH"
+twigsmith --version
+tgi --help
+```
+
+After verification, `tar -xzf ARCHIVE` also extracts the archive's named directory;
+place that directory on PATH. Native execution requires neither Rust nor Node/npm.
+Git 2.45 or newer is required independently of the distribution's default package.
+POSIX `sh` is required for the selected editor and configured-check paths. Editors,
+signing/transport helpers, and project-check tools are needed when you select those
+features. Optional completion shells have their own requirements below.
+
+The current candidate target is Linux x86_64 GNU. The selected build baseline is
+Ubuntu 22.04 with glibc 2.35; qualification on that baseline and the selected newer
+LTS userspaces remains pending. A Debian development-host run alone establishes no
+Ubuntu or universal Linux compatibility. Ordinary standard-support and community-LTS
+systems are eligible for qualification; paid extended-support-only releases are
+excluded. An eligible OS may require a Git upgrade. Shared-library and kernel
+compatibility must be established for the exact artifact; replacing system libc
+is not an installation step. Checksums detect mismatches with the accompanying
+manifest; they do not independently authenticate a publisher.
+
+Release downloads and npm/npx installation remain unpublished. The
+[developer packaging guide](DEVELOPMENT.md#native-candidate-packaging) describes
+local builds and their provenance.
+
 ## Transition from the earlier Rust identity
 
 Before switching to Twigsmith, finish or recover outstanding operations with the

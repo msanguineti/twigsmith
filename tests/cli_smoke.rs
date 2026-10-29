@@ -9,7 +9,7 @@ fn cli_runs_outside_git_without_node_or_rust_tools() {
         "smoke checks require / outside Git"
     );
 
-    for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
+    for executable in [support::executable("twigsmith"), support::executable("tgi")] {
         for args in [
             vec![],
             vec!["--help"],
@@ -78,7 +78,6 @@ fn cli_runs_outside_git_without_node_or_rust_tools() {
     }
 }
 
-#[cfg(target_os = "linux")]
 mod support;
 #[cfg(target_os = "linux")]
 #[path = "support/terminal.rs"]
@@ -92,7 +91,7 @@ fn ordinary_errors_use_red_headings_and_preserve_plain_diagnostics_and_exit_stat
         "ordinary_errors_use_red_headings_and_preserve_plain_diagnostics_and_exit_status",
         true,
         |root| {
-            let executable = env!("CARGO_BIN_EXE_twigsmith");
+            let executable = support::executable("twigsmith");
             let repo = support::Repository::new(root);
             for preference in [
                 None,

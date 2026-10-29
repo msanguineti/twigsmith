@@ -64,7 +64,7 @@ fn cases(name: &str, test: impl Fn(&Path, Cli)) {
         test(
             directory.path(),
             Cli {
-                executable: env!("CARGO_BIN_EXE_twigsmith"),
+                executable: support::executable("twigsmith"),
                 aliases: false,
             },
         );
@@ -73,7 +73,7 @@ fn cases(name: &str, test: impl Fn(&Path, Cli)) {
 
 fn entrypoint_cases(name: &str, test: impl Fn(&Path, Cli)) {
     isolated(name, true, |root| {
-        for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
+        for executable in [support::executable("twigsmith"), support::executable("tgi")] {
             for aliases in [false, true] {
                 let directory = tempfile::tempdir_in(root).unwrap();
                 println!("lifecycle wiring: executable={executable}, aliases={aliases}");

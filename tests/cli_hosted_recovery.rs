@@ -14,7 +14,7 @@ use twigsmith::{
 };
 
 fn run(repo: &Repository, command: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_twigsmith"))
+    Command::new(support::executable("twigsmith"))
         .current_dir(repo.path())
         .arg(command)
         .args(args)

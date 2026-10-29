@@ -2,11 +2,13 @@
 use super::*;
 use std::process::Output;
 
-const EXE: &str = env!("CARGO_BIN_EXE_tgi");
+fn executable() -> &'static str {
+    support::executable("tgi")
+}
 const SHARED: &str = "twigsmith.config.toml";
 
 fn run(repo: &Repository, args: &[&str]) -> Output {
-    Command::new(EXE)
+    Command::new(executable())
         .current_dir(repo.path())
         .args(args)
         .stdin(Stdio::null())
@@ -339,7 +341,7 @@ fn publish_only_retains_local_work_cancel_then_wip_review_readiness() {
             ));
             let saved = value(&local, &["rev-parse", "HEAD"]);
             let base = value(&remote, &["rev-parse", "main"]);
-            let mut term = terminal::Terminal::start(EXE, local.path(), &["finish"]);
+            let mut term = terminal::Terminal::start(executable(), local.path(), &["finish"]);
             term.until("How should this work be delivered?");
             term.send(b"cancel\n");
             assert_eq!(term.finish().code(), Some(1), "{}", term.output);
@@ -611,7 +613,7 @@ fn default_config_wip_switch_resume_native_reword_and_both_cleanup() {
             forbid_work_republication(&remote);
             reword_editors(root, &local);
             let mut term = terminal::Terminal::start(
-                EXE,
+                executable(),
                 local.path(),
                 &[
                     "finish",
