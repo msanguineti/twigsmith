@@ -17,6 +17,17 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def package_filename(report, name, version):
+    """npm 11 reports an array; npm 12 keys its report by package name."""
+    if isinstance(report, dict) and set(report) == {name}:
+        report = [report[name]]
+    if (not isinstance(report, list) or len(report) != 1
+            or not isinstance(report[0], dict)
+            or report[0].get('filename') != f'{name}-{version}.tgz'):
+        raise ValueError('unexpected npm pack output')
+    return report[0]['filename']
+
+
 def make_package(repo, archive, output, archive_sha256, payload_sha256):
     archive = Path(archive).absolute()
     output = Path(output).absolute()
@@ -45,6 +56,7 @@ def make_package(repo, archive, output, archive_sha256, payload_sha256):
             raise ValueError('native payload does not match the expected SHA-256')
         version = manifest['version']
         metadata = {'name': 'twigsmith', 'version': version, 'license': 'MIT',
+                    'repository': {'type': 'git', 'url': 'https://github.com/msanguineti/twigsmith.git'},
                     'os': ['linux'], 'cpu': ['x64'], 'libc': ['glibc'],
                     'bin': {'twigsmith': 'twigsmith', 'tgi': 'twigsmith'}}
         package = temporary / 'package'
@@ -71,9 +83,7 @@ def make_package(repo, archive, output, archive_sha256, payload_sha256):
                                  '--pack-destination', str(staged), str(package)],
                                 env=env, cwd=temporary, check=True, text=True, stdout=subprocess.PIPE)
         report = json.loads(result.stdout)
-        if len(report) != 1 or report[0]['filename'] != f'twigsmith-{version}.tgz':
-            raise ValueError('unexpected npm pack output')
-        tarball = staged / report[0]['filename']
+        tarball = staged / package_filename(report, 'twigsmith', version)
         expected = {'package/package.json': (package / 'package.json').read_bytes(),
                     'package/twigsmith': payload.read_bytes(),
                     'package/LICENSE': (package / 'LICENSE').read_bytes(),

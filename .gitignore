@@ -15,3 +15,4 @@
 # Python packaging and qualification helpers
 /tools/__pycache__/
 /scripts/ci/__pycache__/
+/site/__pycache__/

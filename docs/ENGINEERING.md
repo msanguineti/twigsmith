@@ -166,6 +166,27 @@ The [development guide](DEVELOPMENT.md#native-candidate-packaging) owns packagin
 and qualification commands; the [user guide](USAGE.md#native-archive-candidates)
 owns extraction and runtime prerequisites.
 
+`tools/release_set.py` binds approved native archive/payload and both manifest hashes
+with the npm tarball identity. `tools/release_stage.py` restricts hosted candidate
+acquisition to exact successful canonical runs/artifacts and prepares a new npm
+candidate without publishing. Native build, packaging and publisher source identities
+remain distinct. The explicit `publish.yml` workflow validates the native and publisher
+sources with the same protected-main eligibility rule as qualification.
+
+`tools/release_publish.py` snapshots verified local bytes, observes downloaded provider
+bytes and applies one `release_recovery` decision at a time. Unknown/conflicting
+observations stop; every attempted effect is followed by fresh observation, including
+ambiguous timeouts. Only archive/manifest/checksums are release assets. No tag is
+created or moved. Workflow concurrency and the local repository lock own exclusivity;
+the pure recovery function does not supply it. Native/npm publication is intentionally
+nontransactional, and channel/site promotion follows consumption checks.
+
+`site/build.py` stages preview output by default; fresh identity-bound consumption
+receipts enable release copy and exact-version instructions. Local replacement has
+rollback/retained-backup behavior, while live Pages deployment remains its own protected
+job. Neither hashes nor a receipt prove account authorization or deployed availability.
+The development guide documents invocation, trust/bootstrap and retry contracts.
+
 ## Shell completion
 
 [`completion.rs`](../src/completion.rs) supplies a shell-neutral Clap command
