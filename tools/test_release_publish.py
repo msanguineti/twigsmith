@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import native_package
@@ -250,7 +251,7 @@ class PublicationTests(unittest.TestCase):
 
     def test_auth_rejection_reobserves_and_retains_remote_absence(self):
         self.fixture.fail = 'create draft'
-        with self.assertRaisesRegex(publish.PublicationError, 'still pending'):
+        with self.assertRaisesRegex(publish.PublicationError, 'still pending: create draft: provider request rejected \\(HTTP 403\\)'):
             self.run_release(execute=True)
         self.assertIsNone(self.fixture.release)
         self.assertEqual(self.fixture.effects, ['create draft'])
@@ -390,6 +391,31 @@ class PublicationTests(unittest.TestCase):
             publish.HTTP(fixture=self.fixture.origin, token='must-not-leak')
         with self.assertRaisesRegex(publish.PublicationError, 'outside'):
             self.providers.http.request('https://example.com/steal', authenticated=True)
+
+
+class NpmDiagnosticTests(unittest.TestCase):
+    def test_failure_reports_codes_and_stages_without_raw_credentials_or_provider_text(self):
+        secret = 'opaque-sensitive-value'
+        stderr = ('npm verbose oidc Failed token exchange request with body message: '
+                  'workflow permission denied ' + secret + '\n'
+                  'npm http fetch POST 403 https://registry.npmjs.org/private?token=' + secret + '\n'
+                  'npm error code ENEEDAUTH\n'
+                  'npm error code EOPAQUE_SENSITIVE_VALUE\n'
+                  'npm error Authorization: Bearer ' + secret + '\n')
+        result = subprocess.CompletedProcess([], 1, stdout=secret, stderr=stderr)
+        provider = publish.Providers(publish.HTTP())
+        with patch.object(subprocess, 'run', return_value=result) as command:
+            with self.assertRaises(publish.PublicationError) as error:
+                provider.npm_command(['publish', 'candidate.tgz'])
+        self.assertEqual(str(error.exception),
+                         'npm operation failed (exit 1; code ENEEDAUTH,unrecognized; HTTP 403; '
+                         'OIDC exchange rejected; mentions workflow,permission); remote state must be observed')
+        self.assertNotIn(secret, str(error.exception))
+        self.assertNotIn('EOPAQUE_SENSITIVE_VALUE', str(error.exception))
+        self.assertNotIn('https:', str(error.exception))
+        environment = command.call_args.kwargs['env']
+        self.assertEqual(environment['NPM_CONFIG_LOGLEVEL'], 'verbose')
+        self.assertEqual(environment['NPM_CONFIG_LOGS_MAX'], '0')
 
 
 if __name__ == '__main__':

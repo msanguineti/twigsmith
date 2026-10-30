@@ -400,6 +400,9 @@ Every attempted effect, including one whose response was lost, is followed by a
 fresh provider observation. Identical remote bytes allow continuation; unknown
 state, conflicting bytes or a missing/changed tag stops. Existing published content
 is never replaced and a retry never repacks or rebuilds the candidate.
+An npm failure reports its exit/error code, observed HTTP status and authentication
+stage when available. Raw npm/provider output stays private; diagnostics use fixed
+labels so tokens, request URLs and server-supplied messages do not enter CI logs.
 
 A workflow-wide `twigsmith-release` concurrency group serializes the entire run,
 including optional Pages deployment; local command invocations also take a shared
