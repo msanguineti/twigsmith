@@ -188,7 +188,7 @@ class Providers:
             environment = {k: v for k, v in environment.items() if not k.lower().startswith('npm_config_')}
             environment.update(NPM_CONFIG_USERCONFIG=str(config), NPM_CONFIG_GLOBALCONFIG=str(global_config),
                                NPM_CONFIG_CACHE=str(cache or Path(temp, 'cache')), NPM_CONFIG_REGISTRY=self.registry,
-                               NPM_CONFIG_LOGLEVEL='error', NPM_CONFIG_LOGS_MAX='0',
+                               NPM_CONFIG_LOGLEVEL='verbose', NPM_CONFIG_LOGS_MAX='0',
                                NPM_CONFIG_FETCH_RETRIES='0', NPM_CONFIG_FETCH_TIMEOUT='30000')
             if self.http.fixture:
                 environment.pop('NODE_AUTH_TOKEN', None)
@@ -205,7 +205,34 @@ class Providers:
             except (OSError, subprocess.TimeoutExpired):
                 raise PublicationError('npm operation unavailable or timed out; remote state must be observed') from None
             if result.returncode:
-                raise PublicationError('npm operation failed; remote state must be observed')
+                # npm's OIDC exchange failures are verbose-only. Report fixed
+                # classifications, never its raw output (which can contain URLs,
+                # credentials or provider-controlled error text).
+                details = ['exit ' + str(result.returncode)]
+                codes = sorted(set(re.findall(r'^npm (?:error|ERR!) code (E[A-Z0-9_]+)\s*$', result.stderr, re.M)))
+                if codes:
+                    known = {'E400', 'E401', 'E403', 'E404', 'E409', 'E422', 'E429', 'E500', 'E502', 'E503', 'E504',
+                             'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ENEEDAUTH', 'ENOTFOUND', 'EOTP',
+                             'EPUBLISHCONFLICT', 'ESOCKETTIMEDOUT', 'ETIMEDOUT', 'EUSAGE'}
+                    labels = sorted({code if code in known else 'unrecognized' for code in codes})
+                    details.append('code ' + ','.join(labels))
+                statuses = sorted(set(re.findall(r'^npm http fetch (?:GET|POST|PUT|DELETE) ([1-5][0-9]{2})\b', result.stderr, re.M)))
+                if statuses:
+                    details.append('HTTP ' + ','.join(statuses))
+                for marker, label in (
+                    ('Successfully retrieved and set token', 'OIDC token acquired'),
+                    ('Failed token exchange request', 'OIDC exchange rejected'),
+                    ('Failed to fetch id_token', 'OIDC identity request failed'),
+                    ('Skipped because incorrect permissions for id-token', 'OIDC identity permission absent'),
+                    ('Signed provenance statement', 'provenance signed'),
+                ):
+                    if marker in result.stderr:
+                        details.append(label)
+                words = ('provenance', 'repository', 'workflow', 'environment', 'permission', 'expired', 'sigstore', 'fulcio')
+                mentioned = [word for word in words if word in result.stderr.lower()]
+                if mentioned:
+                    details.append('mentions ' + ','.join(mentioned))
+                raise PublicationError('npm operation failed (' + '; '.join(details) + '); remote state must be observed')
             return result.stdout
 
     def effect(self, step, record, files):
@@ -383,7 +410,8 @@ def resume(record, files, expected, providers, *, execute=False, promote=None, s
             after['consumption_verified'] = receipt is not None
             after['site_promoted'] = bool(receipt and site_observed and site_observed(record, receipt))
             if release_recovery.next_step(expected, record['npm']['sha256'], after) == step:
-                raise PublicationError('operation failed or timed out; fresh observation confirms it is still pending: ' + step) from None
+                detail = ': ' + str(error) if isinstance(error, PublicationError) else ''
+                raise PublicationError('operation failed or timed out; fresh observation confirms it is still pending: ' + step + detail) from None
         if len(attempted) > 1 and attempted[-1] == attempted[-2]:
             raise PublicationError('operation did not make observable progress')
     raise PublicationError('publication did not converge within bounded operations')
