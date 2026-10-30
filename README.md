@@ -1,5 +1,10 @@
 # Twigsmith
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/msanguineti/twigsmith/main/site/assets/logo-dark.svg">
+  <img src="https://raw.githubusercontent.com/msanguineti/twigsmith/main/site/assets/logo.svg" alt="Twigsmith anvil and Git branch logo" width="420">
+</picture>
+
 A Git workflow CLI for starting workstreams, saving progress, and delivering
 finished work, releases, and hotfixes. Invoke it as `twigsmith` or the equivalent
 shorthand `tgi`; both share settings and recovery state.
