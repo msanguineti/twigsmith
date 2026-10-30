@@ -145,8 +145,14 @@ completed-directory rename prevents failed builds from presenting partial output
 The verifier checks archive and member hashes, exact names, modes and ELF
 architecture, and rejects traversal, links, duplicate or nonregular members before
 extraction. Hash consistency does not independently authenticate a publisher. The
-manifest identifies the `twigsmith` payload for later npm work; that channel must
-consume accepted bytes by hash rather than rebuild them.
+manifest identifies the `twigsmith` payload for npm packaging.
+[`tools/npm_package.py`](../tools/npm_package.py) verifies the native archive and
+caller-supplied archive and payload hashes before running offline `npm pack`. It
+checks the resulting allowlist, bytes and modes before making the output directory
+visible. Both npm bin names point to that same native executable; package metadata
+selects Linux, x64 and glibc without enforcing a glibc minimum. The npm manifest
+separately records native provenance and packaging inputs. Neither hash consistency
+nor a recorded source identity authenticates a publisher.
 
 Pull-request CI checks the proposed integration for source and completion behavior.
 Explicit release preparation reuses eligible source validation without repeating

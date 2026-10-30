@@ -323,6 +323,30 @@ not establish compatibility with the selected Ubuntu runners. Preserve the glibc
 2.35 build baseline when replacing the Ubuntu 22.04 runner; its retirement is
 separate from Ubuntu's maintenance lifecycle.
 
+## npm candidate packaging
+
+`./dev package-npm` wraps an existing verified native candidate; it does not
+rebuild the executable. Python 3.10+ and npm are required. Supply the expected
+SHA-256 values from independently retained acceptance evidence and use a new
+output directory:
+
+```sh
+./dev package-npm /path/to/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz /tmp/twigsmith-npm-candidate --archive-sha256 ARCHIVE_SHA256 --payload-sha256 PAYLOAD_SHA256
+./dev test-packaging
+```
+
+The native archive must have its adjacent manifest and checksum file. The tool
+checks both expected hashes and native package integrity, runs `npm pack` offline
+with isolated configuration, and validates the exact output files and modes before
+publishing the output directory. It includes only the selected native executable,
+license, README and package metadata. Both npm bin names point to that executable;
+there are no package scripts or runtime dependencies. The output manifest records
+the native provenance and packaging source, tool, README, Node/npm versions and
+tarball hash separately. A dirty packaging source is labelled as such. Hashes bind the
+inputs and output but do not authenticate their publisher. The npm regression
+checks invoke the npm available on PATH; the regular source suite's native package
+checks do not require npm.
+
 ## Troubleshooting
 
 - **Missing Rust tools or components:** repeat `./dev bootstrap`, especially

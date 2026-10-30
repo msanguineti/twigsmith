@@ -48,9 +48,16 @@ compatibility must be established for the exact artifact; replacing system libc
 is not an installation step. Checksums detect mismatches with the accompanying
 manifest; they do not independently authenticate a publisher.
 
-Release downloads and npm/npx installation remain unpublished. The
-[developer packaging guide](DEVELOPMENT.md#native-candidate-packaging) describes
-local builds and their provenance.
+Release downloads and registry installation remain unpublished. A local npm
+candidate can be installed from its `.tgz` with `npm install /path/to/twigsmith.tgz`,
+or globally with `npm install --global /path/to/twigsmith.tgz`. Node and npm are
+needed for npm installation and npx; the executable itself does not need them.
+The npm package targets Linux x86_64 with glibc 2.35 or newer. Its libc metadata
+identifies the libc family, not the minimum version; confirm the host meets that
+baseline. Git 2.45 or newer and the other runtime prerequisites above still apply.
+If Git reports `unknown option: --no-lazy-fetch`, upgrade Git to 2.45 or newer.
+The [developer packaging guide](DEVELOPMENT.md#npm-candidate-packaging) describes
+candidate creation and provenance.
 
 ## Transition from the earlier Rust identity
 
