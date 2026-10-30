@@ -15,15 +15,12 @@ class RecoveryTests(unittest.TestCase):
         return next_step(self.assets, self.npm, self.state)
 
     def test_success_interruption_and_timeout_after_remote_success(self):
-        self.assertEqual(self.step(), 'create draft')
-        self.state['release'] = 'draft'
+        self.state['release'] = 'published'
         self.assertEqual(self.step(), 'upload archive')
         # A timed-out upload is observed before retry: identical bytes advance.
         self.state['assets']['archive'] = self.assets['archive']
         self.assertEqual(self.step(), 'upload checksum')
         self.state['assets'].update(self.assets)
-        self.assertEqual(self.step(), 'publish release')
-        self.state['release'] = 'published'
         self.assertEqual(self.step(), 'publish npm')
         self.state['npm'] = self.npm
         self.assertEqual(self.step(), 'verify public consumption')
@@ -42,7 +39,7 @@ class RecoveryTests(unittest.TestCase):
         self.state['npm'] = 'unknown'
         self.assertIn('unknown', self.step())
         self.state.update(npm='absent', assets={'archive': self.assets['archive']})
-        self.assertIn('missing assets', self.step())
+        self.assertEqual(self.step(), 'upload checksum')
 
     def test_duplicate_invocation_requires_exclusive_control(self):
         self.state['exclusive'] = False

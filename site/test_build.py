@@ -39,19 +39,19 @@ class SiteTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.output = self.root / 'pages'
         self.record = {
-            'repository': 'msanguineti/twigsmith', 'version': '0.1.0-beta.1',
-            'tag': 'v0.1.0-beta.1',
-            'publication': {'source': '4' * 40, 'channel': 'beta',
-                            'staging_channel': 'release-candidate', 'prerelease': True},
-            'native': {'archive': 'twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz',
+            'repository': 'msanguineti/twigsmith', 'version': '0.1.0',
+            'tag': 'v0.1.0',
+            'publication': {'source': '4' * 40, 'channel': 'latest',
+                            'staging_channel': 'release-candidate', 'prerelease': False, 'release_id': 123},
+            'native': {'archive': 'twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz',
                        'sha256': '1' * 64, 'manifest_sha256': '2' * 64,
                        'payload_sha256': '3' * 64, 'source': {'revision': '4' * 40}},
-            'npm': {'package': 'twigsmith-0.1.0-beta.1.tgz',
+            'npm': {'package': 'twigsmith-0.1.0.tgz',
                     'sha256': '5' * 64, 'manifest_sha256': '6' * 64}}
         self.receipt = {'identity': deepcopy(self.record),
                         'native_sha256': '1' * 64, 'npm_sha256': '5' * 64,
                         'observed_at': datetime.now(timezone.utc).isoformat(),
-                        'consumption': {kind: {'version': '0.1.0-beta.1', 'commands': ['twigsmith', 'tgi']}
+                        'consumption': {kind: {'version': '0.1.0', 'commands': ['twigsmith', 'tgi']}
                                         for kind in ('native', 'npm', 'npx')}}
 
     def previous(self):
@@ -73,14 +73,14 @@ class SiteTests(unittest.TestCase):
         self.assertNotIn('not published', published)
         self.assertNotIn('planned locations', published)
         self.assertNotIn('Local npm candidate', published)
-        self.assertIn('npm install --global twigsmith@0.1.0-beta.1', published)
-        self.assertIn('npx --yes --package=twigsmith@0.1.0-beta.1 twigsmith --version', published)
-        self.assertIn('npx --yes --package=twigsmith@0.1.0-beta.1 tgi --help', published)
-        download = ('https://github.com/msanguineti/twigsmith/releases/download/v0.1.0-beta.1/'
-                    'twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu')
+        self.assertIn('npm install --global twigsmith@0.1.0', published)
+        self.assertIn('npx --yes --package=twigsmith@0.1.0 twigsmith --version', published)
+        self.assertIn('npx --yes --package=twigsmith@0.1.0 tgi --help', published)
+        download = ('https://github.com/msanguineti/twigsmith/releases/download/v0.1.0/'
+                    'twigsmith-0.1.0-x86_64-unknown-linux-gnu')
         for suffix in ('.tar.gz', '.manifest.json', '.sha256'):
             self.assertIn(f'href="{download}{suffix}"', published)
-        self.assertIn('https://www.npmjs.com/package/twigsmith/v/0.1.0-beta.1', published)
+        self.assertIn('https://www.npmjs.com/package/twigsmith/v/0.1.0', published)
         for path in self.output.rglob('*'):
             self.assertFalse(path.is_symlink())
         self.assertNotIn('observed_at', published)
@@ -95,7 +95,7 @@ class SiteTests(unittest.TestCase):
                 '--archive-sha256', '1' * 64, '--payload-sha256', '3' * 64,
                 '--package-sha256', '5' * 64, '--native-manifest-sha256', '2' * 64,
                 '--npm-manifest-sha256', '6' * 64, '--tag', self.record['tag'],
-                '--receipt', str(receipt_file), '--channel', 'beta']
+                '--receipt', str(receipt_file), '--channel', 'latest']
         with mock.patch.object(build.release_set, 'verify', return_value=deepcopy(verified)), mock.patch.object(sys, 'argv', args):
             build.main()
         self.assertTrue(build.promotion_matches(self.output, self.record, self.receipt))
@@ -117,8 +117,24 @@ class SiteTests(unittest.TestCase):
         (self.output / 'assets' / 'mark.svg').write_text('changed')
         self.assertFalse(build.promotion_matches(self.output, self.record, self.receipt))
 
+    def test_prerelease_cannot_replace_published_site(self):
+        self.previous()
+        record = deepcopy(self.record)
+        record['version'] = '0.1.1-rc1'
+        record['tag'] = 'v' + record['version']
+        record['native']['archive'] = f'twigsmith-{record["version"]}-x86_64-unknown-linux-gnu.tar.gz'
+        record['npm']['package'] = f'twigsmith-{record["version"]}.tgz'
+        record['publication'].update(prerelease=True, channel='next')
+        receipt = deepcopy(self.receipt)
+        receipt['identity'] = record
+        for observation in receipt['consumption'].values():
+            observation['version'] = record['version']
+        with self.assertRaisesRegex(ValueError, 'publication identity'):
+            build.build(self.output, record, receipt=receipt)
+        self.assert_previous()
+
     def test_receipt_identity_hash_and_consumption_fail_closed(self):
-        changes = [lambda receipt: receipt['identity']['publication'].update(channel='latest'),
+        changes = [lambda receipt: receipt['identity']['publication'].update(channel='next'),
                    lambda receipt: receipt['identity'].update(tag='v0.1.0-beta.2'),
                    lambda receipt: receipt['identity']['native'].update(payload_sha256='0' * 64),
                    lambda receipt: receipt.update(native_sha256='0' * 64),

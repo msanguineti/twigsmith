@@ -87,6 +87,68 @@ class StageTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 release_stage.positive(value)
 
+    def test_release_continuation_binds_original_run_release_and_candidate(self):
+        record = self.fixture.check()
+        record['publication'] = {'source': record['native']['source']['revision'],
+                                 'channel': 'next', 'staging_channel': 'candidate', 'prerelease': True}
+        request = {'candidate_run': 2, 'artifact_id': 9, 'approval': record}
+        body = '<!-- twigsmith-release-request\n' + json.dumps(request) + '\n-->'
+        release = {'id': 44, 'tag_name': record['tag'], 'body': body, 'prerelease': True,
+                   'published_at': '2026-01-02T00:00:00Z', 'draft': False}
+        event = {'action': 'published', 'repository': {'full_name': release_stage.REPO},
+                 'source': record['native']['source']['revision'], 'run_id': '3', 'run_attempt': '1',
+                 'release': deepcopy(release)}
+        event_run = {'run_id': '3', 'attempt': '1', 'source': event['source']}
+        self.run.update(id=2, head_sha=record['npm']['packaging']['source']['revision'],
+                        path='.github/workflows/publish.yml', updated_at='2026-01-01T00:00:00Z')
+        self.artifact.update(name='release-candidate', workflow_run={'id': 2, 'head_sha': self.run['head_sha']},
+                             created_at='2026-01-01T00:00:00Z')
+        def fetch(path):
+            if '/releases/' in path:
+                return release
+            return self.fetch(path)
+        value = release_stage.request_from_event(event, event_run, '3' * 40, fetch)
+        self.assertEqual(value['approval']['publication']['release_id'], 44)
+        for field, value in [('action', 'edited'), ('source', 'f' * 40),
+                             ('repository', {'full_name': 'fork/repo'}), ('run_attempt', '2')]:
+            old = event[field]
+            event[field] = value
+            with self.subTest(event_field=field), self.assertRaises(ValueError):
+                release_stage.request_from_event(event, event_run, '3' * 40, fetch)
+            event[field] = old
+        for field, value in [('body', body + ' changed'), ('tag_name', 'v0.0.1'), ('id', 45), ('prerelease', False)]:
+            old = release[field]
+            release[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                release_stage.request_from_event(event, event_run, '3' * 40, fetch)
+            release[field] = old
+        self.artifact['created_at'] = '2026-01-03T00:00:00Z'
+        with self.assertRaisesRegex(ValueError, 'before release'):
+            release_stage.request_from_event(event, event_run, '3' * 40, fetch)
+
+    def test_release_event_run_must_be_canonical_success_and_exact_artifact(self):
+        run = deepcopy(self.run)
+        run.update(id=3, event='release', run_attempt=2)
+        artifact = {'id': 17, 'name': 'release-event-3-2', 'expired': False,
+                    'workflow_run': {'id': 3, 'head_sha': run['head_sha']}}
+        def fetch(path):
+            return {'artifacts': [artifact]} if '/artifacts?' in path else run
+        self.assertEqual(release_stage.inspect_event_run(3, 2, fetch)['artifact_id'], '17')
+        for field, value in [('conclusion', 'failure'), ('event', 'workflow_dispatch'),
+                             ('head_repository', {'full_name': 'fork/repo'}), ('run_attempt', 1)]:
+            old = run[field]
+            run[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                release_stage.inspect_event_run(3, 2, fetch)
+            run[field] = old
+        artifact['expired'] = True
+        with self.assertRaises(ValueError):
+            release_stage.inspect_event_run(3, 2, fetch)
+        artifact['expired'] = False
+        artifact['workflow_run']['head_sha'] = 'e' * 40
+        with self.assertRaises(ValueError):
+            release_stage.inspect_event_run(3, 2, fetch)
+
 
 if __name__ == '__main__':
     unittest.main()

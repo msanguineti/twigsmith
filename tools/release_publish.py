@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observe and resume an approved immutable prerelease (read/plan by default).
+"""Observe and resume an approved immutable release (read/plan by default).
 
 Live effects require --execute and the protected publication workflow. A fixture
 endpoint is restricted to loopback and never receives live credentials. This is
@@ -32,6 +32,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PublicationError(ValueError):
     pass
+
+
+def semver_key(version):
+    """Return a comparable SemVer precedence key; reject ambiguous registry values."""
+    match = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?', version)
+    if not match:
+        raise PublicationError('npm channel version is not valid SemVer')
+    prerelease = match.group(4)
+    identifiers = []
+    if prerelease is not None:
+        for part in prerelease.split('.'):
+            if not part or (part.isdigit() and len(part) > 1 and part.startswith('0')):
+                raise PublicationError('npm channel version is not valid SemVer')
+            identifiers.append((0, int(part)) if part.isdigit() else (1, part))
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)),
+            1 if prerelease is None else 0, tuple(identifiers))
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -143,9 +159,12 @@ class Providers:
         assets = {}
         status = 'absent'
         self.release_id = None
+        if release is None:
+            raise PublicationError('approved published release is absent')
         if release is not None:
-            if release['tag_name'] != record['tag'] or release['prerelease'] is not True:
-                raise PublicationError('release identity or prerelease status conflicts')
+            if (release['id'] != record['publication']['release_id'] or release['draft'] is not False
+                    or release['prerelease'] is not record['publication']['prerelease']):
+                raise PublicationError('release identity or published status conflicts')
             self.release_id = int(release['id'])
             status = 'draft' if release['draft'] else 'published'
             page = 1
@@ -172,10 +191,12 @@ class Providers:
             if tarball != allowed:
                 raise PublicationError('registry tarball URL conflicts')
             npm = release_set.digest(self.http.request(tarball, binary=True))
-        tags = self.http.request(self.registry + '/-/package/twigsmith/dist-tags', absent=True) or {}
+        tags = self.http.request(self.registry + '/-/package/twigsmith/dist-tags', absent=True)
+        if not isinstance(tags, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in tags.items()):
+            raise PublicationError('npm channel observation is unavailable or invalid')
         return {'exclusive': True, 'release': status, 'assets': assets, 'npm': npm,
                 'channel': 'expected' if tags.get(record['publication']['channel']) == record['version'] else 'other',
-                'consumption_verified': False, 'site_promoted': False}
+                'tags': tags, 'consumption_verified': False, 'site_promoted': False}
 
     def npm_command(self, arguments, *, cwd=None, anonymous=False, cache=None):
         environment = os.environ.copy()
@@ -197,8 +218,9 @@ class Providers:
             elif not anonymous and environment.get('NODE_AUTH_TOKEN'):
                 config.write_text('//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n')
             if anonymous:
-                for key in ('NODE_AUTH_TOKEN', 'NPM_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'):
-                    environment.pop(key, None)
+                for key in list(environment):
+                    if key in ('GH_TOKEN', 'GITHUB_TOKEN', 'NODE_AUTH_TOKEN', 'NPM_TOKEN') or key.startswith('ACTIONS_ID_TOKEN_'):
+                        environment.pop(key, None)
             try:
                 result = subprocess.run([self.npm, '--registry=' + self.registry, *arguments],
                                         cwd=cwd or temp, env=environment, capture_output=True, text=True, timeout=180)
@@ -236,19 +258,12 @@ class Providers:
             return result.stdout
 
     def effect(self, step, record, files):
-        if step == 'create draft':
-            self.http.request(self.api + '/releases', method='POST', authenticated=True,
-                              data={'tag_name': record['tag'], 'name': record['tag'], 'draft': True,
-                                    'prerelease': True, 'make_latest': 'false'})
-        elif step.startswith('upload '):
+        if step.startswith('upload '):
             name = step[7:]
             origin = self.http.fixture or 'https://uploads.github.com'
             self.http.request(origin + '/repos/' + REPO + f'/releases/{self.release_id}/assets?'
                               + urlencode({'name': name}), method='POST', authenticated=True,
                               data=files[name])
-        elif step == 'publish release':
-            self.http.request(self.api + f'/releases/{self.release_id}', method='PATCH', authenticated=True,
-                              data={'draft': False, 'make_latest': 'false'})
         elif step == 'publish npm':
             with tempfile.TemporaryDirectory(prefix='twigsmith-publish-') as temp:
                 tgz = Path(temp, record['npm']['package'])
@@ -292,7 +307,11 @@ class Providers:
                 raise PublicationError('npm registry acquisition differs from approved package')
             for name in ('twigsmith', 'tgi'):
                 for binary in (root / 'native' / record['native']['archive'][:-7] / name, prefix / 'node_modules' / '.bin' / name):
-                    result = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=20)
+                    environment = {k: v for k, v in os.environ.items()
+                                   if not (k in ('GH_TOKEN', 'GITHUB_TOKEN', 'NODE_AUTH_TOKEN', 'NPM_TOKEN')
+                                           or k.startswith('ACTIONS_ID_TOKEN_') or k.lower().startswith('npm_config_'))}
+                    result = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=20,
+                                            env=environment)
                     if result.returncode or result.stdout.strip() != 'twigsmith ' + record['version']:
                         raise PublicationError('downloaded or npm-installed command failed version observation')
                 output = self.npm_command(['exec', '--offline', '--yes', '--ignore-scripts', '--package=' + str(packed / record['npm']['package']),
@@ -307,16 +326,19 @@ class Providers:
 
 def approved_inputs(archive, npm_dir, approval):
     publication = approval['publication']
-    if (set(publication) != {'source', 'channel', 'staging_channel', 'prerelease'}
+    version_is_prerelease = semver_key(approval['version'])[3] == 0
+    if (set(publication) != {'source', 'channel', 'staging_channel', 'prerelease', 'release_id'}
             or not re.fullmatch(r'[0-9a-f]{40}', publication['source'])
             or publication['source'] != approval['native']['source']['revision']
-            or publication['prerelease'] is not True or '-' not in approval['version']):
-        raise PublicationError('approval must bind a source and prerelease target')
-    for channel in (publication['channel'], publication['staging_channel']):
-        if not re.fullmatch(r'[a-z][a-z0-9-]{0,80}', channel) or channel == 'latest':
-            raise PublicationError('approval must select explicit non-latest prerelease channels')
-    if publication['channel'] == publication['staging_channel']:
-        raise PublicationError('staging and advertised channels must differ')
+            or type(publication['release_id']) is not int or publication['release_id'] < 1
+            or type(publication['prerelease']) is not bool
+            or publication['prerelease'] != version_is_prerelease):
+        raise PublicationError('approval must bind a source, release ID and matching version class')
+    if publication['channel'] != ('next' if publication['prerelease'] else 'latest'):
+        raise PublicationError('advertised channel differs from release class')
+    staging = publication['staging_channel']
+    if not isinstance(staging, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,80}', staging) or staging in ('next', 'latest'):
+        raise PublicationError('staging channel must be distinct from advertised channels')
     record = release_set.verify(archive, npm_dir, approval['native']['sha256'],
         approval['native']['payload_sha256'], approval['npm']['sha256'], approval['tag'],
         approval['native']['manifest_sha256'], approval['npm']['manifest_sha256'])
@@ -378,10 +400,18 @@ def source_eligible(repo, record, providers, execute):
 def resume(record, files, expected, providers, *, execute=False, promote=None, site_observed=None):
     receipt = None
     attempted = []
+    protected_tags = None
+    tags_initialized = False
     for _ in range(20):
         state = providers.observe(record, expected)
+        other = 'latest' if record['publication']['prerelease'] else 'next'
+        if not tags_initialized:
+            protected_tags = state['tags'].get(other)
+            tags_initialized = True
+        elif state['tags'].get(other) != protected_tags:
+            raise PublicationError('other advertised npm channel changed during publication')
         state['consumption_verified'] = receipt is not None
-        state['site_promoted'] = bool(receipt and site_observed and site_observed(record, receipt))
+        state['site_promoted'] = record['publication']['prerelease'] or bool(receipt and site_observed and site_observed(record, receipt))
         step = release_recovery.next_step(expected, record['npm']['sha256'], state)
         if execute and providers.tag_source(record['tag']) != record['publication']['source']:
             raise PublicationError('approved remote tag is absent or changed')
@@ -394,6 +424,10 @@ def resume(record, files, expected, providers, *, execute=False, promote=None, s
             continue
         if step == 'promote site' and promote is None:
             return {'next': step, 'observed': state, 'attempted': attempted, 'receipt': receipt}
+        if step == 'promote channel':
+            current = state['tags'].get(record['publication']['channel'])
+            if current is not None and current != record['version'] and semver_key(current) >= semver_key(record['version']):
+                raise PublicationError('advertised npm channel points to a newer or equal-precedence version')
         # Re-observe even after a rejection/timeout. If no progress occurred, stop;
         # another invocation may retry only from its fresh observations.
         try:
@@ -406,9 +440,16 @@ def resume(record, files, expected, providers, *, execute=False, promote=None, s
             error = failure
         attempted.append(step)
         after = providers.observe(record, expected)
+        if after['tags'].get(other) != protected_tags:
+            raise PublicationError('other advertised npm channel changed during publication')
+        target = record['publication']['channel']
+        if step != 'promote channel' and after['tags'].get(target) != state['tags'].get(target):
+            raise PublicationError('advertised npm channel changed before promotion')
+        if step == 'promote channel' and after['tags'].get(target) not in (state['tags'].get(target), record['version']):
+            raise PublicationError('advertised npm channel changed to an unexpected version')
         if error:
             after['consumption_verified'] = receipt is not None
-            after['site_promoted'] = bool(receipt and site_observed and site_observed(record, receipt))
+            after['site_promoted'] = record['publication']['prerelease'] or bool(receipt and site_observed and site_observed(record, receipt))
             if release_recovery.next_step(expected, record['npm']['sha256'], after) == step:
                 detail = ': ' + str(error) if isinstance(error, PublicationError) else ''
                 raise PublicationError('operation failed or timed out; fresh observation confirms it is still pending: ' + step + detail) from None
@@ -451,8 +492,8 @@ def main():
             result = resume(record, files, expected, providers, execute=args.execute,
                             promote=promote, site_observed=observed)
             result['tag_exists'] = tag_exists
-            result['site_artifact_prepared'] = result['observed'].pop('site_promoted')
-            if result['next'] == 'complete':
+            result['site_artifact_prepared'] = result['observed'].pop('site_promoted') and not record['publication']['prerelease']
+            if result['next'] == 'complete' and not record['publication']['prerelease']:
                 result['next'] = 'site artifact prepared; Pages deployment remains separate'
             if args.receipt_output and result['receipt']:
                 Path(args.receipt_output).write_text(json.dumps(result['receipt'], indent=2) + '\n')

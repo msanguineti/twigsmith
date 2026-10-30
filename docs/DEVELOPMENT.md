@@ -356,8 +356,9 @@ source eligibility/publication.
 
 ## Release preparation and publication
 
-`publish.yml` is an explicit manual workflow on `main`; neither pushes nor merges
-publish anything. Its `prepare` operation uses read-only GitHub permissions to
+`publish.yml` prepares candidates on `main` and continues a published GitHub
+release after successful release qualification; neither pushes nor merges publish
+anything. Its `prepare` operation uses read-only GitHub permissions to
 retrieve a successful canonical native qualification artifact, verify its approved
 identity, and pack a new npm candidate at the current publisher revision. The
 `release-candidate` Actions artifact contains only native archive/manifest/checksums,
@@ -372,14 +373,29 @@ Dispatch input `request` is JSON, passed as data rather than shell source:
 | `prepare` | `publisher_revision` (exact current main SHA), `artifact_id` (native artifact ID), `native` (the reviewed identity record's native object, including source/tree, run/attempt and independently approved hashes) |
 | `publish` | `publisher_revision` (exact current main SHA), `candidate_run` and `artifact_id` (the successful preparation run and its exact release-candidate artifact), `approval` (the complete reviewed identity plus publication choices) |
 
-The `approval.publication` object contains `source` (the native build revision),
-`prerelease: true`, `staging_channel` (a temporary non-latest npm dist-tag) and
-`channel` (the advertised non-latest prerelease dist-tag). The two channels must
-be different. These are explicit release choices; examples such as `candidate` and
-`beta` are not configured defaults. All version/tag/native/npm hashes and packaging
-provenance must equal the downloaded candidate. Do not regenerate approval hashes
-from replacement files during a retry. An expired/foreign artifact, failed run,
-wrong publisher revision or changed identity stops before publication.
+To initiate publication, include exactly one comment in the GitHub release body:
+
+```text
+<!-- twigsmith-release-request
+{"candidate_run": PREPARATION_RUN_ID, "artifact_id": ARTIFACT_ID, "approval": APPROVAL_OBJECT}
+-->
+```
+
+Replace the placeholders with valid JSON values from the reviewed candidate. The
+approval contains its complete identity and a `publication` object with `source`,
+`prerelease`, `channel` and `staging_channel`. The advertised channel is `next`
+for a prerelease and `latest` for a stable release; the staging channel is distinct
+from both. Omit `release_id` from this comment: the continuation binds the original
+published release ID. The successful preparation run and its exact artifact must
+exist before release publication. The continuation checks the event, current release,
+tag, source and candidate before it obtains publication permissions. All version,
+tag, native/npm hashes and packaging provenance must match the candidate.
+
+For a manual retry, use the `publish` request in the table with the same approval,
+adding the original numeric `release_id` to `approval.publication` and setting
+`publisher_revision` to current eligible main. Never regenerate hashes or repack a
+candidate for a retry. An expired or foreign artifact, failed run, changed identity
+or conflicting bytes stops publication.
 
 Both native source and publisher revision must satisfy the existing protected-main
 eligibility rule. Native source, npm packaging source and publisher revision can
@@ -390,23 +406,24 @@ Some historical-source release API requests can require workflow-write authority
 a rejected existing-tag operation must be investigated rather than adding a token
 or retargeting the tag automatically.
 
-The `publish` operation has a read-only preflight, then the `publish` job in the
-`release` environment repeats identity checks and resumes the release. It uploads
-only the approved native files to a draft, publishes that prerelease, publishes
-the exact npm tarball to the approved staging channel, verifies anonymous download
-and execution, and then advances the advertised channel. There is no cross-service
+A published release triggers qualification and then a read-only preflight on main.
+The `publish` job in the `release` environment rechecks the candidate and resumes
+that exact visible release. It uploads only missing approved native assets, publishes
+the exact npm tarball to its staging channel, verifies anonymous download and
+execution, and advances the advertised channel. There is no cross-service
 transaction: native or npm publication can remain visible after a later failure.
 Every attempted effect, including one whose response was lost, is followed by a
 fresh provider observation. Identical remote bytes allow continuation; unknown
-state, conflicting bytes or a missing/changed tag stops. Existing published content
-is never replaced and a retry never repacks or rebuilds the candidate.
+state, conflicting bytes or a missing/changed release or tag stops. Existing
+published bytes are never replaced.
 An npm failure reports its exit/error code, observed HTTP status and authentication
 stage when available. Raw npm/provider output stays private; diagnostics use fixed
 labels so tokens, request URLs and server-supplied messages do not enter CI logs.
 
 A workflow-wide `twigsmith-release` concurrency group serializes the entire run,
-including optional Pages deployment; local command invocations also take a shared
-repository lock. Keep this group on any future publication/deployment path.
+including Pages deployment; local command invocations also take a shared
+repository lock. GitHub can replace an older pending run in a concurrency group;
+inspect its status and retry a displaced continuation with the same candidate.
 The reviewed hosted runtime is Node 24.22.2 with npm 12.2.1. npm trust must identify
 repository `msanguineti/twigsmith`, workflow filename `publish.yml`, environment
 `release`; direct publish and dist-tag permissions are separate. Actual account
@@ -454,13 +471,14 @@ this is not a process-crash transaction or an atomic reader-visible directory sw
 Hosted Pages deployment is separate and uses the completed ordinary-file artifact.
 Preview/release assets use relative paths for the repository Pages base path.
 
-The publication workflow prepares the verified site only after download/execution
-checks and channel promotion. `deploy_pages` defaults to false; enabling it is a
-separate release operation. The `deploy-pages` job uses environment `github-pages`
-and only Pages/OIDC permissions. Pages must already be configured for GitHub Actions;
-the workflow does not enable it automatically. Keep existing advertised site content
-until the intended native/npm set is publicly verified. A failed Pages deployment
-can be retried from the same immutable candidate; it does not undo a release.
+The publication workflow builds and deploys Pages automatically for a stable
+release only after download/execution checks and channel promotion. Prereleases do
+not deploy Pages. The `deploy-pages` job uses environment `github-pages` and only
+Pages/OIDC permissions. Pages must already be configured for GitHub Actions. A failed
+Pages deployment can be retried with the same immutable candidate by dispatching
+`publish` on main with `deploy_pages` enabled; the workflow obtains a fresh
+consumption receipt before rebuilding the site. A deployment failure does not undo
+a release.
 
 ## Troubleshooting
 

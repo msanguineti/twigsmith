@@ -45,8 +45,6 @@ def next_step(expected_assets, expected_npm, observed):
         return 'create draft'
     missing = sorted(set(expected_assets) - set(assets))
     if missing:
-        if release == 'published':
-            return 'stop: published release missing assets'
         return 'upload ' + missing[0]
     if release == 'draft':
         if npm != 'absent':
