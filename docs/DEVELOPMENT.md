@@ -347,6 +347,13 @@ inputs and output but do not authenticate their publisher. The npm regression
 checks invoke the npm available on PATH; the regular source suite's native package
 checks do not require npm.
 
+The package metadata identifies the canonical public repository for npm provenance.
+`tools/release_set.py --help` describes an offline check of a native archive and npm
+candidate against independently supplied hashes and a matching version tag. This
+checks artifact identity; it does not establish source eligibility or publication.
+`site/build.py --help` uses that check to build an unpublished local site preview in
+a new directory. The preview's planned release links do not establish availability.
+
 ## Troubleshooting
 
 - **Missing Rust tools or components:** repeat `./dev bootstrap`, especially

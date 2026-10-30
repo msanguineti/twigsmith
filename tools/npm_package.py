@@ -45,6 +45,7 @@ def make_package(repo, archive, output, archive_sha256, payload_sha256):
             raise ValueError('native payload does not match the expected SHA-256')
         version = manifest['version']
         metadata = {'name': 'twigsmith', 'version': version, 'license': 'MIT',
+                    'repository': {'type': 'git', 'url': 'https://github.com/msanguineti/twigsmith.git'},
                     'os': ['linux'], 'cpu': ['x64'], 'libc': ['glibc'],
                     'bin': {'twigsmith': 'twigsmith', 'tgi': 'twigsmith'}}
         package = temporary / 'package'

@@ -45,6 +45,7 @@ class NpmPackageTests(unittest.TestCase):
             self.assertEqual(set(tar.getnames()), {'package/package.json', 'package/twigsmith',
                                                    'package/LICENSE', 'package/README.md'})
             metadata = json.load(tar.extractfile('package/package.json'))
+            self.assertEqual(metadata['repository'], {'type': 'git', 'url': 'https://github.com/msanguineti/twigsmith.git'})
             self.assertEqual(metadata['bin'], {'twigsmith': 'twigsmith', 'tgi': 'twigsmith'})
             self.assertEqual((metadata['os'], metadata['cpu'], metadata['libc']),
                              (['linux'], ['x64'], ['glibc']))

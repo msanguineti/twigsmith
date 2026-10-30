@@ -300,7 +300,9 @@ case "$command" in
     package-npm) exec python3 "$repo_dir/tools/npm_package.py" "$@" ;;
     test-packaging)
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@"
-        exec python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_package.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_package.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_set.py' "$@"
+        exec python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_recovery.py' "$@"
         ;;
     native-qualify) exec python3 "$repo_dir/tools/qualify_native.py" "$@" ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
