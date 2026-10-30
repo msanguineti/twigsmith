@@ -59,13 +59,15 @@ def _validate_identity(record, published):
         raise ValueError('invalid site payload hash')
     if published:
         publication = record.get('publication', {})
-        if (set(publication) != {'source', 'channel', 'staging_channel', 'prerelease'}
+        if (set(publication) != {'source', 'channel', 'staging_channel', 'prerelease', 'release_id'}
                 or not re.fullmatch(r'[0-9a-f]{40}', publication['source'])
                 or publication['source'] != record['native']['source']['revision']
-                or publication['prerelease'] is not True or '-' not in record['version']
+                or publication['prerelease'] is not False or '-' in record['version']
+                or publication['channel'] != 'latest'
+                or type(publication['release_id']) is not int or publication['release_id'] <= 0
                 or publication['channel'] == publication['staging_channel']
-                or any(not re.fullmatch(r'[a-z][a-z0-9-]{0,80}', publication[name])
-                       or publication[name] == 'latest' for name in ('channel', 'staging_channel'))):
+                or not re.fullmatch(r'[a-z][a-z0-9-]{0,80}', publication['staging_channel'])
+                or publication['staging_channel'] in ('latest', 'next')):
             raise ValueError('invalid site publication identity')
 
 

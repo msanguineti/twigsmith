@@ -38,6 +38,24 @@ jobs:
         run: |
           python3 scripts/ci/select-release-source.py
           git checkout --detach "$(cat "$RUNNER_TEMP/candidate-sha")"
+      - name: Capture the original release event for the main-branch continuation
+        if: github.event_name == 'release'
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          event = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          record = {'action': event['action'], 'repository': event['repository'],
+                    'release': event['release'], 'source': os.environ['GITHUB_SHA'],
+                    'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT']}
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'release-event.json').write_text(json.dumps(record))
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'release'
+        with:
+          name: release-event-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-event.json
+          retention-days: 30
+          if-no-files-found: error
       - name: Provision build and qualification prerequisites
         run: |
           test "$(git rev-parse HEAD)" = "$(cat "$RUNNER_TEMP/candidate-sha")"

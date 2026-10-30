@@ -1,6 +1,9 @@
 name: Publish approved prerelease
 
 on:
+  workflow_run:
+    workflows: [Native release qualification]
+    types: [completed]
   workflow_dispatch:
     inputs:
       operation:
@@ -74,7 +77,10 @@ jobs:
           compression-level: 0
 
   preflight:
-    if: inputs.operation == 'publish' && github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.operation == 'publish') ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'release' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -83,19 +89,48 @@ jobs:
     outputs:
       run_id: ${{ steps.input.outputs.run_id }}
       artifact_id: ${{ steps.input.outputs.artifact_id }}
+      request: ${{ steps.final.outputs.request }}
+      deploy: ${{ steps.final.outputs.deploy }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Inspect the release event run
+        id: event
+        if: github.event_name == 'workflow_run'
+        env:
+          TRIGGER_RUN: ${{ github.event.workflow_run.id }}
+          TRIGGER_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/release_stage.py inspect-event /dev/null
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: github.event_name == 'workflow_run'
+        with:
+          artifact-ids: ${{ steps.event.outputs.artifact_id }}
+          run-id: ${{ steps.event.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/release-event
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Bind the original release and previously prepared candidate
+        if: github.event_name == 'workflow_run'
+        env:
+          TRIGGER_RUN: ${{ github.event.workflow_run.id }}
+          TRIGGER_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/release_stage.py event-request "$RUNNER_TEMP/release-event/release-event.json" --output "$RUNNER_TEMP/request.json"
+      - name: Read the manual request
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUEST_JSON: ${{ inputs.request }}
+        run: python3 -c 'import os,pathlib; pathlib.Path(os.environ["RUNNER_TEMP"],"request.json").write_text(os.environ["REQUEST_JSON"])'
       - name: Inspect the approved preparation run and artifact
         id: input
         env:
-          REQUEST_JSON: ${{ inputs.request }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 -c 'import os,pathlib; pathlib.Path(os.environ["RUNNER_TEMP"],"request.json").write_text(os.environ["REQUEST_JSON"])'
           python3 tools/release_stage.py inspect-publish "$RUNNER_TEMP/request.json"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -106,6 +141,23 @@ jobs:
           merge-multiple: true
           digest-mismatch: error
       - run: python3 tools/release_stage.py validate "$RUNNER_TEMP/request.json" --input "$RUNNER_TEMP/release-candidate"
+      - name: Select verified publication and Pages behavior
+        id: final
+        env:
+          MANUAL_DEPLOY: ${{ inputs.deploy_pages }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, pathlib
+          data = pathlib.Path(os.environ['RUNNER_TEMP'], 'request.json').read_bytes()
+          request = json.loads(data)
+          stable = request['approval']['publication']['prerelease'] is False
+          if not stable and os.environ.get('MANUAL_DEPLOY') == 'true':
+              raise ValueError('prereleases cannot deploy Pages')
+          deploy = stable and (os.environ['GITHUB_EVENT_NAME'] == 'workflow_run' or os.environ.get('MANUAL_DEPLOY') == 'true')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('request=' + base64.b64encode(data).decode() + '\n')
+              out.write('deploy=' + str(deploy).lower() + '\n')
+          PY
 
   publish:
     needs: preflight
@@ -137,10 +189,10 @@ jobs:
           digest-mismatch: error
       - name: Recheck identity and resume publication
         env:
-          REQUEST_JSON: ${{ inputs.request }}
+          REQUEST_BASE64: ${{ needs.preflight.outputs.request }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 -c 'import os,pathlib; pathlib.Path(os.environ["RUNNER_TEMP"],"request.json").write_text(os.environ["REQUEST_JSON"])'
+          python3 -c 'import base64,os,pathlib; pathlib.Path(os.environ["RUNNER_TEMP"],"request.json").write_bytes(base64.b64decode(os.environ["REQUEST_BASE64"], validate=True))'
           python3 tools/release_stage.py validate "$RUNNER_TEMP/request.json" --input "$RUNNER_TEMP/release-candidate"
           python3 - <<'PY'
           import json, os, pathlib, subprocess
@@ -149,20 +201,22 @@ jobs:
           approval = request['approval']
           path = root / 'approval.json'
           path.write_text(json.dumps(approval))
-          subprocess.run(['python3', 'tools/release_publish.py',
+          command = ['python3', 'tools/release_publish.py',
               str(root / 'release-candidate/native' / approval['native']['archive']),
               str(root / 'release-candidate/npm'), '--approval', str(path), '--execute',
-              '--receipt-output', str(root / 'consumption.json'),
-              '--site-directory', str(root / 'pages')], check=True)
+              '--receipt-output', str(root / 'consumption.json')]
+          if not approval['publication']['prerelease']:
+              command += ['--site-directory', str(root / 'pages')]
+          subprocess.run(command, check=True)
           PY
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
-        if: inputs.deploy_pages
+        if: needs.preflight.outputs.deploy == 'true'
         with:
           path: ${{ runner.temp }}/pages
 
   deploy-pages:
-    needs: publish
-    if: inputs.deploy_pages
+    needs: [preflight, publish]
+    if: needs.preflight.outputs.deploy == 'true'
     runs-on: ubuntu-24.04
     environment:
       name: github-pages

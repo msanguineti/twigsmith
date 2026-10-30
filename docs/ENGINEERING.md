@@ -170,16 +170,20 @@ owns extraction and runtime prerequisites.
 with the npm tarball identity. `tools/release_stage.py` restricts hosted candidate
 acquisition to exact successful canonical runs/artifacts and prepares a new npm
 candidate without publishing. Native build, packaging and publisher source identities
-remain distinct. The explicit `publish.yml` workflow validates the native and publisher
-sources with the same protected-main eligibility rule as qualification.
+remain distinct. The `publish.yml` continuation binds a published release event to an earlier
+successful prepared candidate and validates native and publisher sources with the
+same protected-main eligibility rule as qualification. It runs on main to retain
+the release environment and npm trusted publisher identity.
 
 `tools/release_publish.py` snapshots verified local bytes, observes downloaded provider
 bytes and applies one `release_recovery` decision at a time. Unknown/conflicting
 observations stop; every attempted effect is followed by fresh observation, including
-ambiguous timeouts. Only archive/manifest/checksums are release assets. No tag is
-created or moved. Workflow concurrency and the local repository lock own exclusivity;
+ambiguous timeouts. Only archive/manifest/checksums are release assets; missing approved files may be
+added to the exact published release, while conflicting files stop recovery. No tag
+is created or moved. Workflow concurrency and the local repository lock own exclusivity;
 the pure recovery function does not supply it. Native/npm publication is intentionally
-nontransactional, and channel/site promotion follows consumption checks.
+nontransactional. Stable and prerelease channels are latest and next respectively;
+only a verified stable release promotes the site after consumption checks.
 
 `site/build.py` stages preview output by default; fresh identity-bound consumption
 receipts enable release copy and exact-version instructions. Local replacement has

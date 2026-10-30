@@ -8,6 +8,7 @@ import copy
 import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import socket
 import time
@@ -32,7 +33,7 @@ class Fixture:
         self.assets = {}
         self.package = None
         self.tgz = None
-        self.tags = {'beta': '0.0.1'}
+        self.tags = {'next': '0.0.1', 'latest': '0.0.0'}
         self.effects = []
         self.fail = None
         self.lost = None
@@ -196,8 +197,24 @@ class PublicationTests(unittest.TestCase):
         cls.approval = release_set.verify(cls.archive, cls.npm, npm_package.sha256(cls.archive),
             release_set.digest(payload), npm_package.sha256(package), 'v0.1.0-beta.1',
             npm_package.sha256(manifest), npm_package.sha256(cls.npm / 'manifest.json'))
-        cls.approval['publication'] = {'source': cls.source, 'channel': 'beta',
-                                     'staging_channel': 'candidate-beta-1', 'prerelease': True}
+        cls.approval['publication'] = {'source': cls.source, 'channel': 'next',
+                                     'staging_channel': 'candidate-beta-1', 'prerelease': True, 'release_id': 1}
+        c.write_text('#include <stdio.h>\nint main(void) { puts("twigsmith 0.1.0"); return 0; }\n')
+        subprocess.run(['cc', '-o', str(binary), str(c)], check=True, capture_output=True)
+        payload = binary.read_bytes()
+        stable_native = cls.root / 'stable-native'
+        stable_native.mkdir()
+        cls.stable_archive = native_package.write_bundle(stable_native, '0.1.0',
+            {'twigsmith': payload, 'tgi': payload, 'LICENSE': (cls.repo / 'LICENSE').read_bytes()}, provenance, 1)
+        cls.stable_npm = cls.root / 'stable-npm'
+        package = npm_package.make_package(cls.repo, cls.stable_archive, cls.stable_npm,
+            npm_package.sha256(cls.stable_archive), release_set.digest(payload))
+        manifest = cls.stable_archive.with_name(cls.stable_archive.name[:-7] + '.manifest.json')
+        cls.stable_approval = release_set.verify(cls.stable_archive, cls.stable_npm,
+            npm_package.sha256(cls.stable_archive), release_set.digest(payload), npm_package.sha256(package),
+            'v0.1.0', npm_package.sha256(manifest), npm_package.sha256(cls.stable_npm / 'manifest.json'))
+        cls.stable_approval['publication'] = {'source': cls.source, 'channel': 'latest',
+            'staging_channel': 'candidate-stable', 'prerelease': False, 'release_id': 1}
 
     @classmethod
     def tearDownClass(cls):
@@ -208,6 +225,7 @@ class PublicationTests(unittest.TestCase):
         self.addCleanup(self.fixture.close)
         self.providers = publish.Providers(publish.HTTP(fixture=self.fixture.origin, timeout=1))
         self.record, self.files, self.expected = publish.approved_inputs(self.archive, self.npm, self.approval)
+        self.fixture.release = {'id': 1, 'tag_name': self.record['tag'], 'draft': False, 'prerelease': True}
 
     def run_release(self, **kwargs):
         return publish.resume(self.record, self.files, self.expected, self.providers, **kwargs)
@@ -216,11 +234,70 @@ class PublicationTests(unittest.TestCase):
         self.fixture.release = {'id': 1, 'tag_name': self.record['tag'], 'draft': False, 'prerelease': True}
         self.fixture.assets = {name: self.files[name] for name in self.expected}
 
+    def use_stable(self):
+        self.record, self.files, self.expected = publish.approved_inputs(
+            self.stable_archive, self.stable_npm, self.stable_approval)
+        self.fixture.release = {'id': 1, 'tag_name': self.record['tag'], 'draft': False, 'prerelease': False}
+
+    def test_stable_visible_release_retry_and_site_only_after_verified_channel(self):
+        self.use_stable()
+        first = sorted(self.expected)[0]
+        self.fixture.fail = 'upload'
+        with self.assertRaisesRegex(publish.PublicationError, 'still pending'):
+            self.run_release(execute=True)
+        self.fixture.fail = None
+        promoted = []
+        def site(record, receipt):
+            self.assertEqual(self.fixture.tags['latest'], record['version'])
+            self.assertEqual(self.fixture.tags['next'], '0.0.1')
+            self.assertIsNotNone(receipt)
+            promoted.append(True)
+        result = self.run_release(execute=True, promote=site, site_observed=lambda *_: bool(promoted))
+        self.assertEqual(result['next'], 'complete')
+        self.assertEqual(self.fixture.effects.count('upload ' + first), 2)
+        self.assertEqual(self.fixture.tags['latest'], '0.1.0')
+        self.assertEqual(promoted, [True])
+        self.assertEqual(self.run_release(execute=True)['next'], 'promote site')
+
+    def test_newer_channel_cannot_be_regressed_by_replayed_release(self):
+        self.use_stable()
+        self.fixture.tags['latest'] = '0.2.0'
+        with self.assertRaisesRegex(publish.PublicationError, 'newer or equal-precedence'):
+            self.run_release(execute=True)
+        self.assertEqual(self.fixture.tags['latest'], '0.2.0')
+        self.assertNotIn('promote channel', self.fixture.effects)
+
+    def test_delayed_registry_completion_is_observed_before_retry(self):
+        self.use_stable()
+        self.ready_native()
+        self.fixture.release['prerelease'] = False
+        self.fixture.fail = 'publish npm'
+        with self.assertRaisesRegex(publish.PublicationError, 'still pending'):
+            self.run_release(execute=True)
+        self.fixture.fail = None
+        self.fixture.tgz = self.files[self.record['npm']['package']]
+        self.fixture.package = {'name': 'twigsmith', 'version': self.record['version'],
+            'dist': {'tarball': self.fixture.origin + '/twigsmith/-/' + self.record['npm']['package']}}
+        self.fixture.tags['candidate-stable'] = self.record['version']
+        result = self.run_release(execute=True)
+        self.assertEqual(result['next'], 'promote site')
+        self.assertEqual(self.fixture.effects.count('publish npm'), 1)
+        self.assertEqual(self.fixture.tags['latest'], self.record['version'])
+        self.assertEqual(self.fixture.tags['next'], '0.0.1')
+
+    def test_class_and_channel_mismatches_are_rejected(self):
+        for field, value in [('channel', 'latest'), ('prerelease', False), ('release_id', 0),
+                             ('staging_channel', 'latest')]:
+            bad = copy.deepcopy(self.approval)
+            bad['publication'][field] = value
+            with self.subTest(field=field), self.assertRaises(publish.PublicationError):
+                publish.approved_inputs(self.archive, self.npm, bad)
+
     def test_default_plan_is_read_only_and_existing_selector_qualifies_source(self):
         with publish.exclusive(self.repo):
             self.assertTrue(publish.source_eligible(self.repo, self.record, self.providers, False))
             result = self.run_release()
-        self.assertEqual(result['next'], 'create draft')
+        self.assertTrue(result['next'].startswith('upload '))
         self.assertEqual(self.fixture.effects, [])
         approval = self.root / 'approval.json'
         approval.write_text(json.dumps(self.approval))
@@ -231,7 +308,7 @@ class PublicationTests(unittest.TestCase):
             str(self.npm), '--approval', str(approval), '--fixture-api', self.fixture.origin],
             capture_output=True, text=True, env=environment)
         self.assertEqual(cli.returncode, 0, cli.stderr)
-        self.assertEqual(json.loads(cli.stdout)['next'], 'create draft')
+        self.assertTrue(json.loads(cli.stdout)['next'].startswith('upload '))
         self.assertEqual(self.fixture.effects, [])
         bad = copy.deepcopy(self.record)
         bad['publication']['source'] = '0'*40
@@ -240,8 +317,8 @@ class PublicationTests(unittest.TestCase):
 
     def test_success_real_publish_install_npx_channel_and_allowlist(self):
         result = self.run_release(execute=True)
-        self.assertEqual(result['next'], 'promote site')
-        self.assertEqual(self.fixture.tags['beta'], self.record['version'])
+        self.assertEqual(result['next'], 'complete')
+        self.assertEqual(self.fixture.tags['next'], self.record['version'])
         self.assertEqual(set(self.fixture.assets), set(self.expected))
         self.assertEqual(release_set.digest(self.fixture.tgz), self.record['npm']['sha256'])
         receipt = result['receipt']
@@ -249,31 +326,33 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(set(receipt['consumption']), {'native', 'npm', 'npx'})
         self.assertTrue(all(v['commands'] == ['twigsmith', 'tgi'] for v in receipt['consumption'].values()))
 
-    def test_auth_rejection_reobserves_and_retains_remote_absence(self):
-        self.fixture.fail = 'create draft'
-        with self.assertRaisesRegex(publish.PublicationError, 'still pending: create draft: provider request rejected \\(HTTP 403\\)'):
+    def test_auth_rejection_reobserves_missing_asset(self):
+        first = sorted(self.expected)[0]
+        self.fixture.fail = 'upload ' + first
+        with self.assertRaisesRegex(publish.PublicationError, 'still pending: upload'):
             self.run_release(execute=True)
-        self.assertIsNone(self.fixture.release)
-        self.assertEqual(self.fixture.effects, ['create draft'])
+        self.assertEqual(self.fixture.assets, {})
+        self.assertEqual(self.fixture.effects, ['upload ' + first])
 
-    def test_draft_lookup_paginates_listing_and_rejects_duplicate_tag(self):
-        self.fixture.release = {'id': 1, 'tag_name': self.record['tag'], 'draft': True, 'prerelease': True}
+    def test_release_lookup_paginates_and_rejects_wrong_identity_or_duplicate(self):
         self.fixture.other_releases = [
             {'id': i + 100, 'tag_name': 'unrelated-' + str(i), 'draft': False, 'prerelease': True}
             for i in range(100)]
-        # The published-tag endpoint intentionally cannot expose this draft.
-        self.assertIsNone(self.providers.http.request(
-            self.providers.api + '/releases/tags/' + self.record['tag'], absent=True))
         self.assertTrue(self.run_release()['next'].startswith('upload '))
-        self.assertEqual(self.providers.release_id, 1)
-        self.assertEqual(self.fixture.effects, [])
+        self.fixture.release['id'] = 2
+        with self.assertRaisesRegex(publish.PublicationError, 'identity'):
+            self.run_release(execute=True)
+        self.fixture.release['id'] = 1
+        self.fixture.release['draft'] = True
+        with self.assertRaisesRegex(publish.PublicationError, 'status'):
+            self.run_release(execute=True)
+        self.fixture.release['draft'] = False
         self.fixture.other_releases.append(dict(self.fixture.release, id=2))
         with self.assertRaisesRegex(publish.PublicationError, 'multiple releases'):
             self.run_release(execute=True)
         self.assertEqual(self.fixture.effects, [])
 
     def test_partial_upload_then_resume_reuses_identical_assets(self):
-        self.fixture.release = {'id': 1, 'tag_name': self.record['tag'], 'draft': True, 'prerelease': True}
         first = sorted(self.expected)[0]
         self.fixture.assets[first] = self.files[first]
         self.fixture.fail = 'upload'
@@ -282,7 +361,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(list(self.fixture.assets), [first])
         self.fixture.fail = None
         result = self.run_release(execute=True)
-        self.assertEqual(result['next'], 'promote site')
+        self.assertEqual(result['next'], 'complete')
         self.assertNotIn('upload ' + first, self.fixture.effects)
 
     def test_response_lost_after_success_is_observed_without_duplicate_upload(self):
@@ -290,16 +369,17 @@ class PublicationTests(unittest.TestCase):
         self.fixture.timeout_after = 'upload ' + first
         self.providers.http.timeout = 0.05
         result = self.run_release(execute=True)
-        self.assertEqual(result['next'], 'promote site')
+        self.assertEqual(result['next'], 'complete')
         self.assertEqual(self.fixture.effects.count('upload ' + first), 1)
 
     def test_truncated_response_after_effect_is_reconciled_without_duplicate(self):
-        self.fixture.truncated_after = 'create draft'
+        first = sorted(self.expected)[0]
+        self.fixture.truncated_after = 'upload ' + first
         result = self.run_release(execute=True)
-        self.assertEqual(result['next'], 'promote site')
-        self.assertEqual(self.fixture.effects.count('create draft'), 1)
-        self.assertEqual(self.fixture.release['draft'], False)
-        self.assertEqual(self.fixture.tags['beta'], self.record['version'])
+        self.assertEqual(result['next'], 'complete')
+        self.assertEqual(self.fixture.effects.count('upload ' + first), 1)
+        self.assertEqual(self.fixture.tags['next'], self.record['version'])
+        self.assertEqual(self.fixture.tags['latest'], '0.0.0')
 
     def test_conflicting_bytes_unexpected_asset_and_npm_stop_before_effect(self):
         self.ready_native()
@@ -340,40 +420,37 @@ class PublicationTests(unittest.TestCase):
         self.fixture.fail = 'publish npm'
         with self.assertRaisesRegex(publish.PublicationError, 'still pending'):
             self.run_release(execute=True)
-        self.assertEqual(self.fixture.tags['beta'], '0.0.1')
+        self.assertEqual(self.fixture.tags['next'], '0.0.1')
         self.fixture.fail = 'promote channel'
         with self.assertRaisesRegex(publish.PublicationError, 'still pending'):
             self.run_release(execute=True)
-        self.assertEqual(self.fixture.tags['beta'], '0.0.1')
+        self.assertEqual(self.fixture.tags['next'], '0.0.1')
         self.assertIsNotNone(self.fixture.tgz)
         self.fixture.fail = None
-        def fail_site(record, receipt):
-            raise OSError('fixture promotion failed')
-        with self.assertRaisesRegex(publish.PublicationError, 'still pending: promote site'):
-            self.run_release(execute=True, promote=fail_site)
-        self.assertEqual(self.fixture.tags['beta'], self.record['version'])
+        called = []
+        result = self.run_release(execute=True, promote=lambda *args: called.append(args))
+        self.assertEqual(result['next'], 'complete')
+        self.assertEqual(called, [])
+        self.assertEqual(self.fixture.tags['next'], self.record['version'])
 
-    def test_unknown_after_effect_stops_and_retry_reobserves_existing_draft(self):
-        self.fixture.unknown_after = 'create draft'
+    def test_unknown_after_upload_stops_and_retry_observes_existing_bytes(self):
+        first = sorted(self.expected)[0]
+        self.fixture.unknown_after = 'upload ' + first
         with self.assertRaisesRegex(publish.PublicationError, '503'):
             self.run_release(execute=True)
-        self.assertIsNotNone(self.fixture.release)
-        self.assertEqual(self.fixture.effects, ['create draft'])
+        self.assertIn(first, self.fixture.assets)
         self.fixture.unknown = False
         self.fixture.unknown_after = None
-        self.assertTrue(self.run_release()['next'].startswith('upload '))
+        self.assertEqual(self.run_release(execute=True)['next'], 'complete')
+        self.assertEqual(self.fixture.effects.count('upload ' + first), 1)
 
-    def test_matching_site_artifact_is_prepared_only_after_fresh_consumption(self):
-        module_spec = importlib.util.spec_from_file_location('publication_site', publish.ROOT / 'site/build.py')
-        site = importlib.util.module_from_spec(module_spec)
-        module_spec.loader.exec_module(site)
-        output = self.root / 'published-site'
+    def test_prerelease_never_prepares_site(self):
+        called = []
         result = self.run_release(execute=True,
-            promote=lambda record, receipt: site.build(output, record, receipt=receipt),
-            site_observed=lambda record, receipt: site.promotion_matches(output, record, receipt))
+            promote=lambda *args: called.append(args),
+            site_observed=lambda *args: called.append(args))
         self.assertEqual(result['next'], 'complete')
-        self.assertTrue(site.promotion_matches(output, self.record, result['receipt']))
-        self.assertIn('Version 0.1.0-beta.1', (output / 'index.html').read_text())
+        self.assertEqual(called, [])
 
     def test_input_substitution_and_credential_destinations_rejected(self):
         bad = copy.deepcopy(self.approval)
@@ -394,6 +471,25 @@ class PublicationTests(unittest.TestCase):
 
 
 class NpmDiagnosticTests(unittest.TestCase):
+    def test_anonymous_npm_exec_does_not_inherit_publication_credentials(self):
+        credentials = {'GH_TOKEN': 'x', 'GITHUB_TOKEN': 'x', 'NODE_AUTH_TOKEN': 'x',
+                       'NPM_TOKEN': 'x', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'x',
+                       'ACTIONS_ID_TOKEN_REQUEST_URL': 'x'}
+        result = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+        provider = publish.Providers(publish.HTTP())
+        with patch.dict(os.environ, credentials), patch.object(subprocess, 'run', return_value=result) as command:
+            provider.npm_command(['exec', '--offline', '--', 'twigsmith', '--version'], anonymous=True)
+        for key in credentials:
+            self.assertFalse(key in command.call_args.kwargs['env'], key + ' leaked')
+
+    def test_semver_precedence_and_invalid_versions(self):
+        versions = ['0.1.0-alpha', '0.1.0-alpha.1', '0.1.0-alpha.beta',
+                    '0.1.0-beta', '0.1.0-rc.2', '0.1.0-rc.10', '0.1.0', '0.2.0']
+        self.assertEqual(sorted(versions, key=publish.semver_key), versions)
+        for version in ('1.2', '1.02.3', '1.2.3-01', '1.2.3+a..b'):
+            with self.subTest(version=version), self.assertRaises(publish.PublicationError):
+                publish.semver_key(version)
+
     def test_failure_reports_codes_and_stages_without_raw_credentials_or_provider_text(self):
         secret = 'opaque-sensitive-value'
         stderr = ('npm verbose oidc Failed token exchange request with body message: '

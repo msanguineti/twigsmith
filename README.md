@@ -4,24 +4,25 @@ A Git workflow CLI for starting workstreams, saving progress, and delivering
 finished work, releases, and hotfixes. Invoke it as `twigsmith` or the equivalent
 shorthand `tgi`; both share settings and recovery state.
 
-The `0.1.0-rc1` prerelease targets Linux x86_64 with glibc 2.35 or newer and
-requires Git 2.45 or newer. It provides `start`, `save`, `finish`, `status`, `config`,
-and `completion`. For this prerelease, install the exact npm version:
+Twigsmith targets Linux x86_64 with glibc 2.35 or newer and requires Git 2.45 or
+newer. It provides `start`, `save`, `finish`, `status`, `config`, and `completion`.
+Choose a published version from the [npm package page](https://www.npmjs.com/package/twigsmith),
+then replace `VERSION` with that version to install it:
 
 ```sh
-npm install --global twigsmith@0.1.0-rc1
+npm install --global twigsmith@VERSION
 tgi --version
 ```
 
 To run it without a global installation:
 
 ```sh
-npx --yes --package=twigsmith@0.1.0-rc1 tgi --help
+npx --yes --package=twigsmith@VERSION tgi --help
 ```
 
 Node and npm are needed for npm/npx installation; native execution does not need
-them. Native archives and their checksums belong to the
-[`v0.1.0-rc1` release](https://github.com/msanguineti/twigsmith/releases/tag/v0.1.0-rc1).
+them. Native archives and their checksums are available from
+[GitHub releases](https://github.com/msanguineti/twigsmith/releases).
 See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates) for verification and
 runtime prerequisites, or build from source using the [development guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md).
 

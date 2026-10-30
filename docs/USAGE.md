@@ -58,8 +58,8 @@ npx --yes --package=twigsmith@0.1.0-rc1 twigsmith --version
 npx --yes --package=twigsmith@0.1.0-rc1 tgi --help
 ```
 
-Use an explicit prerelease version; the default npm tag still identifies npm’s
-temporary holding package until a stable release is selected. A local npm candidate can also be installed from its `.tgz` with
+Use an explicit prerelease version; the default npm tag selects the version
+currently advertised as `latest`. A local npm candidate can also be installed from its `.tgz` with
 `npm install /path/to/twigsmith.tgz`,
 or globally with `npm install --global /path/to/twigsmith.tgz`. Node and npm are
 needed for npm installation and npx; the executable itself does not need them.
