@@ -39,6 +39,15 @@ class NpmPackageTests(unittest.TestCase):
         return npm_package.make_package(self.repo, self.archive, self.output,
                                         self.archive_hash, self.payload_hash)
 
+    def test_pack_report_client_shapes_and_rejections(self):
+        entry = {'filename': 'twigsmith-0.1.0-beta.1.tgz'}
+        for report in ([entry], {'twigsmith': entry}):
+            self.assertEqual(npm_package.package_filename(report, 'twigsmith', '0.1.0-beta.1'), entry['filename'])
+        for report in ({'other': entry}, [entry, entry], {}, [], 'invalid',
+                       {'twigsmith': {'filename': '../outside.tgz'}}, {'twigsmith': None}):
+            with self.subTest(report=report), self.assertRaises(ValueError):
+                npm_package.package_filename(report, 'twigsmith', '0.1.0-beta.1')
+
     def test_real_npm_pack_has_only_expected_bytes_and_metadata(self):
         tarball = self.build()
         with tarfile.open(tarball) as tar:

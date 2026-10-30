@@ -24,16 +24,10 @@
   </section>
   <section class="strip"><div class="wrap strip-inner"><span>START A WORKSTREAM</span><span aria-hidden="true">✳</span><span>SAVE YOUR PROGRESS</span><span aria-hidden="true">✳</span><span>FINISH WITH INTENT</span></div></section>
   <section id="install" class="section wrap"><div class="section-heading"><p class="eyebrow">01 / GET STARTED</p><h2>Ready when<br>you are.</h2></div><div class="section-body"><p class="intro">Use <code>twigsmith</code> or its equivalent short name, <code>tgi</code>. Both run the same native executable interface.</p>
-    <div class="notice"><strong>Candidate availability</strong><p>Release downloads and npm registry installation are not published yet. The instructions below describe the current local candidate.</p></div>
+    <!-- AVAILABILITY-NOTICE -->
     <!-- RELEASE-IDENTITY -->
     <h3>Requirements</h3><p>Linux x86_64 GNU with glibc 2.35 or newer, Git 2.45 or newer, and POSIX <code>sh</code> for editor and configured-check paths. The native executable does not require Rust or Node. Node and npm are needed for npm installation and npx.</p>
-    <h3>Verify a native candidate</h3><p>Keep the archive with its manifest and checksum. From a source checkout, verify the archive and extract it to a new directory:</p>
-    <pre><code>./dev verify-native ARCHIVE --extract-to DESTINATION
-export PATH="DESTINATION/ARCHIVE_DIRECTORY:$PATH"
-twigsmith --version
-tgi --help</code></pre>
-    <p>Checksums detect mismatches with the accompanying manifest; they do not independently authenticate the publisher. See the <a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates">native candidate guide</a> for the full instructions and compatibility limits.</p>
-    <h3>Local npm candidate</h3><p>Install a candidate tarball with <code>npm install TARBALL</code>, or use <code>npm install --global TARBALL</code>. The package targets Linux x86_64 GNU; confirm the glibc baseline yourself.</p>
+    <!-- INSTALLATION-INSTRUCTIONS -->
   </div></section>
   <section id="guide" class="guide"><div class="wrap guide-inner"><div><p class="eyebrow">02 / GO DEEPER</p><h2>Good tools leave<br>you in control.</h2><p>Use ordinary Git commands for editing history, resolving conflicts, and submitting your work.</p></div><div class="guide-links"><a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#a-working-session"><span>01</span><strong>A working session</strong><span>↗</span></a><a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#command-reference"><span>02</span><strong>Command reference</strong><span>↗</span></a><a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#troubleshooting-and-recovery"><span>03</span><strong>Troubleshooting &amp; recovery</strong><span>↗</span></a><a href="https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md"><span>04</span><strong>Development guide</strong><span>↗</span></a></div></div></section>
 </main>

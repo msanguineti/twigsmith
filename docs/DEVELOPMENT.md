@@ -348,11 +348,116 @@ checks invoke the npm available on PATH; the regular source suite's native packa
 checks do not require npm.
 
 The package metadata identifies the canonical public repository for npm provenance.
-`tools/release_set.py --help` describes an offline check of a native archive and npm
-candidate against independently supplied hashes and a matching version tag. This
-checks artifact identity; it does not establish source eligibility or publication.
-`site/build.py --help` uses that check to build an unpublished local site preview in
-a new directory. The preview's planned release links do not establish availability.
+`tools/release_set.py --help` checks a native archive and npm candidate against
+independently supplied archive, payload, tarball and both manifest hashes and a
+matching version tag. Its identity record preserves native build and npm packaging
+sources separately. This offline check does not authenticate a publisher or prove
+source eligibility/publication.
+
+## Release preparation and publication
+
+`publish.yml` is an explicit manual workflow on `main`; neither pushes nor merges
+publish anything. Its `prepare` operation uses read-only GitHub permissions to
+retrieve a successful canonical native qualification artifact, verify its approved
+identity, and pack a new npm candidate at the current publisher revision. The
+`release-candidate` Actions artifact contains only native archive/manifest/checksums,
+npm tarball/manifest and `identity.json`. It excludes harnesses and provisioning
+archives. Review and retain this exact output before authorizing publication.
+Preparation is not npm staging: it creates no package, placeholder, tag or release.
+
+Dispatch input `request` is JSON, passed as data rather than shell source:
+
+| Operation | Required request fields |
+| --- | --- |
+| `prepare` | `publisher_revision` (exact current main SHA), `artifact_id` (native artifact ID), `native` (the reviewed identity record's native object, including source/tree, run/attempt and independently approved hashes) |
+| `publish` | `publisher_revision` (exact current main SHA), `candidate_run` and `artifact_id` (the successful preparation run and its exact release-candidate artifact), `approval` (the complete reviewed identity plus publication choices) |
+
+The `approval.publication` object contains `source` (the native build revision),
+`prerelease: true`, `staging_channel` (a temporary non-latest npm dist-tag) and
+`channel` (the advertised non-latest prerelease dist-tag). The two channels must
+be different. These are explicit release choices; examples such as `candidate` and
+`beta` are not configured defaults. All version/tag/native/npm hashes and packaging
+provenance must equal the downloaded candidate. Do not regenerate approval hashes
+from replacement files during a retry. An expired/foreign artifact, failed run,
+wrong publisher revision or changed identity stops before publication.
+
+Both native source and publisher revision must satisfy the existing protected-main
+eligibility rule. Native source, npm packaging source and publisher revision can
+be different. The release tag is `v` followed by the exact native version and must
+already exist at the native build revision before publication; this workflow never
+creates or moves tags. Retain original provenance when a task was squash merged.
+Some historical-source release API requests can require workflow-write authority;
+a rejected existing-tag operation must be investigated rather than adding a token
+or retargeting the tag automatically.
+
+The `publish` operation has a read-only preflight, then the `publish` job in the
+`release` environment repeats identity checks and resumes the release. It uploads
+only the approved native files to a draft, publishes that prerelease, publishes
+the exact npm tarball to the approved staging channel, verifies anonymous download
+and execution, and then advances the advertised channel. There is no cross-service
+transaction: native or npm publication can remain visible after a later failure.
+Every attempted effect, including one whose response was lost, is followed by a
+fresh provider observation. Identical remote bytes allow continuation; unknown
+state, conflicting bytes or a missing/changed tag stops. Existing published content
+is never replaced and a retry never repacks or rebuilds the candidate.
+
+A workflow-wide `twigsmith-release` concurrency group serializes the entire run,
+including optional Pages deployment; local command invocations also take a shared
+repository lock. Keep this group on any future publication/deployment path.
+The reviewed hosted runtime is Node 24.22.2 with npm 12.2.1. npm trust must identify
+repository `msanguineti/twigsmith`, workflow filename `publish.yml`, environment
+`release`; direct publish and dist-tag permissions are separate. Actual account
+rights, two-factor authentication, environment/Pages settings and successful OIDC
+publication require explicit setup and live verification. Saving a trust entry or
+running `npm whoami` does not prove these operations work. If the unscoped package
+is absent, owner-authenticated first publication of the approved bytes is needed
+before ordinary trusted publishing can be established. npm staging also creates
+public state and is not a safe bootstrap dry run.
+
+For read-only observation from a checkout, supply a reviewed approval file:
+
+```sh
+python3 tools/release_publish.py ARCHIVE NPM_DIRECTORY --approval APPROVAL.json
+```
+
+This verifies local bytes and source eligibility and reports observed state and the
+next operation without applying it. Live effects additionally require `--execute`,
+scoped credentials and the canonical hosted workflow. Fixture endpoints are explicitly
+restricted to loopback and cannot receive live credentials. The fixture test suite
+uses real npm clients and disposable HTTP services, never the public registry.
+`./dev test-packaging` runs the native/npm integrity, provider, artifact-acquisition
+and site tests; it requires Node/npm, a C compiler and local loopback sockets.
+These boundary tests use the canonical Git history for the migration-baseline
+eligibility check; use a full clone. The ordinary source suite's native archive
+checks do not require Node/npm.
+
+## Site artifacts and Pages
+
+`site/build.py --help` builds an unpublished preview from the same independently
+verified release inputs. A published artifact additionally requires a fresh,
+identity-bound consumption receipt generated by the publication verifier. Its
+observations cover anonymous native/npm downloads, both executable names and npm
+execution of the verified registry-acquired tarball. Exact-version public npx
+selection is also a live release check; a fixture or downloaded-tarball execution
+alone does not establish that selection. Receipts expire after 15 minutes and
+are not authentication or authorization to deploy. The hosted workflow generates
+its own receipt; do not substitute a hand-written receipt for live verification.
+The public site never includes the receipt or private coordination records.
+
+Local builds are staged before directory replacement. A failed build preserves the
+previous artifact; a failed replacement attempts restoration and retains/names the
+backup if restoration also fails. The two renames briefly remove the output path;
+this is not a process-crash transaction or an atomic reader-visible directory swap.
+Hosted Pages deployment is separate and uses the completed ordinary-file artifact.
+Preview/release assets use relative paths for the repository Pages base path.
+
+The publication workflow prepares the verified site only after download/execution
+checks and channel promotion. `deploy_pages` defaults to false; enabling it is a
+separate release operation. The `deploy-pages` job uses environment `github-pages`
+and only Pages/OIDC permissions. Pages must already be configured for GitHub Actions;
+the workflow does not enable it automatically. Keep existing advertised site content
+until the intended native/npm set is publicly verified. A failed Pages deployment
+can be retried from the same immutable candidate; it does not undo a release.
 
 ## Troubleshooting
 

@@ -302,7 +302,10 @@ case "$command" in
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_package.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_set.py' "$@"
-        exec python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_recovery.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_recovery.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_stage.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_publish.py' "$@"
+        exec python3 -m unittest discover -s "$repo_dir/site" -p 'test_*.py' "$@"
         ;;
     native-qualify) exec python3 "$repo_dir/tools/qualify_native.py" "$@" ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
