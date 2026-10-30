@@ -19,14 +19,14 @@ In this manual: [a working session](#a-working-session),
 
 ## Native archive candidates
 
-A locally produced native candidate contains regular executables `twigsmith` and
+A native archive contains regular executables `twigsmith` and
 `tgi`, the MIT license, and extraction guidance. No installation script is needed.
 Keep the archive together with its `.manifest.json` and `.sha256` files. With the
 source repository available, verify and extract into a new directory:
 
 ```sh
-./dev verify-native /path/to/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
-export PATH="/tmp/twigsmith candidate/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu:$PATH"
+./dev verify-native /path/to/twigsmith-0.1.0-rc1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
+export PATH="/tmp/twigsmith candidate/twigsmith-0.1.0-rc1-x86_64-unknown-linux-gnu:$PATH"
 twigsmith --version
 tgi --help
 ```
@@ -48,8 +48,19 @@ compatibility must be established for the exact artifact; replacing system libc
 is not an installation step. Checksums detect mismatches with the accompanying
 manifest; they do not independently authenticate a publisher.
 
-Release downloads and registry installation remain unpublished. A local npm
-candidate can be installed from its `.tgz` with `npm install /path/to/twigsmith.tgz`,
+For the `0.1.0-rc1` prerelease, download the native archive and sidecars from the
+[GitHub release](https://github.com/msanguineti/twigsmith/releases/tag/v0.1.0-rc1),
+or install the exact npm version:
+
+```sh
+npm install --global twigsmith@0.1.0-rc1
+npx --yes --package=twigsmith@0.1.0-rc1 twigsmith --version
+npx --yes --package=twigsmith@0.1.0-rc1 tgi --help
+```
+
+Use an explicit prerelease version; the default npm tag still identifies npm’s
+temporary holding package until a stable release is selected. A local npm candidate can also be installed from its `.tgz` with
+`npm install /path/to/twigsmith.tgz`,
 or globally with `npm install --global /path/to/twigsmith.tgz`. Node and npm are
 needed for npm installation and npx; the executable itself does not need them.
 The npm package targets Linux x86_64 with glibc 2.35 or newer. Its libc metadata

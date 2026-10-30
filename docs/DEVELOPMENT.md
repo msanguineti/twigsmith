@@ -290,7 +290,7 @@ For a local development probe, use a fresh output and extraction directory:
 
 ```sh
 ./dev package-native .dev/tmp/native-probe --allow-dirty
-./dev verify-native .dev/tmp/native-probe/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith probe"
+./dev verify-native .dev/tmp/native-probe/twigsmith-0.1.0-rc1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith probe"
 ./dev test-packaging
 ```
 
@@ -331,7 +331,7 @@ SHA-256 values from independently retained acceptance evidence and use a new
 output directory:
 
 ```sh
-./dev package-npm /path/to/twigsmith-0.1.0-beta.1-x86_64-unknown-linux-gnu.tar.gz /tmp/twigsmith-npm-candidate --archive-sha256 ARCHIVE_SHA256 --payload-sha256 PAYLOAD_SHA256
+./dev package-npm /path/to/twigsmith-0.1.0-rc1-x86_64-unknown-linux-gnu.tar.gz /tmp/twigsmith-npm-candidate --archive-sha256 ARCHIVE_SHA256 --payload-sha256 PAYLOAD_SHA256
 ./dev test-packaging
 ```
 

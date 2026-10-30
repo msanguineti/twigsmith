@@ -4,11 +4,26 @@ A Git workflow CLI for starting workstreams, saving progress, and delivering
 finished work, releases, and hotfixes. Invoke it as `twigsmith` or the equivalent
 shorthand `tgi`; both share settings and recovery state.
 
-The native Rust version is under development. Its documented build and validation
-environment is Linux. Native candidate packaging targets Linux x86_64 GNU;
-release downloads and npm installation are not published. It currently provides `start`,
-`save`, `finish`, `status`, `config`, and `completion`. Build it from this repository using the [development guide](docs/DEVELOPMENT.md),
-or extract a locally produced [native candidate](docs/USAGE.md#native-archive-candidates).
+The `0.1.0-rc1` prerelease targets Linux x86_64 with glibc 2.35 or newer and
+requires Git 2.45 or newer. It provides `start`, `save`, `finish`, `status`, `config`,
+and `completion`. For this prerelease, install the exact npm version:
+
+```sh
+npm install --global twigsmith@0.1.0-rc1
+tgi --version
+```
+
+To run it without a global installation:
+
+```sh
+npx --yes --package=twigsmith@0.1.0-rc1 tgi --help
+```
+
+Node and npm are needed for npm/npx installation; native execution does not need
+them. Native archives and their checksums belong to the
+[`v0.1.0-rc1` release](https://github.com/msanguineti/twigsmith/releases/tag/v0.1.0-rc1).
+See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates) for verification and
+runtime prerequisites, or build from source using the [development guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md).
 
 ## Quick start
 
@@ -31,7 +46,7 @@ work for manual review. The OneFlow bundles tag the completed work source. Compl
 comes from configuration or `--mode`; an unresolved mode asks at a terminal.
 `status` summarizes the current checkout. Ordinary finish can explicitly prepare
 work in Git's interactive rebase editor before review or integration; see
-[history editing](docs/USAGE.md#edit-ordinary-work-history).
+[history editing](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#edit-ordinary-work-history).
 
 | Command | Shorthand | Purpose |
 | --- | --- | --- |
@@ -43,33 +58,33 @@ work in Git's interactive rebase editor before review or integration; see
 
 Run `tgi config` to choose a publication remote and a base source for a single
 repository or a fork. Use `tgi config show` to inspect effective roles and sources.
-See the [user guide](docs/USAGE.md#remote-roles-and-fork-workflows) for both
+See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#remote-roles-and-fork-workflows) for both
 workflows and tracking styles.
 
 Use `tgi config --oneflow` to select an editable direct OneFlow setup bundle,
 then start with explicit ordinary, release, or hotfix policy. Branch prefixes alone select no policy.
-The [release guide](docs/USAGE.md#direct-releases-and-hotfixes) covers source
+The [release guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#direct-releases-and-hotfixes) covers source
 selection, source or integrated-result tags, ordered destinations, optional one-time
 rebase, active-release routing, marker branches, and recovery.
 Use `tgi config --oneflow-hosted` for version publication and a separate merge-back
-branch ready for manual submission. The [hosted guide](docs/USAGE.md#hosted-releases-and-hotfixes)
+branch ready for manual submission. The [hosted guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#hosted-releases-and-hotfixes)
 covers review destinations and follow-up. Finish creates no pull request and performs
 no deployment.
 
 Terminal menus support arrow keys and Enter; slow Git operations show activity.
 `NO_COLOR` disables colour, and redirected output stays plain. See the
-[user manual](docs/USAGE.md#start-or-resume-work) for command details.
+[user manual](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#start-or-resume-work) for command details.
 
 Use `tgi --help` or `tgi <command> --help` for a quick reference.
 Enable Tab completion for Bash, Zsh, Fish or PowerShell with the
-[shell completion guide](docs/USAGE.md#shell-completion).
+[shell completion guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#shell-completion).
 
 ## Documentation
 
-- [User manual](docs/USAGE.md): commands, settings, automation, and recovery.
-- [Contributor guide](docs/DEVELOPMENT.md): setup, builds, checks, and
+- [User manual](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md): commands, settings, automation, and recovery.
+- [Contributor guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md): setup, builds, checks, and
   troubleshooting.
-- [Technical manual](docs/ENGINEERING.md): architecture, workflow invariants,
+- [Technical manual](https://github.com/msanguineti/twigsmith/blob/main/docs/ENGINEERING.md): architecture, workflow invariants,
   failure handling, and implementation diagnosis.
 
-Licensed under [MIT](LICENSE).
+Licensed under [MIT](https://github.com/msanguineti/twigsmith/blob/main/LICENSE).
