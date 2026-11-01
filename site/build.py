@@ -86,26 +86,24 @@ def _render(record, published):
                + ('' if published else '<p>These planned locations may not be available yet. Verify publication before installing.</p>')
                + f'<p><a href="{release}">Release page</a> · <a href="{download}">Native archive</a> · '
                f'<a href="{npm}">npm package</a></p>'
-               f'<p>Native archive SHA-256: <code>{record["native"]["sha256"]}</code><br>'
-               f'npm tarball SHA-256: <code>{record["npm"]["sha256"]}</code></p></div>')
+               f'<details><summary>SHA-256 checksums</summary><p>Native archive: <code>{record["native"]["sha256"]}</code><br>'
+               f'npm tarball: <code>{record["npm"]["sha256"]}</code></p></details></div>')
     if published:
         notice = (f'<div class="notice"><strong>Version {html.escape(version)} · {html.escape(record["publication"]["channel"])} channel</strong>'
-                  '<p>Download the Linux native archive or install the same version with npm.</p></div>')
-        instructions = f'''<h3>Native installation</h3><p>Download the <a href="{download}">archive</a>,
-    <a href="{downloads}/{stem}.manifest.json">manifest</a> and
-    <a href="{downloads}/{stem}.sha256">checksums</a> into the same directory. Verify before extracting:</p>
+                  '</div>')
+        instructions = f'''<h3>Native installation</h3><p>Download the <a href="{download}">archive</a>, <a href="{downloads}/{stem}.manifest.json">manifest</a> and <a href="{downloads}/{stem}.sha256">checksums</a> to the same directory:</p>
     <pre tabindex="0"><code>sha256sum --check {stem}.sha256
  tar -xzf {archive}
  export PATH="$PWD/{stem}:$PATH"
  twigsmith --version
  tgi --help</code></pre>
-    <p>Compare the archive hash with the release identity above. Checksums detect mismatches; they do not independently authenticate the publisher. The <a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates">native archive guide</a> also covers verification with a source checkout and compatibility limits.</p>
+    <p>Compare the archive hash with the release checksum above. Checksums do not authenticate the publisher. See the <a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates">native archive guide</a> for more details.</p>
     <h3>npm installation</h3><pre tabindex="0"><code>npm install --global twigsmith@{version}
  twigsmith --version
  tgi --help</code></pre>
     <h3>Run with npx</h3><pre tabindex="0"><code>npx --yes --package=twigsmith@{version} twigsmith --version
  npx --yes --package=twigsmith@{version} tgi --help</code></pre>
-    <p>The npm package targets Linux x86_64 GNU; confirm the glibc baseline before installing.</p>'''
+'''
         instructions = instructions.replace('\n ', '\n')
     else:
         notice = ('<div class="notice"><strong>Candidate availability</strong><p>Release downloads and npm registry installation are not published yet. The instructions below describe the current local candidate.</p></div>')
