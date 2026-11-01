@@ -1,0 +1,53 @@
+name: Publish website
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      expected_version:
+        description: Stable version just published by the calling workflow
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: twigsmith-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Resolve public release and build the website
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: |
+          args=()
+          if [ -n "$EXPECTED_VERSION" ]; then
+            args+=(--expected-version "$EXPECTED_VERSION")
+          fi
+          python3 site/publish.py prepare --output "$RUNNER_TEMP/pages" --snapshot "$RUNNER_TEMP/site-snapshot.json" "${args[@]}"
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: ${{ runner.temp }}/pages
+      - name: Recheck source, release and artifact before deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 site/publish.py recheck --snapshot "$RUNNER_TEMP/site-snapshot.json"
+      - name: Deploy the verified Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

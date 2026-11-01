@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "native": {
+    "platform": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
+    "requirements": {"system": "Linux x86_64 with glibc 2.35+ and Git 2.45+", "shell": "POSIX sh for editors and checks"}
+  },
+  "npm": {
+    "coverage": [{"os": "linux", "arch": "x64", "libc": "glibc"}],
+    "requirements": "Node.js LTS and npm; Linux x86_64 with glibc 2.35+ and Git 2.45+"
+  }
+}

@@ -8,6 +8,7 @@ observations, not publisher authentication or permission to deploy Pages.
 import argparse
 from datetime import datetime, timezone
 import html
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -113,13 +114,144 @@ tgi --help</code></pre>
     <p>Checksums detect mismatches with the accompanying manifest; they do not independently authenticate the publisher. See the <a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates">native candidate guide</a> for the full instructions and compatibility limits.</p>
     <h3>Local npm candidate</h3><p>Install a candidate tarball with <code>npm install TARBALL</code>, or use <code>npm install --global TARBALL</code>. The package targets Linux x86_64 GNU; confirm the glibc baseline yourself.</p>'''
     source = (ROOT / 'site' / 'index.html').read_text(encoding='utf-8')
+    # This legacy candidate view does not assert requirements for a different
+    # published version. The resolved release view supplies version-bound details.
+    requirements = '<h3>Requirements</h3><p>See the release-specific requirements before installing.</p>'
     for marker, content in [('AVAILABILITY-NOTICE', notice), ('RELEASE-IDENTITY', details),
+                            ('REQUIREMENTS', requirements),
                             ('INSTALLATION-INSTRUCTIONS', instructions)]:
         placeholder = f'<!-- {marker} -->'
         if source.count(placeholder) != 1:
             raise ValueError(f'site template requires exactly one {marker} placeholder')
         source = source.replace(placeholder, content)
     return source
+
+
+class _ReleaseFields(HTMLParser):
+    """Collect actual rendered fields independently of their layout and style."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fields = {}
+        self.stack = []
+        self.release_links = []
+        self.text = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        field = attrs.get('data-release-field')
+        if field:
+            if field in self.fields:
+                raise ValueError('duplicate release field')
+            self.fields[field] = {'text': '', 'href': attrs.get('href')}
+        if tag not in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+            self.stack.append(field)
+        href = attrs.get('href', '')
+        if ('github.com/msanguineti/twigsmith/releases/' in href
+                or 'www.npmjs.com/package/twigsmith/v/' in href):
+            self.release_links.append(href)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}:
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if self.stack:
+            self.stack.pop()
+
+    def handle_data(self, text):
+        self.text.append(text)
+        for field in self.stack:
+            if field:
+                self.fields[field]['text'] += text
+
+
+def _render_resolved(model):
+    """Render an already provider-validated, release-bound model."""
+    escape = html.escape
+    expected = {}
+
+    def text_field(key, value, tag='span'):
+        expected[key] = {'text': value, 'href': None}
+        return f'<{tag} data-release-field="{key}">{escape(value)}</{tag}>'
+
+    def link(key, value, label):
+        expected[key] = {'text': label, 'href': value}
+        return f'<a data-release-field="{key}" href="{escape(value, quote=True)}">{escape(label)}</a>'
+
+    version = model['version']
+    npm = model['npm']
+    details = '<div class="candidate"><h3>Release ' + text_field('version', version) + '</h3><p>'
+    details += link('release-link', model['release_url'], 'Release page')
+    for index, native in enumerate(model['native']):
+        label = 'Native archive' if len(model['native']) == 1 else 'Native archive ' + str(index + 1)
+        details += ' · ' + link(f'archive-link-{index}', native['assets']['archive']['url'], label)
+    details += ' · ' + link('npm-link', npm['url'], 'npm package') + '</p>'
+    details += '<details><summary>SHA-256 checksums</summary><p>'
+    for index, native in enumerate(model['native']):
+        details += 'Native archive: <code>' + text_field(f'archive-hash-{index}', native['assets']['archive']['sha256']) + '</code><br>'
+    details += 'npm tarball: <code>' + text_field('npm-hash', npm['sha256']) + '</code></p></details></div>'
+
+    requirements = '<h3>Requirements</h3><dl class="requirements">'
+    for index, native in enumerate(model['native']):
+        for item, (key, value) in enumerate(native['requirements'].items()):
+            label = {'system': 'System', 'shell': 'Editors & checks'}.get(key, key.capitalize())
+            requirements += '<div><dt>' + escape(label) + '</dt><dd>' + text_field(f'requirement-{index}-{item}', value) + '</dd></div>'
+    coverage = '; '.join(' / '.join(str(platform[key]) for key in ('os', 'arch', 'libc') if platform.get(key))
+                         for platform in npm['coverage'])
+    requirements += '<div><dt>npm &amp; npx</dt><dd>' + text_field('npm-requirements', npm['requirements'])
+    requirements += ' (' + text_field('npm-coverage', coverage) + ')</dd></div></dl>'
+
+    instructions = ''
+    for method, heading in [('install', 'Install with npm'), ('npx', 'Or run with npx')]:
+        instructions += '<h3>' + heading + '</h3><pre tabindex="0"><code>'
+        instructions += text_field('npm-command-' + method, '\n'.join(npm['commands'][method])) + '</code></pre>'
+    for index, native in enumerate(model['native']):
+        platform = native['platform']
+        label = ' / '.join(str(platform[key]) for key in ('os', 'arch', 'libc') if platform.get(key))
+        heading = 'Or install the native archive' if native['commands'] else 'Native downloads'
+        instructions += '<h3>' + heading + '</h3><p>' + text_field(f'platform-{index}', label) + ': Download the '
+        for position, (kind, title) in enumerate([('archive', 'archive'), ('manifest', 'manifest'), ('checksums', 'checksums')]):
+            if position:
+                instructions += ', ' if position == 1 else ' and '
+            instructions += link(f'{kind}-download-{index}', native['assets'][kind]['url'], title)
+        if native['commands']:
+            instructions += ' to the same directory:</p><pre tabindex="0"><code>'
+            instructions += text_field(f'native-command-{index}', '\n'.join(native['commands'])) + '</code></pre>'
+        else:
+            instructions += '.</p>'
+
+    source = (ROOT / 'site' / 'index.html').read_text(encoding='utf-8')
+    for marker, content in [('AVAILABILITY-NOTICE', ''), ('RELEASE-IDENTITY', details),
+                            ('REQUIREMENTS', requirements), ('INSTALLATION-INSTRUCTIONS', instructions)]:
+        placeholder = f'<!-- {marker} -->'
+        if source.count(placeholder) != 1:
+            raise ValueError(f'site template requires exactly one {marker} placeholder')
+        source = source.replace(placeholder, content)
+    _validate_rendered(source, expected, version)
+    return source
+
+
+def _validate_rendered(source, expected, version):
+    page = _ReleaseFields()
+    page.feed(source)
+    page.close()
+    if page.fields != expected:
+        raise ValueError('rendered release fields differ from resolved model')
+    expected_links = [value['href'] for value in expected.values() if value['href']]
+    if sorted(page.release_links) != sorted(expected_links):
+        raise ValueError('rendered release links differ from resolved model')
+    # Reject separately embedded exact-version npm commands that could contradict
+    # the generated instructions, including those outside generated components.
+    for found in re.findall(r'twigsmith@([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)', ''.join(page.text)):
+        if found != version:
+            raise ValueError('conflicting rendered release version')
+
+
+def build_resolved(output, model):
+    """Build from a model returned by release_model.resolve, without publishing."""
+    source = _render_resolved(model)
+    _build_source(output, source)
 
 
 def _promote(staged, output):
@@ -148,6 +280,10 @@ def build(output, record, *, receipt=None):
     if published:
         validate_receipt(record, receipt)
     source = _render(record, published)
+    _build_source(output, source, lambda: validate_receipt(record, receipt) if published else None)
+
+
+def _build_source(output, source, before_promote=lambda: None):
     output = Path(output).absolute()
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = Path(tempfile.mkdtemp(prefix=f'.{output.name}-', dir=output.parent))
@@ -160,8 +296,7 @@ def build(output, record, *, receipt=None):
         for path in staged.rglob('*'):
             if path.is_symlink() or not (path.is_file() or path.is_dir()):
                 raise ValueError('site artifact must contain ordinary files and directories')
-        if published:
-            validate_receipt(record, receipt)
+        before_promote()
         _promote(staged, output)
     except BaseException:
         # A failed restore must leave the previous artifact available for recovery.

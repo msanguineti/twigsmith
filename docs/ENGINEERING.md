@@ -185,11 +185,16 @@ the pure recovery function does not supply it. Native/npm publication is intenti
 nontransactional. Stable and prerelease channels are latest and next respectively;
 only a verified stable release promotes the site after consumption checks.
 
-`site/build.py` stages preview output by default; fresh identity-bound consumption
-receipts enable release copy and exact-version instructions. Local replacement has
-rollback/retained-backup behavior, while live Pages deployment remains its own protected
-job. Neither hashes nor a receipt prove account authorization or deployed availability.
-The development guide documents invocation, trust/bootstrap and retry contracts.
+`site/build.py` stages previews and retains the receipt-gated publisher build.
+`site/release_model.py` resolves reviewed, release-bound descriptors against GitHub's
+latest stable release and npm latest, including native asset identities and actual npm
+tarball hashes. `site/publish.py` builds a site from that resolved model and captures
+source and provider observations for revalidation at deployment. The manual and
+stable-publication paths share a separately serialized Pages job; its check immediately
+precedes deployment but cannot make a distributed provider observation and deployment
+atomic. Existing package consumption verification is retained, and a site-only retry
+has no product-write authority. The development guide documents the workflow and
+release-data maintenance.
 
 ## Shell completion
 

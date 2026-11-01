@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build and verify the finite Linux native package format (Python 3.10+)."""
 import argparse
+from copy import deepcopy
 import gzip
 import hashlib
 import io
@@ -95,12 +96,84 @@ def validate_elf(data):
         raise ValueError("payload ELF type must be executable or position-independent executable")
 
 
-def write_bundle(output, version, payloads, provenance, epoch):
+def validate_requirements(requirements, *, native_builder=False):
+    """Validate the frozen supported-runtime data independently of build provenance."""
+    def text(value):
+        return isinstance(value, str) and bool(value.strip()) and not any(ord(c) < 32 for c in value)
+    def platform_data(value):
+        return (isinstance(value, dict) and set(value) == {"os", "arch", "libc"}
+                and text(value["os"]) and text(value["arch"])
+                and (value["libc"] is None or text(value["libc"])))
+    try:
+        if (not isinstance(requirements, dict) or set(requirements) != {"schema", "native", "npm"}
+                or type(requirements["schema"]) is not int or requirements["schema"] != 1):
+            raise ValueError("invalid requirements schema")
+        native, npm = requirements["native"], requirements["npm"]
+        if (set(native) != {"platform", "requirements"}
+                or not platform_data(native["platform"])
+                or not isinstance(native["requirements"], dict) or not native["requirements"]
+                or not all(text(k) and text(v) for k, v in native["requirements"].items())
+                or set(npm) != {"coverage", "requirements"} or not text(npm["requirements"])
+                or not isinstance(npm["coverage"], list) or not npm["coverage"]
+                or not all(platform_data(v) for v in npm["coverage"])):
+            raise ValueError("invalid supported requirements")
+        if native_builder and (native["platform"] != {"os": "linux", "arch": "x86_64", "libc": "glibc"}
+                               or set(native["requirements"]) != {"system", "shell"}):
+            raise ValueError("requirements do not match the native builder")
+    except (KeyError, TypeError) as error:
+        raise ValueError("invalid supported requirements") from error
+    return deepcopy(requirements)
+
+
+def load_requirements(repo):
+    return validate_requirements(json.loads((repo / "site/current-requirements.json").read_text()), native_builder=True)
+
+
+def requirements_match_descriptor(manifest, descriptor):
+    """Compare a release descriptor with the requirements frozen in its manifest."""
+    try:
+        snapshot = validate_requirements(manifest["requirements"])
+        native = [entry for entry in descriptor["native"] if entry["platform"] == snapshot["native"]["platform"]]
+        return (manifest["version"] == descriptor["version"] and len(native) == 1
+                and native[0]["requirements"] == snapshot["native"]["requirements"]
+                and descriptor["npm"]["requirements"] == snapshot["npm"]["requirements"]
+                and descriptor["npm"]["coverage"] == snapshot["npm"]["coverage"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def guidance(version, stem, requirements):
+    native = requirements["native"]["requirements"]
+    return f"""Twigsmith {version} — Linux x86_64 GNU native candidate
+
+Extract this archive with tar -xzf, then add the extracted directory to PATH:
+  export PATH="/absolute/path/to/{stem}:$PATH"
+Run twigsmith --help or tgi --help; both names use the same native implementation.
+
+Requirements: {native['system']}. {native['shell']}.
+Rust, Node and npm are not required for the native archive. Editors,
+signing/transport helpers and project checks are needed only when selected.
+Qualification evidence applies to the observed environments and exact bytes;
+it does not establish every distribution, shared-library or kernel boundary.
+Optional completion shells have separate compatibility requirements.
+
+Verify the adjacent .sha256 and .manifest.json with the repository's
+./dev verify-native command before using a candidate. SHA-256 establishes
+consistency with those files; it does not independently authenticate a publisher.
+The manifest labels CI candidates and local development probes and records the
+checkout, toolchain and available CI run. It does not attest arbitrary local
+source bytes or establish reproducible compiler output.
+See the repository docs/USAGE.md for configuration and recovery guidance.
+"""
+
+
+def write_bundle(output, version, payloads, provenance, epoch, requirements=None):
     """Assemble only validated regular payload bytes; publish after full verification."""
+    requirements = validate_requirements(requirements, native_builder=True) if requirements is not None else load_requirements(Path(__file__).resolve().parents[1])
     stem = f"twigsmith-{version}-{TARGET}"
     archive = output / f"{stem}.tar.gz"
     files = dict(payloads)
-    files["README.txt"] = GUIDANCE.format(version=version, stem=stem).encode()
+    files["README.txt"] = guidance(version, stem, requirements).encode()
     for name in ("twigsmith", "tgi"):
         validate_elf(files[name])
     # Tar/Gzip metadata is stable; compiler/linker byte reproducibility is separate.
@@ -114,7 +187,8 @@ def write_bundle(output, version, payloads, provenance, epoch):
                     entry.mtime = epoch
                     tar.addfile(entry, io.BytesIO(files[name]))
     manifest = {
-        "schema": 2, "name": "twigsmith", "version": version, "target": TARGET,
+        "schema": 3, "name": "twigsmith", "version": version, "target": TARGET,
+        "requirements": requirements,
         "archive": {"name": archive.name, "sha256": digest(archive.read_bytes())},
         "files": {name: {"sha256": digest(data), "size": len(data),
                          "mode": format(MEMBERS[name], "04o")} for name, data in files.items()},
@@ -150,13 +224,15 @@ def verify(archive, extract_to=None):
     version = manifest["version"]
     if not isinstance(version, str) or not VERSION.fullmatch(version):
         raise ValueError("invalid manifest version")
-    if (manifest.get("schema") != 2 or manifest.get("name") != "twigsmith"
+    if (manifest.get("schema") not in (2, 3) or manifest.get("name") != "twigsmith"
             or manifest.get("target") != TARGET
             or stem != f"twigsmith-{version}-{TARGET}"
             or manifest.get("archive") != {"name": archive.name, "sha256": digest(archive_data)}
             or manifest.get("npm_payload") != "twigsmith"
             or set(manifest.get("files", {})) != set(MEMBERS)):
         raise ValueError("inconsistent package name, version, target or manifest entries")
+    if manifest["schema"] == 3:
+        validate_requirements(manifest["requirements"], native_builder=True)
     provenance = manifest["provenance"]
     source = provenance["source"]
     if (not re.fullmatch(r"[a-f0-9]{40}", source["revision"])
@@ -194,7 +270,9 @@ def verify(archive, extract_to=None):
             contents[name] = data
     for name in ("twigsmith", "tgi"):
         validate_elf(contents[name])
-    if (contents["README.txt"] != GUIDANCE.format(version=version, stem=stem).encode()
+    expected_guidance = (GUIDANCE.format(version=version, stem=stem) if manifest["schema"] == 2
+                         else guidance(version, stem, manifest["requirements"]))
+    if (contents["README.txt"] != expected_guidance.encode()
             or b"MIT License" not in contents["LICENSE"]):
         raise ValueError("missing license or package guidance")
     if extract_to is not None:
@@ -227,6 +305,7 @@ def build(repo, output, allow_dirty, target):
         raise ValueError("source is dirty; commit it or use --allow-dirty for a labelled probe")
     kind = provenance_kind(source)
     version = package_metadata(repo)
+    requirements = load_requirements(repo)
     for name, value in os.environ.items():
         if value and (name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_BOOTSTRAP", "CC", "CFLAGS", "LDFLAGS")
                       or name.startswith("CARGO_PROFILE_RELEASE_")
@@ -259,6 +338,8 @@ def build(repo, output, allow_dirty, target):
             if result.stdout.strip() != f"twigsmith {version}" or result.stderr:
                 raise ValueError(f"unexpected {name} --version output: {result!r}")
             payloads[name] = path.read_bytes()
+        if requirements != load_requirements(repo):
+            raise ValueError("requirements changed during packaging; no candidate published")
         if source != identity(repo):
             raise ValueError("source changed during packaging; no candidate published")
         provenance = {
@@ -276,7 +357,7 @@ def build(repo, output, allow_dirty, target):
         with tempfile.TemporaryDirectory(prefix=".native-package-", dir=output.parent) as temp:
             staged = Path(temp) / "candidate"
             staged.mkdir()
-            archive = write_bundle(staged, version, payloads, provenance, epoch)
+            archive = write_bundle(staged, version, payloads, provenance, epoch, requirements)
             staged.rename(output)
     print(output / archive.name)
 

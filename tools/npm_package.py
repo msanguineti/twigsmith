@@ -55,10 +55,16 @@ def make_package(repo, archive, output, archive_sha256, payload_sha256):
         if sha256(payload) != payload_sha256:
             raise ValueError('native payload does not match the expected SHA-256')
         version = manifest['version']
+        coverage = (manifest['requirements']['npm']['coverage'] if manifest['schema'] == 3
+                    else [{'os': 'linux', 'arch': 'x64', 'libc': 'glibc'}])
+        # This package contains one Linux x64 payload; never advertise another platform.
+        if coverage != [{'os': 'linux', 'arch': 'x64', 'libc': 'glibc'}]:
+            raise ValueError('npm coverage does not match the native payload')
+        platform = coverage[0]
         metadata = {'name': 'twigsmith', 'version': version, 'license': 'MIT',
                     'repository': {'type': 'git', 'url': 'https://github.com/msanguineti/twigsmith.git'},
                     'homepage': 'https://msanguineti.github.io/twigsmith/',
-                    'os': ['linux'], 'cpu': ['x64'], 'libc': ['glibc'],
+                    'os': [platform['os']], 'cpu': [platform['arch']], 'libc': [platform['libc']],
                     'bin': {'twigsmith': 'twigsmith', 'tgi': 'twigsmith'}}
         package = temporary / 'package'
         package.mkdir()

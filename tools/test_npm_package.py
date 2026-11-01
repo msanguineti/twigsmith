@@ -70,6 +70,32 @@ class NpmPackageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'must not exist'):
             self.build()
 
+    def test_npm_platform_metadata_uses_frozen_native_requirements(self):
+        manifest = native_package.verify(self.archive)
+        requirements = manifest['requirements']
+        self.assertEqual(requirements['npm']['coverage'], [{'os': 'linux', 'arch': 'x64', 'libc': 'glibc'}])
+        # A later edit to the development source does not alter this package.
+        with patch.object(native_package, 'load_requirements', side_effect=AssertionError('current requirements read')):
+            tarball = self.build()
+        with tarfile.open(tarball) as tar:
+            metadata = json.load(tar.extractfile('package/package.json'))
+        self.assertEqual((metadata['os'], metadata['cpu'], metadata['libc']),
+                         (['linux'], ['x64'], ['glibc']))
+
+    def test_refuses_coverage_not_represented_by_single_payload(self):
+        manifest = native_package.verify(self.archive)
+        requirements = manifest['requirements']
+        requirements['npm']['coverage'].append({'os': 'darwin', 'arch': 'arm64', 'libc': None})
+        source = self.root / 'other-native'
+        source.mkdir()
+        self.archive = native_package.write_bundle(source, '0.1.0-beta.1',
+            {'twigsmith': self.payload, 'tgi': self.payload,
+             'LICENSE': (self.repo / 'LICENSE').read_bytes()}, manifest['provenance'], 1, requirements)
+        self.archive_hash = npm_package.sha256(self.archive)
+        with self.assertRaisesRegex(ValueError, 'coverage'):
+            self.build()
+        self.assertFalse(self.output.exists())
+
     def test_corrupt_input_and_wrong_expected_hashes_never_publish(self):
         self.archive.write_bytes(self.archive.read_bytes() + b'corrupt')
         with self.assertRaisesRegex(ValueError, 'expected SHA-256'):

@@ -16,10 +16,6 @@ on:
         description: Reviewed JSON request (see development guide)
         type: string
         required: true
-      deploy_pages:
-        description: Deploy the verified site after publication (requires separate owner authorization)
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -91,6 +87,7 @@ jobs:
       artifact_id: ${{ steps.input.outputs.artifact_id }}
       request: ${{ steps.final.outputs.request }}
       deploy: ${{ steps.final.outputs.deploy }}
+      version: ${{ steps.final.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -143,20 +140,19 @@ jobs:
       - run: python3 tools/release_stage.py validate "$RUNNER_TEMP/request.json" --input "$RUNNER_TEMP/release-candidate"
       - name: Select verified publication and Pages behavior
         id: final
-        env:
-          MANUAL_DEPLOY: ${{ inputs.deploy_pages }}
         run: |
           python3 - <<'PY'
-          import base64, json, os, pathlib
+          import base64, json, os, pathlib, re
           data = pathlib.Path(os.environ['RUNNER_TEMP'], 'request.json').read_bytes()
           request = json.loads(data)
           stable = request['approval']['publication']['prerelease'] is False
-          if not stable and os.environ.get('MANUAL_DEPLOY') == 'true':
-              raise ValueError('prereleases cannot deploy Pages')
-          deploy = stable and (os.environ['GITHUB_EVENT_NAME'] == 'workflow_run' or os.environ.get('MANUAL_DEPLOY') == 'true')
+          version = request['approval']['version']
+          if not isinstance(version, str) or not re.fullmatch(r'[0-9A-Za-z.-]+', version):
+              raise ValueError('invalid approved version')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
               out.write('request=' + base64.b64encode(data).decode() + '\n')
-              out.write('deploy=' + str(deploy).lower() + '\n')
+              out.write('deploy=' + str(stable).lower() + '\n')
+              out.write('version=' + version + '\n')
           PY
 
   publish:
@@ -209,22 +205,13 @@ jobs:
               command += ['--site-directory', str(root / 'pages')]
           subprocess.run(command, check=True)
           PY
-      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
-        if: needs.preflight.outputs.deploy == 'true'
-        with:
-          path: ${{ runner.temp }}/pages
-
   deploy-pages:
     needs: [preflight, publish]
     if: needs.preflight.outputs.deploy == 'true'
-    runs-on: ubuntu-24.04
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    uses: ./.github/workflows/site.yml
+    with:
+      expected_version: ${{ needs.preflight.outputs.version }}
     permissions:
+      contents: read
       pages: write
       id-token: write
-    steps:
-      - name: Deploy the verified Pages artifact
-        id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "repository": "msanguineti/twigsmith",
+  "version": "0.1.0",
+  "tag": "v0.1.0",
+  "native": [
+    {
+      "platform": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
+      "requirements": {"system": "Linux x86_64 with glibc 2.35+ and Git 2.45+", "shell": "POSIX sh for editors and checks"},
+      "assets": {
+        "archive": {"name": "twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz", "sha256": "be19f9e84b98e20fcf16957a31a5609eff9043214f03410d0f8c998f9c36090d"},
+        "manifest": {"name": "twigsmith-0.1.0-x86_64-unknown-linux-gnu.manifest.json", "sha256": "d688fc0452ceb93b123e8261a4573c1ac7a7106013e6b72d3787d5bd5ccfa972"},
+        "checksums": {"name": "twigsmith-0.1.0-x86_64-unknown-linux-gnu.sha256", "sha256": "b522b6f0947fc4cead0a6877dc616cd54d509bab339f178da86fe750b3628ef1"}
+      },
+      "commands": ["sha256sum --check twigsmith-0.1.0-x86_64-unknown-linux-gnu.sha256", "tar -xzf twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz", "export PATH=\"$PWD/twigsmith-0.1.0-x86_64-unknown-linux-gnu:$PATH\"", "twigsmith --version", "tgi --help"]
+    }
+  ],
+  "npm": {
+    "version": "0.1.0",
+    "url": "https://www.npmjs.com/package/twigsmith/v/0.1.0",
+    "sha256": "e2b103e6531035d9f1131c851b7eb63a2395d562216be10dec71cb7a0972280f",
+    "integrity": "sha512-OF3sAYKukxSFWSotR+gVS9XJJhEaOP/TADQvPGfXiblF1a1/1hoq/2MA9ekGl7FZDQEGJtWgHQspW/J1HG7+ag==",
+    "coverage": [{"os": "linux", "arch": "x64", "libc": "glibc"}],
+    "requirements": "Node.js LTS and npm; Linux x86_64 with glibc 2.35+ and Git 2.45+",
+    "commands": {"install": ["npm install --global twigsmith@0.1.0", "twigsmith --version", "tgi --help"], "npx": ["npx --yes --package=twigsmith@0.1.0 twigsmith --version", "npx --yes --package=twigsmith@0.1.0 tgi --help"]}
+  }
+}
