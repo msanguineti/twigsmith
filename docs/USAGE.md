@@ -41,8 +41,9 @@ also verifies archive members and extracts into a new directory. Checksums detec
 mismatches; they do not independently authenticate the publisher.
 
 The supported distribution is Linux x86_64 GNU with glibc 2.35 or newer and Git 2.45
-or newer on PATH. POSIX `sh` is needed for editor and configured-check commands;
-editors, signing/transport helpers and project-check tools are needed for the features
+or newer on PATH. Configured checks need the executables named in their command
+arrays, including POSIX `sh` when selected. Editors, signing/transport helpers and
+project-check tools are needed for the features
 that use them. Optional completion shells have their own requirements below. Native
 execution needs neither Rust nor Node.js.
 
@@ -536,9 +537,11 @@ policy offers an editable suggestion through your Git editor when a new merge or
 squash commit needs a message. Supply `-m` to avoid editing. Fast-forward,
 already-integrated work, and reuse of a retained result need no editor. Editor
 failure, cancellation, invalid output, or a blank message stops the pending stage.
-The integration message editor launcher currently requires POSIX `sh` on PATH;
-`-m/--message` or `finish-message = auto` bypasses it. Windows editor behavior has
-not been validated. Native interactive rebase uses Git's own editor launcher.
+The integration message editor uses the installed Git to launch your selected
+editor, including its shell command syntax and configured arguments. Git for
+Windows supplies its own shell; that shell need not be separately on PATH.
+`-m/--message` or `finish-message = auto` bypasses editing. Native interactive
+rebase uses Git's own editor launcher.
 Message text remains literal and Git hooks, cleanup, and signing apply. A message
 may first become necessary after preparation; stopping then retains prepared work.
 

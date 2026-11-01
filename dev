@@ -87,7 +87,7 @@ test_group() {
             ;;
         finish)
             group_description='Finish planning, preparation, publication, recovery, and command interaction'
-            group_targets='finish_integration finish_planning finish_preparation finish_publication finish_roles finish_checks native_checks native_check_guards native_journey cli_finish cli_history cli_history_presentation'
+            group_targets='finish_integration finish_planning finish_preparation finish_publication finish_roles finish_checks native_checks native_check_guards native_journey native_editor cli_finish cli_history cli_history_presentation'
             ;;
         config)
             group_description='Settings, setup, and cross-command finish-check configuration'

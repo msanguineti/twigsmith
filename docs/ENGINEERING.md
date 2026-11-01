@@ -1046,15 +1046,31 @@ Git’s editor preference resolution, documented in [git-var](https://git-scm.co
 The editor receives a private message file and inherited terminal I/O for normal
 interactive editor operation; message text is never shell input. Finish redacts
 its own rendered output, while the external editor controls its terminal display.
-The integration message editor resolves `git var GIT_EDITOR` and always launches
-that command through POSIX `sh` on the inherited PATH. This existing launcher is
-separate from Git's platform-specific shell resolution; Windows availability,
-path conversion and quoting are unvalidated. `-m/--message` and automatic messages
-bypass it. Native rebase delegates its editor launching to Git itself. Git documents
-editor values as shell-interpreted commands in
-[git-var](https://git-scm.com/docs/git-var); replacing this launcher with Windows
-`cmd.exe` would change those command semantics. The optional shell completion adapters add no shell dependency to ordinary
-workflow execution.
+The integration message editor resolves `git var GIT_EDITOR` and invokes a
+one-command Git shell alias in the repository root. Git owns executable lookup,
+configured shell syntax and Windows shell relocation; the filename remains a
+literal argument. A random private message filename also supplies the alias name,
+avoiding fixed-name external `git-<name>` helper collisions. The alias is a child-only
+configuration override; it writes no Git settings. Git supplies its normal alias
+subprocess environment, including `GIT_PREFIX` and command configuration.
+The `:` editor is a no-op, matching Git's editor convention. `-m/--message` and
+automatic messages bypass this boundary. Native rebase delegates editor launching
+to Git itself. Git documents editor commands in
+[git-var](https://git-scm.com/docs/git-var) and shell aliases in
+[git-config](https://git-scm.com/docs/git-config#Documentation/git-config.txt-alias).
+Using Git's alias runner retains the Git 2.45 floor: that version's reported
+`GIT_SHELL_PATH` can be incorrect on Windows, as described in the
+[Git 2.46 release notes](https://github.com/git/git/blob/v2.46.0/Documentation/RelNotes/2.46.0.txt).
+
+The editor inherits terminal streams and can replace the private message file
+atomically. Finish revalidates the bound context after editing, rejects nonregular
+files, NUL and unsupported encoding, then applies the existing message cleanup.
+Editor failure leaves preparation and external editor effects available for retry.
+The launcher uses Git's alias process lifecycle, rather than Git's commit-editor
+signal handler. Terminal cancellation by a foreground editor is covered by native
+fixtures; abrupt application termination and arbitrary detached GUI descendants
+have no additional containment or recovery guarantee. The optional shell completion
+adapters add no shell dependency to ordinary workflow execution.
 
 Messages are required only for new merge/squash commits. Git commit hooks,
 message cleanup, and signing remain effective.

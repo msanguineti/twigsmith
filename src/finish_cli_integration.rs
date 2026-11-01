@@ -549,21 +549,32 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
         .map_err(|e| fail(&e))?;
     writeln!(file, "{}", plan.message_suggestion()).map_err(|e| fail(&e))?;
     file.flush().map_err(|e| fail(&e))?;
-    // Git editor values are shell commands. Only that configured value is shell
-    // syntax; the pathname is a positional argument and message bytes never enter
-    // the command. The temporary file also permits editor atomic-save replacement.
-    // This launcher requires POSIX sh on the inherited PATH, independently of
-    // Git's own platform shell resolution. Windows path/quoting is unvalidated.
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(format!("{editor} \"$@\""))
-        .arg("twigsmith-editor")
-        .arg(file.path())
-        .current_dir(root)
-        .status()
-        .map_err(|e| fail(&e))?;
-    if !status.success() {
-        return Err(fail(&status));
+    // A one-command shell alias delegates executable/shell selection and native
+    // path handling to the installed Git (including Git-for-Windows at 2.45).
+    // Git appends the filename as a literal argument and inherits terminal I/O.
+    // Neither the message bytes nor its pathname become command syntax. The
+    // override exists only in this child; no repository configuration is written.
+    // Git's editor launcher treats ':' as a no-op before preparing a child.
+    if editor != ":" {
+        // External git-<name> helpers take precedence over aliases. Reuse the
+        // private tempfile's unpredictable suffix to avoid a fixed-name collision.
+        let alias = file
+            .path()
+            .file_name()
+            .expect("temporary filename")
+            .to_str()
+            .expect("ASCII tempfile name");
+        let status = Command::new("git")
+            .arg("-c")
+            .arg(format!("alias.{alias}=!{editor}"))
+            .arg(alias)
+            .arg(file.path())
+            .current_dir(root)
+            .status()
+            .map_err(|e| fail(&e))?;
+        if !status.success() {
+            return Err(fail(&status));
+        }
     }
     integration::revalidate(root, plan, plan.evidence.as_ref()).map_err(|e| fail(&e))?;
     if !fs::symlink_metadata(file.path())

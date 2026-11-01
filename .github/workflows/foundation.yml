@@ -104,16 +104,19 @@ jobs:
           $env:CARGO_TARGET_DIR = Join-Path $PWD 'target'
           $env:RUSTUP_TOOLCHAIN = $toolchain
           $env:PATH = (Join-Path $env:CARGO_HOME 'bin') + [IO.Path]::PathSeparator + $env:PATH
+          (Get-Command git -ErrorAction Stop).Source
           git --no-lazy-fetch --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git var GIT_SHELL_PATH
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $compiler = rustc -vV
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $compiler
           if ($compiler -notcontains "host: $env:EXPECTED_TARGET") { throw 'Compiler must run on the intended native target' }
           # Explicit target prevents inherited Cargo configuration selecting another architecture.
-          cargo build --locked --target $env:EXPECTED_TARGET --example native_check_fixture
+          cargo build --locked --target $env:EXPECTED_TARGET --example native_check_fixture --example native_editor_fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --no-fail-fast --target $env:EXPECTED_TARGET --test native_journey --test native_checks --test native_check_guards -- --nocapture
+          cargo test --locked --no-fail-fast --target $env:EXPECTED_TARGET --test native_journey --test native_checks --test native_check_guards --test native_editor -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   native-completion:
