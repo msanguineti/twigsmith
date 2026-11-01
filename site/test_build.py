@@ -76,6 +76,9 @@ class SiteTests(unittest.TestCase):
         self.assertIn('npm install --global twigsmith@0.1.0', published)
         self.assertIn('npx --yes --package=twigsmith@0.1.0 twigsmith --version', published)
         self.assertIn('npx --yes --package=twigsmith@0.1.0 tgi --help', published)
+        for earlier, later in zip(('Version 0.1.0', 'Requirements', 'Install with npm', 'Or run with npx', 'Or install the native archive'),
+                                  ('Requirements', 'Install with npm', 'Or run with npx', 'Or install the native archive', 'Release 0.1.0')):
+            self.assertLess(published.index(earlier), published.index(later))
         download = ('https://github.com/msanguineti/twigsmith/releases/download/v0.1.0/'
                     'twigsmith-0.1.0-x86_64-unknown-linux-gnu')
         for suffix in ('.tar.gz', '.manifest.json', '.sha256'):

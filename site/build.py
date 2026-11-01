@@ -91,19 +91,18 @@ def _render(record, published):
     if published:
         notice = (f'<div class="notice"><strong>Version {html.escape(version)} · {html.escape(record["publication"]["channel"])} channel</strong>'
                   '</div>')
-        instructions = f'''<h3>Native installation</h3><p>Download the <a href="{download}">archive</a>, <a href="{downloads}/{stem}.manifest.json">manifest</a> and <a href="{downloads}/{stem}.sha256">checksums</a> to the same directory:</p>
+        instructions = f'''<h3>Install with npm</h3><pre tabindex="0"><code>npm install --global twigsmith@{version}
+ twigsmith --version
+ tgi --help</code></pre>
+    <h3>Or run with npx</h3><pre tabindex="0"><code>npx --yes --package=twigsmith@{version} twigsmith --version
+ npx --yes --package=twigsmith@{version} tgi --help</code></pre>
+    <h3>Or install the native archive</h3><p>Download the <a href="{download}">archive</a>, <a href="{downloads}/{stem}.manifest.json">manifest</a> and <a href="{downloads}/{stem}.sha256">checksums</a> to the same directory:</p>
     <pre tabindex="0"><code>sha256sum --check {stem}.sha256
  tar -xzf {archive}
  export PATH="$PWD/{stem}:$PATH"
  twigsmith --version
  tgi --help</code></pre>
-    <p>Compare the archive hash with the release checksum above. Checksums do not authenticate the publisher. See the <a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates">native archive guide</a> for more details.</p>
-    <h3>npm installation</h3><pre tabindex="0"><code>npm install --global twigsmith@{version}
- twigsmith --version
- tgi --help</code></pre>
-    <h3>Run with npx</h3><pre tabindex="0"><code>npx --yes --package=twigsmith@{version} twigsmith --version
- npx --yes --package=twigsmith@{version} tgi --help</code></pre>
-'''
+    <p>Compare the archive hash with the release checksum below. Checksums do not authenticate the publisher. See the <a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates">native archive guide</a> for more details.</p>'''
         instructions = instructions.replace('\n ', '\n')
     else:
         notice = ('<div class="notice"><strong>Candidate availability</strong><p>Release downloads and npm registry installation are not published yet. The instructions below describe the current local candidate.</p></div>')
