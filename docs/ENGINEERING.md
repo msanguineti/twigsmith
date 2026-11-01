@@ -895,6 +895,9 @@ descendant breakaway. It handles console Ctrl-C and Ctrl-Break during the check
 stage and stops job members on cancellation, collection failure or leader exit.
 It retains member process handles before requesting termination and waits for
 their signaled state, then enumerates again for children spawned during cleanup.
+If a termination request returns access denied, it waits up to one second for
+that same retained process handle to signal. Only observed termination resolves
+the error; a still-live or unobservable process keeps cleanup unsuccessful.
 Job accounting alone cannot establish process-handle completion; job-wide
 termination remains an error/unwinding fallback.
 Both backends stop ordinary descendants and reap the leader before returning.

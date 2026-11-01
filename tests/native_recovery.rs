@@ -211,7 +211,9 @@ fn native_linked_worktree_attempts_are_isolated_and_occupied_target_refuses() {
             assert!(prepared.is_prepared(), "{prepared:#?}");
             let attempt = prepared.plan.unwrap().recovery_path.unwrap();
             assert!(
-                attempt.starts_with(f.local.path().join(".git/worktrees")),
+                fs::canonicalize(&attempt)
+                    .unwrap()
+                    .starts_with(fs::canonicalize(f.local.path().join(".git/worktrees")).unwrap()),
                 "{}",
                 attempt.display()
             );
@@ -489,10 +491,14 @@ fn native_recovery_storage_symlinks_and_windows_junctions_refuse() {
             for junction in variants {
                 let f = fixture(root);
                 let (_, path) = interrupted(&f);
-                let namespace = f.local.path().join(".git/twigsmith-integration");
-                let target = f.local.path().join(".git/saved recovery storage");
-                fs::rename(&namespace, &target).unwrap();
+                // Git reports canonical worktree identity; macOS temporary paths
+                // can enter through /var while the same directory is /private/var.
+                let namespace =
+                    fs::canonicalize(f.local.path().join(".git/twigsmith-integration")).unwrap();
+                let path = fs::canonicalize(&path).unwrap();
                 let relative = path.strip_prefix(&namespace).unwrap();
+                let target = namespace.parent().unwrap().join("saved recovery storage");
+                fs::rename(&namespace, &target).unwrap();
                 let bytes = fs::read(target.join(relative)).unwrap();
                 if !linked_directory(&namespace, &target, *junction) {
                     continue;
