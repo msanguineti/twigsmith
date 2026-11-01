@@ -79,7 +79,7 @@ test_group() {
     case "$1" in
         start)
             group_description='Start planning, execution, and command interaction'
-            group_targets='start_resolution start_workflow cli_start remote_roles'
+            group_targets='start_resolution start_workflow cli_start native_journey remote_roles'
             ;;
         save)
             group_description='Save planning, checkpoints, publication, and command interaction'
@@ -172,7 +172,7 @@ full_tests() {
         settings cli_config
         @units dev_selection native_packaging git_execution repository_state remote_roles cli_status
         bash_completion completion_engine completion_setup completion_shells native_completion
-        start_resolution start_workflow cli_start
+        start_resolution start_workflow cli_start native_journey
         save_planning save_execution save_publication cli_save
         finish_planning finish_checks finish_roles finish_preparation
         finish_integration finish_publication cli_finish cli_history cli_history_presentation

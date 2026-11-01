@@ -28,7 +28,8 @@ Tools, dependency caches, and utilities live in `.dev/`; build outputs live in
 
 The Inquire/Crossterm prompt backend documents Unix and Windows terminal support,
 including ordinary Windows console use. Application Windows and macOS build/runtime
-support have not been validated. Shell completion is supplied by the executables
+support require qualification beyond the focused native Git journey described
+below. Shell completion is supplied by the executables
 and uses the same locally installed Git boundary as inspection. Direct
 integration's message editor currently launches the
 Git-selected editor through POSIX `sh` on PATH. `-m/--message` or
@@ -227,6 +228,30 @@ native behavior assertion. The workflow has no explicit job timeout; GitHub
 Actions applies its platform limits. Windows uses the pinned Rust toolchain
 with native Cargo; the Unix jobs use `./dev`. Native completion checks establish
 shell contracts, rather than whole-application platform compatibility.
+
+### Native Git journey
+
+Run `./dev test --test native_journey -- --nocapture` for the focused application
+slice. The `start` group and complete checks include it too. On Windows, use native
+Cargo with the toolchain pinned in `rust-toolchain.toml`:
+`cargo test --locked --test native_journey -- --nocapture`.
+
+The test exercises help/version for both executable names, read-only status,
+ordinary branch creation from a freshly advanced local remote, and an unreachable
+remote refusal. Each name starts an equivalent fresh case; the other inspects its
+result. Real Git checks refs, raw index preservation, index-tree identity, tracked
+content and checkout cleanliness in isolated repositories with spaces in their
+paths and literal punctuation in branch names. Fixtures supply their own Git
+identity and configuration and require no credentials or network service.
+
+The pull-request `Native Git journey` matrix selects Ubuntu 22.04 x64, Windows
+Server 2025 x64, macOS 15 ARM64 and macOS 15 Intel. Jobs verify runner/compiler
+architecture, use the pinned native Rust toolchain and record source, image, OS,
+Git and compiler versions alongside test observations in their logs. Missing or
+failed jobs leave that environment unverified. Successful results cover this
+journey only; they do not qualify Windows desktop versions, interactive terminals,
+save/finish, editors, configured checks, packaging or installation. Published
+distribution remains Linux x86_64 GNU.
 
 For optimized executables:
 
