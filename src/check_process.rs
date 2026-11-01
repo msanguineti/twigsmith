@@ -199,7 +199,11 @@ mod platform {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "check_process/windows.rs"]
+mod platform;
+
+#[cfg(not(any(unix, windows)))]
 mod platform {
     use super::*;
     pub struct Cancellation;
@@ -207,7 +211,7 @@ mod platform {
         pub fn new() -> Result<Self, Error> {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "finish checks require Unix process-group management",
+                "finish checks require Unix or Windows process management",
             )
             .into())
         }
@@ -226,7 +230,7 @@ mod platform {
     ) -> Result<ExitStatus, Error> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "finish checks require Unix process-group management",
+            "finish checks require Unix or Windows process management",
         )
         .into())
     }

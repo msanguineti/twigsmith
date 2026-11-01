@@ -111,7 +111,9 @@ jobs:
           $compiler
           if ($compiler -notcontains "host: $env:EXPECTED_TARGET") { throw 'Compiler must run on the intended native target' }
           # Explicit target prevents inherited Cargo configuration selecting another architecture.
-          cargo test --locked --target $env:EXPECTED_TARGET --test native_journey -- --nocapture
+          cargo build --locked --target $env:EXPECTED_TARGET --example native_check_fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --target $env:EXPECTED_TARGET --test native_journey --test native_checks --test native_check_guards -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   native-completion:

@@ -505,6 +505,7 @@ pub(crate) fn clear_other_selection(
         return Err(FinishError::ContextChanged);
     }
     fs::remove_file(&path)?;
+    #[cfg(unix)]
     fs::File::open(path.parent().expect("selector parent"))?.sync_all()?;
     Ok(true)
 }
@@ -1461,7 +1462,9 @@ impl Record {
 }
 
 /// Write a complete private record before Git effects. Callers revalidate the
-/// selected bytes first. Temporary files and parent directories are synced.
+/// selected bytes first. Temporary files are synced; Unix also syncs parent
+/// directories, as in review recovery. Windows does not expose directory syncing
+/// through ordinary file handles.
 pub(super) fn write<T: Serialize>(
     root: &Path,
     path: &Path,
@@ -1486,6 +1489,7 @@ pub(super) fn write<T: Serialize>(
         }
         match builder.create(&current) {
             Ok(()) => {
+                #[cfg(unix)]
                 fs::File::open(current.parent().unwrap())?.sync_all()?;
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
@@ -1501,6 +1505,7 @@ pub(super) fn write<T: Serialize>(
     } else {
         file.persist_noclobber(path).map_err(|e| e.error)?;
     }
+    #[cfg(unix)]
     fs::File::open(path.parent().unwrap())?.sync_all()?;
     Ok(())
 }
