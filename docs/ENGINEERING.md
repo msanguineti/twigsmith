@@ -19,6 +19,12 @@ completion has adapters for Bash, Zsh, Fish and PowerShell; adapter availability
 and completion CI do not establish whole-application support on other operating
 systems.
 
+The focused [native Git journey](DEVELOPMENT.md#native-git-journey) checks both
+command names, observational status and ordinary start against an advanced local
+remote, with independent ref, index and worktree assertions. Its four-platform
+pull-request matrix is separate from completion coverage and distribution
+qualification; only actual successful native jobs establish that slice on an OS.
+
 The repository includes independent manual website publishing and automatic
 website publishing after successful stable package publication. Release-bound
 metadata supplies versions, links, commands and requirements independently of page

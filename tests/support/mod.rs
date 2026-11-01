@@ -131,6 +131,9 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // Let Cargo's normal capture policy own successful diagnostics too, so
+    // --nocapture exposes evidence printed inside an isolated fixture.
+    print!("{}", String::from_utf8_lossy(&output.stdout));
 }
 
 pub struct Repository {

@@ -43,6 +43,77 @@ jobs:
           npm install --global npm@12.2.1 --ignore-scripts
           ./dev test-packaging
 
+  native-journey:
+    name: Native Git journey (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: X64
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2025
+            arch: X64
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            arch: ARM64
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            arch: X64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Select maintained macOS Git
+        if: runner.os == 'macOS'
+        run: |
+          brew install git
+          echo "$(brew --prefix git)/bin" >> "$GITHUB_PATH"
+      - name: Bootstrap repository-local Rust
+        if: runner.os != 'Windows'
+        run: ./dev bootstrap
+      - name: Bootstrap native Windows Rust
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = [regex]::Match((Get-Content rust-toolchain.toml -Raw), 'channel = "([^"]+)"').Groups[1].Value
+          if (-not $toolchain) { throw 'Missing Rust toolchain pin' }
+          $env:RUSTUP_HOME = Join-Path $PWD '.dev/rustup'
+          $env:CARGO_HOME = Join-Path $PWD '.dev/cargo'
+          rustup toolchain install $toolchain --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run native application journey and record environment
+        shell: pwsh
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Output "Source: $env:GITHUB_SHA; runner: $env:RUNNER_OS/$env:RUNNER_ARCH; image: $env:ImageOS/$env:ImageVersion"
+          Write-Output ([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)
+          $PSVersionTable.PSVersion
+          if ($env:RUNNER_ARCH -ne $env:EXPECTED_ARCH) { throw 'Unexpected runner architecture' }
+          $toolchain = [regex]::Match((Get-Content rust-toolchain.toml -Raw), 'channel = "([^"]+)"').Groups[1].Value
+          if (-not $toolchain) { throw 'Missing Rust toolchain pin' }
+          $env:RUSTUP_HOME = Join-Path $PWD '.dev/rustup'
+          $env:CARGO_HOME = Join-Path $PWD '.dev/cargo'
+          $env:CARGO_TARGET_DIR = Join-Path $PWD 'target'
+          $env:RUSTUP_TOOLCHAIN = $toolchain
+          $env:PATH = (Join-Path $env:CARGO_HOME 'bin') + [IO.Path]::PathSeparator + $env:PATH
+          git --no-lazy-fetch --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler = rustc -vV
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler
+          if ($compiler -notcontains "host: $env:EXPECTED_TARGET") { throw 'Compiler must run on the intended native target' }
+          # Explicit target prevents inherited Cargo configuration selecting another architecture.
+          cargo test --locked --target $env:EXPECTED_TARGET --test native_journey -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   native-completion:
     name: Native completion (${{ matrix.os }})
     strategy:
