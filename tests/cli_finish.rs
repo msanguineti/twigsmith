@@ -2756,13 +2756,13 @@ fn finish_capable_navigation_review_and_integration_delivery_cancel_and_failure(
 
 #[test]
 #[cfg(target_os = "linux")]
-fn integration_missing_path_shell_retains_work_and_reports_editor_failure() {
+fn integration_git_editor_works_without_path_shell() {
     cases(
-        "integration_missing_path_shell_retains_work_and_reports_editor_failure",
+        "integration_git_editor_works_without_path_shell",
         true,
         |root, exe| {
             let f = integration_fixture(root, false);
-            let before = work_snapshot(&f.local);
+            let before = oid(&f.local, "HEAD");
             let target = remote_oid(f.project.path(), "main");
             let private = f.local.path().join(".git/twigsmith.config.toml");
             fs::write(
@@ -2785,21 +2785,13 @@ fn integration_missing_path_shell_retains_work_and_reports_editor_failure() {
                 .current_dir(f.local.path())
                 .args(["finish", "--integration", "merge", "--cleanup", "keep"])
                 .env("PATH", git_only)
-                .env("GIT_EDITOR", "true")
+                .env("GIT_EDITOR", "true ")
                 .env("TERM", "dumb");
             let mut term = terminal::Terminal::start_command(command);
-            assert_eq!(term.finish().code(), Some(1), "{}", term.output);
-            contains(
-                &term.output,
-                &[
-                    "integration message editing failed",
-                    "No such file or directory",
-                    "supply -m/--message",
-                ],
-            );
+            assert_eq!(term.finish().code(), Some(0), "{}", term.output);
             term.assert_restored();
-            unchanged_work(&f.local, &before);
-            assert_eq!(remote_oid(f.project.path(), "main"), target);
+            assert_eq!(oid(&f.local, REF), before);
+            assert_ne!(remote_oid(f.project.path(), "main"), target);
         },
     );
 }

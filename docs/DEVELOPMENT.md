@@ -31,8 +31,8 @@ including ordinary Windows console use. Application Windows and macOS build/runt
 support require qualification beyond the focused native Git journey described
 below. Shell completion is supplied by the executables
 and uses the same locally installed Git boundary as inspection. Direct
-integration's message editor currently launches the
-Git-selected editor through POSIX `sh` on PATH. `-m/--message` or
+integration's message editor launches the Git-selected command through a temporary
+Git shell alias, using Git's own executable and shell resolution. `-m/--message` or
 `finish-message = auto` bypasses that launcher. Native interactive rebase delegates
 editor launching to Git. Configured finish checks use Unix process groups or
 Windows Job Objects to manage child processes. Linux tests do not establish
@@ -231,14 +231,14 @@ shell contracts, rather than whole-application platform compatibility.
 
 ### Native Git journey
 
-Build the native check fixture with
-`./dev cargo build --example native_check_fixture`, then run
-`./dev test --test native_journey --test native_checks --test native_check_guards -- --nocapture`.
-Complete checks build the fixture and include these suites. On Windows, use native
+Build the native fixtures with
+`./dev cargo build --example native_check_fixture --example native_editor_fixture`, then run
+`./dev test --test native_journey --test native_checks --test native_check_guards --test native_editor -- --nocapture`.
+Complete checks build the fixtures and include these suites. On Windows, use native
 Cargo with the toolchain pinned in `rust-toolchain.toml`:
-`cargo build --locked --example native_check_fixture`, followed by
-`cargo test --locked --test native_journey --test native_checks --test native_check_guards -- --nocapture`.
-Build the fixture before focused `start`, `save`, `finish` or `shared` group runs
+`cargo build --locked --example native_check_fixture --example native_editor_fixture`, followed by
+`cargo test --locked --test native_journey --test native_checks --test native_check_guards --test native_editor -- --nocapture`.
+Build the fixtures before focused `start`, `save`, `finish` or `shared` group runs
 too; these groups include native suites that use it.
 
 The test exercises help/version for both executable names, read-only status,
@@ -258,9 +258,19 @@ Server 2025 x64, macOS 15 ARM64 and macOS 15 Intel. Jobs verify runner/compiler
 architecture, use the pinned native Rust toolchain and record source, image, OS,
 Git and compiler versions alongside test observations in their logs. Missing or
 failed jobs leave that environment unverified. Successful results cover the
-tested journeys only; they do not qualify Windows desktop versions, interactive
-terminals, editors, broader tagged/hosted recovery, packaging or installation. Published
+tested journeys only; they do not qualify Windows desktop versions,
+general prompt navigation, real shell Tab completion, broader tagged/hosted
+recovery, packaging or installation. Published
 distribution remains Linux x86_64 GNU.
+The `native_editor` suite uses real Unix PTYs and Windows ConPTY with a foreground
+Rust editor fixture. Both command names exercise merge/squash acceptance, literal
+multiline messages, atomic save, cancellation after preparation and retry. Failure
+cases check invalid message files and context changes independently through Git.
+The Windows acceptance journey limits PATH to the directory containing `git.exe`,
+with no `sh.exe` there. The harness bounds waits, cleans its process group/job and
+checks terminal line input and echo afterward. This establishes the tested terminal
+handoff, not arbitrary detached GUI editor containment or full interactive coverage.
+
 The native suite selection uses `--no-fail-fast` so a failing test binary still
 leaves evidence from the other selected binaries; the job remains unsuccessful
 if any selected binary fails.
