@@ -2,3 +2,5 @@
 .candidate{border:1px solid var(--line);padding:0 22px 12px;margin:30px 0;overflow-wrap:anywhere}.candidate h3{margin-top:18px}
 
 .section-body{min-width:0}pre:focus-visible{outline:3px solid #648000;outline-offset:4px}
+
+.candidate{background:#e7eadf;border:0;border-top:3px solid #719400;padding:22px 24px;margin:0 0 36px}.candidate h3{margin:0;font-size:2rem}.candidate p{margin:12px 0}.candidate a{font-weight:700}.candidate details{border-top:1px solid #c5cec1;margin-top:18px;padding-top:12px}.candidate summary{cursor:pointer;font-size:.85rem;font-weight:700}.candidate summary:focus-visible{outline:3px solid #648000;outline-offset:4px}.requirements{margin:12px 0 0}.requirements div{display:grid;grid-template-columns:130px 1fr;gap:16px;padding:9px 0;border-bottom:1px solid var(--line)}.requirements dt{font-weight:700;color:var(--ink)}.requirements dd{margin:0;color:#414d44}@media(max-width:400px){.requirements div{grid-template-columns:1fr;gap:2px}}

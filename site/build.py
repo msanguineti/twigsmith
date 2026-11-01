@@ -89,8 +89,7 @@ def _render(record, published):
                f'<details><summary>SHA-256 checksums</summary><p>Native archive: <code>{record["native"]["sha256"]}</code><br>'
                f'npm tarball: <code>{record["npm"]["sha256"]}</code></p></details></div>')
     if published:
-        notice = (f'<div class="notice"><strong>Version {html.escape(version)} · {html.escape(record["publication"]["channel"])} channel</strong>'
-                  '</div>')
+        notice = ''
         instructions = f'''<h3>Install with npm</h3><pre tabindex="0"><code>npm install --global twigsmith@{version}
  twigsmith --version
  tgi --help</code></pre>
@@ -102,7 +101,7 @@ def _render(record, published):
  export PATH="$PWD/{stem}:$PATH"
  twigsmith --version
  tgi --help</code></pre>
-    <p>Compare the archive hash with the release checksum below. Checksums do not authenticate the publisher. See the <a href="https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates">native archive guide</a> for more details.</p>'''
+'''
         instructions = instructions.replace('\n ', '\n')
     else:
         notice = ('<div class="notice"><strong>Candidate availability</strong><p>Release downloads and npm registry installation are not published yet. The instructions below describe the current local candidate.</p></div>')
