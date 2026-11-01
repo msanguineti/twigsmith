@@ -49,6 +49,15 @@ fn ignore_interruption() {
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    // Git's GPG signer protocol cannot supply an application-specific mode.
+    // Keep this deliberately failing signer distinct from ordinary fixture modes.
+    if args
+        .first()
+        .is_some_and(|arg| arg.starts_with("--status-fd"))
+    {
+        eprintln!("native-fixture-signing-refused");
+        std::process::exit(23);
+    }
     match args[0].as_str() {
         "exit" => std::process::exit(args[1].parse().unwrap()),
         "record" => {
@@ -87,6 +96,24 @@ fn main() {
                 .get(3)
                 .is_some_and(|permit| !Path::new(permit).exists())
             {
+                std::process::exit(23);
+            }
+        }
+        "branch-gate" => {
+            let git = |args: &[&str]| {
+                let output = Command::new("git").args(args).output().unwrap();
+                assert!(output.status.success());
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            };
+            let branch = git(&["symbolic-ref", "--short", "HEAD"]);
+            let head = git(&["rev-parse", "HEAD"]);
+            let mut log = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&args[1])
+                .unwrap();
+            writeln!(log, "{branch} {head}").unwrap();
+            if !Path::new(&args[2]).join(branch).is_file() {
                 std::process::exit(23);
             }
         }

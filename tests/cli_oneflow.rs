@@ -1,4 +1,6 @@
 //! Public lifecycle wiring and release/hotfix safety against isolated real Git repositories.
+#[path = "support/native.rs"]
+mod native;
 mod support;
 #[cfg(target_os = "linux")]
 #[path = "support/terminal.rs"]
@@ -169,14 +171,16 @@ fn clone_bare(root: &Path, repository: &Repository, source: &Path) -> tempfile::
     destination
 }
 
-#[cfg(unix)]
 fn hook(path: &Path, name: &str, body: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let hooks = path.join("hooks");
     fs::create_dir_all(&hooks).unwrap();
     let result = hooks.join(name);
     fs::write(&result, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     result
 }
 
@@ -911,7 +915,6 @@ fn explicit_creation_and_hotfix_context_errors_preserve_refs() {
 }
 
 #[test]
-#[cfg(unix)]
 fn tag_signing_failure_never_delivers_unsigned_version() {
     cases(
         "tag_signing_failure_never_delivers_unsigned_version",
@@ -926,9 +929,11 @@ fn tag_signing_failure_never_delivers_unsigned_version() {
                 configure(&fixture, "none", "none", "project");
                 start_release(cli, &fixture, "release/train");
                 let released = commit(&fixture.local, "release", "release candidate\n");
-                fixture
-                    .local
-                    .success(&["config", "gpg.program", "/missing-oneflow-signer"]);
+                fixture.local.success(&[
+                    "config",
+                    "gpg.program",
+                    native::helper().to_str().unwrap(),
+                ]);
                 if preference.starts_with("gpgSign-") {
                     fixture.local.success(&[
                         "config",
@@ -950,7 +955,11 @@ fn tag_signing_failure_never_delivers_unsigned_version() {
                 } else {
                     vec!["--tag", "signed-version", "--sign-tag"]
                 };
-                status(cli.run(&fixture.local, "finish", &arguments), 1);
+                let report = status(cli.run(&fixture.local, "finish", &arguments), 1);
+                assert!(
+                    report.contains("native-fixture-signing-refused"),
+                    "{report}"
+                );
                 assert_eq!(oid(fixture.local.path(), "refs/tags/signed-version"), None);
                 assert_eq!(refs(fixture.project.path()), before);
                 assert_eq!(oid(fixture.local.path(), "release/train"), Some(released));
@@ -961,7 +970,7 @@ fn tag_signing_failure_never_delivers_unsigned_version() {
             let released = commit(&fixture.local, "release", "release candidate\n");
             fixture
                 .local
-                .success(&["config", "gpg.program", "/missing-oneflow-signer"]);
+                .success(&["config", "gpg.program", native::helper().to_str().unwrap()]);
             for key in ["tag.gpgSign", "tag.forceSignAnnotated"] {
                 fixture.local.success(&["config", "--add", key, "yes"]);
                 fixture.local.success(&["config", "--add", key, "no"]);
@@ -988,7 +997,6 @@ fn tag_signing_failure_never_delivers_unsigned_version() {
     );
 }
 
-#[cfg(unix)]
 fn server_hook(fixture: &Fixture, destination: &Path, body: &str) -> std::path::PathBuf {
     fixture.local.success(&[
         "-C",
@@ -1001,7 +1009,6 @@ fn server_hook(fixture: &Fixture, destination: &Path, body: &str) -> std::path::
 }
 
 #[test]
-#[cfg(unix)]
 fn partial_multidestination_release_delivery_and_source_deleted_cleanup_resume() {
     cases(
         "partial_multidestination_release_delivery_and_source_deleted_cleanup_resume",
@@ -1188,12 +1195,11 @@ fn first_destination_conflict_preserves_selected_identity_through_native_resolut
 }
 
 #[test]
-#[cfg(unix)]
 fn retry_rejects_changed_settings_and_same_commit_tag_object_substitution() {
     cases(
         "retry_rejects_changed_settings_and_same_commit_tag_object_substitution",
         |root, cli| {
-            for context in ["settings", "tag-object", "marker", "endpoint"] {
+            for context in ["settings", "tag-object", "marker", "endpoint", "source"] {
                 let fixture = Fixture::new(root);
                 configure(
                     &fixture,
@@ -1287,6 +1293,15 @@ fn retry_rejects_changed_settings_and_same_commit_tag_object_substitution() {
                         "refs/heads/released",
                         &marker,
                     ]);
+                } else if context == "source" {
+                    fixture.local.success(&["branch", "-D", "release/train"]);
+                    fixture
+                        .local
+                        .success(&["branch", "release/train", &released]);
+                    assert_eq!(
+                        oid(fixture.local.path(), "release/train"),
+                        Some(released.clone())
+                    );
                 } else {
                     let different = clone_bare(root, &fixture.local, fixture.project.path());
                     fixture.local.success(&[
@@ -1313,7 +1328,6 @@ fn retry_rejects_changed_settings_and_same_commit_tag_object_substitution() {
 }
 
 #[test]
-#[cfg(unix)]
 fn bypassed_release_checks_do_not_authorize_later_unbypassed_retry() {
     cases(
         "bypassed_release_checks_do_not_authorize_later_unbypassed_retry",
@@ -1325,7 +1339,14 @@ fn bypassed_release_checks_do_not_authorize_later_unbypassed_retry() {
             // Insert the global check before workstream tables so this checks
             // both the approved released source and its integration candidate.
             let first_table = config.find("[workstreams.ordinary]").unwrap();
-            let check = "[[finish-checks]]\nname='Release tree gate'\ncommand=['sh','-c','git rev-parse HEAD >> .git/checked-trees; test -f .git/check-pass']\n";
+            let command = native::command(
+                "ordered",
+                &[".git/checked-trees", "candidate", ".git/check-pass"],
+            );
+            let check = format!(
+                "[[finish-checks]]\nname='Release tree gate'\ncommand={}\n",
+                serde_json::to_string(&command).unwrap()
+            );
             fs::write(
                 private,
                 format!(
@@ -1357,14 +1378,29 @@ fn bypassed_release_checks_do_not_authorize_later_unbypassed_retry() {
             assert_eq!(refs(fixture.project.path()), before);
             let checked =
                 fs::read_to_string(fixture.local.path().join(".git/checked-trees")).unwrap();
-            assert!(checked.lines().any(|tree| tree == released), "{checked}");
+            assert!(
+                checked
+                    .lines()
+                    .any(|tree| tree == format!("candidate {released}")),
+                "{checked}"
+            );
             fs::write(fixture.local.path().join(".git/check-pass"), "").unwrap();
             cli.success(&fixture.local, "finish", &[]);
             let candidate = oid(fixture.project.path(), "main").unwrap();
             let checked =
                 fs::read_to_string(fixture.local.path().join(".git/checked-trees")).unwrap();
-            assert!(checked.lines().any(|tree| tree == released), "{checked}");
-            assert!(checked.lines().any(|tree| tree == candidate), "{checked}");
+            assert!(
+                checked
+                    .lines()
+                    .any(|tree| tree == format!("candidate {released}")),
+                "{checked}"
+            );
+            assert!(
+                checked
+                    .lines()
+                    .any(|tree| tree == format!("candidate {candidate}")),
+                "{checked}"
+            );
         },
     );
 }
@@ -1583,6 +1619,54 @@ fn divergent_or_aliased_release_marker_preserves_published_refs() {
                 assert_eq!(oid(fixture.project.path(), marker), previous_marker);
                 assert_eq!(oid(fixture.local.path(), "release/train"), Some(released));
             }
+        },
+    );
+}
+
+#[test]
+fn occupied_release_marker_preserves_worktree_and_all_refs() {
+    cases(
+        "occupied_release_marker_preserves_worktree_and_all_refs",
+        |root, cli| {
+            let fixture = Fixture::new(root);
+            configure(&fixture, "released", "none", "project");
+            fixture
+                .local
+                .success(&["branch", "released", &fixture.base]);
+            fixture.local.success(&["push", "project", "released"]);
+            let occupied = root.join("occupied release marker 世界");
+            fixture
+                .local
+                .success(&["worktree", "add", occupied.to_str().unwrap(), "released"]);
+            fs::write(occupied.join("private note.txt"), "other worktree work\n").unwrap();
+            start_release(cli, &fixture, "release/train");
+            let released = commit(&fixture.local, "release", "release candidate\n");
+            cli.success(&fixture.local, "save", &[]);
+            let local_before = refs(fixture.local.path());
+            let remote_before = refs(fixture.project.path());
+            let report = status(
+                cli.run(&fixture.local, "finish", &["--tag", "occupied-marker"]),
+                1,
+            );
+            assert!(report.contains("worktree"), "{report}");
+            assert_eq!(refs(fixture.local.path()), local_before);
+            assert_eq!(refs(fixture.project.path()), remote_before);
+            assert_eq!(oid(fixture.local.path(), "HEAD"), Some(released.clone()));
+            assert_eq!(oid(&occupied, "HEAD"), Some(fixture.base.clone()));
+            assert_eq!(
+                fs::read_to_string(occupied.join("private note.txt")).unwrap(),
+                "other worktree work\n"
+            );
+            fs::remove_file(occupied.join("private note.txt")).unwrap();
+            fixture
+                .local
+                .success(&["worktree", "remove", occupied.to_str().unwrap()]);
+            cli.success(&fixture.local, "finish", &["--tag", "occupied-marker"]);
+            assert_eq!(oid(fixture.project.path(), "released"), Some(released));
+            assert_eq!(
+                value(&fixture.local, &["symbolic-ref", "--short", "HEAD"]),
+                "main"
+            );
         },
     );
 }

@@ -165,14 +165,16 @@ fn clone_bare(root: &Path, repository: &Repository, source: &Path) -> tempfile::
     destination
 }
 
-#[cfg(unix)]
 fn hook(path: &Path, name: &str, body: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let hooks = path.join("hooks");
     fs::create_dir_all(&hooks).unwrap();
     let result = hooks.join(name);
     fs::write(&result, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     result
 }
 
@@ -367,6 +369,17 @@ fn hosted_hotfix_routes_to_declared_active_release_or_development() {
             for active in ["none", "release/active"] {
                 let f = Fixture::new(root);
                 configure(&f, "personal", active);
+                let work = clone_bare(root, &f.local, f.project.path());
+                f.local
+                    .success(&["remote", "add", "work", work.path().to_str().unwrap()]);
+                let config = f.local.path().join(".git/twigsmith.config.toml");
+                fs::write(
+                    &config,
+                    fs::read_to_string(&config)
+                        .unwrap()
+                        .replace("publish-remote='project'", "publish-remote='work'"),
+                )
+                .unwrap();
                 f.local.success(&["tag", "previous", &f.base]);
                 if active != "none" {
                     f.local.success(&[
@@ -397,7 +410,28 @@ fn hosted_hotfix_routes_to_declared_active_release_or_development() {
                     output.contains(&format!("into project/{target}")),
                     "{output}"
                 );
-                assert_eq!(oid(f.project.path(), "refs/tags/v-fixed"), Some(source));
+                assert_eq!(
+                    oid(f.project.path(), "refs/tags/v-fixed"),
+                    Some(source.clone())
+                );
+                assert_eq!(
+                    oid(work.path(), "refs/heads/hotfix/current"),
+                    Some(source.clone())
+                );
+                assert_eq!(
+                    oid(f.personal.path(), "refs/heads/back/fixed"),
+                    Some(source.clone())
+                );
+                assert_eq!(
+                    oid(f.local.path(), "refs/heads/hotfix/current"),
+                    Some(source)
+                );
+                assert_eq!(value(&f.local, &["branch", "--show-current"]), "back/fixed");
+                assert_eq!(oid(f.project.path(), "refs/heads/hotfix/current"), None);
+                assert_eq!(oid(f.personal.path(), "refs/heads/hotfix/current"), None);
+                assert_eq!(oid(work.path(), "refs/tags/v-fixed"), None);
+                assert_eq!(oid(f.personal.path(), "refs/tags/v-fixed"), None);
+                assert_eq!(oid(f.project.path(), "refs/heads/released"), None);
                 assert_eq!(
                     oid(f.project.path(), &format!("refs/heads/{target}")),
                     Some(f.base)
@@ -484,7 +518,6 @@ fn ordinary_contribution_into_release_or_hotfix_has_no_tagged_effects() {
         },
     );
 }
-#[cfg(unix)]
 #[test]
 fn hosted_dirty_checkout_hook_stops_before_merge_or_publication() {
     cases(
@@ -573,7 +606,6 @@ fn hosted_fresh_collisions_and_aliases_do_not_adopt_existing_refs() {
         },
     );
 }
-#[cfg(unix)]
 #[test]
 fn hosted_exact_parent_candidate_without_preparation_start_is_rejected() {
     cases(

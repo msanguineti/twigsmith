@@ -125,6 +125,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked --no-fail-fast --target $env:EXPECTED_TARGET --test native_journey --test native_checks --test native_check_guards --test native_editor --test native_prompts -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --no-fail-fast --target $env:EXPECTED_TARGET --test cli_oneflow --test cli_direct_sequence --test cli_hosted_oneflow --test cli_hosted_recovery --test native_recovery -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked --target $env:EXPECTED_TARGET --lib presentation::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

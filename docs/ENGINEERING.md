@@ -25,7 +25,9 @@ remote, save/review delivery and direct candidate retry, with independent ref,
 index and worktree assertions. Native prompt tests cover guided configuration and
 representative save/finish keyboard interaction, fallback and terminal restoration.
 Companion native process and guard suites exercise
-managed checks and refusal boundaries. The four-platform
+managed checks and refusal boundaries. Tagged/direct and hosted CLI suites exercise
+version identity, partial publication and fresh-process retry; native recovery
+fixtures cover filesystem and linked-worktree guards. The four-platform
 pull-request matrix is separate from completion coverage and distribution
 qualification; only actual successful native jobs establish that slice on an OS.
 
