@@ -366,6 +366,24 @@ npm tarball/manifest and `identity.json`. It excludes harnesses and provisioning
 archives. Review and retain this exact output before authorizing publication.
 Preparation is not npm staging: it creates no package, placeholder, tag or release.
 
+For a stable release, download the exact prepared `release-candidate` artifact and
+create its site descriptor from the verified local bytes:
+
+```sh
+python3 site/candidate.py RELEASE_CANDIDATE_DIRECTORY > site/releases/VERSION.json
+```
+
+Replace `VERSION` with the candidate's stable version. Review the generated release
+identity, asset names, hashes, installation commands and frozen requirements, then
+merge the descriptor to main before publishing the GitHub release. The preparation
+candidate remains unchanged; use the current main revision as publisher revision for
+a manual continuation. Stable publication preflight checks the reviewed descriptor
+against the same approved candidate before it obtains product-write permissions.
+Missing or different data stops the continuation. Prereleases do not require a site
+descriptor. The generated file describes local candidate bytes; it does not assert
+that GitHub or npm has published them. The existing 0.1.0 descriptor is bound to its
+exact historical manifest because that release predates requirements snapshots.
+
 Dispatch input `request` is JSON, passed as data rather than shell source:
 
 | Operation | Required request fields |

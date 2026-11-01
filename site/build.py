@@ -241,6 +241,12 @@ def _validate_rendered(source, expected, version):
     expected_links = [value['href'] for value in expected.values() if value['href']]
     if sorted(page.release_links) != sorted(expected_links):
         raise ValueError('rendered release links differ from resolved model')
+    # A redesign can introduce a separate release claim outside generated fields.
+    # Scope this to release-labelled versions so dependency versions remain valid.
+    visible_text = ' '.join(page.text)
+    for found in re.findall(r'\b(?:release(?:\s+version)?|(?:current|latest|twigsmith)\s+version)\s*[:#]?\s*v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)', visible_text, flags=re.IGNORECASE):
+        if found != version:
+            raise ValueError('conflicting rendered release version')
     # Reject separately embedded exact-version npm commands that could contradict
     # the generated instructions, including those outside generated components.
     for found in re.findall(r'twigsmith@([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)', ''.join(page.text)):

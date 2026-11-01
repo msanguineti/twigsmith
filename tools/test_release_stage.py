@@ -3,6 +3,8 @@ from copy import deepcopy
 import importlib.util
 import json
 import os
+import shutil
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -75,6 +77,39 @@ class StageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             release_stage.prepare(downloaded, self.fixture.root / 'bad', bad)
         self.assertFalse((self.fixture.root / 'bad').exists())
+
+    def test_stable_descriptor_checked_before_publication(self):
+        site = Path(__file__).resolve().parents[1] / 'site'
+        sys.path.insert(0, str(site))
+        self.addCleanup(sys.path.remove, str(site))
+        import candidate
+        from test_candidate import CandidateTests
+        fixture = CandidateTests('test_reviewed_descriptor_binds_candidate_and_requirements')
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        record, files = fixture.record, fixture.files
+        record['publication'] = {'prerelease': False}
+        approval = {'native': self.record,
+                    'npm': {'packaging': {'source': {'dirty': False}}}}
+        request = {'approval': approval}
+        root = self.fixture.root / 'descriptor-checkout'
+        (root / 'site/releases').mkdir(parents=True)
+        shutil.copy(site / 'candidate.py', root / 'site/candidate.py')
+        descriptor = root / 'site/releases/0.2.0.json'
+        with patch.object(release_stage, 'ROOT', root), \
+             patch('release_publish.approved_inputs', return_value=(record, files, {})):
+            with self.assertRaises(FileNotFoundError):
+                release_stage.validate_bundle(self.fixture.root, request)
+            descriptor.write_text(json.dumps(candidate.descriptor_for(record, files)))
+            self.assertEqual(release_stage.validate_bundle(self.fixture.root, request)[0], record)
+            changed = json.loads(descriptor.read_text())
+            changed['npm']['sha256'] = '0' * 64
+            descriptor.write_text(json.dumps(changed))
+            with self.assertRaisesRegex(ValueError, 'differs'):
+                release_stage.validate_bundle(self.fixture.root, request)
+            record['publication']['prerelease'] = True
+            descriptor.unlink()
+            self.assertEqual(release_stage.validate_bundle(self.fixture.root, request)[0], record)
 
     def test_dispatch_main_and_input_identity_guards(self):
         env = {'GITHUB_REPOSITORY': release_stage.REPO, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': '3' * 40}

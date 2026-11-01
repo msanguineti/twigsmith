@@ -278,7 +278,9 @@ class SiteTests(unittest.TestCase):
         for changed in [source.replace('twigsmith@0.1.0', 'twigsmith@9.0.0', 1),
                         source.replace(model['release_url'], model['release_url'] + '-bad', 1),
                         source.replace('data-release-field="npm-requirements"', '', 1),
-                        source.replace('glibc 2.35+', 'glibc 2.40+', 1)]:
+                        source.replace('glibc 2.35+', 'glibc 2.40+', 1),
+                        source.replace('</main>', '<p>Current release: 9.0.0</p></main>'),
+                        source.replace('</main>', '<p>Latest version: 9.0.0</p></main>')]:
             with self.subTest(changed=changed[:30]), self.assertRaises(ValueError):
                 build._validate_rendered(changed, page.fields, '0.1.0')
 
