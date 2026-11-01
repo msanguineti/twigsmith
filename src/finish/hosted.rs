@@ -198,6 +198,9 @@ fn write_private(
     }
     file.persist(destination)
         .map_err(|e| FinishError::from(e.error))?;
+    // Ordinary Windows file handles cannot open directories. Match direct and
+    // review recovery: sync the record everywhere and its parent on Unix.
+    #[cfg(unix)]
     fs::File::open(parent)?.sync_all()?;
     Ok(())
 }

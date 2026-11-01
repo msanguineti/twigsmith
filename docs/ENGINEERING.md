@@ -1412,6 +1412,9 @@ preparation retention refs corroborate transitions. A recreated branch at the sa
 OID cannot inherit ownership. Conflict resolution must establish the recorded
 source/target merge; it cannot redefine the released version. Native continuation
 and abandonment keep that identity; missing or changed evidence blocks reuse.
+Record files synchronize before atomic replacement. Parent-directory synchronization
+is Unix-only, as for direct integration; Windows power-loss durability remains
+outside this boundary.
 
 Responsibility ends at verified publication and readiness for manual submission.
 Later PR state is neither observed nor reconstructed. Provider submission, subsequent
