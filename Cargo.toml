@@ -14,6 +14,20 @@ rustix = { version = "1.1", features = ["pty", "process"] }
 rustix = { version = "1.1", features = ["process", "fs"] }
 signal-hook = { version = "0.4.5", default-features = false }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
 [dependencies]
 clap = { version = "4.6", features = ["unstable-ext"] }
 clap_complete = { version = "=4.6.11", features = ["unstable-dynamic"] }

@@ -21,7 +21,9 @@ systems.
 
 The focused [native Git journey](DEVELOPMENT.md#native-git-journey) checks both
 command names, observational status and ordinary start against an advanced local
-remote, with independent ref, index and worktree assertions. Its four-platform
+remote, save/review delivery and direct candidate retry, with independent ref,
+index and worktree assertions. Companion native process and guard suites exercise
+managed checks and refusal boundaries. The four-platform
 pull-request matrix is separate from completion coverage and distribution
 qualification; only actual successful native jobs establish that slice on an OS.
 
@@ -878,13 +880,29 @@ cannot invalidate or renew authoritative remote evidence. Remote movement during
 checks is caught by publication observations and leases.
 
 [`check_process.rs`](../src/check_process.rs) manages Unix process groups and
-catchable cancellation signals across the stage. It stops ordinary descendants
-when their leader exits or cancellation occurs and reaps the leader before
-returning. Concurrent library check stages serialize ownership of this process-wide
-signal facility. Non-Unix configured execution is unsupported. SIGKILL and deliberate
+catchable cancellation signals across the stage. The
+unreaped leader pins its process-group identity through cleanup. On macOS, a
+group containing only that zombie leader can reject signalling; this is accepted
+only after a complete native group-membership snapshot proves that sole member.
+Other signal failures remain errors. The
+[Windows backend](../src/check_process/windows.rs) starts each executable suspended,
+assigns it to a non-inheritable Job Object before resuming it, and prevents ordinary
+descendant breakaway. It handles console Ctrl-C and Ctrl-Break during the check
+stage and stops job members on cancellation, collection failure or leader exit.
+It retains member process handles before requesting termination and waits for
+their signaled state, then enumerates again for children spawned during cleanup.
+Job accounting alone cannot establish process-handle completion; job-wide
+termination remains an error/unwinding fallback.
+Both backends stop ordinary descendants and reap the leader before returning.
+Bounded pipe drains keep continuous output from starving cancellation. Concurrent
+library check stages serialize ownership of the process-wide cancellation facility.
+Windows batch files require an explicit shell executable, such as `cmd.exe`, rather
+than Rust's implicit batch launcher. Forced OS termination and deliberate Unix
 process-group escape are outside the lifecycle guarantee; checks are project code,
-not sandboxed work. Failed launch, exit, signal, collection, cancellation, or guard
-stops execution without automatic fixes, commits, stashes, retries, or rollback.
+not sandboxed work. Windows console-close/logoff events have separate OS termination
+limits and are not graceful check cancellation. Failed launch, exit, signal,
+collection, cancellation, or guard stops execution without automatic fixes,
+commits, stashes, retries, or rollback.
 When assume-unchanged or skip-worktree flags are present, the check boundary uses
 a disposable index populated from the guarded candidate and a native Git diff to
 compare actual working content. This catches edits hidden from status without
@@ -1241,8 +1259,10 @@ pending delivery retries run the effective check list again.
 
 [`integration/recovery.rs`](../src/finish/integration/recovery.rs) stores version-4
 private attempt records and an active selector under the worktree Git directory.
-Atomic writes synchronize files/directories, reject symlinks and require private
-Unix paths. Records bind repository/worktree identity, exact refs and commits,
+Atomic writes synchronize files and, on Unix, parent directories; they reject
+symlinks and require private Unix paths. Windows file replacement does not add a
+parent-directory sync or establish power-loss durability or private ACL qualification.
+Records bind repository/worktree identity, exact refs and commits,
 endpoints, settings/provenance, Git configuration, choices, reflog anchors,
 retention refs and cleanup-relevant source versions. A stored acknowledgement is
 corroborating evidence, not a reusable success flag. Malformed or unsupported

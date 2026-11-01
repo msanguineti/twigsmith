@@ -34,9 +34,9 @@ and uses the same locally installed Git boundary as inspection. Direct
 integration's message editor currently launches the
 Git-selected editor through POSIX `sh` on PATH. `-m/--message` or
 `finish-message = auto` bypasses that launcher. Native interactive rebase delegates
-editor launching to Git. Configured finish checks use Unix process-group management
-and are unsupported on non-Unix systems. Linux tests do not establish portability
-of these paths.
+editor launching to Git. Configured finish checks use Unix process groups or
+Windows Job Objects to manage child processes. Linux tests do not establish
+portability of these paths; native tests supply the scoped runtime evidence below.
 
 ## Development
 
@@ -231,27 +231,39 @@ shell contracts, rather than whole-application platform compatibility.
 
 ### Native Git journey
 
-Run `./dev test --test native_journey -- --nocapture` for the focused application
-slice. The `start` group and complete checks include it too. On Windows, use native
+Build the native check fixture with
+`./dev cargo build --example native_check_fixture`, then run
+`./dev test --test native_journey --test native_checks --test native_check_guards -- --nocapture`.
+Complete checks build the fixture and include these suites. On Windows, use native
 Cargo with the toolchain pinned in `rust-toolchain.toml`:
-`cargo test --locked --test native_journey -- --nocapture`.
+`cargo build --locked --example native_check_fixture`, followed by
+`cargo test --locked --test native_journey --test native_checks --test native_check_guards -- --nocapture`.
+Build the fixture before focused `start`, `save`, `finish` or `shared` group runs
+too; these groups include native suites that use it.
 
 The test exercises help/version for both executable names, read-only status,
 ordinary branch creation from a freshly advanced local remote, and an unreachable
-remote refusal. Each name starts an equivalent fresh case; the other inspects its
-result. Real Git checks refs, raw index preservation, index-tree identity, tracked
-content and checkout cleanliness in isolated repositories with spaces in their
+remote refusal. Save/review and direct-integration cases exercise ordered native
+checks and retained-candidate retry. Real Git checks refs, raw index preservation,
+index-tree identity, tracked content and checkout cleanliness in isolated repositories with spaces in their
 paths and literal punctuation in branch names. Fixtures supply their own Git
 identity and configuration and require no credentials or network service.
+The companion process suite checks literal arguments, environment, EOF input,
+streaming, output volume and managed descendant cancellation. Guard fixtures check
+local mutations, hidden tracked work, ignored output, remote movement, retry,
+explicit bypass and streamed credential redaction.
 
 The pull-request `Native Git journey` matrix selects Ubuntu 22.04 x64, Windows
 Server 2025 x64, macOS 15 ARM64 and macOS 15 Intel. Jobs verify runner/compiler
 architecture, use the pinned native Rust toolchain and record source, image, OS,
 Git and compiler versions alongside test observations in their logs. Missing or
-failed jobs leave that environment unverified. Successful results cover this
-journey only; they do not qualify Windows desktop versions, interactive terminals,
-save/finish, editors, configured checks, packaging or installation. Published
+failed jobs leave that environment unverified. Successful results cover the
+tested journeys only; they do not qualify Windows desktop versions, interactive
+terminals, editors, broader tagged/hosted recovery, packaging or installation. Published
 distribution remains Linux x86_64 GNU.
+The native suite selection uses `--no-fail-fast` so a failing test binary still
+leaves evidence from the other selected binaries; the job remains unsuccessful
+if any selected binary fails.
 
 For optimized executables:
 

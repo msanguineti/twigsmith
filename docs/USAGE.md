@@ -1187,6 +1187,8 @@ Commands use exact executable-and-argument lists. Shell features require an
 explicit shell, as in the second check; there is no implicit shell interpretation,
 interpolation, or splitting. Setup and inspection never run the commands or probe
 executables. Start and save never execute finish checks.
+On Windows, name a shell explicitly for batch files, for example
+`["cmd.exe", "/c", "validate.cmd"]`; a batch file as the executable is rejected.
 
 An omitted private list inherits the shared list. A supplied private list replaces
 the whole shared list; `[]` disables inherited checks. Every supplied list is
@@ -1197,6 +1199,9 @@ and PATH. They receive EOF on stdin. Their stdout and stderr appear as they run,
 along with each check's name and command. A failed exit, launch error, or interruption
 stops publication and later checks. Ctrl-C stops the running check and its ordinary
 child processes. Check commands run as project code with your permissions.
+On Windows this cancellation uses console Ctrl-C or Ctrl-Break and managed Job
+Objects. Forced termination of Twigsmith and console-close/logoff events do not
+provide the same graceful cancellation and reporting boundary.
 
 Preparation and check effects stay in place. Fix the problem, commit or preserve
 any generated changes, and rerun finish. Review reruns all checks. Ordinary direct

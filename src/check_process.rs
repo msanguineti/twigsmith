@@ -120,6 +120,49 @@ mod platform {
             let _ = self.child.wait();
         }
     }
+    fn stop_exited_group(group: Pid) -> io::Result<()> {
+        match kill_process_group(group, Signal::KILL) {
+            Ok(()) => Ok(()),
+            #[cfg(target_os = "macos")]
+            Err(rustix::io::Errno::PERM) if exited_leader_is_sole_member(group)? => Ok(()),
+            Err(error) => Err(io::Error::other(format!(
+                "stop check process group {group} with SIGKILL: {error}"
+            ))),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn exited_leader_is_sole_member(group: Pid) -> io::Result<bool> {
+        // Darwin killpg excludes zombies and can return EPERM for the retained
+        // exited leader alone. libproc lists live and zombie members under one
+        // process-list lock. Two slots let us distinguish the complete sole-
+        // leader list from a truncated list; any other membership fails closed.
+        // WNOWAIT still owns this exact leader PID, so it cannot be reused, and
+        // a group containing only that zombie has no ordinary process to fork.
+        let mut members = [0_i32; 2];
+        // SAFETY: libproc receives a writable, aligned buffer with its byte size.
+        // proc_listpgrppids returns a count of PIDs rather than a count of bytes.
+        let count = unsafe {
+            libc::proc_listpgrppids(
+                group.as_raw_pid(),
+                members.as_mut_ptr().cast(),
+                std::mem::size_of_val(&members) as i32,
+            )
+        };
+        if count <= 0 {
+            return Err(io::Error::other(format!(
+                "inspect exited check process group {group} with proc_listpgrppids: {}",
+                io::Error::last_os_error()
+            )));
+        }
+        Ok(sole_leader_list(group, count, members))
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn sole_leader_list(group: Pid, count: i32, members: [i32; 2]) -> bool {
+        count == 1 && members[0] == group.as_raw_pid()
+    }
+
     fn nonblocking(pipe: &impl AsFd) -> io::Result<()> {
         fcntl_setfl(pipe, fcntl_getfl(pipe)? | OFlags::NONBLOCK)?;
         Ok(())
@@ -178,10 +221,14 @@ mod platform {
                     | rustix::process::WaitIdOptions::NOHANG
                     | rustix::process::WaitIdOptions::NOWAIT,
             )
-            .map_err(io::Error::from)?;
+            .map_err(|error| {
+                io::Error::other(format!(
+                    "observe check leader with waitid(WNOWAIT): {error}"
+                ))
+            })?;
             if exited.is_some() {
                 let group = Pid::from_raw(child.child.id() as i32).expect("child PID");
-                kill_process_group(group, Signal::KILL).map_err(io::Error::from)?;
+                stop_exited_group(group)?;
                 child.group = None;
                 // Collect all available buffered output, including enlarged pipes,
                 // without waiting on descriptors held by escaped descendants.
@@ -197,9 +244,29 @@ mod platform {
             thread::sleep(Duration::from_millis(10));
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn group_completion_requires_the_complete_retained_leader_list() {
+            let leader = Pid::from_raw(17).unwrap();
+            assert!(sole_leader_list(leader, 1, [17, 0]));
+            assert!(!sole_leader_list(leader, 1, [18, 0]));
+            assert!(!sole_leader_list(leader, 2, [17, 18]));
+            assert!(!sole_leader_list(leader, 2, [18, 17]));
+            assert!(!sole_leader_list(leader, 0, [17, 0]));
+            assert!(!sole_leader_list(leader, -1, [17, 0]));
+        }
+    }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "check_process/windows.rs"]
+mod platform;
+
+#[cfg(not(any(unix, windows)))]
 mod platform {
     use super::*;
     pub struct Cancellation;
@@ -207,7 +274,7 @@ mod platform {
         pub fn new() -> Result<Self, Error> {
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "finish checks require Unix process-group management",
+                "finish checks require Unix or Windows process management",
             )
             .into())
         }
@@ -226,7 +293,7 @@ mod platform {
     ) -> Result<ExitStatus, Error> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "finish checks require Unix process-group management",
+            "finish checks require Unix or Windows process management",
         )
         .into())
     }
