@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 import hashlib
+import io
 from types import SimpleNamespace
 
 from test_release_model import ReleaseModelTests
@@ -14,6 +15,25 @@ import publish
 
 
 class PublishTests(unittest.TestCase):
+    def test_fetch_scopes_media_type_and_credentials_to_github_api(self):
+        cases = [
+            (publish.GITHUB + '/releases/latest', 'application/vnd.github+json', 'Bearer test-token'),
+            (publish.REGISTRY + '/latest', '*/*', None),
+            (publish.REGISTRY + '/-/twigsmith-0.1.0.tgz', '*/*', None),
+            ('https://github.com/msanguineti/twigsmith/releases/download/v0.1.0/native.manifest.json', '*/*', None),
+        ]
+        payload = b'\x00\xffprovider bytes'
+        for url, accept, authorization in cases:
+            with self.subTest(url=url):
+                def respond(request, timeout):
+                    self.assertEqual(request.full_url, url)
+                    self.assertEqual(request.get_header('Accept'), accept)
+                    self.assertEqual(request.get_header('Authorization'), authorization)
+                    self.assertEqual(timeout, 30)
+                    return io.BytesIO(payload)
+                with mock.patch.dict(publish.os.environ, {'GH_TOKEN': 'test-token'}), mock.patch.object(publish, 'urlopen', side_effect=respond):
+                    self.assertEqual(publish.fetch(url, len(payload)), payload)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -20,9 +20,12 @@ REGISTRY = 'https://registry.npmjs.org/twigsmith'
 
 
 def fetch(url, limit):
-    headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'twigsmith-site'}
-    if url.startswith(GITHUB + '/') and os.environ.get('GH_TOKEN'):
-        headers['Authorization'] = 'Bearer ' + os.environ['GH_TOKEN']
+    # npm metadata and downloaded assets must not inherit GitHub's API media type.
+    headers = {'Accept': '*/*', 'User-Agent': 'twigsmith-site'}
+    if url.startswith(GITHUB + '/'):
+        headers['Accept'] = 'application/vnd.github+json'
+        if os.environ.get('GH_TOKEN'):
+            headers['Authorization'] = 'Bearer ' + os.environ['GH_TOKEN']
     with urlopen(Request(url, headers=headers), timeout=30) as response:
         data = response.read(limit + 1)
     if len(data) > limit:
