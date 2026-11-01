@@ -6,6 +6,32 @@ implementation and the invariants that matter when diagnosing or changing it.
 The [user manual](USAGE.md) covers commands and recovery procedures; the
 [development guide](DEVELOPMENT.md) covers setup, builds, and validation.
 
+## Current position and direction
+
+Twigsmith provides start, save, review delivery, direct integration and tagged
+release/hotfix workflows through the same two native command names, `twigsmith`
+and `tgi`. Git owns history editing, hooks, signing and transport; the application
+owns planning, effect boundaries, verification and recovery.
+
+The published distribution baseline is 0.1.0 for Linux x86_64 GNU with glibc 2.35+
+and Git 2.45+. Native archives and npm carry the same implementation. Shell
+completion has adapters for Bash, Zsh, Fish and PowerShell; adapter availability
+and completion CI do not establish whole-application support on other operating
+systems.
+
+The repository includes independent manual website publishing and automatic
+website publishing after successful stable package publication. Release-bound
+metadata supplies versions, links, commands and requirements independently of page
+layout. Hosted deployment is a separate operation from implementing this workflow;
+source and local fixture validation do not establish its live execution.
+
+The next product direction is Windows and macOS distribution. The release model
+already separates native platform assets and requirements from npm coverage.
+Supporting each new platform requires its own runtime/editor/process behavior,
+package format and same-artifact qualification; adding a descriptor is not enough.
+Platform support should expand through those verified boundaries while preserving
+literal arguments, developer work, Git configuration and recovery semantics.
+
 Read the architecture and Git boundary first, then follow the relevant workflow:
 
 - [Shell completion](#shell-completion)
@@ -75,12 +101,9 @@ select the existing preference; otherwise cancellation is initially selected whe
 available. Esc, Ctrl-C and Ctrl-D cancel before submission. Line-oriented fallback
 requires a complete submitted line and preserves EOF cancellation.
 
-Inquire is used with only its Crossterm feature. Its documented Unix/Windows
-backend capability is distinct from application portability. It was selected over
-Cliclack because Inquire's input actions handle Ctrl-D cancellation, matching the
-CLI's EOF contract; Cliclack 0.5.6 handles Esc and Ctrl-C but ignores Ctrl-D.
-See the [Inquire documentation](https://docs.rs/inquire/0.9.4/inquire/) and
-[input actions](https://docs.rs/inquire/0.9.4/src/inquire/prompts/action.rs.html).
+Inquire uses its Crossterm feature. Backend platform support does not establish
+application portability. The adapter preserves Ctrl-D cancellation and the CLI's
+EOF contract; see [input actions](https://docs.rs/inquire/0.9.4/src/inquire/prompts/action.rs.html).
 The adapter uses plain complete-line input when stdout is redirected or
 `TERM=dumb`, while command eligibility continues to require terminal stdin/stderr
 for unresolved approval. `NO_COLOR` and `CLICOLOR=0` remove colour; redirected
@@ -163,7 +186,7 @@ representative real-Git workflows using extracted binaries and an isolated PATH.
 Its results bind source, run and payload hashes; compatibility is limited to the
 observed environments and kernels. Git 2.45 remains a separate prerequisite.
 The [development guide](DEVELOPMENT.md#native-candidate-packaging) owns packaging
-and qualification commands; the [user guide](USAGE.md#native-archive-candidates)
+and qualification commands; the [user guide](USAGE.md#native-archives-and-npm-installation)
 owns extraction and runtime prerequisites.
 
 `tools/release_set.py` binds approved native archive/payload and both manifest hashes
@@ -185,11 +208,42 @@ the pure recovery function does not supply it. Native/npm publication is intenti
 nontransactional. Stable and prerelease channels are latest and next respectively;
 only a verified stable release promotes the site after consumption checks.
 
-`site/build.py` stages preview output by default; fresh identity-bound consumption
-receipts enable release copy and exact-version instructions. Local replacement has
-rollback/retained-backup behavior, while live Pages deployment remains its own protected
-job. Neither hashes nor a receipt prove account authorization or deployed availability.
-The development guide documents invocation, trust/bootstrap and retry contracts.
+### Release data and website publication
+
+[Current packaging requirements](../site/current-requirements.json) define native
+requirements and npm coverage separately. Native schema 3 manifests freeze that
+supported-runtime snapshot alongside build provenance. Package README text and npm
+metadata use the snapshot rather than the build machine's incidental environment.
+The verifier can still read schema 2 manifests; the website's historical 0.1.0
+bootstrap is bound to its exact published manifest.
+
+[Release descriptors](../site/releases/) bind each version to its exact native
+assets, checksums, installation commands, npm identity and release requirements.
+[`site/candidate.py`](../site/candidate.py) derives a descriptor from verified
+candidate bytes. Stable publication preflight requires the reviewed descriptor to
+match the candidate before the write-capable publisher runs. Changing requirements
+for future builds does not change the description of an older published binary.
+
+[`site/release_model.py`](../site/release_model.py) resolves that descriptor against
+GitHub's latest published stable release and npm's `latest` version. Version,
+destination, asset and package-byte disagreement prevents publication.
+[`site/build.py`](../site/build.py) renders release information and requirements
+where the template places them and checks the generated claims and destinations.
+It also retains the receipt-gated publisher build. Layout and typography can change
+without independently editing versions or download links.
+
+[`site/publish.py`](../site/publish.py) prepares the site and captures main, provider,
+model and artifact observations for revalidation immediately before deployment.
+The manual and stable-publication paths share the separately serialized
+[Pages workflow](../.github/workflows/site.yml). Manual publication has no product write authority and does not depend on retained Actions candidate artifacts.
+The automatic path follows successful package publication, public consumption
+verification and stable-channel promotion. Prereleases do not update the stable site.
+
+A failed site run leaves product publication intact and can be retried independently.
+The final provider/source check and external deployment cannot be atomic; a change
+in that interval requires reconciliation by a later dispatch. See the
+[development guide](DEVELOPMENT.md#site-artifacts-and-pages) for commands, descriptor
+maintenance and deployment conditions.
 
 ## Shell completion
 
@@ -224,22 +278,20 @@ The [dynamic API](https://docs.rs/clap_complete/4.6.11/clap_complete/engine/inde
 and [custom value completion](https://docs.rs/clap_complete/4.6.11/clap_complete/engine/struct.ArgValueCompleter.html)
 require `unstable-dynamic`, with Clap's `unstable-ext` for argument extensions.
 The exact completion-library version is pinned because these APIs can change.
-The engine was selected for shared command-context matching and custom values.
-Static-only generators cannot supply current repository values. Upstream
-[`CompleteEnv`](https://docs.rs/clap_complete/4.6.11/clap_complete/env/index.html)
+Repository completion uses shared command-context matching and custom values.
+Upstream [`CompleteEnv`](https://docs.rs/clap_complete/4.6.11/clap_complete/env/index.html)
 supports the four shells, but its [4.6.11 shell integration source](https://docs.rs/clap_complete/4.6.11/src/clap_complete/env/shells.rs.html)
 shows that the PowerShell adapter evaluates reconstructed
 command text, and its Bash adapter lacks this application's established literal
 word-break handling. The application therefore owns small transport/insertion
 adapters and a private query protocol rather than adopting those integrations.
-This is an application containment choice, not a claim that the upstream engine
-provides these safeguards. Candidate alias/option expansion uses the selected
-engine's candidate IDs; parity tests guard this version-sensitive boundary.
+Candidate alias/option expansion uses the engine's candidate IDs; parity tests
+guard this version-sensitive boundary.
 
 Stable PowerShell native completers fall back to filesystem suggestions when
-custom completion returns no matches, as documented by the
-[PowerShell issue](https://github.com/PowerShell/PowerShell/issues/19628) and verified
-with PowerShell 7.5.4. A scoped `TabExpansion2` wrapper filters only provider
+custom completion returns no matches; see the
+[PowerShell issue](https://github.com/PowerShell/PowerShell/issues/19628). A scoped
+`TabExpansion2` wrapper filters only provider
 matches in literal tool argument contexts. Application path candidates retain
 their explicit completion type. The wrapper retains the prior delegate, static
 parameter metadata, common parameters, output types and unrelated results; a
@@ -1152,303 +1204,172 @@ state. The [snapshot limits](#snapshot-limits) and trusted-hook limits still app
 
 ### Local execution and retention
 
-[`integration::execution::prepare`](../src/finish/integration/execution.rs)
-validates the approved local binding before history changes. The caller supplies
-pinned objects and initial evidence from explicit refresh; the publication lease
-protects the original target if a remote moves afterward. Ordinary local execution performs no fetch or remote write.
-Tagged execution also observes version refs, acquires any required marker objects,
-and checks the exact source before creating its tag; publication remains a separate
-stage. It
-records intent and retains the original source at `refs/twigsmith/integration/<token>/original` before
-changing history.
+[`integration::execution`](../src/finish/integration/execution.rs) validates the
+bound local state, records intent and retains original work before history changes.
+Ordinary execution uses pinned objects from explicit refresh and performs no fetch
+or remote write. Tagged execution additionally observes version refs and obtains
+required marker objects before tag creation; publication remains a separate stage.
 
-Work preparation preserves merge structure and uses the same bounded rebase
-options as review. Preparation merges have Git-generated messages. The actual
-prepared graph is reassessed before integration; unresolved final message input
-can be returned after preparation. The backend does not prompt. Explicit interactive preparation invokes Git's
-native editors; final integration message editing belongs to the CLI.
+Work preparation preserves merges with the same bounded options as review, then
+reassesses the actual graph. The backend returns unresolved choices rather than
+prompting. Native interactive preparation delegates editing to Git; the CLI owns
+final integration message editing.
 
-An absent/behind local target is conditionally created/advanced to the observed
-target with a marked reflog transition and exact old-OID expectation. If resuming
-on the checked-out target, Git fast-forwards ref, index, and tree together.
-The executor checks out the target to construct the candidate; this temporary
-workspace choice does not execute the configured final checkout policy. Both
-initial and recovered candidate switches protect ignored files from overwrite.
+An absent or behind local target advances conditionally to the observed target with
+an exact old-OID expectation and marked reflog transition. If target is checked out,
+Git updates ref, index and tree together. Temporary candidate checkout is separate
+from final checkout policy and protects ignored files.
 
-Integration runs Git `--ff-only`, `--no-ff` with message, or squash followed by a
-guarded commit. The automatic message is `Integrate <source> into <target>`.
-Explicit messages are literal arguments with normal Git cleanup, hooks, and
-signing. The verified result is retained at
-`refs/twigsmith/integration/<token>/result`. Source/target branches and retention
-refs survive failed checks. Reports distinguish new integration from reuse and
-retain observed changes even when Git fails afterward.
+Integration uses `--ff-only`, `--no-ff` with a message, or squash plus guarded commit.
+Automatic messages are `Integrate <source> into <target>`; explicit messages remain
+literal arguments with normal Git cleanup, hooks and signing. Original/result
+retention refs under `refs/twigsmith/integration/<token>/` survive failed checks.
+Reports distinguish a newly created result from verified reuse and retain effects
+that preceded a Git failure.
 
-`execution::check` requires a clean verified candidate checked out at its exact
-result OID. It uses the shared ordered process runner with integration-specific
-guards over records, refs, settings, history, and context. Check success cannot
-authorize a later publication or omission of checks. Candidate failure retains
-the result and a retry runs the effective list again.
+Candidate checks need a clean tree at the retained result OID and guard identity,
+policy, refs, recovery evidence and content. A failed check retains the result;
+pending delivery retries run the effective check list again.
 
 ### Association and recovery proof
 
-[`integration/recovery.rs`](../src/finish/integration/recovery.rs) stores private
-version-4 records at
-`<worktree-git-dir>/twigsmith-integration/branches/<source>/attempt.json` and an
-`active.json` selector for association after target checkout. Atomic writes sync
-files and containing directories and reject symlinks; Unix paths must be private.
-Records bind identity, exact source/target refs and commits, local target expectation,
+[`integration/recovery.rs`](../src/finish/integration/recovery.rs) stores version-4
+private attempt records and an active selector under the worktree Git directory.
+Atomic writes synchronize files/directories, reject symlinks and require private
+Unix paths. Records bind repository/worktree identity, exact refs and commits,
 endpoints, settings/provenance, Git configuration, choices, reflog anchors,
-retention refs, and cleanup-relevant published source versions. Optional result
-acknowledgements are corroborated evidence rather than stored success flags.
-The current record format is required; malformed or unsupported records block
-recovery. Branch-policy schema failures identify the local association key for
-deliberate correction after pending work is resolved. Metadata replacement alone
-cannot establish prior delivery or cleanup authority.
+retention refs and cleanup-relevant source versions. A stored acknowledgement is
+corroborating evidence, not a reusable success flag. Malformed or unsupported
+records block recovery; branch-policy errors identify the association to repair.
 
-A retained attempt continues with its original settings, reconstructed from its
-retained original regular shared-configuration file (or original absence) and
-current private layer. Untracked shared files and symlinked settings retain strict
-resolved-settings equality. Expected tracked configuration changes from
-preparation, target checkout, and integration
-are checked against the current committed tree rather than treated as new policy.
-An authorized squash's staged configuration is checked against its exact index
-blobs before committing the candidate.
-Private settings, Git configuration, routes, endpoints, and branch associations
-remain bound to the attempt. A changed or recreated branch cannot use this
-configuration handling to inherit another attempt's authority.
-The checkout guard supports Git's ordinary LF/CRLF conversion without running
-external filters. Custom transformations of shared configuration that cannot be
-matched to the selected tree stop this guard conservatively.
+Recovery retains the attempt's original policy across verified tracked settings
+transitions. Private settings and operational Git configuration stay bound.
+Untracked or symlinked shared settings require strict equality. A recreated branch
+cannot inherit another attempt's authority. Checkout supports ordinary LF/CRLF
+conversion without executing external filters; unverifiable transformations stop it.
 
-Acknowledged retention requires the matching private ref and its creation reflog;
-an acknowledged result also requires the verified commit and result ref.
+Association belongs to the exact source in its worktree. Temporary target checkout
+and recorded rebase can retain that association through corroborated HEAD/branch
+history; another branch or worktree cannot adopt it. Missing records, objects,
+anchors or retention refs prevent continuation. Historical association may justify
+refusal without supplying authority to resume an unverifiable attempt.
 
-An attached source selects only its own worktree's branch record. An unfinished
-attempt on A cannot intercept B. A target name alone does not identify an attempt:
-the selector must retain a valid HEAD anchor and corroborate checkout from that
-same source. Later checkout from another work branch breaks association.
-Recorded rebase can select a detached source only through Git's matching
-`head-name` and surviving HEAD anchor. Unassociated HEAD or a selected missing
-record cannot authorize recovery. When a selector is malformed or unreadable,
-refusal can also use an earlier source-to-target checkout, a readable owned record,
-and the matching native transition in both target and HEAD history. A completed
-ordered destination must additionally match its recorded result. This historical
-identity can stop an unintended finish; it does not authorize continuation. If the
-required record or reflogs are unavailable, that fallback cannot establish identity.
+Recovery verifies the actual method-specific transition: fast-forward ancestry,
+exact merge parents, or a squash commit with the recorded target as sole parent
+and the attempt's action marker. Source ancestry alone cannot prove squash
+integration. Corroborated native completion survives a lost final acknowledgement;
+abort, restart or a history-changing reset cannot establish integration.
 
-Recovery checks anchored source preparation, target alignment, and the exact
-integration transition. A preparation merge must retain original-source and
-target ancestry; a preparation rebase requires its marked start, supported finish,
-target incorporation, and no intervening abort/restart. Fast-forward requires
-source equality and target ancestry;
-merge requires exact target/source parents. Squash requires the exact target as
-sole parent and an attempt-specific action marker binding source, target, token,
-and method. Squash source ancestry cannot prove integration. Completed transitions
-can establish results without a final acknowledgement; ordinary merge continuation
-can be verified through exact parentage and anchored transition. Missing objects,
-expired/changed anchors, forged commit shape, or inconsistent retention refs stop
-recovery. A reset that leaves the original tip unchanged can permit retry; abort
-or history-changing reset cannot establish integration.
-
-Merge/rebase recovery uses ordinary Git continuation and abort. If a verified
-merge commit remains with stale `MERGE_HEAD`, the execution report directs the
-developer to `git merge --quit` to retain the commit and clear machinery.
-Squash has no `MERGE_HEAD`, as documented
-by [git-merge](https://git-scm.com/docs/git-merge). Its report supplies the exact
-`GIT_REFLOG_ACTION` needed for a manual commit, or the tracked-tree restoration
-and `SQUASH_MSG` cleanup needed to abandon the attempt. An unmarked manual squash
-commit cannot borrow ancestry as proof. The [integration fixtures](../tests/finish_integration.rs)
-cover method-specific parentage, worktree association, conflicts, retention,
-candidate checks, exact object acquisition, target leases, partial delivery, and
-interrupted acknowledgements with cross-process retries.
+Merge/rebase continuation and abort use ordinary Git. A verified merge result with
+stale `MERGE_HEAD` can retain its commit through `git merge --quit`. Squash has no
+`MERGE_HEAD`; reports provide the exact reflog action required for a manual commit,
+or the restoration and `SQUASH_MSG` cleanup needed to abandon it. An unmarked manual
+squash commit cannot borrow the attempt's proof. See
+[integration fixtures](../tests/finish_integration.rs) for method, association and
+cross-process interruption cases.
 
 ## Tagged release delivery
 
-[`integration/release.rs`](../src/finish/integration/release.rs) adds version
-identity and release-marker delivery to the existing direct integration stages.
-It shares the integration attempt's repository/worktree identity, exact source,
-target/endpoints, settings/provenance, Git configuration, retained commits,
-reflog anchors, choices, and cleanup proof. An optional release record extends
-that evidence; ordinary integration retains its independent behavior.
+The [OneFlow model](https://www.endoflineblog.com/oneflow-a-git-branching-model-and-workflow)
+informs source tagging and release/hotfix routing; its
+[hosted adaptation](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab)
+informs separate merge-back preparation. Explicit context, guarded publication and
+recovery are Twigsmith policy. These sources describe particular workflows rather
+than universal Git practice.
 
-The fixed completed work source and destination integration results have distinct
-responsibilities. Each configured destination receives that same source independently,
-in order. Its result and conflict resolution do not become the source for later
-destinations. Tagged completion uses one history-preserving integration method;
-squash is incompatible.
+[`integration/release.rs`](../src/finish/integration/release.rs) extends direct
+integration with version identity, ordered destinations and an optional marker.
+The fixed completed work source is distinct from every destination's integration
+result. Each destination receives that same source independently; an earlier
+result or conflict resolution never becomes the source of later delivery.
+Tagged completion uses one history-preserving method and rejects squash.
 
-Tag identity is `work-source` by default, including both OneFlow bundles. Source
-identity validates and tags the completed work before integration. With
-`integrated-result`, the first destination is integrated and its exact validated
-result supplies the version; later results supply no additional tags. Annotation,
-signing, collisions, retention, and publication bind the selected tag object and
-commit. Failure to establish the first result cannot authorize a substitute source
-tag. Checks validate the actual completed source and destination candidates.
+The default `work-source` identity validates and tags completed work before
+integration. `integrated-result` instead validates and tags the first destination's
+exact result. Later destinations create no additional version identity. The
+selected exact tag object and commit remain bound through retention, signing,
+publication and recovery; failed first-result validation cannot substitute a source
+tag. Normal Git annotation/signing preferences apply without unsigned fallback.
+Existing unrelated tags are collisions and cannot be replaced.
 
-Tagged direct preparation defaults to none, independently of inherited ordinary
-update preferences. An explicit invocation can select rebase against the resolved
-preparation source. Persistent tagged rebase preference is rejected. Preparation
-runs before source fixation, checks, tag creation, or any target integration and
-reuses the existing guarded native rebase/retention machinery. Successful retained
-preparation is corroborated on retry rather than replayed onto successive targets.
-Preparation can move the release cutoff by importing preparation-base work; that
-is an explicit developer choice. Original-work recovery, shared-history protection,
-and published-work authorization remain separate from update selection. Native
-preparation before finish requires no redundant tool operation. Interactive tagged
-editing remains unsupported.
+Tagged preparation defaults to none independently of ordinary update preferences.
+An explicit invocation can request rebase against the resolved preparation source;
+persistent tagged rebase and interactive tagged editing are unsupported. Preparation
+precedes source fixation and checks. Verified one-time preparation is reused on
+retry rather than replayed against later targets. Published-work authorization and
+incorporation proof remain separate from update selection.
 
-Checks validate each exact candidate before pending target delivery. Completed
-work and the selected first result share successful validation when they are the
-same exact commit. A candidate equal to an already checked source
-needs no duplicate check.
-Retained successful receipts are usable only with their corroborated unchanged
-commit and complete policy/configuration binding. Failed or state-changing checks
-stop delivery and retain the attempt. Receipts distinguish successful checks from
-explicit bypass; a later unbypassed pending delivery validates bypassed trees.
-A source-deleted retry can only verify existing delivery and finish cleanup.
-Explicit check bypass remains reportable.
+Each exact pending candidate is checked before delivery. An unchanged source and
+first result can share validation; bypass receipts remain distinct from successful
+checks and cannot authorize later unbypassed delivery. A source-deleted retry may
+verify existing delivery and finish cleanup, but cannot construct new delivery.
 
-The integration attempt retains the ordered destination set and completed entries
-alongside its current destination. Each completed entry binds the exact result,
-local ref and reflog, and result-retention creation evidence.
-[`integration::advance`](../src/finish/integration/sequence.rs) verifies prior
-delivery, acquires the next destination's exact history, and binds its
-independent transition through the same integration machinery. Changed completed
-refs or missing pins cannot inherit completion authority. The fixed source and
-corroborated preparation remain shared; candidate transitions remain per destination.
-Fresh-process retries reuse the active and completed evidence. Publication and
-cleanup reobserve the full required delivery set before effects.
+[`integration::advance`](../src/finish/integration/sequence.rs) corroborates each
+completed destination before acquiring and binding the next one's independent
+transition. Fresh-process retries revalidate active and completed evidence. Changed
+refs, missing retention or incompatible policy block reuse. Replacement refs cannot
+supply validation of the original released tree.
 
-Tag input is explicit and independent of the integration message. Git creates
-lightweight or requested annotated/signed tags at the selected released commit,
-with normal Git signing preferences and no unsigned fallback after failure.
-Tagged completion rejects replacement refs in Git's effective replacement
-namespace. Git can present a replacement tree as clean at the original commit
-ID; that cleanliness cannot establish validation of the original released tree.
-This restriction is supported by a real-Git regression and
-[Git replacement semantics](https://git-scm.com/docs/git-replace).
-The tag's exact object identity and attempt-marked creation reflog corroborate
-creation even when the final acknowledgement was interrupted. An annotated tag's
-peeled commit alone cannot establish identity. Existing local/remote tags outside
-that corroborated attempt are collisions; no replacement is authorized.
+Hotfix routing takes an explicit active-release branch or declared absence. A fix
+on an active release reaches development when that release is completed. Branch
+scans and tag order supply no routing authority. The optional marker is independent
+of source and destination results: it is initialized or conditionally fast-forwarded
+to the selected released commit. Divergence, changed refs or occupied worktrees stop
+marker effects. Disabled markers have no effect.
 
-Hotfix routing uses explicit active-release data: the exact named release branch
-or declared absence. No branch scan or tag ordering supplies this context. An
-active release receives the fix and carries it into development when that release
-is later completed. The original OneFlow article documents earlier-commit release
-creation, source tagging before merge-back, this hotfix route, and an optional
-marker at the released commit. These are documented model capabilities, not
-claims about universal project practice. The application's explicit context,
-exact selected-tag publication, and guarded recovery are chosen product policy.
-See [OneFlow's description](https://www.endoflineblog.com/oneflow-a-git-branching-model-and-workflow),
-[Git tag](https://git-scm.com/docs/git-tag), and
-[Git push](https://git-scm.com/docs/git-push).
+Target, tag and marker publication are separate nontransactional effects. Every
+required endpoint must confirm the exact delivery before final checkout and work
+cleanup. Rewrite permission cannot broaden tag, target, marker or deletion scope.
+Partial delivery survives failure; retry completes pending effects from corroborated
+evidence. Native merge continuation retains the original released identity.
 
-An enabled marker is distinct from source and every integration destination.
-Planning binds its initial local and per-endpoint versions, acquires exact missing objects, and
-proves that each existing marker can fast-forward to the selected released commit.
-Delivery initializes or conditionally advances the marker at that commit. Its
-identity follows the tag selection independently of later integration results.
-Disabled markers have no effect. Divergence, changed context, symbolic refs, and occupied worktrees block marker effects.
-
-Target integration, selected version-tag delivery, and marker delivery are
-nontransactional effects. Each required endpoint is observed independently. Pending target delivery
-first verifies retained tag and marker expectations; a conflicting version cannot
-borrow the earlier target authority. A push exit or acknowledgement alone cannot establish completion. Final checkout
-and every work-cleanup effect reobserve all required delivery. Tag, development,
-active-release target, marker, and unrelated refs stay outside work cleanup.
-Rewrite permission cannot replace a tag or broaden target, marker, or deletion
-scope. Partial effects survive failure and fresh-process retry completes pending
-effects, including after local source deletion. Conflicting input, changed refs,
-settings, endpoints, or associations block reuse. Native merge continuation or
-abandonment retains the original released version identity.
-
-The default checkout is the first integration destination. Required delivery
-includes the selected tag, every target result, and any enabled marker; no individual
-publication establishes complete finish. Work cleanup starts only after verification
-of the entire delivery set. CLI reports distinguish selected version and fixed work
-source, integration results/destinations, marker, cleanup, and pending work.
-Hosted version preparation uses the separate review path described below. Provider
-submission and deployment remain external to both paths. The [CLI OneFlow fixtures](../tests/cli_oneflow.rs)
-and [ordered delivery fixtures](../tests/cli_direct_sequence.rs)
-exercise release/hotfix safety and recovery with real Git through the canonical
-command entry point. A focused ordinary lifecycle matrix verifies both executables
-and their start/save/finish aliases with actual publication and integration effects.
+The default final checkout is the first integration destination. Reports distinguish
+the fixed source, version, destination results, marker, cleanup and pending work.
+Provider submission and deployment remain external. The
+[OneFlow CLI fixtures](../tests/cli_oneflow.rs) and
+[ordered delivery fixtures](../tests/cli_direct_sequence.rs) exercise those boundaries.
 
 ## Hosted version preparation
 
-[`finish::hosted`](../src/finish/hosted.rs) handles tagged work with
-`finish-mode = review` and work-source tag identity;
-[`finish_cli_hosted.rs`](../src/finish_cli_hosted.rs)
-resolves terminal input and reports a version and separate merge-back branch
-ready for manual submission. The selected template's `publish-remote`
-receives original work, `base-remote` receives the version tag and supplies the
-project target, and `review-remote` receives merge-back work. An omitted review
-remote follows the effective work publication remote. `merge-back-branch` or
-explicit finish input names the distinct branch; no prefix infers policy or
-ownership.
+[`finish::hosted`](../src/finish/hosted.rs) handles tagged review with work-source
+identity; [`finish_cli_hosted.rs`](../src/finish_cli_hosted.rs) resolves input and
+reports a version plus a separate merge-back branch ready for manual submission.
+The policy's publication remote receives original work, its base remote receives
+the tag and supplies the project target, and its review remote receives merge-back
+work. An omitted review remote follows effective work publication. Explicit input
+names the distinct merge-back branch; its prefix grants no ownership.
 
-Hosted assessment requires complete history without replacement refs or grafts;
-missing history cannot establish this version-preparation evidence. The released
-source and merge-back candidate remain separate identities. Source
-checks validate the exact released tree before tag delivery. Tag identity includes
-the exact tag object, its released commit, and corroborated attempt creation;
-annotation/signing cannot fall back to another version. The merge-back branch
-starts at the released source. Merge preparation imports the pinned target only
-into that branch; none retains the source history. Rebase cannot preserve the
-released history for this path. Candidate checks identify the prepared commit.
-Before merge, explicit path-overlap checks protect ignored local content from
-the retained target tree. Git 2.47.3 fixtures show that merge machinery can replace
-ignored paths despite `--no-overwrite-ignore`; this application guard complements
-Git's checkout and index protections. Retained successful receipts require unchanged
-corroborated commits and bound
-context; bypass receipts cannot authorize unbypassed pending delivery.
+Assessment needs complete history without replacement refs or grafts. Source
+checks validate the exact released tree before tag delivery. The merge-back branch
+starts at that immutable source, then imports the pinned target by merge or leaves
+source history unchanged. Rebase cannot preserve this path's released identity.
+Before merging, path-overlap checks protect ignored files against the target tree;
+Git's `--no-overwrite-ignore` alone does not contain all merge effects. Candidate
+checks validate the resulting merge-back commit. Successful retained receipts need
+corroborated unchanged commits and policy; bypass receipts cannot authorize an
+unbypassed pending operation.
 
-Hosted policy keeps work branches, denies history replacement, and selects
-no-ff merge-back guidance independently of ordinary contribution preferences.
-It neither integrates into the target nor advances the optional marker. The
-marker is follow-up information, not a pending executor effect. Source, tag, and
-merge-back publication select only their intended exact refs at their bound
-endpoints, and independently verified equality recovers completed delivery.
-Command errors remain reportable after effects and no rollback discards work.
+Hosted policy keeps work branches, denies history replacement and selects no-ff
+merge-back guidance independently of ordinary contribution preferences. It neither
+integrates into the target nor advances the marker. Exact source, tag and merge-back
+refs are published only at their bound endpoints. Fresh verified equality can recover
+completed delivery while command errors remain reportable.
 
-Recovery covers the tool's own preparation and publication across processes.
-Version-1 private records live under `<worktree-git-dir>/twigsmith-hosted/`, with
-separate attempts and merge-back associations keyed by the exact source/branch
-bytes. Private attempt evidence binds repository/worktree, original association,
-settings/provenance and Git configuration, endpoints, source/tag identities,
-merge-back creation and preparation transitions, and check receipts. Private refs
-at `refs/twigsmith/hosted/<token>/target` and `/prepare` retain the exact target and
-corroborate preparation start through attempt-marked creation reflogs. Missing or
-changed acknowledged retention blocks reuse. A branch at
-the same OID is insufficient proof of ownership after recreation. A conflict
-resolution must establish the recorded source/target merge transition before
-candidate publication; it cannot redefine the released version. Native Git merge
-continuation and abandonment retain the original version identity. Changed or
-missing evidence blocks affected operations rather than adopting existing work.
+Private version-1 attempt/association records under the worktree Git directory bind
+identity, original branch instance, policy/configuration, endpoints, source/tag
+objects, merge-back creation and preparation, and checks. Attempt-marked target and
+preparation retention refs corroborate transitions. A recreated branch at the same
+OID cannot inherit ownership. Conflict resolution must establish the recorded
+source/target merge; it cannot redefine the released version. Native continuation
+and abandonment keep that identity; missing or changed evidence blocks reuse.
 
-Successful output reports verified readiness for manual submission, names the
-review source and target, and gives no-ff and manual follow-up instructions.
-Readiness ends this attempt's responsibility. Later PR activity is neither
-observed nor reconstructed from Git history. No provider API, external workflow
-tool, submission-state polling, post-review cleanup, or marker completion stage
-exists in this path. The developer resolves later review conflicts on merge-back
-work, preserves the tagged version, and removes temporary branches only after
-appropriate integration.
-
-The separate source and no-ff guidance are documented in
-[Ruka's hosted OneFlow article](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab).
-The article describes a workflow, not universal project practice. Exact selected
-tag delivery, declared active-release hotfix routing, guarded recovery, and the
-readiness boundary are this application's policy. The hosted article does not
-restate the original active-release hotfix case; explicit settings preserve that
-routing rather than inferring release context from hosted submission state.
-[Hosted lifecycle tests](../tests/cli_hosted_oneflow.rs) cover routes, immutable
-version history, native merge recovery, collision containment, and entrypoint
-wiring; [recovery tests](../tests/cli_hosted_recovery.rs) cover interrupted effects,
-partial destinations, check receipts, and changed evidence.
-[Presentation tests](../tests/cli_hosted_presentation.rs) cover terminal
-cancellation, prompt revalidation, and streamed credential protection.
+Responsibility ends at verified publication and readiness for manual submission.
+Later PR state is neither observed nor reconstructed. Provider submission, subsequent
+review conflicts, branch cleanup and marker follow-up belong to the developer.
+[Hosted lifecycle tests](../tests/cli_hosted_oneflow.rs),
+[recovery tests](../tests/cli_hosted_recovery.rs) and
+[presentation tests](../tests/cli_hosted_presentation.rs) cover the corresponding
+routes, interrupted effects, retained evidence and terminal interaction.
 
 ### Review with deferred version identity
 
@@ -1461,23 +1382,6 @@ cleanup and marker advancement. Readiness supplies no proof of external completi
 or authority for later effects. Multiple-destination review is rejected before
 publication. The direct-only source-rebase extension does not change work-source
 hosted merge-back preparation semantics.
-
-## OneFlow model coverage
-
-The [2017 OneFlow model](https://www.endoflineblog.com/oneflow-a-git-branching-model-and-workflow)
-describes feature completion by interactive rebase followed by fast-forward or
-no-ff integration, no-ff integration alone, and releases/hotfixes tagged before
-merge-back, with optional release markers and declared active-release routing.
-The application composes those operations through independent explicit choices.
-The [2021 hosted adaptation](https://www.endoflineblog.com/implementing-oneflow-on-github-bitbucket-and-gitlab)
-uses provider review and separate version merge-back branches with no-ff guidance.
-Review finish prepares ordinary work for submission; tagged hosted finish prepares
-that separate merge-back branch and preserves the released version.
-
-These articles document models, not universal practice or provider compatibility.
-Submission, provider merge settings, deployment, later review conflicts, and
-post-submission cleanup remain manual/external. Hosted readiness ends at verified
-publication, so no provider API or later submission-state verification is implied.
 
 ## Evidence and maintenance limits
 
@@ -1492,9 +1396,8 @@ application Git configuration remains the developer's own. Terminal fixtures
 exercise complete-line input and live output.
 These tests establish the covered behavior; they do not establish hosted-provider
 authentication compatibility or universal Git-version/platform support. The
-documented development path is Linux, with recovery fixtures grounded in Git
-2.47.3. Git's installed command semantics and reflog conventions remain relevant
-compatibility boundaries.
+documented development path is Linux. Git's installed command semantics and
+reflog conventions remain relevant compatibility boundaries.
 
 Extensions depend on preserving read-only assessment, exact ref/endpoint binding,
 revalidation at effect boundaries, and partial-completion reporting. Shared

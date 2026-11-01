@@ -76,6 +76,9 @@ class SiteTests(unittest.TestCase):
         self.assertIn('npm install --global twigsmith@0.1.0', published)
         self.assertIn('npx --yes --package=twigsmith@0.1.0 twigsmith --version', published)
         self.assertIn('npx --yes --package=twigsmith@0.1.0 tgi --help', published)
+        for earlier, later in zip(('Release 0.1.0', 'Requirements', 'Install with npm', 'Or run with npx'),
+                                  ('Requirements', 'Install with npm', 'Or run with npx', 'Or install the native archive')):
+            self.assertLess(published.index(earlier), published.index(later))
         download = ('https://github.com/msanguineti/twigsmith/releases/download/v0.1.0/'
                     'twigsmith-0.1.0-x86_64-unknown-linux-gnu')
         for suffix in ('.tar.gz', '.manifest.json', '.sha256'):
@@ -234,6 +237,68 @@ class SiteTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'ordinary files'):
                 build.build(self.output, self.record)
         self.assertEqual((self.output / 'index.html').read_text(), 'previous verified site')
+
+    def resolved_model(self):
+        model = json.loads((build.ROOT / 'site/releases/0.1.0.json').read_text())
+        model['release_url'] = 'https://github.com/msanguineti/twigsmith/releases/tag/v0.1.0'
+        for native in model['native']:
+            for asset in native['assets'].values():
+                asset['url'] = ('https://github.com/msanguineti/twigsmith/releases/download/v0.1.0/'
+                                + asset['name'])
+        return model
+
+    def test_resolved_release_fields_survive_moved_component_and_style_changes(self):
+        model = self.resolved_model()
+        template = (build.ROOT / 'site/index.html').read_text()
+        template = template.replace('    <!-- RELEASE-IDENTITY -->\n', '')
+        template = template.replace('    <!-- REQUIREMENTS -->',
+                                    '    <!-- REQUIREMENTS -->\n    <!-- RELEASE-IDENTITY -->')
+        template = template.replace('class="section-body"', 'class="changed-layout"')
+        original = build.Path.read_text
+
+        def read(path, *args, **kwargs):
+            if path == build.ROOT / 'site/index.html':
+                return template
+            return original(path, *args, **kwargs)
+
+        with mock.patch.object(build.Path, 'read_text', read):
+            build.build_resolved(self.output, model)
+        result = (self.output / 'index.html').read_text()
+        self.assertLess(result.index('Requirements'), result.index('Release <span'))
+        self.assertIn('class="changed-layout"', result)
+        self.assertIn(model['native'][0]['assets']['archive']['url'], result)
+        self.assertIn('Linux x86_64 with glibc 2.35+ and Git 2.45+', result)
+        self.assertIn('npm install --global twigsmith@0.1.0', result)
+
+    def test_rendered_release_mismatch_is_rejected(self):
+        model = self.resolved_model()
+        source = build._render_resolved(model)
+        page = build._ReleaseFields()
+        page.feed(source)
+        for changed in [source.replace('twigsmith@0.1.0', 'twigsmith@9.0.0', 1),
+                        source.replace(model['release_url'], model['release_url'] + '-bad', 1),
+                        source.replace('data-release-field="npm-requirements"', '', 1),
+                        source.replace('glibc 2.35+', 'glibc 2.40+', 1),
+                        source.replace('</main>', '<p>Current release: 9.0.0</p></main>'),
+                        source.replace('</main>', '<p>Latest version: 9.0.0</p></main>')]:
+            with self.subTest(changed=changed[:30]), self.assertRaises(ValueError):
+                build._validate_rendered(changed, page.fields, '0.1.0')
+
+    def test_resolved_multiple_platforms_have_separate_links_and_commands(self):
+        model = self.resolved_model()
+        native = deepcopy(model['native'][0])
+        native['platform'] = {'os': 'example', 'arch': 'other', 'libc': None}
+        native['requirements'] = {'system': 'Example system'}
+        native['commands'] = ['example command']
+        for kind, asset in native['assets'].items():
+            asset['url'] = 'https://github.com/msanguineti/twigsmith/releases/download/v0.1.0/example-' + kind
+        model['native'].append(native)
+        build.build_resolved(self.output, model)
+        result = (self.output / 'index.html').read_text()
+        self.assertIn('Example system', result)
+        self.assertIn('example command', result)
+        self.assertIn('example / other', result)
+        self.assertIn(model['npm']['requirements'], result)
 
 
 if __name__ == '__main__':

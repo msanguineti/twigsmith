@@ -113,26 +113,10 @@ their exact targets with `./dev test-groups`, then select a capability:
 ./dev test-group history-edit
 ```
 
-The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
-`lifecycle`, `smoke`, `completion`, `finish-planning`, `history-edit`, `oneflow`, and `hosted-oneflow`. Command groups include
-backend and CLI coverage. `completion` checks candidate contexts, registration and shell insertion, including
-literal Readline insertion.
-`smoke` pairs CLI smoke checks with development
-launcher selection and completion. `finish-planning` selects review finish planning and
-eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles,
-ordered destination delivery, selected version identity, and one-time preparation
-recovery.
-`history-edit` selects ordinary native history editing and fresh-process recovery.
-`hosted-oneflow` selects version publication, separate merge-back preparation, and
-fresh-process recovery for manual submission. `shared` covers the development launcher, native packaging/qualification tooling, Git boundary, repository observation,
-settings, tracking, remote roles, CLI activity, finish-check configuration, and exact save/finish
-publication. `lifecycle` includes CLI smoke checks, end-to-end project/fork
-workflows, and direct and hosted release/hotfix delivery and recovery; this broad group
-includes expensive lifecycle coverage. Prefer the narrower groups during fast
-iteration, then run full validation before submitting changes. Every group also runs
-library and binary unit tests (`--lib --bins`). Targets overlap where they
-exercise shared behaviour. Overlap selects shared tests for relevant development
-work; a full run executes the ordered suites once rather than executing each group.
+Select the group matching the changed behavior. Every group includes library and
+binary unit tests; shared targets can appear in several groups, while a full run
+executes each suite once. `./dev test-groups` is the authoritative membership list.
+Use narrow groups for iteration and complete validation before delivery.
 
 The `finish` group does not include `cli_oneflow`, `cli_direct_sequence`, `cli_hosted_oneflow`, or
 `cli_hosted_recovery`, or `cli_hosted_presentation`. For tagged release/hotfix
@@ -189,19 +173,11 @@ when adding or changing coverage:
   consistently low-value tests. Keep reliable protection for important contracts
   when replacing flaky tests.
 
-Detailed CLI finish and OneFlow safety scenarios exercise the shared canonical
-dispatcher. Focused matrices verify both native executables and lifecycle aliases
-with real effects; repeat expensive scenarios across entry points when they
-protect a distinct failure mode.
-
-For expensive workflow matrices, combine factors when their interaction changes
-behavior. Keep preparation mode and remote-role combinations that distinguish
-base selection from publication. Check existing base/publication tracking through
-representative finish executions with each remote layout; preserve all outcome and
-configuration assertions without repeating every preparation combination.
-Retain real-Git interruption and fresh-process recovery tests where the contract
-depends on an effect committing before the application records its acknowledgement.
-Mocks of process results cannot establish that boundary.
+Exercise the shared dispatcher through representative native executables and aliases.
+Repeat expensive scenarios only when their interaction protects a distinct failure
+mode. Retain real-Git interruption and fresh-process recovery tests where an effect
+can commit before the application records its acknowledgement; mocked process
+results cannot establish that boundary.
 
 Judge the suite by the important defects it catches, its reliability and
 diagnostic value, and its total cost. Test count and raw coverage percentage are
@@ -227,8 +203,7 @@ Zsh, Fish or PowerShell. The sourceable `completions/twigsmith.bash` is the Bash
 adapter used by executable-generated session setup; it needs a built executable
 on PATH. Grammar and repository candidates live in Rust.
 
-Completion runtime coverage on Linux includes Bash 5.2.37, Zsh 5.9, Fish 4.0.2
-and PowerShell 7.5.4. PowerShell completion requires 7.3 or newer.
+PowerShell completion requires 7.3 or newer.
 Completion tests use isolated repositories and profiles. Tests requiring optional
 shell runtimes are marked ignored in the regular Cargo suite. Complete
 `./dev test`, `./dev check`, and an unfiltered `./dev test-group completion`
@@ -250,10 +225,8 @@ CI checks its required runtime environment before selecting tests. A missing
 required runtime is a setup error with tests not started, rather than a failed
 native behavior assertion. The workflow has no explicit job timeout; GitHub
 Actions applies its platform limits. Windows uses the pinned Rust toolchain
-with native Cargo; the Unix jobs use `./dev`. Real interaction evidence and
-measured latency belong to the review evidence for a completion change. Native
-completion checks establish their tested shell contracts, rather than
-whole-application platform compatibility.
+with native Cargo; the Unix jobs use `./dev`. Native completion checks establish
+shell contracts, rather than whole-application platform compatibility.
 
 For optimized executables:
 
@@ -309,8 +282,8 @@ extraction guidance, a `.manifest.json` with member and archive hashes and build
 metadata, and a `.sha256` file for the archive and manifest. Keep the three files
 together. `verify-native` checks identity, hashes, archive members, modes and ELF
 architecture, and optionally extracts into a new directory. It runs without Rust.
-The current verifier handles the current manifest format; earlier retained
-candidates can be verified with the tooling from their source revision.
+The verifier supports native manifest schemas 2 and 3. New packages snapshot
+supported runtime requirements separately from build provenance.
 
 `./dev native-qualify --help` describes extracted-artifact runtime checks. The
 fixture harnesses use real Git and select the extracted executables through an
@@ -366,6 +339,24 @@ npm tarball/manifest and `identity.json`. It excludes harnesses and provisioning
 archives. Review and retain this exact output before authorizing publication.
 Preparation is not npm staging: it creates no package, placeholder, tag or release.
 
+For a stable release, download the exact prepared `release-candidate` artifact and
+create its site descriptor from the verified local bytes:
+
+```sh
+python3 site/candidate.py RELEASE_CANDIDATE_DIRECTORY > site/releases/VERSION.json
+```
+
+Replace `VERSION` with the candidate's stable version. Review the generated release
+identity, asset names, hashes, installation commands and frozen requirements, then
+merge the descriptor to main before publishing the GitHub release. The preparation
+candidate remains unchanged; use the current main revision as publisher revision for
+a manual continuation. Stable publication preflight checks the reviewed descriptor
+against the same approved candidate before it obtains product-write permissions.
+Missing or different data stops the continuation. Prereleases do not require a site
+descriptor. The generated file describes local candidate bytes; it does not assert
+that GitHub or npm has published them. The existing 0.1.0 descriptor is bound to its
+exact historical manifest because that release predates requirements snapshots.
+
 Dispatch input `request` is JSON, passed as data rather than shell source:
 
 | Operation | Required request fields |
@@ -420,9 +411,9 @@ An npm failure reports its exit/error code, observed HTTP status and authenticat
 stage when available. Raw npm/provider output stays private; diagnostics use fixed
 labels so tokens, request URLs and server-supplied messages do not enter CI logs.
 
-A workflow-wide `twigsmith-release` concurrency group serializes the entire run,
-including Pages deployment; local command invocations also take a shared
-repository lock. GitHub can replace an older pending run in a concurrency group;
+A workflow-wide `twigsmith-release` concurrency group serializes publication;
+local command invocations also take a shared repository lock. Pages deployments
+use a separate `twigsmith-pages` concurrency group. GitHub can replace an older pending run in a concurrency group;
 inspect its status and retry a displaced continuation with the same candidate.
 The reviewed hosted runtime is Node 24.22.2 with npm 12.2.1. npm trust must identify
 repository `msanguineti/twigsmith`, workflow filename `publish.yml`, environment
@@ -453,32 +444,47 @@ checks do not require Node/npm.
 
 ## Site artifacts and Pages
 
-`site/build.py --help` builds an unpublished preview from the same independently
-verified release inputs. A published artifact additionally requires a fresh,
-identity-bound consumption receipt generated by the publication verifier. Its
-observations cover anonymous native/npm downloads, both executable names and npm
-execution of the verified registry-acquired tarball. Exact-version public npx
-selection is also a live release check; a fixture or downloaded-tarball execution
-alone does not establish that selection. Receipts expire after 15 minutes and
-are not authentication or authorization to deploy. The hosted workflow generates
-its own receipt; do not substitute a hand-written receipt for live verification.
-The public site never includes the receipt or private coordination records.
+`site/build.py --help` builds an unpublished preview from verified candidate inputs.
+The publisher's release build still requires its fresh, identity-bound consumption
+receipt, covering native and npm downloads and execution. Receipts expire after 15
+minutes; do not fabricate one or treat it as authorization to deploy.
 
-Local builds are staged before directory replacement. A failed build preserves the
-previous artifact; a failed replacement attempts restoration and retains/names the
-backup if restoration also fails. The two renames briefly remove the output path;
+The independently dispatched **Publish website** workflow uses reviewed main and
+only repository-read and Pages deployment permissions. It resolves GitHub's latest
+published, non-draft, non-prerelease release and npm's `latest`; GitHub orders its
+latest endpoint by the release commit's creation time, not semantic tag order or
+publication time. The versions must agree and the reviewed release descriptor in
+`site/releases/` must match the available native assets, npm metadata and tarball.
+Missing or conflicting data stops deployment. The current website's version is not
+a constraint: a newer agreed release can be selected. Each descriptor keeps exact
+asset names, hashes, installation commands and platform-specific requirements for
+that release; create and review one for each future stable release using its approved
+candidate and published asset identities. New native manifests freeze the supported
+requirements from `site/current-requirements.json`; the site verifies the descriptor
+against the downloaded manifest. Build-environment provenance remains separate.
+The reviewed 0.1.0 descriptor is a bootstrap for its older manifest. Preserve it and
+the published artifacts.
+
+A successful stable package publication invokes the same Pages workflow after
+consumption checks and channel promotion; prereleases do not. A failed site deployment
+can be retried by dispatching **Publish website** on main without republishing the
+package or retaining a candidate artifact. Pages must already be configured for
+GitHub Actions, and the `github-pages` environment must allow the deployment.
+
+Pages jobs share a separate concurrency group. Once admitted, each checks that its
+checkout is current main, captures release observations, stages the ordinary-file
+artifact, and rechecks source, provider identities and artifact immediately before
+deployment. An old queued run therefore fails if it reaches the boundary after a
+change. Provider or main changes can still occur between that final observation and
+the external deployment; the check and Pages effect are not an atomic transaction.
+A later dispatch reconciles the site if that race occurs. The public artifact contains
+neither the provider snapshot nor a consumption receipt.
+
+Local site builds stage output before directory replacement. A failed build preserves
+the previous artifact; a failed replacement attempts restoration and retains/names
+the backup if restoration also fails. The two renames briefly remove the output path;
 this is not a process-crash transaction or an atomic reader-visible directory swap.
-Hosted Pages deployment is separate and uses the completed ordinary-file artifact.
 Preview/release assets use relative paths for the repository Pages base path.
-
-The publication workflow builds and deploys Pages automatically for a stable
-release only after download/execution checks and channel promotion. Prereleases do
-not deploy Pages. The `deploy-pages` job uses environment `github-pages` and only
-Pages/OIDC permissions. Pages must already be configured for GitHub Actions. A failed
-Pages deployment can be retried with the same immutable candidate by dispatching
-`publish` on main with `deploy_pages` enabled; the workflow obtains a fresh
-consumption receipt before rebuilding the site. A deployment failure does not undo
-a release.
 
 ## Troubleshooting
 

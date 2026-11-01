@@ -25,8 +25,7 @@ To run it without a global installation:
 npx --yes --package=twigsmith@VERSION tgi --help
 ```
 
-Node and npm are needed for npm/npx installation; native execution does not need
-them. Native archives and their checksums are available from
+For npm/npx, use Node.js LTS and npm. Native execution needs neither. Native archives and their checksums are available from
 [GitHub releases](https://github.com/msanguineti/twigsmith/releases).
 See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates) for verification and
 runtime prerequisites, or build from source using the [development guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md).
@@ -43,16 +42,10 @@ tgi finish
 tgi status
 ```
 
-`start` creates or resumes a branch. `save` publishes progress and offers
-checkpoint choices for uncommitted work. `finish` prepares, runs configured checks,
-and publishes a clean branch for manual submission in review mode or delivers its
-integrated result to the configured target in integrate mode. Explicit release and
-hotfix policy selects version identity and ordered direct destinations, or prepares
-work for manual review. The OneFlow bundles tag the completed work source. Completion mode
-comes from configuration or `--mode`; an unresolved mode asks at a terminal.
-`status` summarizes the current checkout. Ordinary finish can explicitly prepare
-work in Git's interactive rebase editor before review or integration; see
-[history editing](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#edit-ordinary-work-history).
+`start` creates or resumes a branch; `save` preserves and publishes progress.
+`finish` prepares work, runs configured checks, and either publishes the branch for
+manual review or integrates it into the configured target. It creates no pull
+request and performs no deployment. `status` summarizes the current checkout.
 
 | Command | Shorthand | Purpose |
 | --- | --- | --- |
@@ -67,15 +60,11 @@ repository or a fork. Use `tgi config show` to inspect effective roles and sourc
 See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#remote-roles-and-fork-workflows) for both
 workflows and tracking styles.
 
-Use `tgi config --oneflow` to select an editable direct OneFlow setup bundle,
-then start with explicit ordinary, release, or hotfix policy. Branch prefixes alone select no policy.
-The [release guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#direct-releases-and-hotfixes) covers source
-selection, source or integrated-result tags, ordered destinations, optional one-time
-rebase, active-release routing, marker branches, and recovery.
-Use `tgi config --oneflow-hosted` for version publication and a separate merge-back
-branch ready for manual submission. The [hosted guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#hosted-releases-and-hotfixes)
-covers review destinations and follow-up. Finish creates no pull request and performs
-no deployment.
+For releases and hotfixes, select explicit policy with an editable
+[direct OneFlow](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#direct-releases-and-hotfixes)
+or [hosted OneFlow](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#hosted-releases-and-hotfixes)
+setup. Branch prefixes alone select no policy. The user guide also covers
+[interactive history editing](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#edit-ordinary-work-history).
 
 Terminal menus support arrow keys and Enter; slow Git operations show activity.
 `NO_COLOR` disables colour, and redirected output stays plain. See the

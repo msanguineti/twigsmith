@@ -196,7 +196,13 @@ def validate_bundle(bundle, request):
     native_identity(approval['native'])
     if approval['npm']['packaging']['source']['dirty'] is not False:
         raise ValueError('published package must have clean packaging provenance')
-    return approved_inputs(bundle / 'native' / approval['native']['archive'], bundle / 'npm', approval)
+    record, files, expected = approved_inputs(bundle / 'native' / approval['native']['archive'], bundle / 'npm', approval)
+    if not record['publication']['prerelease']:
+        spec = importlib.util.spec_from_file_location('site_candidate', ROOT / 'site/candidate.py')
+        candidate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(candidate)
+        candidate.verify_descriptor(record, files, ROOT / 'site/releases' / (record['version'] + '.json'))
+    return record, files, expected
 
 
 def main():

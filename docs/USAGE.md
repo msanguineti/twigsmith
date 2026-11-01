@@ -17,58 +17,51 @@ In this manual: [a working session](#a-working-session),
 [guarantees and limits](#guarantees-and-practical-limits),
 [automation](#automation), and [troubleshooting](#troubleshooting-and-recovery).
 
-## Native archive candidates
+<a id="native-archive-candidates"></a>
+## Native archives and npm installation
 
-A native archive contains regular executables `twigsmith` and
-`tgi`, the MIT license, and extraction guidance. No installation script is needed.
-Keep the archive together with its `.manifest.json` and `.sha256` files. With the
-source repository available, verify and extract into a new directory:
+Twigsmith 0.1.0 is available from [GitHub releases](https://github.com/msanguineti/twigsmith/releases/tag/v0.1.0)
+and [npm](https://www.npmjs.com/package/twigsmith/v/0.1.0). The native archive contains
+`twigsmith`, `tgi`, the MIT license and extraction guidance. Both commands use the
+same settings and recovery state.
+
+Download the archive, manifest and checksums from the same release into one directory.
+Verify the checksums before extracting, then add the extracted directory to PATH:
 
 ```sh
-./dev verify-native /path/to/twigsmith-0.1.0-rc1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith candidate"
-export PATH="/tmp/twigsmith candidate/twigsmith-0.1.0-rc1-x86_64-unknown-linux-gnu:$PATH"
+sha256sum --check twigsmith-0.1.0-x86_64-unknown-linux-gnu.sha256
+tar -xzf twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz
+export PATH="$PWD/twigsmith-0.1.0-x86_64-unknown-linux-gnu:$PATH"
 twigsmith --version
 tgi --help
 ```
 
-After verification, `tar -xzf ARCHIVE` also extracts the archive's named directory;
-place that directory on PATH. Native execution requires neither Rust nor Node/npm.
-Git 2.45 or newer is required independently of the distribution's default package.
-POSIX `sh` is required for the selected editor and configured-check paths. Editors,
-signing/transport helpers, and project-check tools are needed when you select those
-features. Optional completion shells have their own requirements below.
+With a source checkout, `./dev verify-native ARCHIVE --extract-to DESTINATION`
+also verifies archive members and extracts into a new directory. Checksums detect
+mismatches; they do not independently authenticate the publisher.
 
-The current candidate target is Linux x86_64 GNU. The selected build baseline is
-Ubuntu 22.04 with glibc 2.35. Candidate preparation qualifies the exact artifact on Ubuntu
-22.04/24.04/26.04. A Debian development-host run alone establishes no
-Ubuntu or universal Linux compatibility. Ordinary standard-support and community-LTS
-systems are eligible for qualification; paid extended-support-only releases are
-excluded. An eligible OS may require a Git upgrade. Shared-library and kernel
-compatibility must be established for the exact artifact; replacing system libc
-is not an installation step. Checksums detect mismatches with the accompanying
-manifest; they do not independently authenticate a publisher.
+The supported distribution is Linux x86_64 GNU with glibc 2.35 or newer and Git 2.45
+or newer on PATH. POSIX `sh` is needed for editor and configured-check commands;
+editors, signing/transport helpers and project-check tools are needed for the features
+that use them. Optional completion shells have their own requirements below. Native
+execution needs neither Rust nor Node.js.
 
-For the `0.1.0-rc1` prerelease, download the native archive and sidecars from the
-[GitHub release](https://github.com/msanguineti/twigsmith/releases/tag/v0.1.0-rc1),
-or install the exact npm version:
+For npm installation or npx, use Node.js LTS and npm:
 
 ```sh
-npm install --global twigsmith@0.1.0-rc1
-npx --yes --package=twigsmith@0.1.0-rc1 twigsmith --version
-npx --yes --package=twigsmith@0.1.0-rc1 tgi --help
+npm install --global twigsmith@0.1.0
+npx --yes --package=twigsmith@0.1.0 twigsmith --version
+npx --yes --package=twigsmith@0.1.0 tgi --help
 ```
 
-Use an explicit prerelease version; the default npm tag selects the version
-currently advertised as `latest`. A local npm candidate can also be installed from its `.tgz` with
-`npm install /path/to/twigsmith.tgz`,
-or globally with `npm install --global /path/to/twigsmith.tgz`. Node and npm are
-needed for npm installation and npx; the executable itself does not need them.
-The npm package targets Linux x86_64 with glibc 2.35 or newer. Its libc metadata
-identifies the libc family, not the minimum version; confirm the host meets that
-baseline. Git 2.45 or newer and the other runtime prerequisites above still apply.
+The npm package has the same Linux and glibc requirements as the native archive.
+Its libc metadata identifies the family, not the minimum version. For a prerelease,
+supply its exact version; npm's default `latest` tag selects the advertised stable
+version. A local candidate can be installed with `npm install /path/to/twigsmith.tgz`
+or `npm install --global /path/to/twigsmith.tgz`.
 If Git reports `unknown option: --no-lazy-fetch`, upgrade Git to 2.45 or newer.
-The [developer packaging guide](DEVELOPMENT.md#npm-candidate-packaging) describes
-candidate creation and provenance.
+The [developer packaging guide](DEVELOPMENT.md#npm-candidate-packaging) covers
+candidate creation, provenance and qualification.
 
 ## Transition from the earlier Rust identity
 

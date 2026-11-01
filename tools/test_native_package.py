@@ -1,4 +1,5 @@
 """Package-format boundary tests: synthetic ELF bytes never qualify a runtime."""
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -76,6 +77,56 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(binary.stat().st_mode), 0o755)
         with self.assertRaisesRegex(ValueError, "must not exist"):
             package.verify(self.archive, destination)
+
+    def test_frozen_requirements_survive_current_source_changes(self):
+        before = package.verify(self.archive)
+        changed = deepcopy(before["requirements"])
+        changed["native"]["requirements"]["system"] = "A later supported system"
+        changed["npm"]["requirements"] = "A later npm runtime"
+        # Model an actual later edit to the current source after the archive exists.
+        current = self.root / "current-requirements.json"
+        current.write_text(json.dumps(before["requirements"]))
+        current.write_text(json.dumps(changed))
+        with patch.object(package, "load_requirements", side_effect=lambda _: json.loads(current.read_text())):
+            after = package.verify(self.archive)
+        self.assertEqual(before["requirements"], after["requirements"])
+        descriptor = {"version": before["version"],
+                      "native": [deepcopy(before["requirements"]["native"])],
+                      "npm": deepcopy(before["requirements"]["npm"])}
+        self.assertTrue(package.requirements_match_descriptor(before, descriptor))
+        descriptor["native"][0]["requirements"]["system"] = "different"
+        self.assertFalse(package.requirements_match_descriptor(before, descriptor))
+
+    def test_descriptor_matching_allows_other_platform_snapshot_without_changing_builder(self):
+        manifest = package.verify(self.archive)
+        manifest["requirements"]["native"] = {
+            "platform": {"os": "future", "arch": "arm64", "libc": None},
+            "requirements": {"system": "Example fixture platform", "runtime": "Example runtime"}}
+        descriptor = {"version": manifest["version"],
+                      "native": [deepcopy(manifest["requirements"]["native"])],
+                      "npm": deepcopy(manifest["requirements"]["npm"])}
+        self.assertTrue(package.requirements_match_descriptor(manifest, descriptor))
+        descriptor["native"][0]["requirements"]["system"] = "different"
+        self.assertFalse(package.requirements_match_descriptor(manifest, descriptor))
+        with self.assertRaisesRegex(ValueError, "native builder"):
+            package.validate_requirements(manifest["requirements"], native_builder=True)
+
+    def test_legacy_manifest_and_guidance_stay_verifiable(self):
+        root = self.root / "legacy"
+        root.mkdir()
+        with patch.object(package, "guidance", side_effect=lambda version, stem, _: package.GUIDANCE.format(version=version, stem=stem)):
+            archive = package.write_bundle(root, "0.1.0-beta.1",
+                {"twigsmith": self.payload, "tgi": self.payload,
+                 "LICENSE": Path(__file__).resolve().parents[1].joinpath("LICENSE").read_bytes()}, self.provenance, 1)
+        self.archive = archive
+        def legacy(manifest):
+            manifest["schema"] = 2
+            manifest.pop("requirements")
+        self.rebind(legacy)
+        with patch.object(package, "load_requirements", side_effect=AssertionError("current requirements read")):
+            manifest = package.verify(archive)
+        self.assertEqual(manifest["schema"], 2)
+        self.assertFalse(package.requirements_match_descriptor(manifest, {}))
 
     def test_corruption_and_manifest_tampering_fail_before_extraction(self):
         self.archive.write_bytes(self.archive.read_bytes() + b"corruption")
@@ -211,6 +262,8 @@ class SourceIdentityTests(unittest.TestCase):
                     package.provenance_kind(source)
 
     def test_failed_build_publishes_no_output(self):
+        (self.repo / "site").mkdir()
+        (self.repo / "site/current-requirements.json").write_text((Path(__file__).resolve().parents[1] / "site/current-requirements.json").read_text())
         (self.repo / "Cargo.toml").write_text('[package]\nname = "twigsmith"\nversion = "0.1.0"\n')
         (self.repo / "Cargo.lock").write_text('name = "twigsmith"\nversion = "0.1.0"\n')
         (self.repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.99.0"\n')
