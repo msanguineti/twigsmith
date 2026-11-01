@@ -171,7 +171,10 @@ impl Job {
             if result == 0 {
                 let error = io::Error::last_os_error();
                 if error.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
-                    return Err(error);
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("QueryInformationJobObject for check job members: {error}"),
+                    ));
                 }
                 buffer.resize(buffer.len() * 2, 0);
                 continue;
@@ -217,6 +220,12 @@ impl Job {
                         0,
                         pid,
                     )
+                })
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("OpenProcess for check job member {pid}: {error}"),
+                    )
                 })?;
                 let mut member = 0;
                 // SAFETY: valid queryable process and job, writable BOOL output.
@@ -224,7 +233,11 @@ impl Job {
                     IsProcessInJob(process.as_raw_handle(), self.0.as_raw_handle(), &mut member)
                 } == 0
                 {
-                    return Err(io::Error::last_os_error());
+                    let error = io::Error::last_os_error();
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("IsProcessInJob for check job member {pid}: {error}"),
+                    ));
                 }
                 if member != 0 {
                     members.push(process);
@@ -244,7 +257,10 @@ impl Job {
                     if unsafe { TerminateProcess(process.as_raw_handle(), 1) } == 0 {
                         let error = io::Error::last_os_error();
                         if !process_stopped(process, 0)? {
-                            return Err(error);
+                            return Err(io::Error::new(
+                                error.kind(),
+                                format!("TerminateProcess for retained check job member: {error}"),
+                            ));
                         }
                     }
                 }
@@ -264,7 +280,13 @@ fn process_stopped(process: &OwnedHandle, timeout: u32) -> io::Result<bool> {
     match unsafe { WaitForSingleObject(process.as_raw_handle(), timeout) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
-        WAIT_FAILED => Err(io::Error::last_os_error()),
+        WAIT_FAILED => {
+            let error = io::Error::last_os_error();
+            Err(io::Error::new(
+                error.kind(),
+                format!("WaitForSingleObject for retained check job member: {error}"),
+            ))
+        }
         _ => Err(io::Error::other("unexpected check process wait result")),
     }
 }
@@ -467,7 +489,12 @@ pub fn run(
             thread::sleep(Duration::from_millis(10));
         }
     })();
-    child.stop()?;
+    child.stop().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("stopping managed check after {result:?}: {error}"),
+        )
+    })?;
     result
 }
 

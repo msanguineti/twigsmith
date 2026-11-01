@@ -25,6 +25,20 @@ impl NativeTerminal {
         self.inner.read(&mut self.output);
     }
 
+    fn drain_after_exit(&mut self, deadline: Instant) {
+        // ConPTY's renderer and the reader thread can publish the last frame
+        // after the process handle becomes signalled.
+        let mut quiet = Instant::now();
+        while quiet.elapsed() < Duration::from_millis(200) && Instant::now() < deadline {
+            let previous = self.output.len();
+            self.read();
+            if self.output.len() != previous {
+                quiet = Instant::now();
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     pub fn until(&mut self, expected: &str) {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
@@ -32,11 +46,11 @@ impl NativeTerminal {
             if self.output.contains(expected) {
                 return;
             }
-            if self.inner.try_wait().is_some() {
-                self.read();
+            if let Some(status) = self.inner.try_wait() {
+                self.drain_after_exit(deadline);
                 assert!(
                     self.output.contains(expected),
-                    "exited before {expected:?}: {}",
+                    "exited with {status} before {expected:?}: {}",
                     self.output
                 );
                 return;
@@ -59,17 +73,7 @@ impl NativeTerminal {
         loop {
             self.read();
             if let Some(status) = self.inner.try_wait() {
-                // ConPTY's output pump is asynchronous with process exit.
-                // A short quiet period collects the terminal's final report.
-                let mut quiet = Instant::now();
-                while quiet.elapsed() < Duration::from_millis(100) && Instant::now() < deadline {
-                    let previous = self.output.len();
-                    self.read();
-                    if self.output.len() != previous {
-                        quiet = Instant::now();
-                    }
-                    thread::sleep(Duration::from_millis(5));
-                }
+                self.drain_after_exit(deadline);
                 return status;
             }
             assert!(
@@ -233,8 +237,8 @@ mod platform {
                 CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
                 DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
                 InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                PROCESS_INFORMATION, ResumeThread, STARTUPINFOEXW, UpdateProcThreadAttribute,
-                WaitForSingleObject,
+                PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+                UpdateProcThreadAttribute, WaitForSingleObject,
             },
         },
     };
@@ -385,6 +389,13 @@ mod platform {
                 ));
                 let mut startup: STARTUPINFOEXW = zeroed();
                 startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
+                // The test runner's standard streams are redirected. Without
+                // this flag CreateProcess can copy those handles despite the
+                // pseudoconsole attribute. Explicit NULL standard handles let
+                // console attachment fill all three with the new console's
+                // handles (GetStdHandle's attach/detach contract).
+                // https://learn.microsoft.com/windows/console/getstdhandle
+                startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
                 startup.lpAttributeList = list;
                 let application = wide(command.get_program());
                 let mut line = quote(command.get_program());

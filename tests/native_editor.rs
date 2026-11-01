@@ -146,9 +146,16 @@ fn native_git_editor_accept_and_cancel_retry() {
             #[cfg(windows)]
             {
                 let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
-                    .map(|dir| dir.join("git.exe"))
-                    .find(|path| path.is_file())
-                    .expect("Git on PATH");
+                    .flat_map(|dir| {
+                        // Normal Git-for-Windows exposes cmd/git.exe without its
+                        // Unix tools. Find it relative to an installed PATH entry
+                        // as well as testing that entry itself.
+                        std::iter::once(dir.join("git.exe"))
+                            .chain(dir.ancestors().map(|root| root.join("cmd/git.exe")))
+                            .collect::<Vec<_>>()
+                    })
+                    .find(|path| path.is_file() && !path.parent().unwrap().join("sh.exe").exists())
+                    .expect("native Git installation directory on PATH without sh.exe");
                 let directory = git.parent().unwrap();
                 assert!(
                     !directory.join("sh.exe").exists(),
@@ -163,7 +170,10 @@ fn native_git_editor_accept_and_cancel_retry() {
             assert_eq!(trace["git_pager"], "native-editor-pager-sentinel");
             assert_eq!(trace["args"][0], "--fixture-argument");
             assert_eq!(trace["args"][1], "literal ;$λ");
-            assert_eq!(Path::new(trace["cwd"].as_str().unwrap()), local.path());
+            assert_eq!(
+                fs::canonicalize(trace["cwd"].as_str().unwrap()).unwrap(),
+                fs::canonicalize(local.path()).unwrap()
+            );
             let suggested = fs::read_to_string(root.join("suggestion")).unwrap();
             assert!(
                 suggested.contains(WORK) && suggested.contains("main"),
