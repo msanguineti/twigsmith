@@ -549,6 +549,10 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
         .map_err(|e| fail(&e))?;
     writeln!(file, "{}", plan.message_suggestion()).map_err(|e| fail(&e))?;
     file.flush().map_err(|e| fail(&e))?;
+    // Keep path cleanup ownership, but release the open handle before handing
+    // the file to another process. Leave Windows replacement saves under the
+    // editor's ownership; read the resulting path after it returns.
+    let file = file.into_temp_path();
     // A one-command shell alias delegates executable/shell selection and native
     // path handling to the installed Git (including Git-for-Windows at 2.45).
     // Git appends the filename as a literal argument and inherits terminal I/O.
@@ -559,7 +563,6 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
         // External git-<name> helpers take precedence over aliases. Reuse the
         // private tempfile's unpredictable suffix to avoid a fixed-name collision.
         let alias = file
-            .path()
             .file_name()
             .expect("temporary filename")
             .to_str()
@@ -568,7 +571,7 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
             .arg("-c")
             .arg(format!("alias.{alias}=!{editor}"))
             .arg(alias)
-            .arg(file.path())
+            .arg(&file)
             .current_dir(root)
             .status()
             .map_err(|e| fail(&e))?;
@@ -577,14 +580,14 @@ fn edit_message(root: &Path, plan: &Plan, presentation: Presentation) -> Result<
         }
     }
     integration::revalidate(root, plan, plan.evidence.as_ref()).map_err(|e| fail(&e))?;
-    if !fs::symlink_metadata(file.path())
+    if !fs::symlink_metadata(&file)
         .map_err(|e| fail(&e))?
         .file_type()
         .is_file()
     {
         return Err(fail(&"the editor did not leave a regular message file"));
     }
-    let bytes = fs::read(file.path()).map_err(|e| fail(&e))?;
+    let bytes = fs::read(&file).map_err(|e| fail(&e))?;
     let raw = String::from_utf8(bytes).map_err(|e| fail(&e))?;
     if raw.contains('\0') {
         return Err(fail(&"the message contains NUL"));

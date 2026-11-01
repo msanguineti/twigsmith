@@ -1063,7 +1063,8 @@ Using Git's alias runner retains the Git 2.45 floor: that version's reported
 [Git 2.46 release notes](https://github.com/git/git/blob/v2.46.0/Documentation/RelNotes/2.46.0.txt).
 
 The editor inherits terminal streams and can replace the private message file
-atomically. Finish revalidates the bound context after editing, rejects nonregular
+atomically. The initial file handle is closed before launch, allowing Windows
+replacement saves; a temporary path guard retains cleanup ownership. Finish revalidates the bound context after editing, rejects nonregular
 files, NUL and unsupported encoding, then applies the existing message cleanup.
 Editor failure leaves preparation and external editor effects available for retry.
 The launcher uses Git's alias process lifecycle, rather than Git's commit-editor
