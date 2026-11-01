@@ -100,9 +100,12 @@ Build, test, and lint use the committed `Cargo.lock`.
 ## Select tests during development
 
 Run focused tests while implementing a change. List the available groups and
-their exact targets with `./dev test-groups`, then select a capability:
+their exact targets with `./dev test-groups`. Build the native fixtures before
+focused groups, which all include the presentation unit tests, then select a
+capability:
 
 ```sh
+./dev cargo build --example native_check_fixture --example native_editor_fixture
 ./dev test-group start
 ./dev test-group config
 ./dev test-group shared
@@ -233,13 +236,16 @@ shell contracts, rather than whole-application platform compatibility.
 
 Build the native fixtures with
 `./dev cargo build --example native_check_fixture --example native_editor_fixture`, then run
-`./dev test --test native_journey --test native_checks --test native_check_guards --test native_editor -- --nocapture`.
+`./dev test --test native_journey --test native_checks --test native_check_guards --test native_editor --test native_prompts -- --nocapture`.
 Complete checks build the fixtures and include these suites. On Windows, use native
 Cargo with the toolchain pinned in `rust-toolchain.toml`:
 `cargo build --locked --example native_check_fixture --example native_editor_fixture`, followed by
-`cargo test --locked --test native_journey --test native_checks --test native_check_guards --test native_editor -- --nocapture`.
-Build the fixtures before focused `start`, `save`, `finish` or `shared` group runs
-too; these groups include native suites that use it.
+`cargo test --locked --test native_journey --test native_checks --test native_check_guards --test native_editor --test native_prompts -- --nocapture`.
+Build the fixtures before any focused group run; every group includes the
+presentation unit tests that use terminal restoration. The presentation keyboard
+unit test also uses the terminal restoration fixture. To run that boundary alone
+after building the fixtures:
+`./dev test --lib presentation::tests::keyboard_suggestions_and_described_menus_keep_literal_and_submission_contracts -- --nocapture`.
 
 The test exercises help/version for both executable names, read-only status,
 ordinary branch creation from a freshly advanced local remote, and an unreachable
@@ -259,7 +265,7 @@ architecture, use the pinned native Rust toolchain and record source, image, OS,
 Git and compiler versions alongside test observations in their logs. Missing or
 failed jobs leave that environment unverified. Successful results cover the
 tested journeys only; they do not qualify Windows desktop versions,
-general prompt navigation, real shell Tab completion, broader tagged/hosted
+real shell Tab completion, broader tagged/hosted
 recovery, packaging or installation. Published
 distribution remains Linux x86_64 GNU.
 The `native_editor` suite uses real Unix PTYs and Windows ConPTY with a foreground
@@ -270,6 +276,14 @@ The Windows acceptance journey limits PATH to the directory containing `git.exe`
 with no `sh.exe` there. The harness bounds waits, cleans its process group/job and
 checks terminal line input and echo afterward. This establishes the tested terminal
 handoff, not arbitrary detached GUI editor containment or full interactive coverage.
+
+The `native_prompts` suite exercises guided setup and representative save/finish
+choices in capable terminals, with literal Unicode input, cancellation, context
+revalidation and complete-line fallback. The presentation unit test adds keyboard
+filtering, defaults, in-prompt Tab suggestions, narrow widths and colour suppression.
+The native matrix selects both suites explicitly. These tests use the same PTY/ConPTY
+harness as editor tests and check usable line input and echo after prompts.
+A fallback-only execution does not establish capable keyboard behavior.
 
 The native suite selection uses `--no-fail-fast` so a failing test binary still
 leaves evidence from the other selected binaries; the job remains unsuccessful

@@ -13,10 +13,19 @@ pub struct NativeTerminal {
 }
 
 impl NativeTerminal {
-    pub fn start_command(mut command: Command) -> Self {
-        command.env("TERM", "dumb");
+    pub fn start_command(command: Command) -> Self {
+        Self::start_command_width(command, 100)
+    }
+
+    /// Explicit TERM opts into capable keyboard input; existing callers default
+    /// to complete-line input regardless of the test runner's environment.
+    pub fn start_command_width(mut command: Command, columns: u16) -> Self {
+        assert!(columns > 0 && columns <= i16::MAX as u16);
+        if !command.get_envs().any(|(key, _)| key == "TERM") {
+            command.env("TERM", "dumb");
+        }
         Self {
-            inner: platform::Terminal::start(command),
+            inner: platform::Terminal::start(command, columns),
             output: String::new(),
         }
     }
@@ -86,7 +95,7 @@ impl NativeTerminal {
     }
 
     pub fn assert_restored(&mut self) {
-        self.inner.assert_restored(&mut self.output);
+        self.inner.assert_restored();
         if let Some(hidden) = self.output.rfind("\x1b[?25l") {
             assert!(
                 self.output
@@ -95,6 +104,72 @@ impl NativeTerminal {
                 "cursor left hidden: {}",
                 self.output
             );
+        }
+        self.inner.start_probe();
+        self.until("TERMINAL_PROBE_READY");
+        // Observe echo before submitting a newline. A raw-mode reader or
+        // disabled echo cannot satisfy both this and the completed-line read.
+        let echo_start = self.output.len();
+        self.send(b"line-echo-restored");
+        self.until("line-echo-restored");
+        assert!(self.output[echo_start..].contains("line-echo-restored"));
+        assert!(
+            self.inner.try_wait().is_none(),
+            "probe accepted an incomplete line"
+        );
+        self.send(b"\r");
+        assert!(
+            self.finish().success(),
+            "line input probe failed: {}",
+            self.output
+        );
+        assert!(self.output.contains("TERMINAL_RESTORED"), "{}", self.output);
+    }
+}
+
+fn probe_command() -> Command {
+    let fixture = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(format!(
+            "native_editor_fixture{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+    let mut command = Command::new(fixture);
+    command.arg("--terminal-probe");
+    command
+}
+
+/// PTY/ConPTY reads can split a multibyte character at any byte boundary.
+#[derive(Default)]
+struct Utf8Stream(Vec<u8>);
+impl Utf8Stream {
+    fn push(&mut self, bytes: &[u8], output: &mut String) {
+        self.0.extend_from_slice(bytes);
+        loop {
+            match std::str::from_utf8(&self.0) {
+                Ok(value) => {
+                    output.push_str(value);
+                    self.0.clear();
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    output.push_str(std::str::from_utf8(&self.0[..valid]).unwrap());
+                    self.0.drain(..valid);
+                    match error.error_len() {
+                        Some(length) => {
+                            output.push('\u{fffd}');
+                            self.0.drain(..length);
+                        }
+                        None => break,
+                    }
+                }
+            }
         }
     }
 }
@@ -117,9 +192,12 @@ mod platform {
     pub struct Terminal {
         child: Child,
         master: File,
+        slave: File,
+        probe: Option<Child>,
+        decoder: super::Utf8Stream,
     }
     impl Terminal {
-        pub fn start(mut command: Command) -> Self {
+        pub fn start(mut command: Command, columns: u16) -> Self {
             let master = openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY).unwrap();
             rustix::io::fcntl_setfd(&master, rustix::io::FdFlags::CLOEXEC).unwrap();
             grantpt(&master).unwrap();
@@ -146,7 +224,7 @@ mod platform {
                 &master,
                 Winsize {
                     ws_row: 24,
-                    ws_col: 100,
+                    ws_col: columns,
                     ws_xpixel: 0,
                     ws_ypixel: 0,
                 },
@@ -156,12 +234,15 @@ mod platform {
                 .process_group(0)
                 .stdin(Stdio::from(slave.try_clone().unwrap()))
                 .stdout(Stdio::from(slave.try_clone().unwrap()))
-                .stderr(Stdio::from(slave))
+                .stderr(Stdio::from(slave.try_clone().unwrap()))
                 .spawn()
                 .unwrap();
             Self {
                 child,
                 master: File::from(master),
+                slave,
+                probe: None,
+                decoder: super::Utf8Stream::default(),
             }
         }
         pub fn read(&mut self, output: &mut String) {
@@ -169,7 +250,7 @@ mod platform {
             loop {
                 match self.master.read(&mut bytes) {
                     Ok(0) => break,
-                    Ok(n) => output.push_str(&String::from_utf8_lossy(&bytes[..n])),
+                    Ok(n) => self.decoder.push(&bytes[..n], output),
                     Err(error)
                         if error.kind() == io::ErrorKind::WouldBlock
                             || error.raw_os_error() == Some(5) =>
@@ -184,9 +265,28 @@ mod platform {
             self.master.write_all(input).unwrap();
         }
         pub fn try_wait(&mut self) -> Option<ExitStatus> {
-            self.child.try_wait().unwrap()
+            self.probe
+                .as_mut()
+                .unwrap_or(&mut self.child)
+                .try_wait()
+                .unwrap()
         }
-        pub fn assert_restored(&mut self, _: &mut String) {
+        pub fn start_probe(&mut self) {
+            assert!(
+                self.child.try_wait().unwrap().is_some(),
+                "probe requires finished CLI"
+            );
+            self.probe = Some(
+                super::probe_command()
+                    .process_group(0)
+                    .stdin(Stdio::from(self.slave.try_clone().unwrap()))
+                    .stdout(Stdio::from(self.slave.try_clone().unwrap()))
+                    .stderr(Stdio::from(self.slave.try_clone().unwrap()))
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+        pub fn assert_restored(&mut self) {
             let modes = tcgetattr(&self.master).unwrap().local_modes;
             assert!(
                 modes.contains(LocalModes::ICANON | LocalModes::ECHO),
@@ -200,6 +300,12 @@ mod platform {
                 let _ = kill_process_group(group, Signal::KILL);
             }
             let _ = self.child.wait();
+            if let Some(probe) = self.probe.as_mut() {
+                if let Some(group) = Pid::from_raw(probe.id() as i32) {
+                    let _ = kill_process_group(group, Signal::KILL);
+                }
+                let _ = probe.wait();
+            }
         }
     }
 }
@@ -221,7 +327,6 @@ mod platform {
         ptr::{null, null_mut},
         sync::mpsc::{self, Receiver},
         thread,
-        time::{Duration, Instant},
     };
     use windows_sys::Win32::{
         Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
@@ -301,9 +406,10 @@ mod platform {
         console: Console,
         input: File,
         output: Receiver<Vec<u8>>,
+        decoder: super::Utf8Stream,
     }
     impl Terminal {
-        pub fn start(command: Command) -> Self {
+        pub fn start(command: Command, columns: u16) -> Self {
             unsafe {
                 let mut input_read = null_mut();
                 let mut input_write = null_mut();
@@ -317,7 +423,10 @@ mod platform {
                 let output_write = own(output_write);
                 let mut console = 0;
                 let result = CreatePseudoConsole(
-                    COORD { X: 100, Y: 24 },
+                    COORD {
+                        X: columns as i16,
+                        Y: 24,
+                    },
                     input_read.as_raw_handle(),
                     output_write.as_raw_handle(),
                     0,
@@ -355,6 +464,7 @@ mod platform {
                     console,
                     input,
                     output,
+                    decoder: super::Utf8Stream::default(),
                 }
             }
         }
@@ -456,7 +566,7 @@ mod platform {
 
         pub fn read(&mut self, output: &mut String) {
             for bytes in self.output.try_iter() {
-                output.push_str(&String::from_utf8_lossy(&bytes));
+                self.decoder.push(&bytes, output);
             }
         }
         pub fn send(&mut self, input: &[u8]) {
@@ -479,39 +589,15 @@ mod platform {
                 }
             }
         }
-        pub fn assert_restored(&mut self, output: &mut String) {
+        pub fn assert_restored(&mut self) {
             assert!(
                 self.try_wait().is_some(),
                 "restoration probe requires finished CLI"
             );
-            let fixture = std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("examples")
-                .join("native_editor_fixture.exe");
-            let mut command = Command::new(fixture);
-            command.arg("--terminal-probe");
-            let probe = unsafe { Self::spawn(&command, self.console.0, &self.job) };
-            let deadline = Instant::now() + Duration::from_secs(10);
-            loop {
-                self.read(output);
-                if unsafe { WaitForSingleObject(probe.as_raw_handle(), 0) } == WAIT_OBJECT_0 {
-                    let mut code = 0;
-                    unsafe {
-                        check(GetExitCodeProcess(probe.as_raw_handle(), &mut code));
-                    }
-                    assert_eq!(code, 0, "console restoration probe failed: {output}");
-                    return;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "console restoration probe timed out: {output}"
-                );
-                thread::sleep(Duration::from_millis(10));
-            }
+        }
+        pub fn start_probe(&mut self) {
+            self.process =
+                unsafe { Self::spawn(&super::probe_command(), self.console.0, &self.job) };
         }
     }
     impl Drop for Terminal {
