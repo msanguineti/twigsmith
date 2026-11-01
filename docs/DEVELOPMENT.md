@@ -261,6 +261,9 @@ failed jobs leave that environment unverified. Successful results cover the
 tested journeys only; they do not qualify Windows desktop versions, interactive
 terminals, editors, broader tagged/hosted recovery, packaging or installation. Published
 distribution remains Linux x86_64 GNU.
+The native suite selection uses `--no-fail-fast` so a failing test binary still
+leaves evidence from the other selected binaries; the job remains unsuccessful
+if any selected binary fails.
 
 For optimized executables:
 

@@ -3,7 +3,7 @@
 use super::*;
 use std::{
     io::Read,
-    mem::size_of,
+    mem::{offset_of, size_of},
     os::windows::{
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
         process::CommandExt,
@@ -19,8 +19,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_BROKEN_PIPE, ERROR_NO_MORE_FILES, ERROR_PIPE_NOT_CONNECTED, HANDLE,
-        INVALID_HANDLE_VALUE,
+        ERROR_BROKEN_PIPE, ERROR_MORE_DATA, ERROR_NO_MORE_FILES, ERROR_PIPE_NOT_CONNECTED, HANDLE,
+        INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     System::{
         Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler},
@@ -28,15 +28,18 @@ use windows_sys::Win32::{
             CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
         },
         JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
-            QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+            AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicProcessIdList,
+            JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+            TerminateJobObject,
         },
         Pipes::PeekNamedPipe,
         Threading::{
-            CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetProcessIdOfThread, OpenThread,
-            ResumeThread, THREAD_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
+            CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, GetProcessIdOfThread, INFINITE,
+            OpenProcess, OpenThread, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE, ResumeThread, THREAD_QUERY_LIMITED_INFORMATION,
+            THREAD_SUSPEND_RESUME, TerminateProcess, WaitForSingleObject,
         },
     },
 };
@@ -135,32 +138,134 @@ impl Job {
     }
 
     fn stop(&self) -> io::Result<()> {
-        // SAFETY: the non-inheritable job handle is valid for this whole call.
-        if unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) } == 0 {
-            return Err(io::Error::last_os_error());
+        let result = self.stop_members();
+        if result.is_err() {
+            // SAFETY: valid job. Request containment even when acquiring or
+            // waiting an individual member failed; preserve that cleanup error.
+            // Last-handle closure remains the additional unwinding fallback.
+            unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) };
         }
-        // Termination is asynchronous. A stopped leader alone does not establish
-        // that descendants (including pipe holders) have finished termination.
+        result
+    }
+
+    fn process_ids(&self) -> io::Result<Vec<u32>> {
+        // The Win32 structure ends with a variable-length ULONG_PTR array. A
+        // usize buffer gives both the header and array their required alignment.
+        const HEADER: usize =
+            offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList) / size_of::<usize>();
+        let mut buffer = vec![0usize; HEADER + 32];
         loop {
-            let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-            // SAFETY: valid job, writable correctly sized output structure.
-            if unsafe {
+            let bytes = u32::try_from(buffer.len() * size_of::<usize>())
+                .map_err(|_| io::Error::other("check job process list is too large"))?;
+            // SAFETY: valid job and aligned writable storage including the
+            // variable process-ID array, whose byte length is supplied exactly.
+            let result = unsafe {
                 QueryInformationJobObject(
                     self.0.as_raw_handle(),
-                    JobObjectBasicAccountingInformation,
-                    (&mut accounting as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
-                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    JobObjectBasicProcessIdList,
+                    buffer.as_mut_ptr().cast(),
+                    bytes,
                     null_mut(),
                 )
-            } == 0
-            {
-                return Err(io::Error::last_os_error());
+            };
+            if result == 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
+                    return Err(error);
+                }
+                buffer.resize(buffer.len() * 2, 0);
+                continue;
             }
-            if accounting.ActiveProcesses == 0 {
+            // SAFETY: successful query initialized the fixed header; storage is
+            // aligned and large enough for the structure and its first array slot.
+            let information =
+                unsafe { &*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() };
+            let count = information.NumberOfProcessIdsInList as usize;
+            if count < information.NumberOfAssignedProcesses as usize {
+                buffer.resize(HEADER + information.NumberOfAssignedProcesses as usize, 0);
+                continue;
+            }
+            if count > buffer.len() - HEADER {
+                return Err(io::Error::other("invalid check job process list length"));
+            }
+            return buffer[HEADER..HEADER + count]
+                .iter()
+                .map(|&pid| {
+                    u32::try_from(pid)
+                        .map_err(|_| io::Error::other("invalid check job process identifier"))
+                })
+                .collect();
+        }
+    }
+
+    fn stop_members(&self) -> io::Result<()> {
+        loop {
+            let pids = self.process_ids()?;
+            if pids.is_empty() {
                 return Ok(());
             }
-            thread::sleep(Duration::from_millis(1));
+            let mut members = Vec::new();
+            for pid in pids {
+                // Retain handles BEFORE requesting termination. TerminateJobObject
+                // can remove members from the job list/accounting before their
+                // process objects become signaled; querying after it loses the
+                // handles needed to observe actual completion.
+                // SAFETY: request an owned, non-inheritable process handle.
+                let process = owned_handle(unsafe {
+                    OpenProcess(
+                        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+                        0,
+                        pid,
+                    )
+                })?;
+                let mut member = 0;
+                // SAFETY: valid queryable process and job, writable BOOL output.
+                if unsafe {
+                    IsProcessInJob(process.as_raw_handle(), self.0.as_raw_handle(), &mut member)
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if member != 0 {
+                    members.push(process);
+                } else if !process_stopped(&process, 0)? {
+                    return Err(io::Error::other(
+                        "check process membership changed before termination",
+                    ));
+                }
+                // A recycled PID may name an unrelated process. Never terminate
+                // it, and do not infer completion from absent membership alone.
+            }
+            for process in &members {
+                if !process_stopped(process, 0)? {
+                    // SAFETY: retained handle has terminate access. A natural
+                    // exit can race this call; only a signaled handle makes a
+                    // failed termination request safe to treat as completed.
+                    if unsafe { TerminateProcess(process.as_raw_handle(), 1) } == 0 {
+                        let error = io::Error::last_os_error();
+                        if !process_stopped(process, 0)? {
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+            for process in &members {
+                process_stopped(process, INFINITE)?;
+            }
+            // A captured member could create a child before its termination was
+            // requested. Once all captured parents have signaled, acquire the
+            // remaining members and repeat; do not assume one snapshot is final.
         }
+    }
+}
+
+fn process_stopped(process: &OwnedHandle, timeout: u32) -> io::Result<bool> {
+    // SAFETY: valid retained process handle with synchronization access.
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), timeout) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        _ => Err(io::Error::other("unexpected check process wait result")),
     }
 }
 

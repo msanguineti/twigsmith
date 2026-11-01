@@ -307,6 +307,79 @@ fn native_literal_arguments_environment_eof_and_concurrent_streams() {
 }
 
 #[test]
+fn native_exited_leaders_preserve_exact_exit_status() {
+    isolated(
+        "native_exited_leaders_preserve_exact_exit_status",
+        true,
+        |root| {
+            let _deadline = Deadline::new(root);
+            let cancellation = Cancellation::new().unwrap();
+            // An unreaped leader pins the process-group ID. macOS can reject a
+            // group signal once that leader is its only (zombie) member; completion
+            // must still distinguish a successful check from an exit failure.
+            for code in [0, 23, 0, 23] {
+                let status = check_process::run(
+                    root,
+                    &native::command("exit", &[&code.to_string()]),
+                    &cancellation,
+                    |_, _| {},
+                )
+                .unwrap();
+                assert_eq!(status.code(), Some(code));
+                println!("leader-only check preserved exit {code}");
+            }
+            cancellation.complete().unwrap();
+        },
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn native_macos_zombie_group_observation() {
+    isolated("native_macos_zombie_group_observation", true, |root| {
+        use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
+        use std::os::unix::process::CommandExt;
+        let _deadline = Deadline::new(root);
+        let mut child = BoundedChild(
+            Command::new(native::helper())
+                .args(["exit", "0"])
+                .process_group(0)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let group = Pid::from_raw(child.0.id() as i32).unwrap();
+        wait_until("macOS unreaped leader exit", || {
+            waitid(
+                WaitId::Pid(group),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+            )
+            .unwrap()
+            .is_some()
+        });
+        let signal = kill_process_group(group, Signal::KILL);
+        let mut members = [0i32; 2];
+        // SAFETY: writable two-PID buffer, exact byte length, retained child pins
+        // the process-group identity throughout this native diagnostic.
+        let count = unsafe {
+            libc::proc_listpgrppids(
+                group.as_raw_pid(),
+                members.as_mut_ptr().cast(),
+                std::mem::size_of_val(&members) as i32,
+            )
+        };
+        println!(
+            "macOS zombie-only group: waitid WNOWAIT=exited; killpg SIGKILL={signal:?}; libproc count={count}, members={members:?}"
+        );
+        assert_eq!(count, 1);
+        assert_eq!(members[0], group.as_raw_pid());
+        assert_eq!(child.wait().code(), Some(0));
+    });
+}
+
+#[test]
 fn native_missing_executable_nonzero_and_leader_exit_cleanup() {
     isolated(
         "native_missing_executable_nonzero_and_leader_exit_cleanup",
@@ -330,37 +403,55 @@ fn native_missing_executable_nonzero_and_leader_exit_cleanup() {
             )
             .unwrap();
             assert_eq!(status.code(), Some(23));
-            let _tree = Tree {
-                root: root.to_owned(),
-            };
-            let observer_root = root.to_owned();
-            let observer = thread::spawn(move || {
-                wait_until("leader ready before exit", || {
-                    observer_root.join("leader.ready").exists()
+            for attempt in 0..4 {
+                // Repeat the original leader-first failure with fresh handshakes;
+                // every iteration retains live descendant identities and tests
+                // immediate completion, without polling after executor return.
+                for name in ["leader", "ordinary", "stubborn-pipe-holder"] {
+                    for suffix in ["pid", "ready", "heartbeat"] {
+                        let path = root.join(format!("{name}.{suffix}"));
+                        if path.exists() {
+                            fs::remove_file(path).unwrap();
+                        }
+                    }
+                }
+                let gate = root.join("leader-may-exit");
+                if gate.exists() {
+                    fs::remove_file(gate).unwrap();
+                }
+                let _tree = Tree {
+                    root: root.to_owned(),
+                };
+                let observer_root = root.to_owned();
+                let observer = thread::spawn(move || {
+                    wait_until("leader ready before exit", || {
+                        observer_root.join("leader.ready").exists()
+                    });
+                    let processes = Tree::observe_at(&observer_root);
+                    fs::write(
+                        observer_root.join("leader-may-exit"),
+                        b"observed live identities",
+                    )
+                    .unwrap();
+                    processes
                 });
-                let processes = Tree::observe_at(&observer_root);
-                fs::write(
-                    observer_root.join("leader-may-exit"),
-                    b"observed live identities",
+                let start = Instant::now();
+                let status = check_process::run(
+                    root,
+                    &native::command("tree", &[root.to_str().unwrap(), "exit"]),
+                    &cancellation,
+                    |_, _| {},
                 )
                 .unwrap();
-                processes
-            });
-            let start = Instant::now();
-            let status = check_process::run(
-                root,
-                &native::command("tree", &[root.to_str().unwrap(), "exit"]),
-                &cancellation,
-                |_, _| {},
-            )
-            .unwrap();
-            assert!(status.success());
-            assert!(
-                start.elapsed() < Duration::from_secs(10),
-                "pipe holders delayed leader collection"
-            );
-            for process in observer.join().unwrap() {
-                process.assert_stopped();
+                assert!(status.success());
+                assert!(
+                    start.elapsed() < Duration::from_secs(10),
+                    "pipe holders delayed leader collection"
+                );
+                for process in observer.join().unwrap() {
+                    process.assert_stopped();
+                }
+                println!("leader-first containment iteration {attempt} passed");
             }
             cancellation.complete().unwrap();
         },

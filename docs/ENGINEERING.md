@@ -881,10 +881,18 @@ checks is caught by publication observations and leases.
 
 [`check_process.rs`](../src/check_process.rs) manages Unix process groups and
 catchable cancellation signals across the stage. The
+unreaped leader pins its process-group identity through cleanup. On macOS, a
+group containing only that zombie leader can reject signalling; this is accepted
+only after a complete native group-membership snapshot proves that sole member.
+Other signal failures remain errors. The
 [Windows backend](../src/check_process/windows.rs) starts each executable suspended,
 assigns it to a non-inheritable Job Object before resuming it, and prevents ordinary
 descendant breakaway. It handles console Ctrl-C and Ctrl-Break during the check
-stage and terminates the job on cancellation, collection failure or leader exit.
+stage and stops job members on cancellation, collection failure or leader exit.
+It retains member process handles before requesting termination and waits for
+their signaled state, then enumerates again for children spawned during cleanup.
+Job accounting alone cannot establish process-handle completion; job-wide
+termination remains an error/unwinding fallback.
 Both backends stop ordinary descendants and reap the leader before returning.
 Bounded pipe drains keep continuous output from starving cancellation. Concurrent
 library check stages serialize ownership of the process-wide cancellation facility.

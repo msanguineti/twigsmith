@@ -79,6 +79,19 @@ fn unpublished(remote: &Repository) {
     );
 }
 
+fn guarded_refusal(output: &std::process::Output) {
+    assert!(!output.status.success(), "{output:?}");
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    // A process-collection error must not masquerade as a successful guard:
+    // macOS originally refused publication for the wrong reason in these cases.
+    assert!(diagnostic.contains("stopped:"), "{output:?}");
+    assert!(
+        !diagnostic.contains("cannot execute or collect check")
+            && !diagnostic.contains("check failed with"),
+        "{output:?}"
+    );
+}
+
 #[test]
 fn native_mutations_stop_later_checks_and_publication() {
     isolated(
@@ -105,7 +118,7 @@ fn native_mutations_stop_later_checks_and_publication() {
                 let original = head(&repo, "HEAD");
                 configure(&repo, vec![mutation.clone(), helper("later_check")]);
                 let output = finish(&repo, &[]);
-                assert!(!output.status.success(), "{output:?}");
+                guarded_refusal(&output);
                 assert!(!repo.path().join(".git/later").exists());
                 unpublished(&remote);
                 if mutation == helper("mutate_tracked") {
@@ -130,7 +143,7 @@ fn native_hidden_work_is_guarded_and_ignored_output_is_allowed() {
                 let (repo, remote) = fixture(root);
                 repo.success(&["update-index", hint, "tracked"]);
                 configure(&repo, vec![helper("mutate_tracked"), helper("later_check")]);
-                assert!(!finish(&repo, &[]).status.success());
+                guarded_refusal(&finish(&repo, &[]));
                 assert!(!repo.path().join(".git/later").exists());
                 unpublished(&remote);
             }
