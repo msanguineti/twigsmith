@@ -113,26 +113,10 @@ their exact targets with `./dev test-groups`, then select a capability:
 ./dev test-group history-edit
 ```
 
-The groups are `start`, `save`, `finish`, `config`, `status`, `shared`,
-`lifecycle`, `smoke`, `completion`, `finish-planning`, `history-edit`, `oneflow`, and `hosted-oneflow`. Command groups include
-backend and CLI coverage. `completion` checks candidate contexts, registration and shell insertion, including
-literal Readline insertion.
-`smoke` pairs CLI smoke checks with development
-launcher selection and completion. `finish-planning` selects review finish planning and
-eligibility coverage. `oneflow` selects direct release and hotfix command lifecycles,
-ordered destination delivery, selected version identity, and one-time preparation
-recovery.
-`history-edit` selects ordinary native history editing and fresh-process recovery.
-`hosted-oneflow` selects version publication, separate merge-back preparation, and
-fresh-process recovery for manual submission. `shared` covers the development launcher, native packaging/qualification tooling, Git boundary, repository observation,
-settings, tracking, remote roles, CLI activity, finish-check configuration, and exact save/finish
-publication. `lifecycle` includes CLI smoke checks, end-to-end project/fork
-workflows, and direct and hosted release/hotfix delivery and recovery; this broad group
-includes expensive lifecycle coverage. Prefer the narrower groups during fast
-iteration, then run full validation before submitting changes. Every group also runs
-library and binary unit tests (`--lib --bins`). Targets overlap where they
-exercise shared behaviour. Overlap selects shared tests for relevant development
-work; a full run executes the ordered suites once rather than executing each group.
+Select the group matching the changed behavior. Every group includes library and
+binary unit tests; shared targets can appear in several groups, while a full run
+executes each suite once. `./dev test-groups` is the authoritative membership list.
+Use narrow groups for iteration and complete validation before delivery.
 
 The `finish` group does not include `cli_oneflow`, `cli_direct_sequence`, `cli_hosted_oneflow`, or
 `cli_hosted_recovery`, or `cli_hosted_presentation`. For tagged release/hotfix
@@ -189,19 +173,11 @@ when adding or changing coverage:
   consistently low-value tests. Keep reliable protection for important contracts
   when replacing flaky tests.
 
-Detailed CLI finish and OneFlow safety scenarios exercise the shared canonical
-dispatcher. Focused matrices verify both native executables and lifecycle aliases
-with real effects; repeat expensive scenarios across entry points when they
-protect a distinct failure mode.
-
-For expensive workflow matrices, combine factors when their interaction changes
-behavior. Keep preparation mode and remote-role combinations that distinguish
-base selection from publication. Check existing base/publication tracking through
-representative finish executions with each remote layout; preserve all outcome and
-configuration assertions without repeating every preparation combination.
-Retain real-Git interruption and fresh-process recovery tests where the contract
-depends on an effect committing before the application records its acknowledgement.
-Mocks of process results cannot establish that boundary.
+Exercise the shared dispatcher through representative native executables and aliases.
+Repeat expensive scenarios only when their interaction protects a distinct failure
+mode. Retain real-Git interruption and fresh-process recovery tests where an effect
+can commit before the application records its acknowledgement; mocked process
+results cannot establish that boundary.
 
 Judge the suite by the important defects it catches, its reliability and
 diagnostic value, and its total cost. Test count and raw coverage percentage are
@@ -227,8 +203,7 @@ Zsh, Fish or PowerShell. The sourceable `completions/twigsmith.bash` is the Bash
 adapter used by executable-generated session setup; it needs a built executable
 on PATH. Grammar and repository candidates live in Rust.
 
-Completion runtime coverage on Linux includes Bash 5.2.37, Zsh 5.9, Fish 4.0.2
-and PowerShell 7.5.4. PowerShell completion requires 7.3 or newer.
+PowerShell completion requires 7.3 or newer.
 Completion tests use isolated repositories and profiles. Tests requiring optional
 shell runtimes are marked ignored in the regular Cargo suite. Complete
 `./dev test`, `./dev check`, and an unfiltered `./dev test-group completion`
@@ -250,10 +225,8 @@ CI checks its required runtime environment before selecting tests. A missing
 required runtime is a setup error with tests not started, rather than a failed
 native behavior assertion. The workflow has no explicit job timeout; GitHub
 Actions applies its platform limits. Windows uses the pinned Rust toolchain
-with native Cargo; the Unix jobs use `./dev`. Real interaction evidence and
-measured latency belong to the review evidence for a completion change. Native
-completion checks establish their tested shell contracts, rather than
-whole-application platform compatibility.
+with native Cargo; the Unix jobs use `./dev`. Native completion checks establish
+shell contracts, rather than whole-application platform compatibility.
 
 For optimized executables:
 
@@ -309,8 +282,8 @@ extraction guidance, a `.manifest.json` with member and archive hashes and build
 metadata, and a `.sha256` file for the archive and manifest. Keep the three files
 together. `verify-native` checks identity, hashes, archive members, modes and ELF
 architecture, and optionally extracts into a new directory. It runs without Rust.
-The current verifier handles the current manifest format; earlier retained
-candidates can be verified with the tooling from their source revision.
+The verifier supports native manifest schemas 2 and 3. New packages snapshot
+supported runtime requirements separately from build provenance.
 
 `./dev native-qualify --help` describes extracted-artifact runtime checks. The
 fixture harnesses use real Git and select the extracted executables through an

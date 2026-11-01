@@ -27,6 +27,17 @@ tools. Verify relevant Git behavior in source or isolated real-Git fixtures. Cit
 material evidence and its limits; one project's practice does not establish general
 adoption. Routine engineering choices need no research or approval ceremony.
 
+## Phase ownership
+
+The phase planner owns the phase: it defines acceptance, commissions the independent
+acceptance review, decides closure within the owner's authorized scope, and handles
+PR delivery when authorized. The phase executor implements the agreed scope,
+commissions technical review, resolves findings and commits locally. An executor
+hands evidence back to the planner rather than initiating acceptance review or
+closing the phase. When one agent performs both roles, keep the responsibilities
+and independent review boundaries explicit. Owner authorization still governs
+remote delivery, merging and publication.
+
 ## Development and verification
 
 Use the existing `./dev` entry points. Discover focused scopes with
@@ -54,10 +65,11 @@ The authoritative GitHub repository is `msanguineti/twigsmith`. Use this reposit
 actual checkout; do not hard-code a personal filesystem path.
 
 Use short-lived task branches from up-to-date `origin/main`, normally named
-`codex/<task>`. Do not implement directly on `main`. Keep changes small and integrate
+`docs/<task>`, `feature/<task>`, `fix/<task>` or `test/<task>`. Do not implement directly on `main`. Keep changes small and integrate
 frequently; do not introduce permanent development or feature-integration branches.
 Worktrees are optional when isolation or concurrent work warrants them.
 
+Use Conventional Commit messages, with an optional scope where useful.
 After the required checks and review, selectively commit authorized
 content and inspect the resulting commit. Push branches and open pull requests
 when remote delivery is authorized by the task. All normal integration into `main`
@@ -66,8 +78,8 @@ after successful authorized integration.
 
 Merge only when the owner authorizes that integration and required CI has passed
 against up-to-date `main`. Passing CI alone is not merge authorization. Mandatory
-human PR approval is not required; technical review and owner acceptance remain
-separate. Do not bypass protection, force-push, reset or rewrite history without
+human PR approval is not required; technical review, phase acceptance and owner
+authorization to merge remain separate. Do not bypass protection, force-push, reset or rewrite history without
 explicit authorization. Emergency exceptions must identify their scope and reason.
 Verify actual server enforcement rather than assuming these instructions enable it.
 
