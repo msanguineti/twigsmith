@@ -109,6 +109,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git var GIT_SHELL_PATH
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Ask Git's own shell, including the bundled Git-for-Windows shell.
+          # dash has no version flag; its installed package records that version.
+          git -c 'alias.twigsmith-shell-version=!printf "BASH_VERSION=%s\n" "$BASH_VERSION"; if command -v dpkg-query >/dev/null 2>&1; then dpkg-query --show dash; fi' twigsmith-shell-version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $compiler = rustc -vV
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $compiler
