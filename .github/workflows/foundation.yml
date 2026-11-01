@@ -94,6 +94,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Output "Source: $env:GITHUB_SHA; runner: $env:RUNNER_OS/$env:RUNNER_ARCH; image: $env:ImageOS/$env:ImageVersion"
+          git rev-parse 'HEAD^{tree}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output "Terminal harness: Unix PTY / Windows ConPTY; TERM=xterm-256color; native prompt tests require keyboard input"
           Write-Output ([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)
           $PSVersionTable.PSVersion
           if ($env:RUNNER_ARCH -ne $env:EXPECTED_ARCH) { throw 'Unexpected runner architecture' }
@@ -120,7 +123,9 @@ jobs:
           # Explicit target prevents inherited Cargo configuration selecting another architecture.
           cargo build --locked --target $env:EXPECTED_TARGET --example native_check_fixture --example native_editor_fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --no-fail-fast --target $env:EXPECTED_TARGET --test native_journey --test native_checks --test native_check_guards --test native_editor -- --nocapture
+          cargo test --locked --no-fail-fast --target $env:EXPECTED_TARGET --test native_journey --test native_checks --test native_check_guards --test native_editor --test native_prompts -- --nocapture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --target $env:EXPECTED_TARGET --lib presentation::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   native-completion:

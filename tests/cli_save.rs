@@ -620,41 +620,6 @@ fn save_terminal_keeps_choice_when_only_finish_settings_change() {
     );
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn save_capable_keyboard_choice_and_cancel_restore_terminal() {
-    isolated(
-        "save_capable_keyboard_choice_and_cancel_restore_terminal",
-        true,
-        |root| {
-            for accept in [true, false] {
-                let (repo, remote) = fixture(root);
-                dirty(&repo, true, true);
-                let before = snapshot(repo.path());
-                let mut terminal = terminal::Terminal::start_capable(
-                    env!("CARGO_BIN_EXE_tgi"),
-                    repo.path(),
-                    &["save"],
-                );
-                terminal.until("How would you like to save this work?");
-                if accept {
-                    terminal.send(b"\x1b[A\x1b[A\x1b[A\x1b[A\x1b[A\r");
-                } else {
-                    terminal.send(b"\x04");
-                }
-                assert_eq!(terminal.finish().success(), accept, "{}", terminal.output);
-                terminal.assert_restored();
-                if accept {
-                    published(&repo, &remote);
-                } else {
-                    assert_eq!(snapshot(repo.path()), before);
-                    assert!(oid(&remote, "refs/heads/work").is_none());
-                }
-            }
-        },
-    );
-}
-
 #[cfg(unix)]
 fn hook(directory: &Path, name: &str, contents: &str) {
     use std::os::unix::fs::PermissionsExt;

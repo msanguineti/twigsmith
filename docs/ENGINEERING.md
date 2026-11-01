@@ -22,7 +22,9 @@ systems.
 The focused [native Git journey](DEVELOPMENT.md#native-git-journey) checks both
 command names, observational status and ordinary start against an advanced local
 remote, save/review delivery and direct candidate retry, with independent ref,
-index and worktree assertions. Companion native process and guard suites exercise
+index and worktree assertions. Native prompt tests cover guided configuration and
+representative save/finish keyboard interaction, fallback and terminal restoration.
+Companion native process and guard suites exercise
 managed checks and refusal boundaries. The four-platform
 pull-request matrix is separate from completion coverage and distribution
 qualification; only actual successful native jobs establish that slice on an OS.

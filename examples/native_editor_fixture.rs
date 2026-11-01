@@ -26,6 +26,14 @@ fn assert_terminal() {
 fn main() {
     assert_terminal();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--redirect-stdout") {
+        let status = Command::new(args.get(2).expect("child executable"))
+            .args(&args[3..])
+            .stdout(fs::File::create(args.get(1).expect("stdout filename")).unwrap())
+            .status()
+            .unwrap();
+        std::process::exit(status.code().unwrap_or(1));
+    }
     if args.first().is_some_and(|arg| arg == "--terminal-probe") {
         #[cfg(windows)]
         unsafe {
@@ -41,6 +49,11 @@ fn main() {
                 "console left without line input/echo: {mode:x}"
             );
         }
+        println!("TERMINAL_PROBE_READY");
+        io::stdout().flush().unwrap();
+        let mut line = String::new();
+        assert_ne!(io::stdin().read_line(&mut line).unwrap(), 0);
+        assert_eq!(line.trim_end_matches(['\r', '\n']), "line-echo-restored");
         println!("TERMINAL_RESTORED");
         return;
     }

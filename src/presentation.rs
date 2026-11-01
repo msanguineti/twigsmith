@@ -7,8 +7,8 @@ use inquire::{
     ui::{Attributes, Color, IndexPrefix, RenderConfig, StyleSheet, Styled},
 };
 
-#[cfg(all(test, target_os = "linux"))]
-#[path = "../tests/support/terminal.rs"]
+#[cfg(all(test, any(unix, windows)))]
+#[path = "../tests/support/native_terminal.rs"]
 #[allow(dead_code)]
 mod terminal_tests;
 
@@ -511,12 +511,63 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[test]
+    fn redirected_line_probe() {
+        let Some(expected) = std::env::var_os("TWIGSMITH_PRESENTATION_LINE_PROBE") else {
+            return;
+        };
+        assert!(!interactive());
+        let answer = input_with_suggestions("Complete line?", &["suggested".to_owned()]).unwrap();
+        if expected == "submitted" {
+            assert_eq!(answer.as_deref(), Some("answer"));
+        } else {
+            assert_eq!(answer, None);
+        }
+        println!("LINE_PROBE_PASSED");
+    }
+
+    #[test]
+    fn redirected_fallback_requires_a_complete_line_even_with_capable_term() {
+        use std::process::{Command, Stdio};
+        for term in ["dumb", "xterm-256color"] {
+            for input in [b"".as_slice(), b"answer", b"answer\n"] {
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "presentation::tests::redirected_line_probe",
+                        "--nocapture",
+                    ])
+                    .env("TERM", term)
+                    .env(
+                        "TWIGSMITH_PRESENTATION_LINE_PROBE",
+                        if input.ends_with(b"\n") {
+                            "submitted"
+                        } else {
+                            "cancelled"
+                        },
+                    )
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                child.stdin.take().unwrap().write_all(input).unwrap();
+                let output = child.wait_with_output().unwrap();
+                assert!(output.status.success(), "{output:?}");
+                assert!(String::from_utf8_lossy(&output.stdout).contains("LINE_PROBE_PASSED"));
+                assert!(!output.stderr.contains(&b'\x1b'));
+            }
+        }
+    }
+
+    #[cfg(any(unix, windows))]
     #[test]
     fn terminal_prompt_probe() {
         if std::env::var_os("TWIGSMITH_PRESENTATION_PROBE").is_none() {
             return;
         }
+        assert!(interactive(), "probe must select the capable Inquire path");
+        println!("CAPABLE_TERMINAL_SELECTED");
         section("Repository");
         let suggestions = ["feature/βeta$'x", "feature/βeta$'y"].map(str::to_owned);
         assert_eq!(
@@ -524,6 +575,19 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("feature/βeta$'y")
+        );
+        let literal_hints = ["release β界 with spaces $'\";long-literal-choice".to_owned()];
+        assert_eq!(
+            input_with_suggestions("Highlighted literal?", &literal_hints)
+                .unwrap()
+                .as_deref(),
+            Some(literal_hints[0].as_str())
+        );
+        assert_eq!(
+            input_with_suggestions("No implicit suggestion?", &suggestions)
+                .unwrap()
+                .as_deref(),
+            Some("")
         );
         assert_eq!(
             input_with_suggestions("Future branch?", &suggestions)
@@ -582,7 +646,10 @@ mod tests {
                     ("three", "Third"),
                     ("four", "Fourth"),
                     ("five", "Fifth"),
-                    ("six", "Sixth")
+                    (
+                        "six",
+                        "Sixth choice preserves a long literal β界 description on narrow screens"
+                    )
                 ],
                 None
             )
@@ -602,7 +669,7 @@ mod tests {
         assert_eq!(input("Cancel with keyboard?").unwrap(), None);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(unix, windows))]
     #[test]
     fn keyboard_suggestions_and_described_menus_keep_literal_and_submission_contracts() {
         use std::process::Command;
@@ -626,9 +693,14 @@ mod tests {
                 command.env(key, value);
             }
             let columns = if preference.is_none() { 80 } else { 40 };
-            let mut term = terminal_tests::Terminal::start_command_width(command, columns);
-            term.until("Suggested branch?");
+            let mut term = terminal_tests::NativeTerminal::start_command_width(command, columns);
+            term.until("CAPABLE_TERMINAL_SELECTED");
+            term.until("Type to filter;");
             term.send("feature/β\t\x1b[B\x1b[B\r".as_bytes());
+            term.until("Highlighted literal?");
+            term.send(b"release \x1b[B\t\r");
+            term.until("No implicit suggestion?");
+            term.send(b"\r");
             term.until("Future branch?");
             term.send("future/新しい\r".as_bytes());
             term.until("Literal argument?");

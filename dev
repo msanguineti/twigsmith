@@ -83,15 +83,15 @@ test_group() {
             ;;
         save)
             group_description='Save planning, checkpoints, publication, and command interaction'
-            group_targets='save_planning save_execution save_publication cli_save native_journey remote_roles'
+            group_targets='save_planning save_execution save_publication cli_save native_journey native_prompts remote_roles'
             ;;
         finish)
             group_description='Finish planning, preparation, publication, recovery, and command interaction'
-            group_targets='finish_integration finish_planning finish_preparation finish_publication finish_roles finish_checks native_checks native_check_guards native_journey native_editor cli_finish cli_history cli_history_presentation'
+            group_targets='finish_integration finish_planning finish_preparation finish_publication finish_roles finish_checks native_checks native_check_guards native_journey native_editor native_prompts cli_finish cli_history cli_history_presentation'
             ;;
         config)
             group_description='Settings, setup, and cross-command finish-check configuration'
-            group_targets='settings cli_config finish_checks'
+            group_targets='settings cli_config native_prompts finish_checks'
             ;;
         status)
             group_description='Repository observation and status presentation'

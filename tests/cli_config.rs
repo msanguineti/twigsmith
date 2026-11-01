@@ -1526,28 +1526,6 @@ fn unattended_generation_audits_combined_private_policy_without_writing_invalid_
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn guided_keyboard_cancellation_creates_no_configuration() {
-    cases(
-        "guided_keyboard_cancellation_creates_no_configuration",
-        true,
-        |root, exe| {
-            for cancel in [b"\x1b".as_slice(), b"\x04", b"\x03"] {
-                let repo = Repository::new(root);
-                let before = snapshot(repo.path());
-                let mut term = terminal::Terminal::start_capable(exe, repo.path(), &["config"]);
-                term.until("Remote receiving work");
-                term.send(cancel);
-                assert!(term.finish().success(), "{}", term.output);
-                assert!(term.output.contains("Setup cancelled"), "{}", term.output);
-                term.assert_restored();
-                assert_eq!(snapshot(repo.path()), before);
-            }
-        },
-    );
-}
-
-#[cfg(target_os = "linux")]
 fn default_journey(term: &mut terminal::Terminal) {
     term.until("Remote receiving work");
     term.send(b"\n\n\n\n\n\n");
@@ -1869,39 +1847,6 @@ fn guided_private_only_policy_audit_and_changed_override_review() {
             load(repo.path()).save_plan,
             SavePlan::parse(&["stash:all".into()]).unwrap()
         );
-    });
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn guided_keyboard_suggestions_and_unicode_literal_values() {
-    cases("guided_keyboard_suggestions", true, |root, exe| {
-        let repo = Repository::new(root);
-        commit(&repo);
-        repo.success(&["remote", "add", "réseau", "/offline"]);
-        repo.success(&["branch", "feature/β;$"]);
-        let before = snapshot(&repo.path().join(".git"));
-        let mut term = terminal::Terminal::start_capable_narrow(exe, repo.path(), &["config"]);
-        term.until("Remote receiving work");
-        term.send("ré\t\r".as_bytes());
-        term.until("Project source remote");
-        term.send(b"\r");
-        term.until("Project base branch");
-        term.send("feature/\t\r".as_bytes());
-        term.until("Saving preferences:");
-        term.send(b"\r");
-        term.until("Finishing preferences:");
-        term.send(b"\r");
-        term.until("Finish checks:");
-        term.send(b"\r");
-        term.until("Create this file?");
-        term.send(b"\x1b[A\r");
-        assert!(term.finish().success(), "{}", term.output);
-        term.assert_restored();
-        assert_eq!(load(repo.path()).publish_remote, "réseau");
-        assert_eq!(load(repo.path()).base, "feature/β;$");
-        assert_eq!(snapshot(&repo.path().join(".git")), before);
-        assert!(!term.output.contains("Local branch references"));
     });
 }
 
