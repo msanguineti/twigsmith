@@ -102,8 +102,9 @@ loading the adapter. Complete Bash arguments with the cursor at the word’s end
 Tab leaves a word with trailing text after the cursor unchanged. No general key
 bindings are changed. PowerShell’s normal `Standard`/`Windows` native argument
 mode preserves embedded quotes when executing completed commands; a custom
-`Legacy` mode retains its ordinary argument conversion. The completer selects
-`Standard` locally for its own query and leaves your general preference intact.
+`Legacy` mode retains its ordinary argument conversion. The completer sends its
+own queries as literal argument lists and decodes the backend’s UTF-8 output
+explicitly, preserving your argument-passing and console encoding preferences.
 PowerShell integration wraps `TabExpansion2` to remove default filesystem hints
 for this tool’s arguments, while delegating other commands to the prior function.
 Microsoft describes overriding that host function as
@@ -168,8 +169,9 @@ Persistent registration regenerates shell code on startup using `twigsmith`
 or `tgi` on PATH. Restart the shell after upgrading the executable. Moving it
 works when PATH resolves its new location; a missing executable yields no
 completion. Run `tgi completion --help` for installed setup and recovery details.
-The validated environment is Linux; Windows and macOS runtime compatibility
-remain unverified.
+Native shell checks separately exercise session adapters, Tab insertion and
+command launch. Their results cover the observed shell/terminal versions; they
+do not extend the published Linux distribution baseline to Windows or macOS.
 
 ## A working session
 

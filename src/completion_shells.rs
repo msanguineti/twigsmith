@@ -111,9 +111,6 @@ const POWERSHELL: &str = r#"# twigsmith and tgi completion (PowerShell 7.3 or ne
 if ($PSVersionTable.PSVersion -ge [version]'7.3') {
 Register-ArgumentCompleter -Native -CommandName twigsmith,tgi,twigsmith.exe,tgi.exe -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    # Local scope preserves the user's preference while retaining empty words
-    # and embedded quotes in the backend's literal native argument vector.
-    $PSNativeCommandArgumentPassing = 'Standard'
     $executable = Get-Command twigsmith -CommandType Application -ErrorAction Ignore | Select-Object -First 1
     if (-not $executable) {
         $executable = Get-Command tgi -CommandType Application -ErrorAction Ignore | Select-Object -First 1
@@ -144,8 +141,33 @@ Register-ArgumentCompleter -Native -CommandName twigsmith,tgi,twigsmith.exe,tgi.
     if ($words.Count -eq 0) { return }
     if ($cursorPosition -gt $commandAst.Extent.EndOffset -or $command.CommandElements[-1].Extent.EndOffset -lt $prefix.Length) { $words.Add('') }
     $query = @('__complete', '--shell', 'powershell', '--index', [string]($words.Count - 1), '--') + $words.ToArray()
-    & $executable.Source @query 2>$null | ForEach-Object {
-        $candidate = [string]$_
+    # Native pipelines decode stdout with Console.OutputEncoding, which can be
+    # an OEM code page on Windows. The backend emits UTF-8 on every platform.
+    # Bind encoding and literal argv at this subprocess boundary without changing
+    # the host's console encoding or native argument-passing preference.
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $executable.Source
+    $start.UseShellExecute = $false
+    $directory = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+    if ([System.IO.Directory]::Exists($directory)) { $start.WorkingDirectory = $directory }
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    foreach ($argument in $query) { $start.ArgumentList.Add([string]$argument) }
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        $null = $process.Start()
+        # Drain both streams concurrently; diagnostics remain private to the
+        # completion query even when a backend failure produces substantial text.
+        $errors = $process.StandardError.ReadToEndAsync()
+        $output = $process.StandardOutput.ReadToEnd()
+        $process.WaitForExit()
+        $null = $errors.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { return }
+    } catch { return } finally { $process.Dispose() }
+    foreach ($candidate in [regex]::Split($output, '\r?\n')) {
+        if ($candidate.Length -eq 0) { continue }
         # PowerShell single-quoted literals escape a quote by doubling it.
         $insertion = "'" + $candidate.Replace("'", "''") + "'"
         [System.Management.Automation.CompletionResult]::new($insertion, $candidate, 'ParameterValue', $candidate)

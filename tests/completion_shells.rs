@@ -1,7 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/snapshot.rs"]
+mod preservation;
 mod support;
-#[cfg(target_os = "linux")]
 #[path = "support/terminal.rs"]
 #[allow(dead_code)]
 mod terminal;
@@ -64,6 +65,7 @@ fn fixture(root: &Path) -> Repository {
         repository.success(&["branch", branch]);
     }
     repository.success(&["tag", "v1.2.3"]);
+    fs::write(repository.path().join("irrelevant"), b"not a completion").unwrap();
     repository
 }
 
@@ -162,6 +164,39 @@ foreach ($line in @('tgi save --message irr', 'tgi start irr', 'twigsmith start 
     $result = TabExpansion2 $line $line.Length
     if ($result.CompletionMatches.Count -ne 0) { throw "unrelated completion fallback: $line" }
 }
+# Native stdout remains UTF-8 when the host uses a Windows OEM code page.
+# Set-Location also differs from the OS process cwd: the backend must observe
+# this filesystem location, including its repository discovery from a child.
+$nested = New-Item -ItemType Directory -Path 'encoding nested directory'
+Set-Location -LiteralPath $nested.FullName
+$originalInput = [Console]::InputEncoding
+$originalOutput = [Console]::OutputEncoding
+$originalPipe = $OutputEncoding
+$originalPassing = $global:PSNativeCommandArgumentPassing
+try {
+    foreach ($codepage in @(437, 65001)) {
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding($codepage)
+        $hostOutput = [Console]::OutputEncoding
+        foreach ($mode in @('Legacy', 'Standard', 'Windows')) {
+            $global:PSNativeCommandArgumentPassing = $mode
+            foreach ($line in @('tgi s 中', 'twigsmith s 中')) {
+                $result = TabExpansion2 $line $line.Length
+                if ($result.CompletionMatches.Count -ne 1 -or $result.CompletionMatches[0].ListItemText -cne '中文工作') {
+                    throw "UTF-8 candidate changed under code page $codepage / $mode"
+                }
+                if (-not [object]::ReferenceEquals([Console]::InputEncoding, $originalInput) -or
+                    -not [object]::ReferenceEquals([Console]::OutputEncoding, $hostOutput) -or
+                    -not [object]::ReferenceEquals($OutputEncoding, $originalPipe) -or
+                    $global:PSNativeCommandArgumentPassing -ne $mode) {
+                    throw 'completion changed host encoding or argument preference'
+                }
+            }
+        }
+    }
+} finally {
+    [Console]::OutputEncoding = $originalOutput
+    $global:PSNativeCommandArgumentPassing = $originalPassing
+}
 "#).unwrap();
             let output = Command::new(&shell)
                 .args([
@@ -206,7 +241,6 @@ foreach ($line in @('tgi save --message irr', 'tgi start irr', 'twigsmith start 
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires zsh; run explicitly on a provisioned machine"]
 fn zsh_tab_preserves_literal_names_with_native_completion() {
@@ -217,6 +251,10 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
         |root| {
             let repository = fixture(root);
             let script = artifact(root, "zsh");
+            let nested = repository.path().join("nested directory");
+            fs::create_dir(&nested).unwrap();
+            fs::write(nested.join("irrelevant"), b"no fallback").unwrap();
+            let before = preservation::snapshot(repository.path());
             let capture = root.join("arguments");
             let rc = root.join(".zshrc");
             let mut init = String::new();
@@ -241,15 +279,22 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
             }
             init.push_str(&format!("autoload -Uz compinit\ncompinit -i -D\nsource {}\nPS1='TWIGSMITH_READY> '\ncount=0\ntgi() {{ printf '%s\\0' \"$@\" > {}; ((count+=1)); printf 'DONE:%s\\n' \"$count\"; }}\ntwigsmith() {{ tgi \"$@\"; }}\n", quote(script.to_str().unwrap()), quote(capture.to_str().unwrap())));
             fs::write(&rc, init).unwrap();
-            let mut command = Command::new("setsid");
+            let mut command = Command::new(&shell);
             command
-                .args(["--ctty", shell.to_str().unwrap(), "-d", "-i"])
+                .args(["-d", "-i"])
                 .env("ZDOTDIR", root)
                 .env("PATH", backend_path())
                 .env("TERM", "xterm-256color")
-                .env("LC_ALL", "C.UTF-8")
-                .current_dir(repository.path());
-            let mut terminal = terminal::Terminal::start_command(command);
+                .env(
+                    "LC_ALL",
+                    if cfg!(target_os = "macos") {
+                        "en_US.UTF-8"
+                    } else {
+                        "C.UTF-8"
+                    },
+                )
+                .current_dir(&nested);
+            let mut terminal = terminal::Terminal::start_session(command);
             terminal.until("TWIGSMITH_READY> ");
             for (index, (line, expected)) in [
                 ("tgi s 中", "s\0中文工作\0"),
@@ -312,13 +357,14 @@ fn zsh_tab_preserves_literal_names_with_native_completion() {
                 "{}",
                 terminal.output
             );
+            capture_static_and_empty(&mut terminal, root, &nested, &capture);
+            assert_eq!(preservation::snapshot(repository.path()), before);
             terminal.send(b"exit\n");
             assert!(terminal.finish().success(), "{}", terminal.output);
         },
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires fish; run explicitly on a provisioned machine"]
 fn fish_tab_inserts_literal_names() {
@@ -326,15 +372,21 @@ fn fish_tab_inserts_literal_names() {
     isolated("fish_tab_inserts_literal_names", true, |root| {
         let repository = fixture(root);
         let script = artifact(root, "fish");
+        let nested = repository.path().join("nested directory");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("irrelevant"), b"no fallback").unwrap();
+        let before = preservation::snapshot(repository.path());
         let capture = root.join("arguments");
         let resources = shell
             .parent()
             .and_then(Path::parent)
             .unwrap()
             .join("share/fish/functions");
+        // With --no-config, older Fish has no variable-change handler to
+        // complete this initializer after it sets fish_key_bindings itself.
         let setup = if resources.is_dir() {
             format!(
-                "set -p fish_function_path {}; fish_default_key_bindings; ",
+                "set -p fish_function_path {}; set -g fish_key_bindings fish_default_key_bindings; fish_default_key_bindings; ",
                 quote(resources.to_str().unwrap())
             )
         } else {
@@ -345,21 +397,21 @@ fn fish_tab_inserts_literal_names() {
             quote(script.to_str().unwrap()),
             quote(capture.to_str().unwrap())
         );
-        let mut command = Command::new("setsid");
+        let mut command = Command::new(&shell);
         command
-            .args([
-                "--ctty",
-                shell.to_str().unwrap(),
-                "--no-config",
-                "-i",
-                "-C",
-                &init,
-            ])
+            .args(["--no-config", "-i", "-C", &init])
             .env("PATH", backend_path())
             .env("TERM", "xterm-256color")
-            .env("LC_ALL", "C.UTF-8")
-            .current_dir(repository.path());
-        let mut terminal = terminal::Terminal::start_command(command);
+            .env(
+                "LC_ALL",
+                if cfg!(target_os = "macos") {
+                    "en_US.UTF-8"
+                } else {
+                    "C.UTF-8"
+                },
+            )
+            .current_dir(&nested);
+        let mut terminal = terminal::Terminal::start_session(command);
         terminal.until("TWIGSMITH_READY> ");
         for (index, (line, expected)) in [
             ("tgi s 中", "s\0中文工作\0"),
@@ -422,6 +474,8 @@ fn fish_tab_inserts_literal_names() {
             "{}",
             terminal.output
         );
+        capture_static_and_empty(&mut terminal, root, &nested, &capture);
+        assert_eq!(preservation::snapshot(repository.path()), before);
         terminal.send(b"exit\n");
         assert!(terminal.finish().success(), "{}", terminal.output);
     });
@@ -673,7 +727,14 @@ fn powershell_console_tab_preserves_native_arguments_and_empty_results() {
                 .env("PATH", std::env::join_paths(paths).unwrap())
                 .env("TWIGSMITH_COMPLETION_CAPTURE", &capture)
                 .env("TERM", "xterm-256color")
-                .env("LC_ALL", "C.UTF-8")
+                .env(
+                    "LC_ALL",
+                    if cfg!(target_os = "macos") {
+                        "en_US.UTF-8"
+                    } else {
+                        "C.UTF-8"
+                    },
+                )
                 .current_dir(repository.path());
             let mut terminal = terminal::Terminal::start_command(command);
             terminal.until_with_cursor_reports("TWIGSMITH_READY> ");
@@ -775,5 +836,230 @@ fn adapters_use_short_executable_when_only_it_is_on_path() {
             out.lines().any(|line| line.trim() == "status"),
             "{shell_name}: {output:?}"
         );
+    }
+}
+
+fn native_launch_and_completed_start(root: &Path, name: &str) {
+    let runtime = shell(name).unwrap_or_else(|| panic!("required {name} runtime is unavailable"));
+    let repository = fixture(root);
+    let nested = repository.path().join("nested directory");
+    fs::create_dir(&nested).unwrap();
+    fs::write(
+        repository.path().join("unrelated work"),
+        b"keep this work\n",
+    )
+    .unwrap();
+    repository.success(&["add", "unrelated work", "irrelevant"]);
+    repository.success(&["commit", "-m", "preserved content"]);
+    let refs_before = repository.success(&["show-ref"]).stdout;
+    let script = artifact(root, name);
+    let bin = root.join("native binaries with spaces");
+    fs::create_dir(&bin).unwrap();
+    for (binary, source) in [
+        ("tgi", env!("CARGO_BIN_EXE_tgi")),
+        ("twigsmith", env!("CARGO_BIN_EXE_twigsmith")),
+    ] {
+        fs::copy(source, bin.join(binary)).unwrap();
+    }
+    let mut paths = vec![bin.clone()];
+    paths.extend(std::env::split_paths(&backend_path()));
+    let session = root.join("native-session");
+    fs::create_dir(&session).unwrap();
+    let mut init = format!("source {}\n", quote(script.to_str().unwrap()));
+    if name == "fish" {
+        let resources = runtime
+            .parent()
+            .and_then(Path::parent)
+            .unwrap()
+            .join("share/fish/functions");
+        if resources.is_dir() {
+            init.insert_str(
+                0,
+                &format!(
+                    "set -p fish_function_path {}; set -g fish_key_bindings fish_default_key_bindings; fish_default_key_bindings;\n",
+                    quote(resources.to_str().unwrap())
+                ),
+            );
+        }
+    }
+    if name == "zsh" {
+        // Reuse relocated runtime paths selected by the local launcher.
+        if let Some(path) = std::env::var_os("TWIGSMITH_TEST_ZSH_MODULE_PATH") {
+            init.insert_str(
+                0,
+                &format!(
+                    "module_path=({} $module_path)\n",
+                    quote(path.to_str().unwrap())
+                ),
+            );
+        }
+        if let Some(path) = std::env::var_os("TWIGSMITH_TEST_ZSH_FUNCTION_PATH") {
+            init.insert_str(
+                0,
+                &format!("fpath=({}/**/*(/) $fpath)\n", quote(path.to_str().unwrap())),
+            );
+        }
+        init.insert_str(0, "autoload -Uz compinit\n");
+        // compinit must run after relocated paths have been configured.
+        init = init.replace("source ", "compinit -i -D\nsource ");
+    }
+    init.push_str(if name == "fish" {
+        "function fish_prompt; printf 'NATIVE_READY> '; end\n"
+    } else {
+        "PS1='NATIVE_READY> '\n"
+    });
+    let rc = session.join(if name == "zsh" { ".zshrc" } else { "bashrc" });
+    fs::write(&rc, &init).unwrap();
+    let mut command = Command::new(&runtime);
+    match name {
+        "bash" => {
+            command.args(["--noprofile", "--rcfile", rc.to_str().unwrap(), "-i"]);
+        }
+        "zsh" => {
+            command.args(["-d", "-i"]).env("ZDOTDIR", &session);
+        }
+        "fish" => {
+            command.args(["--no-config", "-i", "-C", &init]);
+        }
+        _ => unreachable!(),
+    }
+    command
+        .current_dir(&nested)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("TERM", "xterm-256color")
+        .env(
+            "LC_ALL",
+            if cfg!(target_os = "macos") {
+                "en_US.UTF-8"
+            } else {
+                "C.UTF-8"
+            },
+        );
+    let mut terminal = terminal::Terminal::start_session(command);
+    terminal.until("NATIVE_READY> ");
+    let status_file = root.join("native-exit-status");
+    let passing = if name == "fish" { "$status" } else { "$?" };
+    for (index, binary) in ["tgi", "twigsmith"].iter().enumerate() {
+        // Add refs after startup: completion must read the current nested repository.
+        let branch = format!("live{index}-中文;$'\"work");
+        repository.success(&["branch", &branch]);
+        terminal.output.clear();
+        terminal.send(format!("{binary} start live{index}-\t").as_bytes());
+        terminal.send(
+            format!(
+                "; printf '%s' {passing} > {}; printf 'NATIVE_DONE_{index}\\n'\r",
+                quote(status_file.to_str().unwrap())
+            )
+            .as_bytes(),
+        );
+        terminal.until(&format!("NATIVE_DONE_{index}\r\n"));
+        assert_eq!(fs::read(&status_file).unwrap(), b"0", "{}", terminal.output);
+        assert_eq!(
+            repository
+                .success(&["symbolic-ref", "--short", "HEAD"])
+                .stdout,
+            format!("{branch}\n").as_bytes()
+        );
+        let index_before_status = fs::read(repository.path().join(".git/index")).unwrap();
+        // Explicit space-containing paths launch each actual binary too.
+        terminal.output.clear();
+        terminal.send(
+            format!(
+                "{} status; printf '%s' {passing} > {}; printf 'PATH_DONE_{index}\\n'\r",
+                quote(bin.join(binary).to_str().unwrap()),
+                quote(status_file.to_str().unwrap())
+            )
+            .as_bytes(),
+        );
+        terminal.until(&format!("PATH_DONE_{index}\r\n"));
+        assert_eq!(fs::read(&status_file).unwrap(), b"0", "{}", terminal.output);
+        assert_eq!(
+            fs::read(repository.path().join(".git/index")).unwrap(),
+            index_before_status,
+            "status refreshed the index"
+        );
+        assert_eq!(
+            fs::read(repository.path().join("unrelated work")).unwrap(),
+            b"keep this work\n"
+        );
+        assert_eq!(
+            repository.success(&["write-tree"]).stdout,
+            repository.success(&["rev-parse", "HEAD^{tree}"]).stdout
+        );
+    }
+    terminal.send(b"exit\r");
+    assert!(terminal.finish().success(), "{}", terminal.output);
+    // Existing refs still point to their original objects; only fixture-added refs appear.
+    let after = repository.success(&["show-ref"]).stdout;
+    for line in String::from_utf8(refs_before).unwrap().lines() {
+        assert!(
+            String::from_utf8_lossy(&after)
+                .lines()
+                .any(|value| value == line)
+        );
+    }
+    assert!(!repository.path().join("SENTINEL").exists());
+}
+
+#[test]
+fn bash_native_launch_and_completed_start() {
+    isolated("bash_native_launch_and_completed_start", true, |root| {
+        native_launch_and_completed_start(root, "bash")
+    });
+}
+
+#[test]
+#[ignore = "requires zsh; run explicitly on a provisioned machine"]
+fn zsh_native_launch_and_completed_start() {
+    isolated("zsh_native_launch_and_completed_start", true, |root| {
+        native_launch_and_completed_start(root, "zsh")
+    });
+}
+
+#[test]
+#[ignore = "requires fish; run explicitly on a provisioned machine"]
+fn fish_native_launch_and_completed_start() {
+    isolated("fish_native_launch_and_completed_start", true, |root| {
+        native_launch_and_completed_start(root, "fish")
+    });
+}
+
+fn capture_static_and_empty(
+    terminal: &mut terminal::Terminal,
+    outside: &Path,
+    repository: &Path,
+    capture: &Path,
+) {
+    terminal.output.clear();
+    terminal.send(format!("cd {}\r", quote(outside.to_str().unwrap())).as_bytes());
+    terminal.until("TWIGSMITH_READY> ");
+    terminal.output.clear();
+    terminal.send(b"tgi stat\t\r");
+    terminal.until("DONE:10");
+    assert_eq!(
+        fs::read(capture).unwrap(),
+        b"status\0",
+        "{}",
+        terminal.output
+    );
+    terminal.output.clear();
+    terminal.send(format!("cd {}\r", quote(repository.to_str().unwrap())).as_bytes());
+    terminal.until("TWIGSMITH_READY> ");
+    for (count, command, expected) in [
+        (
+            11,
+            "twigsmith start irrelevant",
+            b"start\0irrelevant\0".as_slice(),
+        ),
+        (
+            12,
+            "tgi save --message irrelevant",
+            b"save\0--message\0irrelevant\0".as_slice(),
+        ),
+    ] {
+        terminal.output.clear();
+        terminal.send(format!("{command}\t\r").as_bytes());
+        terminal.until(&format!("DONE:{count}"));
+        assert_eq!(fs::read(capture).unwrap(), expected, "{}", terminal.output);
     }
 }

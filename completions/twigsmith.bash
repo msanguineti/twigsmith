@@ -76,7 +76,12 @@ _twigsmith_add() {
 
 _twigsmith() {
     local -a words=()
-    local LC_ALL=C
+    # Bash through 4.2 exposes byte offsets; later Bash exposes character
+    # offsets in COMP_POINT. Keep substring and word-fragment units aligned
+    # with the invoking editor, including in multibyte locales.
+    if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] <= 2))); then
+        local LC_ALL=C
+    fi
     local cur quote suffix candidate executable i
     COMPREPLY=()
     # Readline replaces text before the cursor and retains the token suffix.
@@ -98,4 +103,7 @@ _twigsmith() {
     return 0
 }
 
-complete -o noquote -F _twigsmith twigsmith tgi
+# Bash 3.2 has no noquote option. Its default programmable-completion path
+# leaves our shell-escaped insertions intact; newer Readline needs noquote.
+complete -o noquote -F _twigsmith twigsmith tgi 2>/dev/null ||
+    complete -F _twigsmith twigsmith tgi
