@@ -349,9 +349,11 @@ fn fish_tab_inserts_literal_names() {
             .and_then(Path::parent)
             .unwrap()
             .join("share/fish/functions");
+        // With --no-config, older Fish has no variable-change handler to
+        // complete this initializer after it sets fish_key_bindings itself.
         let setup = if resources.is_dir() {
             format!(
-                "set -p fish_function_path {}; fish_default_key_bindings; ",
+                "set -p fish_function_path {}; set -g fish_key_bindings fish_default_key_bindings; fish_default_key_bindings; ",
                 quote(resources.to_str().unwrap())
             )
         } else {
@@ -841,7 +843,7 @@ fn native_launch_and_completed_start(root: &Path, name: &str) {
             init.insert_str(
                 0,
                 &format!(
-                    "set -p fish_function_path {}; fish_default_key_bindings;\n",
+                    "set -p fish_function_path {}; set -g fish_key_bindings fish_default_key_bindings; fish_default_key_bindings;\n",
                     quote(resources.to_str().unwrap())
                 ),
             );

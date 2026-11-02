@@ -17,6 +17,10 @@ use std::{
 use support::{Repository, isolated};
 use terminal::NativeTerminal;
 
+// ConPTY may render a trailing prompt space as cursor movement (CSI 1 C).
+// Synchronize on visible marker text rather than its terminal representation.
+const SHELL_READY: &str = "NATIVE_SHELL_READY>";
+
 const LITERAL: &str = "literal/β;$'&()work";
 
 fn runtime(name: &str) -> PathBuf {
@@ -69,7 +73,7 @@ fn captured(term: &mut NativeTerminal, capture: &Path, line: &str, expected: &[&
     term.output.clear();
     term.send(format!("{line}\r").as_bytes());
     term.until("NATIVE_ARGUMENTS_RECORDED");
-    term.until("NATIVE_SHELL_READY> ");
+    term.until(SHELL_READY);
     let actual: Vec<String> = serde_json::from_slice(&fs::read(capture).unwrap()).unwrap();
     assert_eq!(actual, expected, "{}", term.output);
 }
@@ -127,7 +131,7 @@ fn windows_powershell_actual_tab_and_native_arguments() {
                 .env("TWIGSMITH_ARGUMENT_CAPTURE", &capture)
                 .env("TERM", "xterm-256color");
             let mut term = NativeTerminal::start_command_width(command, 180);
-            term.until("NATIVE_SHELL_READY> ");
+            term.until(SHELL_READY);
             captured(&mut term, &capture, "tgi stat\t", &["status"]);
             captured(
                 &mut term,
@@ -143,7 +147,7 @@ fn windows_powershell_actual_tab_and_native_arguments() {
                 )
                 .as_bytes(),
             );
-            term.until("NATIVE_SHELL_READY> ");
+            term.until(SHELL_READY);
             let before = preservation::snapshot(repo.path());
             captured(&mut term, &capture, "tgi stat\t", &["status"]);
             assert_eq!(
@@ -161,7 +165,7 @@ fn windows_powershell_actual_tab_and_native_arguments() {
             assert_eq!(preservation::snapshot(repo.path()), before_tab);
             term.output.clear();
             term.send(b"\x03");
-            term.until("NATIVE_SHELL_READY> ");
+            term.until(SHELL_READY);
             for name in ["twigsmith", "tgi"] {
                 repo.success(&["switch", "main"]);
                 let old_tree = repo.success(&["write-tree"]).stdout;
@@ -222,7 +226,7 @@ fn windows_powershell_actual_tab_and_native_arguments() {
                 term.send(
                     format!("$global:PSNativeCommandArgumentPassing = '{mode}'\r").as_bytes(),
                 );
-                term.until("NATIVE_SHELL_READY> ");
+                term.until(SHELL_READY);
                 let expected = if mode == "Legacy" {
                     "space quoted value"
                 } else {

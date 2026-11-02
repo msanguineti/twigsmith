@@ -20,6 +20,7 @@ pub struct Terminal {
     master: File,
     pub output: String,
     pending_utf8: Vec<u8>,
+    device_query: Vec<u8>,
 }
 impl Terminal {
     pub fn start(executable: &str, directory: &Path, args: &[&str]) -> Self {
@@ -114,6 +115,7 @@ impl Terminal {
             master: File::from(master),
             output: String::new(),
             pending_utf8: Vec::new(),
+            device_query: Vec::new(),
         }
     }
     #[allow(dead_code)]
@@ -136,12 +138,33 @@ impl Terminal {
             );
         }
     }
+    // Fish's startup capability batch ends with primary device attributes.
+    // A terminal may leave optional queries unanswered, but DA1 must complete
+    // the handshake before the shell accepts keys. Report a basic VT100 with
+    // no optional extensions, rather than enabling unimplemented protocols.
+    fn answer_device_attributes(&mut self, bytes: &[u8]) {
+        self.device_query.extend_from_slice(bytes);
+        while let Some(start) = self
+            .device_query
+            .windows(4)
+            .position(|word| word == b"\x1b[0c")
+        {
+            self.master.write_all(b"\x1b[?1;0c").unwrap();
+            self.device_query.drain(..start + 4);
+        }
+        // Preserve a partial query across PTY read boundaries. Track this
+        // independently from rendered output, which callers clear between steps.
+        let keep = self.device_query.len().saturating_sub(3);
+        self.device_query.drain(..keep);
+    }
+
     fn read(&mut self) {
         let mut bytes = [0; 8192];
         loop {
             match self.master.read(&mut bytes) {
                 Ok(0) => break,
                 Ok(n) => {
+                    self.answer_device_attributes(&bytes[..n]);
                     self.pending_utf8.extend_from_slice(&bytes[..n]);
                     loop {
                         match std::str::from_utf8(&self.pending_utf8) {
