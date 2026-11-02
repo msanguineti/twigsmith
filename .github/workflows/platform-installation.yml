@@ -85,6 +85,12 @@ jobs:
           run-id: ${{ steps.input.outputs.run }}
           github-token: ${{ github.token }}
           digest-mismatch: error
+      - name: Start only an existing enabled Docker service
+        if: always() && runner.os == 'Windows' && steps.input.outcome == 'success'
+        shell: pwsh
+        run: |
+          & ./scripts/ci/start-existing-docker.ps1 -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'installation-service')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Observe clean ServerCore runtime absence and official provisioning
         if: always() && runner.os == 'Windows' && steps.input.outcome == 'success'
         shell: pwsh
@@ -103,5 +109,6 @@ jobs:
           path: |
             ${{ runner.temp }}/installation-browser/
             ${{ runner.temp }}/installation-runtime/
+            ${{ runner.temp }}/installation-service/
           if-no-files-found: warn
           retention-days: 30

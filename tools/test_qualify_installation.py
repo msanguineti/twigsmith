@@ -1,5 +1,6 @@
 """Synthetic trust-boundary tests; these never claim browser/Windows qualification."""
 from copy import deepcopy
+import contextlib
 import hashlib
 import io
 import json
@@ -162,6 +163,151 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertEqual(set(report['checks']), set(probe.BROWSER_ROWS))
             self.assertTrue(all(row['status'] == 'unmet' for row in report['checks'].values()))
             self.assertNotIn('sig=', json.dumps(report))
+
+    def test_download_progress_uses_matching_guid_and_requires_browser_completion(self):
+        begin = {'event': 'Browser.downloadWillBegin', 'guid': 'selected', 'suggestedFilename': 'original.zip'}
+        events = [begin, {'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': 'inProgress'}]
+        self.assertEqual(probe.selected_download_progress(events)['state'], 'inProgress')
+        events.append({'event': 'Browser.downloadProgress', 'guid': 'other', 'state': 'completed'})
+        self.assertEqual(probe.selected_download_progress(events)['state'], 'inProgress')
+        events.append({'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': 'completed'})
+        self.assertEqual(probe.selected_download_progress(events)['state'], 'completed')
+        events.append({'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': 'canceled'})
+        self.assertEqual(probe.selected_download_progress(events)['state'], 'canceled')
+        events.append({'event': 'Browser.downloadWillBegin', 'guid': 'extra'})
+        with self.assertRaisesRegex(RuntimeError, 'more than one'):
+            probe.selected_download_progress(events)
+
+    def test_cdp_download_events_never_retain_signed_url(self):
+        event = {'method': 'Browser.downloadWillBegin', 'params': {'guid': 'selected',
+                 'suggestedFilename': 'original.zip', 'url': 'https://storage.invalid/a?sig=private'}}
+        response = {'id': 1, 'result': {}}
+        wire = io.BytesIO(b''.join(bytes([0x81, 126]) + len(data).to_bytes(2, 'big') + data
+                                   for data in (json.dumps(event).encode(), json.dumps(response).encode())))
+        client = probe.CDP.__new__(probe.CDP)
+        client.events, client.sequence = [], 0
+        client.exact = wire.read
+        client.frame = lambda opcode, data: None
+        client.call('Browser.getVersion')
+        self.assertEqual(client.events, [{'event': 'Browser.downloadWillBegin', 'guid': 'selected',
+                                         'suggestedFilename': 'original.zip'}])
+        self.assertNotIn('sig=', json.dumps(client.events))
+
+    def test_browser_retains_lifetime_until_matching_completion_and_consumer_returns(self):
+        for terminal in ('completed', 'canceled'):
+            with self.subTest(terminal=terminal), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                directory, profile = root / 'download', root / 'profile'
+                directory.mkdir(); profile.mkdir()
+                original = directory / 'original.zip'
+                payload = b'fully-readable-but-still-in-progress'
+                active = profile / 'DevToolsActivePort'
+                active.write_text('12345\n/devtools/browser/probe\n')
+                state = {'closed': False, 'sleeps': 0, 'browser': None}
+                class Browser:
+                    def __init__(self, url):
+                        self.events = []
+                        self.page = '/page/' in url
+                        if not self.page:
+                            state['browser'] = self
+                    def call(self, method, params=None):
+                        if method == 'Browser.setDownloadBehavior':
+                            self_events_enabled = params['eventsEnabled']
+                            assert self_events_enabled
+                        if method == 'Target.createTarget':
+                            return {'targetId': 'page'}
+                        if method == 'Page.navigate':
+                            original.write_bytes(payload)
+                            state['browser'].events.extend([
+                                {'event': 'Browser.downloadWillBegin', 'guid': 'selected', 'suggestedFilename': original.name},
+                                {'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': 'inProgress'}])
+                        if method == 'Browser.close':
+                            state['closed'] = True
+                            original.unlink(missing_ok=True)
+                        return {'product': 'native-browser-fixture'}
+                    def close(self):
+                        pass
+                class Connection:
+                    def request(self, *args):
+                        pass
+                    def getresponse(self):
+                        return io.BytesIO(json.dumps([{'id': 'page', 'webSocketDebuggerUrl': 'ws://127.0.0.1/page/1'}]).encode())
+                    def close(self):
+                        pass
+                def sleep(_):
+                    state['sleeps'] += 1
+                    self.assertTrue(original.is_file())
+                    self.assertEqual(probe.native_package.digest(original.read_bytes()), hashlib.sha256(payload).hexdigest())
+                    state['browser'].events.append({'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': terminal})
+                process = SimpleNamespace(poll=lambda: None, wait=lambda timeout: 0)
+                observation = {}
+                with patch.object(probe, 'browser_binary', return_value=Path('native-browser-fixture')), \
+                     patch.object(probe, 'CDP', Browser), \
+                     patch.object(probe.http.client, 'HTTPConnection', return_value=Connection()), \
+                     patch.object(probe.subprocess, 'Popen', return_value=process), \
+                     patch.object(probe.time, 'sleep', side_effect=sleep):
+                    if terminal == 'canceled':
+                        with self.assertRaisesRegex(RuntimeError, 'canceled'):
+                            with probe.browser_download('https://signed.invalid/private', directory, profile,
+                                                        hashlib.sha256(payload).hexdigest(), observation):
+                                self.fail('a canceled download must not yield a candidate')
+                    else:
+                        with probe.browser_download('https://signed.invalid/private', directory, profile,
+                                                    hashlib.sha256(payload).hexdigest(), observation) as (path, observed):
+                            self.assertEqual(state['sleeps'], 1)
+                            self.assertFalse(state['closed'])
+                            self.assertTrue(path.is_file())
+                            self.assertEqual(observed['download_events'][-1]['state'], 'completed')
+                self.assertTrue(state['closed'])
+                self.assertFalse(original.exists())
+                self.assertTrue(observation['lifecycle'][-2]['files'])
+                self.assertEqual(observation['lifecycle'][-1]['files'], [])
+                self.assertNotIn('signed.invalid', json.dumps(observation))
+
+    def test_browser_original_removed_after_close_is_explicitly_unmet(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            report = {'checks': {name: {'status': 'passed'} for name in probe.BROWSER_ROWS}}
+            item = {'artifact': {'artifact_id': '17', 'sha256': '0' * 64}}
+            @contextlib.contextmanager
+            def download(url, directory, profile, expected_hash, observation):
+                original = directory / 'original.zip'
+                original.write_bytes(b'original')
+                observation['lifecycle'] = []
+                yield original, observation
+                original.unlink()
+            args = SimpleNamespace(evidence_dir=root)
+            with patch.object(probe.sys, 'platform', 'win32'), \
+                 patch.object(probe.release_stage, 'inspect_platform_request'), \
+                 patch.object(probe, 'signed_redirect', return_value='signed-url-not-retained'), \
+                 patch.object(probe, 'browser_download', side_effect=download), \
+                 patch.object(probe, 'inspect_browser_download'), \
+                 patch.object(probe, 'windows_policy', return_value={'available': True}) as policy, \
+                 patch.object(probe, 'security_metadata', return_value={'present': False}):
+                probe.browser_probe(args, {}, item, report)
+            self.assertEqual(policy.call_count, 2)
+            self.assertEqual(report['checks']['original_retained_after_browser_close']['status'], 'unmet')
+            self.assertFalse(probe.passed(report, probe.BROWSER_ROWS))
+
+    def test_no_runtime_daemon_captures_read_only_host_state_and_stays_unmet(self):
+        report = {'checks': {}}
+        args = SimpleNamespace(archive=Path('approved-candidate.zip'), redist_sha256='1' * 64)
+        with patch.object(probe.sys, 'platform', 'win32'), \
+             patch.object(probe, 'verify_candidate', return_value={'version': 'fixture'}), \
+             patch.object(probe.shutil, 'which', return_value='docker-fixture'), \
+             patch.object(probe, 'command', return_value={'exit': 1, 'stdout': '', 'stderr': 'no named pipe'}) as command, \
+             patch.object(probe, 'runtime_host_state', return_value={'exit': 0, 'stdout': 'stopped-service', 'stderr': ''}) as host:
+            probe.runtime_probe(args, {}, {}, report)
+        host.assert_called_once()
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(report['checks']['isolated_container']['status'], 'unmet')
+        self.assertIn('stopped-service', report['runtime_host_state']['stdout'])
+        with patch.object(probe, 'powershell', return_value={}) as powershell:
+            probe.runtime_host_state()
+        script = powershell.call_args.args[0]
+        self.assertIn('Get-CimInstance Win32_Service', script)
+        self.assertNotIn('Start-Service', script)
+        self.assertNotIn('Set-Service', script)
 
     def test_mac_native_archive_utility_uses_original_and_preserves_produced_file(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -551,8 +551,10 @@ The Windows runtime probe uses a disposable process-isolated official ServerCore
 2025 container through the runner's existing Docker daemon. It checks an actual
 missing-runtime failure for both aliases, installs the hash-pinned official
 Microsoft-signed Redistributable, then requires successful version results. It
-never removes host runtime DLLs or provisions a Docker daemon. A missing daemon,
-preinstalled runtime or different failure remains unmet. This is ServerCore
+never removes host runtime DLLs or provisions a Docker daemon. The workflow starts
+an already registered, enabled Docker service when stopped and records before/after
+state and engine readiness. It leaves missing or disabled services unchanged.
+A missing daemon, preinstalled runtime or different failure remains unmet. This is ServerCore
 provisioning evidence; it is not desktop/UAC evidence. Reports record actual host
 policies, including any security protections disabled by the hosted image.
 

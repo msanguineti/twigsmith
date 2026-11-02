@@ -314,6 +314,7 @@ case "$command" in
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_platform_package.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_platform.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_installation.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_docker_service.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_set.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_recovery.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_stage.py' "$@"

@@ -6,6 +6,7 @@ Missing security metadata, UI access or clean runtime is an unmet check, not a p
 """
 import argparse
 import base64
+import contextlib
 import hashlib
 import http.client
 import json
@@ -34,7 +35,8 @@ REDIST = 'https://aka.ms/vc14/vc_redist.x64.exe'
 TIMEOUT = 180
 BROWSER_ROWS = ('browser_download', 'outer_security_metadata', 'archive_identity',
                 'native_extraction', 'inherited_security_metadata', 'security_policy', 'security_assessment',
-                'first_launch_twigsmith', 'first_launch_tgi', 'ordinary_git_journey')
+                'first_launch_twigsmith', 'first_launch_tgi', 'ordinary_git_journey',
+                'original_retained_after_browser_close')
 RUNTIME_ROWS = ('isolated_container', 'official_installer', 'runtime_absent',
                 'absent_launch_twigsmith', 'absent_launch_tgi', 'runtime_install',
                 'installed_launch_twigsmith', 'installed_launch_tgi')
@@ -173,6 +175,7 @@ class CDP:
             self.sock.close()
             raise ValueError('local DevTools WebSocket handshake failed')
         self.sequence = 0
+        self.events = []
 
     def exact(self, count):
         output = b''
@@ -209,6 +212,10 @@ class CDP:
             if first & 15 != 1:
                 raise ValueError('local DevTools closed or sent a non-text message')
             message = json.loads(data)
+            if message.get('method') in ('Browser.downloadWillBegin', 'Browser.downloadProgress'):
+                fields = ('guid', 'suggestedFilename', 'state', 'receivedBytes', 'totalBytes')
+                self.events.append({'event': message['method'], **{key: value for key, value in
+                    message.get('params', {}).items() if key in fields}})
             if message.get('id') == self.sequence:
                 if 'error' in message:
                     raise RuntimeError('local browser rejected DevTools operation')
@@ -232,7 +239,36 @@ def browser_binary():
     return None
 
 
-def browser_download(url, directory, profile, expected_hash):
+def download_snapshot(directory, stage):
+    files = []
+    if not directory.is_dir():
+        return {'stage': stage, 'directory_missing': True, 'files': files}
+    for path in directory.iterdir():
+        try:
+            info = path.stat()
+            files.append({'name': path.name, 'size': info.st_size, 'regular': path.is_file(),
+                          'symlink': path.is_symlink()})
+        except FileNotFoundError:
+            files.append({'name': path.name, 'disappeared_during_observation': True})
+    return {'stage': stage, 'observed_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'files': files}
+
+
+def selected_download_progress(events):
+    beginnings = {event['guid']: event for event in events if event.get('event') == 'Browser.downloadWillBegin'
+                  and event.get('guid')}
+    if len(beginnings) > 1:
+        raise RuntimeError('native browser initiated more than one download')
+    if not beginnings:
+        return {'state': 'pending'}
+    guid, beginning = next(iter(beginnings.items()))
+    selected = [event for event in events if event.get('event') == 'Browser.downloadProgress'
+                and event.get('guid') == guid]
+    return {'guid': guid, 'suggestedFilename': beginning.get('suggestedFilename'),
+            'state': selected[-1].get('state') if selected else 'pending'}
+
+
+@contextlib.contextmanager
+def browser_download(url, directory, profile, expected_hash, observation=None):
     binary = browser_binary()
     if binary is None:
         raise RuntimeError('installed native headed browser is unavailable')
@@ -243,6 +279,8 @@ def browser_download(url, directory, profile, expected_hash):
     process = subprocess.Popen([str(binary), *flags], stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, env=child_env())
     client = None
+    observation = {} if observation is None else observation
+    observation['lifecycle'] = [download_snapshot(directory, 'before_browser_navigation')]
     try:
         active = profile / 'DevToolsActivePort'
         deadline = time.monotonic() + 40
@@ -253,7 +291,10 @@ def browser_download(url, directory, profile, expected_hash):
         lines = active.read_text().splitlines()
         client = CDP('ws://127.0.0.1:' + str(int(lines[0])) + lines[1])
         version = client.call('Browser.getVersion')
-        client.call('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(directory)})
+        observation.update(binary=str(binary), flags=flags, version=version, headed=True,
+                           download_events=client.events)
+        client.call('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(directory),
+                                                     'eventsEnabled': True})
         target = client.call('Target.createTarget', {'url': 'about:blank'})
         connection = http.client.HTTPConnection('127.0.0.1', int(lines[0]), timeout=10)
         connection.request('GET', '/json/list')
@@ -267,17 +308,29 @@ def browser_download(url, directory, profile, expected_hash):
             page_client.close()
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline:
+            # Drain browser-level progress messages without persisting their signed URL.
+            client.call('Browser.getVersion')
+            progress = selected_download_progress(client.events)
+            completed = progress['state'] == 'completed'
+            if progress['state'] == 'canceled':
+                raise RuntimeError('native browser canceled the download; security decision or cancellation remains unqualified')
             files = list(directory.iterdir())
             complete = [path for path in files if path.is_file() and not path.is_symlink()
                         and path.suffix not in ('.crdownload', '.tmp')]
-            if len(complete) == 1 and len(files) == 1:
+            if completed and len(complete) == 1 and len(files) == 1:
+                if complete[0].name != progress['suggestedFilename']:
+                    raise ValueError('native browser completion filename differs from the original file')
                 if native_package.digest(complete[0].read_bytes()) != expected_hash:
                     raise ValueError('browser-downloaded original ZIP hash mismatch')
-                return complete[0], {'binary': str(binary), 'flags': flags, 'version': version,
-                                     'headed': True, 'download_sha256': expected_hash}
+                observation.update(binary=str(binary), flags=flags, version=version, headed=True,
+                                   download_sha256=expected_hash, download_events=client.events)
+                observation['lifecycle'].append(download_snapshot(directory, 'verified_original_before_consumer'))
+                yield complete[0], observation
+                return
             time.sleep(.5)
         raise RuntimeError('native browser did not complete the exact download; security UI may require a person')
     finally:
+        observation['lifecycle'].append(download_snapshot(directory, 'before_browser_close'))
         if client:
             try:
                 client.call('Browser.close')
@@ -293,6 +346,7 @@ def browser_download(url, directory, profile, expected_hash):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=10)
+        observation['lifecycle'].append(download_snapshot(directory, 'after_browser_close'))
 
 
 def ps_literal(value):
@@ -402,10 +456,35 @@ def browser_probe(args, approval, item, report):
     release_stage.inspect_platform_request(approval, api_json)
     download = evidence / 'browser-download'
     download.mkdir()
-    # Browser history/preferences can contain signed URLs; never upload profiles.
-    with tempfile.TemporaryDirectory(prefix='twigsmith-browser-profile-') as profile:
-        outer, observation = browser_download(signed_redirect(item['artifact']['artifact_id']), download,
-                                              Path(profile), item['artifact']['sha256'])
+    if sys.platform == 'win32':
+        policy = windows_policy()
+        report['windows_policy_before_download'] = policy
+        row(report, 'security_policy', 'passed' if policy['available'] else 'unmet', policy)
+    # Keep the original browser/profile alive until the original file is consumed.
+    # Chromium may still finalize a download/reputation decision after bytes appear.
+    observation, outer = {}, None
+    try:
+        with tempfile.TemporaryDirectory(prefix='twigsmith-browser-profile-') as profile:
+            with browser_download(signed_redirect(item['artifact']['artifact_id']), download,
+                                  Path(profile), item['artifact']['sha256'], observation) as (outer, observation):
+                inspect_browser_download(args, approval, item, report, outer, observation)
+    finally:
+        observation.setdefault('lifecycle', []).append(download_snapshot(download, 'after_profile_cleanup'))
+        report['browser_lifecycle'] = clean(observation)
+        if outer is not None:
+            retained = outer.is_file() and not outer.is_symlink()
+            retained = retained and native_package.digest(outer.read_bytes()) == item['artifact']['sha256']
+            metadata = security_metadata(outer)
+            row(report, 'original_retained_after_browser_close',
+                'passed' if retained and metadata['present'] else 'unmet',
+                {'same_original_hash': bool(retained), 'security_metadata': metadata})
+        if sys.platform == 'win32':
+            report['windows_policy_after_download'] = windows_policy()
+
+
+def inspect_browser_download(args, approval, item, report, outer, observation):
+    evidence = args.evidence_dir
+    observation['lifecycle'].append(download_snapshot(outer.parent, 'before_original_metadata'))
     row(report, 'browser_download', 'passed', observation)
     marks = {'outer': security_metadata(outer)}
     row(report, 'outer_security_metadata', 'passed' if marks['outer']['present'] else 'unmet', marks['outer'])
@@ -416,6 +495,7 @@ def browser_probe(args, approval, item, report):
         release_stage.extract_artifact(outer.read_bytes(), item['artifact'], Path(temporary) / 'checked', names)
     extracted = evidence / 'os-outer-extraction'
     outer_result = os_extract(outer, extracted)
+    observation['lifecycle'].append(download_snapshot(outer.parent, 'after_outer_extraction'))
     archive = extracted / item['archive']
     manifest = verify_candidate(archive, approval, item)
     marks['archive'] = security_metadata(archive)
@@ -563,6 +643,15 @@ def run_container(docker, image, candidate, name):
         command([docker, 'rm', '--force', name], timeout=30)
 
 
+def runtime_host_state():
+    return powershell("$ErrorActionPreference='Stop'; [pscustomobject]@{" +
+        "services=@(Get-CimInstance Win32_Service -Filter \"Name='docker' OR Name='com.docker.service' OR Name='containerd'\" | " +
+        "Select-Object Name,State,StartMode); " +
+        "dockerd=(Get-Command dockerd.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source); " +
+        "docker_host=$env:DOCKER_HOST; docker_context=$env:DOCKER_CONTEXT}" +
+        ' | ConvertTo-Json -Depth 5 -Compress')
+
+
 def runtime_probe(args, approval, item, report):
     if sys.platform != 'win32':
         raise ValueError('isolated MSVC runtime qualification requires native Windows')
@@ -571,9 +660,11 @@ def runtime_probe(args, approval, item, report):
         raise ValueError('runtime probe requires an externally approved official installer SHA-256')
     docker = shutil.which('docker')
     if not docker:
+        report['runtime_host_state'] = runtime_host_state()
         return
     info = command([docker, 'info', '--format', '{{json .}}'], timeout=30)
     if info['exit']:
+        report['runtime_host_state'] = runtime_host_state()
         row(report, 'isolated_container', 'unmet', info)
         return
     engine = json.loads(info['stdout'])
