@@ -32,7 +32,7 @@ def verify(archive, npm_dir, archive_hash, payload_hash, package_hash, tag,
             raise ValueError('expected lowercase SHA-256 values')
     if digest(archive.read_bytes()) != archive_hash:
         raise ValueError('native archive differs from approved hash')
-    native_manifest = archive.with_name(archive.name[:-7] + '.manifest.json')
+    native_manifest = archive.with_name(native_package.archive_stem(archive) + '.manifest.json')
     npm_manifest = npm_dir / 'manifest.json'
     if digest(native_manifest.read_bytes()) != native_manifest_hash:
         raise ValueError('native manifest differs from approved hash')
@@ -43,6 +43,8 @@ def verify(archive, npm_dir, archive_hash, payload_hash, package_hash, tag,
         raise ValueError('npm manifest differs from approved hash')
     with tempfile.TemporaryDirectory() as temp:
         native = native_package.verify(archive, Path(temp) / 'native')
+        if native['target'] != native_package.TARGET:
+            raise ValueError('legacy release publication requires the Linux x86_64 GNU target')
         version = native['version']
         if tag != 'v' + version:
             raise ValueError('tag must exactly match native version')

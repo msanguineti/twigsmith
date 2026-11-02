@@ -120,8 +120,8 @@ fn native_git_editor_accept_and_cancel_retry() {
             support::Repository::new(root).success(&["var", "GIT_SHELL_PATH"])
         );
         for (exe, method, atomic, override_editor) in [
-            (env!("CARGO_BIN_EXE_tgi"), "merge", false, false),
-            (env!("CARGO_BIN_EXE_twigsmith"), "squash", true, true),
+            (support::executable("tgi"), "merge", false, false),
+            (support::executable("twigsmith"), "squash", true, true),
         ] {
             let (local, remote) = fixture(root, false);
             local.success(&[
@@ -208,7 +208,7 @@ fn native_git_editor_accept_and_cancel_retry() {
         let target = oid(&remote, "main");
         let original = oid(&local, "HEAD");
         finish_editor(
-            command(env!("CARGO_BIN_EXE_tgi"), &local, root, "accept"),
+            command(support::executable("tgi"), &local, root, "accept"),
             b"cancel\n",
             1,
         );
@@ -216,7 +216,7 @@ fn native_git_editor_accept_and_cancel_retry() {
         assert_ne!(prepared, original);
         assert_eq!(oid(&remote, "main"), target);
         no_message_files(&local);
-        let retry = command(env!("CARGO_BIN_EXE_tgi"), &local, root, "accept");
+        let retry = command(support::executable("tgi"), &local, root, "accept");
         finish_editor(retry, b"accept\n", 0);
         assert_eq!(oid(&local, "HEAD^2"), prepared);
         assert_eq!(oid(&remote, "main"), oid(&local, "HEAD"));
@@ -245,7 +245,7 @@ fn native_git_editor_failures_and_bypass() {
             let work = oid(&local, "HEAD");
             let mutation = matches!(action, "settings" | "head" | "index");
             let mut cmd = command(
-                env!("CARGO_BIN_EXE_twigsmith"),
+                support::executable("twigsmith"),
                 &local,
                 root,
                 if mutation { "mutate" } else { action },
@@ -294,7 +294,7 @@ fn native_git_editor_failures_and_bypass() {
         local.success(&["config", "core.editor", "absent-editor-executable"]);
         let target = oid(&remote, "main");
         let mut term = NativeTerminal::start_command(command(
-            env!("CARGO_BIN_EXE_tgi"),
+            support::executable("tgi"),
             &local,
             root,
             "accept",
@@ -307,7 +307,7 @@ fn native_git_editor_failures_and_bypass() {
         // Git's ':' editor is explicitly a no-op, even with no external ':' executable.
         local.success(&["config", "core.editor", ":"]);
         let mut term = NativeTerminal::start_command(command(
-            env!("CARGO_BIN_EXE_tgi"),
+            support::executable("tgi"),
             &local,
             root,
             "accept",
@@ -319,7 +319,7 @@ fn native_git_editor_failures_and_bypass() {
         for explicit in [false, true] {
             let (local, remote) = fixture(root, false);
             local.success(&["config", "core.editor", "absent-editor-executable"]);
-            let mut cmd = Command::new(env!("CARGO_BIN_EXE_tgi"));
+            let mut cmd = Command::new(support::executable("tgi"));
             cmd.current_dir(local.path()).args(["finish"]);
             if explicit {
                 cmd.args(["-m", "Explicit intent"]);

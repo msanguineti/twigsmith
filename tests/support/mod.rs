@@ -17,7 +17,8 @@ pub fn executable(name: &str) -> &'static str {
             "artifact directory must be absolute"
         );
         ["twigsmith", "tgi"].map(|name| {
-            let path = directory.join(name);
+            let suffix = std::env::consts::EXE_SUFFIX;
+            let path = directory.join(format!("{name}{suffix}"));
             let metadata = std::fs::symlink_metadata(&path)
                 .unwrap_or_else(|error| panic!("artifact {}: {error}", path.display()));
             assert!(
@@ -57,6 +58,9 @@ use twigsmith::git;
 pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     if env::var("TWIGSMITH_ISOLATED_TEST").as_deref() == Ok(name) {
         let root = env::var_os("TWIGSMITH_TEST_ROOT").expect("isolated test root");
+        if env::var_os("TWIGSMITH_QUALIFICATION_CHILD").is_some() {
+            println!("TWIGSMITH_QUALIFICATION_CHILD {name}");
+        }
         test(Path::new(&root));
         return;
     }
@@ -78,6 +82,8 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     child.env_clear();
     for name in [
         "TWIGSMITH_ARTIFACT_DIR",
+        "TWIGSMITH_NPM_SHIM_DIR",
+        "TWIGSMITH_QUALIFICATION_CHILD",
         "GIT_EXEC_PATH",
         "TWIGSMITH_TEST_BASH",
         "TWIGSMITH_TEST_CMD",

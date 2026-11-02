@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import native_package
 import npm_package
+from test_native_package import macho_fixture, pe_fixture
 
 
 class NpmPackageTests(unittest.TestCase):
@@ -47,6 +48,27 @@ class NpmPackageTests(unittest.TestCase):
                        {'twigsmith': {'filename': '../outside.tgz'}}, {'twigsmith': None}):
             with self.subTest(report=report), self.assertRaises(ValueError):
                 npm_package.package_filename(report, 'twigsmith', '0.1.0-beta.1')
+
+    def test_legacy_packager_refuses_other_verified_platforms_instead_of_advertising_linux(self):
+        for target, arch, payload in [
+            ('aarch64-apple-darwin', 'aarch64', macho_fixture('aarch64')),
+            ('x86_64-pc-windows-msvc', 'x86_64', pe_fixture()),
+        ]:
+            with self.subTest(target=target):
+                provenance = {'kind': 'development-probe',
+                    'source': {'revision': '1' * 40, 'tree': '2' * 40, 'dirty': False},
+                    'build': {'target': target, 'profile': 'release', 'locked': True, 'compiler': 'fixture'},
+                    'toolchain': {'pin': 'fixture', 'rustc': 'rustc fixture\nhost: ' + target, 'cargo': 'fixture'},
+                    'environment': {'system': 'fixture', 'machine': arch}}
+                directory = self.root / target
+                directory.mkdir()
+                archive = native_package.write_bundle(directory, '0.1.0-beta.1',
+                    {name: payload for name in native_package.executable_names(target)} |
+                    {'LICENSE': b'MIT License\nfixture'}, provenance, 1, target=target)
+                with self.assertRaisesRegex(ValueError, 'legacy npm packaging requires'):
+                    npm_package.make_package(self.repo, archive, self.output,
+                        npm_package.sha256(archive), native_package.digest(payload))
+                self.assertFalse(self.output.exists())
 
     def test_real_npm_pack_has_only_expected_bytes_and_metadata(self):
         tarball = self.build()

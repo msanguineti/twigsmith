@@ -2,6 +2,14 @@ name: Native release qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      qualification:
+        description: Candidate preparation to run (never publishes)
+        type: choice
+        default: linux-release
+        options:
+          - linux-release
+          - platform-packages
   release:
     types: [published]
 
@@ -12,7 +20,12 @@ env:
   TWIGSMITH_DEV_FAIL_FAST: '1'
 
 jobs:
+  platform-packages:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'platform-packages'
+    uses: ./.github/workflows/platform-packages.yml
+
   candidate:
+    if: github.event_name != 'workflow_dispatch' || inputs.qualification != 'platform-packages'
     permissions:
       contents: read
       actions: read

@@ -10,6 +10,9 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import struct
+import zipfile
+import warnings
 from unittest.mock import patch
 
 import native_package as package
@@ -74,7 +77,8 @@ class PackageTests(unittest.TestCase):
             binary = extracted / name
             self.assertFalse(binary.is_symlink())
             self.assertEqual(binary.read_bytes(), self.payload)
-            self.assertEqual(stat.S_IMODE(binary.stat().st_mode), 0o755)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(binary.stat().st_mode), 0o755)
         with self.assertRaisesRegex(ValueError, "must not exist"):
             package.verify(self.archive, destination)
 
@@ -196,12 +200,177 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ELF64 x86_64"):
                 package.validate_elf(data)
 
-    def test_wrong_target_and_existing_output_reject_before_build(self):
+    @patch.object(package.platform, "machine", return_value="x86_64")
+    @patch.object(package.platform, "system", return_value="Linux")
+    def test_wrong_target_and_existing_output_reject_before_build(self, *_):
         repo = Path(__file__).resolve().parents[1]
         with self.assertRaisesRegex(ValueError, "target"):
             package.build(repo, self.root / "unused", False, "aarch64-unknown-linux-gnu")
         with self.assertRaisesRegex(ValueError, "must not exist"):
             package.build(repo, self.output, False, package.TARGET)
+
+
+def pe_fixture():
+    """Independent minimal PE32+ image with one imported Windows system DLL."""
+    data = bytearray(1024)
+    data[:2] = b"MZ"
+    struct.pack_into("<I", data, 60, 128)
+    data[128:132] = b"PE\0\0"
+    struct.pack_into("<HH", data, 132, 0x8664, 1)
+    struct.pack_into("<HH", data, 148, 240, 2)
+    struct.pack_into("<H", data, 152, 0x20b)
+    struct.pack_into("<HH", data, 200, 6, 0)
+    struct.pack_into("<H", data, 220, 3)
+    struct.pack_into("<I", data, 260, 16)
+    struct.pack_into("<II", data, 272, 4096, 40)
+    data[392:400] = b".rdata\0\0"
+    struct.pack_into("<IIII", data, 400, 512, 4096, 512, 512)
+    struct.pack_into("<I", data, 524, 4160)
+    data[576:589] = b"KERNEL32.dll\0"
+    return bytes(data)
+
+
+def macho_fixture(arch):
+    """Independent MH_EXECUTE plus dylib and LC_BUILD_VERSION commands."""
+    name = b"/usr/lib/libSystem.B.dylib\0"
+    width = (24 + len(name) + 7) // 8 * 8
+    library = struct.pack("<IIIIII", 0xc, width, 24, 0, 0, 0) + name
+    library += b"\0" * (width - len(library))
+    deployment = struct.pack("<IIIIII", 0x32, 24, 1, 0x0b0000, 0x0f0000, 0)
+    loader = struct.pack("<III", 0xe, 32, 12) + b"/usr/lib/dyld\0" + b"\0" * 6
+    cpu = 0x100000c if arch == "aarch64" else 0x1000007
+    return struct.pack("<IIIIIIII", 0xfeedfacf, cpu, 0, 2, 3, width + 24 + 32, 0, 0) + library + deployment + loader
+
+
+class NewPlatformTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def candidate(self, target):
+        metadata = package.target_metadata(target)
+        data = pe_fixture() if metadata["os"] == "windows" else macho_fixture(metadata["arch"])
+        provenance = {"kind": "development-probe",
+                      "source": {"revision": "1" * 40, "tree": "2" * 40, "dirty": False},
+                      "build": {"target": target, "profile": "release", "locked": True, "compiler": "fixture"},
+                      "toolchain": {"pin": "fixture", "rustc": "rustc fixture\nhost: " + target, "cargo": "cargo fixture"},
+                      "environment": {"system": "fixture only", "machine": metadata["arch"]}}
+        output = self.root / target
+        output.mkdir()
+        archive = package.write_bundle(output, "0.1.0", {name: data for name in metadata["executables"]}
+                                       | {"LICENSE": b"MIT License\nfixture"}, provenance, 1, target=target)
+        return archive
+
+    def rebind(self, archive, edit=None):
+        stem = package.archive_stem(archive)
+        path = archive.with_name(stem + ".manifest.json")
+        manifest = json.loads(path.read_text())
+        manifest["archive"]["sha256"] = package.digest(archive.read_bytes())
+        if edit:
+            edit(manifest)
+        path.write_text(json.dumps(manifest))
+        archive.with_name(stem + ".sha256").write_text(
+            f"{package.digest(archive.read_bytes())}  {archive.name}\n"
+            f"{package.digest(path.read_bytes())}  {path.name}\n")
+
+    def test_all_new_targets_roundtrip_without_expanding_supported_requirements(self):
+        for target in ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"):
+            with self.subTest(target=target):
+                archive = self.candidate(target)
+                destination = self.root / (target + " extracted with spaces")
+                manifest = package.verify(archive, destination)
+                self.assertEqual(manifest["schema"], 4)
+                self.assertEqual(manifest["target"], target)
+                self.assertEqual(set(manifest["files"]), set(package.members_for(target)))
+                self.assertEqual(manifest["requirements"]["npm"]["coverage"],
+                                 [{"os": "linux", "arch": "x64", "libc": "glibc"}])
+                root = destination / package.archive_stem(archive)
+                for name in package.executable_names(target):
+                    self.assertEqual(package.inspect_payload((root / name).read_bytes(), target),
+                                     manifest["inspection"][name])
+                if target.endswith("windows-msvc"):
+                    self.assertEqual(manifest["inspection"]["twigsmith.exe"]["imports"], ["KERNEL32.dll"])
+                    self.assertEqual(manifest["npm_payload"], "twigsmith.exe")
+                else:
+                    self.assertEqual(manifest["inspection"]["twigsmith"]["deployment"],
+                                     {"minimum": "11.0.0", "sdk": "15.0.0"})
+
+    def test_windows_archive_rejects_unsafe_forms_before_extraction(self):
+        archive = self.candidate("x86_64-pc-windows-msvc")
+        original = archive.read_bytes()
+        mutations = [lambda entries: setattr(entries[0][0], "filename", "../escape.exe"),
+                     lambda entries: setattr(entries[0][0], "filename", entries[0][0].filename.replace("/", "\\")),
+                     lambda entries: setattr(entries[0][0], "external_attr", (stat.S_IFLNK | 0o777) << 16),
+                     lambda entries: setattr(entries[0][0], "external_attr", ((stat.S_IFREG | 0o755) << 16) | 0x400),
+                     lambda entries: entries.append(entries[0]),
+                     lambda entries: entries.pop()]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                archive.write_bytes(original)
+                with zipfile.ZipFile(archive) as zipped:
+                    entries = [(entry, zipped.read(entry)) for entry in zipped.infolist()]
+                mutation(entries)
+                with warnings.catch_warnings(), zipfile.ZipFile(archive, "w") as zipped:
+                    warnings.simplefilter("ignore", UserWarning)
+                    for entry, data in entries:
+                        zipped.writestr(entry, data)
+                self.rebind(archive)
+                destination = self.root / "never extracted"
+                with self.assertRaises(ValueError):
+                    package.verify(archive, destination)
+                self.assertFalse(destination.exists())
+
+    def test_inspection_and_platform_provenance_are_bound_to_payload(self):
+        archive = self.candidate("aarch64-apple-darwin")
+        for edit in (lambda value: value["inspection"]["twigsmith"]["deployment"].update(minimum="1.0.0"),
+                     lambda value: value["requirements"]["native"]["platform"].update(arch="x86_64"),
+                     lambda value: value["provenance"]["environment"].update(machine="x86_64")):
+            original = archive.with_name(package.archive_stem(archive) + ".manifest.json").read_bytes()
+            self.rebind(archive, edit)
+            with self.assertRaises(ValueError):
+                package.verify(archive)
+            archive.with_name(package.archive_stem(archive) + ".manifest.json").write_bytes(original)
+            self.rebind(archive)
+
+    def test_executable_architecture_kind_and_dependency_structures_are_inspected(self):
+        data = bytearray(pe_fixture())
+        for offset, value in ((132, 0xaa64), (148, 1), (150, 0x2002), (152, 0x10b)):
+            changed = bytearray(data)
+            struct.pack_into("<H", changed, offset, value)
+            with self.subTest(offset=offset), self.assertRaises(ValueError):
+                package.inspect_payload(bytes(changed), "x86_64-pc-windows-msvc")
+        changed = bytearray(data)
+        struct.pack_into("<I", changed, 524, 0x9000)
+        with self.assertRaisesRegex(ValueError, "RVA"):
+            package.inspect_payload(bytes(changed), "x86_64-pc-windows-msvc")
+        with self.assertRaisesRegex(ValueError, "Mach-O"):
+            package.inspect_payload(macho_fixture("aarch64"), "x86_64-apple-darwin")
+        for changed in (macho_fixture("aarch64")[:-1],
+                        macho_fixture("aarch64").replace(b"/usr/lib/", b"/tmp/lib/")):
+            with self.assertRaises(ValueError):
+                package.inspect_payload(changed, "aarch64-apple-darwin")
+
+    def test_windows_msvc_runtime_and_delay_import_evidence(self):
+        data = bytearray(pe_fixture())
+        struct.pack_into("<II", data, 368, 4192, 64)
+        struct.pack_into("<II", data, 608, 1, 4288)
+        runtime = b"VCRUNTIME140.dll\0"
+        data[704:704 + len(runtime)] = runtime
+        report = package.inspect_payload(bytes(data), "x86_64-pc-windows-msvc")
+        self.assertEqual(report["delay_imports"], ["VCRUNTIME140.dll"])
+        self.assertEqual(report["msvc_runtime_imports"], ["VCRUNTIME140.dll"])
+        struct.pack_into("<I", data, 608, 0)
+        with self.assertRaisesRegex(ValueError, "VA-based"):
+            package.inspect_payload(bytes(data), "x86_64-pc-windows-msvc")
+
+    @patch.object(package.platform, "machine", return_value="x86_64")
+    @patch.object(package.platform, "system", return_value="Linux")
+    def test_new_targets_refuse_cross_build_before_running_tools(self, *_):
+        with patch.object(subprocess, "run", side_effect=AssertionError("must not build")):
+            for target in ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"):
+                with self.subTest(target=target), self.assertRaisesRegex(ValueError, "matching host"):
+                    package.build(self.root, self.root / "unused", False, target)
 
 
 class SourceIdentityTests(unittest.TestCase):
@@ -226,7 +395,9 @@ class SourceIdentityTests(unittest.TestCase):
     def git(self, *arguments):
         return subprocess.check_output(["git", *arguments], cwd=self.repo, text=True).strip()
 
-    def test_ordinary_git_metadata_records_clean_and_dirty_source(self):
+    @patch.object(package.platform, "machine", return_value="x86_64")
+    @patch.object(package.platform, "system", return_value="Linux")
+    def test_ordinary_git_metadata_records_clean_and_dirty_source(self, *_):
         original = package.identity(self.repo)
         self.assertEqual(original, {"revision": self.git("rev-parse", "HEAD"),
                                     "tree": self.git("rev-parse", "HEAD^{tree}"),
@@ -261,7 +432,9 @@ class SourceIdentityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "run identity"):
                     package.provenance_kind(source)
 
-    def test_failed_build_publishes_no_output(self):
+    @patch.object(package.platform, "machine", return_value="x86_64")
+    @patch.object(package.platform, "system", return_value="Linux")
+    def test_compiler_overrides_cleared_and_failed_build_publishes_no_output(self, *_):
         (self.repo / "site").mkdir()
         (self.repo / "site/current-requirements.json").write_text((Path(__file__).resolve().parents[1] / "site/current-requirements.json").read_text())
         (self.repo / "Cargo.toml").write_text('[package]\nname = "twigsmith"\nversion = "0.1.0"\n')
@@ -272,17 +445,45 @@ class SourceIdentityTests(unittest.TestCase):
         self.git("commit", "-m", "build fixture")
         output = self.repo / "candidate"
         source = package.identity(self.repo)
-        with patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}), \
+        overrides = {"GITHUB_ACTIONS": "false", "RUSTC": "uninspected-rustc",
+                     "CARGO_BUILD_RUSTC": "another-uninspected-rustc",
+                     "RUSTC_WRAPPER": "untrusted-wrapper", "RUSTC_WORKSPACE_WRAPPER": "workspace-wrapper",
+                     "CARGO_BUILD_RUSTC_WRAPPER": "config-wrapper",
+                     "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "config-workspace-wrapper"}
+        with patch.dict(os.environ, overrides), \
              patch.object(package, "identity", return_value=source), \
              patch.object(package, "git_output", return_value="1"), \
              patch.object(package, "run", side_effect=["rustc 1.99.0 fixture\nhost: " + package.TARGET,
-                                                        "cargo fixture"]), \
-             patch.object(subprocess, "run", side_effect=subprocess.CalledProcessError(1, "cargo")):
+                                                        "cargo fixture"]) as inspected_tools, \
+             patch.object(subprocess, "run", side_effect=subprocess.CalledProcessError(1, "cargo")) as cargo_build:
             with self.assertRaises(subprocess.CalledProcessError):
                 package.build(self.repo, output, False, package.TARGET)
+        environment = cargo_build.call_args.kwargs["env"]
+        inspected_rustc = inspected_tools.call_args_list[0].args[0][0]
+        self.assertTrue(Path(inspected_rustc).is_absolute())
+        self.assertEqual(environment["RUSTC"], inspected_rustc)
+        self.assertEqual(environment["CARGO_BUILD_RUSTC"], inspected_rustc)
+        for name in overrides:
+            if "WRAPPER" in name:
+                self.assertEqual(environment[name], "")
         self.assertFalse(output.exists())
         self.assertFalse((self.repo / ".dev/tmp/distribution-phase-2").exists())
         self.assertEqual(list((self.repo / ".dev/tmp/native-build").iterdir()), [])
+
+    @patch.object(package.platform, "machine", return_value="x86_64")
+    @patch.object(package.platform, "system", return_value="Linux")
+    def test_target_compiler_and_sdk_overrides_fail_before_build(self, *_):
+        source = package.identity(self.repo)
+        requirements = package.load_requirements(Path(__file__).resolve().parents[1])
+        with patch.object(package, "identity", return_value=source), \
+             patch.object(package, "package_metadata", return_value="0.1.0"), \
+             patch.object(package, "load_requirements", return_value=requirements), \
+             patch.object(package, "run", side_effect=AssertionError("must reject before tool invocation")):
+            for name in ("CC_x86_64_unknown_linux_gnu", "CFLAGS_x86_64-unknown-linux-gnu", "TARGET_CC",
+                         "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"):
+                with self.subTest(name=name), patch.dict(os.environ, {name: "unrecorded-override"}):
+                    with self.assertRaisesRegex(ValueError, "unsupported build override"):
+                        package.build(self.repo, self.repo / "unused", False, package.TARGET)
 
 
 if __name__ == "__main__":
