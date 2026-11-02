@@ -58,7 +58,7 @@ def resolve(descriptor, github_latest, npm_latest, npm_tarball):
     """
     try:
         if descriptor.get('schema') == 2:
-            raise ValueError('complete platform sets support unpublished previews only; publication requires Phase 5')
+            raise ValueError('complete platform sets support unpublished previews only; full-set publication is unavailable')
         model = deepcopy(descriptor)
         version = model['version']
         tag = model['tag']

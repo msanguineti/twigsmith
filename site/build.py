@@ -50,7 +50,7 @@ def validate_receipt(record, receipt, *, now=None):
 
 def _validate_identity(record, published):
     if record.get('schema') == 2:
-        raise ValueError('complete platform sets require a verified bundle preview; publication requires Phase 5')
+        raise ValueError('complete platform sets require a verified bundle preview; full-set publication is unavailable')
     if (record['repository'] != release_set.REPOSITORY
             or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', record['version'])
             or record['tag'] != 'v' + record['version']
@@ -174,7 +174,7 @@ class _ReleaseFields(HTMLParser):
 def _render_resolved(model):
     """Render an already provider-validated, release-bound model."""
     if model.get('schema') == 2:
-        raise ValueError('complete platform sets support unpublished previews only; publication requires Phase 5')
+        raise ValueError('complete platform sets support unpublished previews only; full-set publication is unavailable')
     escape = html.escape
     expected = {}
 

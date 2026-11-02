@@ -384,7 +384,7 @@ def shell_routes(artifact, version, evidence, *, require=False):
     report = {"required": require, "selected": list(supported_shells(target)), "routes": [],
               "scope": "Final-artifact launch and generated-adapter invocation smoke for both aliases; "
                        "not actual Tab, terminal/editor/cancellation, profile installation or arbitrary shell versions. "
-                       "Phase 2e actual-Tab source evidence is separate and does not qualify these archive bytes."}
+                       "Prior source-level actual-Tab evidence is separate and does not qualify these archive bytes."}
     directory = evidence / "shell-routes"
     directory.mkdir()
     with tempfile.TemporaryDirectory(prefix="twigsmith-shell-routes-") as temporary:

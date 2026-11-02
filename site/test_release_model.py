@@ -39,7 +39,7 @@ class ReleaseModelTests(unittest.TestCase):
         self.assertNotIn('url', self.descriptor['native'][0]['assets']['archive'])
 
     def test_complete_set_format_refuses_public_resolution_before_provider_fields(self):
-        with self.assertRaisesRegex(ValueError, 'Phase 5'):
+        with self.assertRaisesRegex(ValueError, 'full-set publication is unavailable'):
             release_model.resolve({'schema': 2}, None, None, None)
 
     def test_rejects_provider_disagreement_incomplete_or_changed_assets(self):

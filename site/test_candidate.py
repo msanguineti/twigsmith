@@ -162,7 +162,7 @@ class PlatformCandidateTests(unittest.TestCase):
                           lambda: site_build.build(output, self.approval, receipt={}),
                           lambda: site_build.build_resolved(output, descriptor),
                           lambda: candidate.release_model.resolve(descriptor, {}, {}, b'')]:
-            with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, 'Phase 5'):
+            with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, 'full-set publication is unavailable'):
                 operation()
             self.assertEqual((output / 'index.html').read_text(), 'previous')
 
