@@ -170,14 +170,15 @@ shared Rust dispatcher; the archive stores two regular executable files so eithe
 name works after ordinary extraction. CLI syntax, settings and Git semantics remain
 owned by the application. The archive adds no consumer wrapper or install script.
 
-Packaging uses a fresh locked release build for Linux x86_64 GNU and validates
+Packaging uses a fresh locked release build on the matching native Linux x86_64
+GNU, Windows x64 MSVC or macOS ARM64/Intel host and validates
 the pinned compiler and matching package/lock versions. CI candidates come from a
 controlled clean checkout of the selected commit; local packages are labelled
 development probes. The manifest records commit, tree, toolchain and CI run where
 available. Ordinary Git status is not an unrestricted filesystem attestation. A
 completed-directory rename prevents failed builds from presenting partial output.
 
-The verifier checks archive and member hashes, exact names, modes and ELF
+The verifier checks archive and member hashes, exact names, platform modes and ELF/PE/Mach-O
 architecture, and rejects traversal, links, duplicate or nonregular members before
 extraction. Hash consistency does not independently authenticate a publisher. The
 manifest identifies the `twigsmith` payload for npm packaging.
@@ -188,6 +189,29 @@ visible. Both npm bin names point to that same native executable; package metada
 selects Linux, x64 and glibc without enforcing a glibc minimum. The npm manifest
 separately records native provenance and packaging inputs. Neither hash consistency
 nor a recorded source identity authenticates a publisher.
+
+Native Windows candidates use ZIP and `.exe` names; macOS candidates have separate
+tar.gz archives for ARM64 and Intel. Schema 4 manifests freeze executable-format
+inspection and candidate requirements for these targets, while Linux retains its
+schema 3 contract. Candidate requirements do not claim approved Windows/macOS OS
+floors. Native execution requires neither Rust nor Node/npm.
+
+[`npm_platform_package.py`](../tools/npm_platform_package.py) assembles a separate
+four-platform npm candidate set: a common `twigsmith` Node launcher and exact-version
+optional platform dependencies. The launcher selects the installed native payload,
+preserves invocation/terminal behavior and refuses missing or incompatible packages;
+it performs no runtime download or consumer build. Both command names share the
+launcher. The set manifest binds package and native identities. The current
+Linux-only release-set verifier/publisher remains separate until it can verify and
+recover publication of the complete package set; new platform candidates must not
+be passed off as the existing Linux publication format.
+
+[`qualify_platform.py`](../tools/qualify_platform.py) runs selected existing real-Git
+fixtures against extracted archives and installed npm commands, recording actual
+isolated child execution. Explicit `platform-packages` preparation in the release
+workflow invokes the read-only platform candidate workflow. It builds once per
+native target, assembles the npm set and consumes those bytes across selected
+Node LTS lines. It does not publish or establish desktop OS support floors.
 
 Pull-request CI checks the proposed integration for source and completion behavior.
 Explicit release preparation reuses eligible source validation without repeating

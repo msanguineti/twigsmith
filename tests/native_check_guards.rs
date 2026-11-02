@@ -57,7 +57,7 @@ fn configure(repo: &Repository, commands: Vec<Vec<String>>) {
 }
 fn finish(repo: &Repository, extra: &[&str]) -> std::process::Output {
     let result = native::output(
-        Command::new(env!("CARGO_BIN_EXE_tgi"))
+        Command::new(support::executable("tgi"))
             .current_dir(repo.path())
             .args(["finish", "--mode", "review", "--update", "none"])
             .args(extra),

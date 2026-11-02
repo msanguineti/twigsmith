@@ -498,7 +498,7 @@ fn native_cli_interrupt_contains_tree_and_preserves_retry() {
             };
             let stdout = root.join("cli.stdout");
             let stderr = root.join("cli.stderr");
-            let mut command = Command::new(env!("CARGO_BIN_EXE_twigsmith"));
+            let mut command = Command::new(support::executable("twigsmith"));
             command
                 .current_dir(repo.path())
                 .arg("finish")
@@ -566,7 +566,7 @@ fn native_cli_interrupt_contains_tree_and_preserves_retry() {
             );
             configure(native::command("exit", &["0"]));
             let retry = native::output(
-                Command::new(env!("CARGO_BIN_EXE_tgi"))
+                Command::new(support::executable("tgi"))
                     .current_dir(repo.path())
                     .arg("finish"),
             );

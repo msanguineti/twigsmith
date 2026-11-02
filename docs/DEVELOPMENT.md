@@ -348,7 +348,7 @@ against the proposed integration. Superseded runs for the same pull request are
 cancelled. Merging an unchanged, validated pull request does not repeat the source
 suite or start artifact qualification.
 
-The release workflow prepares candidates on manual dispatch from `main` or on a
+The release workflow's default `linux-release` preparation mode prepares candidates on manual dispatch from `main` or on a
 GitHub `release: published` event, including prereleases. Manual dispatch selects
 the `main` commit at dispatch; a release event selects the commit named by its tag. The
 selected commit must be the recorded migration baseline or a later first-parent
@@ -372,8 +372,12 @@ For a local development probe, use a fresh output and extraction directory:
 ./dev test-packaging
 ```
 
-The version comes from matching `Cargo.toml` and `Cargo.lock` identities. The
-only target is `x86_64-unknown-linux-gnu`. Packaging uses a fresh optimized
+The version comes from matching `Cargo.toml` and `Cargo.lock` identities. Native
+packaging accepts `x86_64-unknown-linux-gnu`, `x86_64-pc-windows-msvc`,
+`aarch64-apple-darwin` and `x86_64-apple-darwin` with `--target TARGET`, on a
+matching native host. On Windows, invoke `python tools/native_package.py build
+OUTPUT --target x86_64-pc-windows-msvc` with the pinned native Rust environment.
+Packaging uses a fresh optimized
 build with the pinned Rust toolchain and locked dependencies. It checks both
 executable versions and publishes a complete output directory only after successful
 verification; existing output is never overwritten. Local builds are labelled
@@ -382,13 +386,18 @@ CI candidates use a controlled clean checkout of the selected commit and record 
 commit, tree, toolchain and CI run. This is provenance information, not independent
 publisher authentication or a guarantee of reproducible builds.
 
-The output contains a `.tar.gz` with both regular executables, the MIT license and
+The output contains a `.tar.gz` (Windows: `.zip`) with both regular executables,
+using `.exe` names on Windows, the MIT license and
 extraction guidance, a `.manifest.json` with member and archive hashes and build
 metadata, and a `.sha256` file for the archive and manifest. Keep the three files
-together. `verify-native` checks identity, hashes, archive members, modes and ELF
+together. `verify-native` checks identity, hashes, archive members, platform modes and ELF/PE/Mach-O
 architecture, and optionally extracts into a new directory. It runs without Rust.
-The verifier supports native manifest schemas 2 and 3. New packages snapshot
-supported runtime requirements separately from build provenance.
+The verifier supports native manifest schemas 2 and 3 for Linux and schema 4 for
+Windows/macOS candidates. Schema 4 binds executable inspection to the payload,
+including PE imports/subsystem or Mach-O dependencies/deployment information.
+New platform candidates explicitly leave product OS support floors unqualified;
+compiler deployment metadata and native hosted tests alone do not select a floor.
+Runtime requirements are separate from build provenance.
 
 `./dev native-qualify --help` describes extracted-artifact runtime checks. The
 fixture harnesses use real Git and select the extracted executables through an
@@ -403,7 +412,7 @@ separate from Ubuntu's maintenance lifecycle.
 
 ## npm candidate packaging
 
-`./dev package-npm` wraps an existing verified native candidate; it does not
+`./dev package-npm` supports the existing Linux publication contract. It wraps an existing verified native candidate; it does not
 rebuild the executable. Python 3.10+ and npm are required. Supply the expected
 SHA-256 values from independently retained acceptance evidence and use a new
 output directory:
@@ -431,6 +440,48 @@ independently supplied archive, payload, tarball and both manifest hashes and a
 matching version tag. Its identity record preserves native build and npm packaging
 sources separately. This offline check does not authenticate a publisher or prove
 source eligibility/publication.
+
+### Platform-selected npm candidates
+
+`./dev package-npm-platforms SPEC OUTPUT` assembles the cross-platform candidate
+set from verified native archives. `SPEC` identifies each archive and its expected
+archive and native payload SHA-256 values. Full assembly requires all four targets
+at one version; the output contains four platform payload packages, the common
+`twigsmith` launcher package and an identity manifest. These candidates are separate
+from the existing Linux-only publisher and are not published by this command.
+
+The common package pins platform packages to its exact version. npm filters the
+optional dependencies by platform; the Node launcher selects the matching installed
+payload and refuses missing, mismatched or unsupported payloads. Both command names
+use this route. Consumer installation runs no lifecycle scripts, compiler or fallback
+downloader. Native archives continue to run independently of Node/npm. Platform
+package names are candidate identifiers; assembling them does not reserve registry
+names or configure trusted publishers.
+
+`./dev platform-qualify --help` describes native archive and installed npm checks.
+The harnesses launch the extracted or installed product and record actual isolated
+child execution, case selection, environments and payload hashes. npm qualification
+uses the prepared package bytes without publishing them to the public registry.
+Inspect the resulting evidence for platform, Node/npm versions, failures and gaps.
+
+For explicit hosted preparation, dispatch `Native release qualification` with
+`qualification=platform-packages`. This read-only mode builds native candidates on
+the four matching hosts, assembles the package set, then exercises npm installation
+on those hosts with Node 22, 24 and 26.
+Node 24 runs the full workflow selection; Node 22 and 26 run the launcher-focused
+journey, editor and cancellation selection. Every runtime runs installation, npx
+and dependency-refusal probes. This avoids repeating Git graph scenarios for each
+Node version while retaining checks at the changed process boundary.
+The workflow checks the selected revision;
+it does not apply the protected-main eligibility contract used for public release
+preparation. Its artifacts are qualification inputs, not approved public releases.
+The default Linux release mode and published-release events retain their existing
+eligibility and publication boundaries. Neither mode publishes through a dispatch.
+
+Windows and macOS downloads are unsigned. Native hosted transfer/execution does not
+model a browser download's security metadata or managed desktop policies. Record
+the actual download/extraction/launch experience before adopting desktop support
+claims; do not remove security protections to turn an unavailable route into a pass.
 
 ## Release preparation and publication
 

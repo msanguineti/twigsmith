@@ -137,7 +137,7 @@ fn native_start_status_journey() {
             std::env::consts::OS,
             std::env::consts::ARCH
         );
-        let binaries = [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")];
+        let binaries = [support::executable("twigsmith"), support::executable("tgi")];
         for executable in binaries {
             for argument in ["--version", "--help"] {
                 let output = Command::new(executable).arg(argument).output().unwrap();
@@ -213,8 +213,8 @@ fn native_selected_save_and_ordered_review_journey() {
         true,
         |root| {
             for (starter, finisher) in [
-                (env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")),
-                (env!("CARGO_BIN_EXE_tgi"), env!("CARGO_BIN_EXE_twigsmith")),
+                (support::executable("twigsmith"), support::executable("tgi")),
+                (support::executable("tgi"), support::executable("twigsmith")),
             ] {
                 let (local, remote) = delivery_fixture(root);
                 let initial_target = oid(&remote, "main");
@@ -384,8 +384,8 @@ fn native_direct_candidate_failure_and_retry_journey() {
         true,
         |root| {
             for (starter, finisher) in [
-                (env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")),
-                (env!("CARGO_BIN_EXE_tgi"), env!("CARGO_BIN_EXE_twigsmith")),
+                (support::executable("twigsmith"), support::executable("tgi")),
+                (support::executable("tgi"), support::executable("twigsmith")),
             ] {
                 let (local, remote) = delivery_fixture(root);
                 let target = oid(&remote, "main");

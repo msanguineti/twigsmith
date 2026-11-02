@@ -42,12 +42,14 @@ def make_package(repo, archive, output, archive_sha256, payload_sha256):
     tool_hash = sha256(repo / 'tools/npm_package.py')
     verifier_hash = sha256(repo / 'tools/native_package.py')
     readme = (repo / 'README.md').read_bytes()
-    native_manifest = archive.with_name(archive.name[:-7] + '.manifest.json')
+    native_manifest = archive.with_name(native_package.archive_stem(archive) + '.manifest.json')
     native_manifest_hash = sha256(native_manifest)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.npm-package-', dir=output.parent) as temp:
         temporary = Path(temp)
         manifest = native_package.verify(archive, temporary / 'native')
+        if manifest['target'] != native_package.TARGET:
+            raise ValueError('legacy npm packaging requires the Linux x86_64 GNU target')
         if sha256(archive) != archive_sha256:
             raise ValueError('native archive changed during verification')
         source = temporary / 'native' / archive.name[:-7]

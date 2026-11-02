@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify the finite Linux native package format (Python 3.10+)."""
+"""Build and verify the finite native candidate package formats (Python 3.10+)."""
 import argparse
 from copy import deepcopy
 import gzip
@@ -15,8 +15,53 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import shutil
+import zipfile
+
+from native_formats import inspect_pe, inspect_macho
 
 TARGET = "x86_64-unknown-linux-gnu"
+TARGETS = {
+    TARGET: {"os": "linux", "arch": "x86_64", "libc": "glibc", "extension": ".tar.gz", "executables": ("twigsmith", "tgi")},
+    "x86_64-pc-windows-msvc": {"os": "windows", "arch": "x86_64", "libc": None, "extension": ".zip", "executables": ("twigsmith.exe", "tgi.exe")},
+    "aarch64-apple-darwin": {"os": "macos", "arch": "aarch64", "libc": None, "extension": ".tar.gz", "executables": ("twigsmith", "tgi")},
+    "x86_64-apple-darwin": {"os": "macos", "arch": "x86_64", "libc": None, "extension": ".tar.gz", "executables": ("twigsmith", "tgi")},
+}
+
+
+def target_metadata(target):
+    try:
+        return deepcopy(TARGETS[target])
+    except KeyError as error:
+        raise ValueError(f"unsupported native target: {target}") from error
+
+
+def executable_names(target):
+    return target_metadata(target)["executables"]
+
+
+def archive_stem(path):
+    name = Path(path).name
+    for extension in (".tar.gz", ".zip"):
+        if name.endswith(extension):
+            return name[:-len(extension)]
+    raise ValueError("expected a regular versioned .tar.gz or .zip archive")
+
+
+def members_for(target):
+    return dict.fromkeys(executable_names(target), 0o755) | {"LICENSE": 0o644, "README.txt": 0o644}
+
+
+def inspect_payload(data, target):
+    metadata = target_metadata(target)
+    if metadata["os"] == "linux":
+        validate_elf(data)
+        return {"format": "ELF64", "arch": "x86_64"}
+    if metadata["os"] == "windows":
+        return inspect_pe(data)
+    return inspect_macho(data, metadata["arch"])
+
+
 VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\Z")
 MEMBERS = {"twigsmith": 0o755, "tgi": 0o755, "LICENSE": 0o644, "README.txt": 0o644}
 GUIDANCE = """Twigsmith {version} — Linux x86_64 GNU native candidate
@@ -48,7 +93,7 @@ def digest(data):
 
 
 def run(args, cwd=None, env=None):
-    return subprocess.check_output(args, cwd=cwd, env=env, text=True).strip()
+    return subprocess.check_output(args, cwd=cwd, env=env, text=True, encoding="utf-8").strip()
 
 
 def git_output(repo, *arguments):
@@ -125,8 +170,24 @@ def validate_requirements(requirements, *, native_builder=False):
     return deepcopy(requirements)
 
 
-def load_requirements(repo):
-    return validate_requirements(json.loads((repo / "site/current-requirements.json").read_text()), native_builder=True)
+def load_requirements(repo, target=TARGET):
+    current = validate_requirements(json.loads((repo / "site/current-requirements.json").read_text()), native_builder=True)
+    if target == TARGET:
+        return current
+    metadata = target_metadata(target)
+    # The public requirements remain Linux-only until qualification and approval.
+    current["native"] = {"platform": {key: metadata[key] for key in ("os", "arch", "libc")},
+                         "requirements": {"system": "Candidate platform; OS support floor is unqualified",
+                                          "shell": "Git 2.45 or newer; native execution needs no Node/npm or Rust"}}
+    return current
+
+
+def validate_target_requirements(requirements, target):
+    result = validate_requirements(requirements, native_builder=target == TARGET)
+    metadata = target_metadata(target)
+    if result["native"]["platform"] != {key: metadata[key] for key in ("os", "arch", "libc")}:
+        raise ValueError("requirements do not match native target")
+    return result
 
 
 def requirements_match_descriptor(manifest, descriptor):
@@ -167,38 +228,83 @@ See the repository docs/USAGE.md for configuration and recovery guidance.
 """
 
 
-def write_bundle(output, version, payloads, provenance, epoch, requirements=None):
+def candidate_guidance(version, stem, requirements, target):
+    if target == TARGET:
+        return guidance(version, stem, requirements)
+    metadata = target_metadata(target)
+    if metadata["os"] == "windows":
+        install = f'''Extract with PowerShell:
+  Expand-Archive -LiteralPath "{stem}.zip" -DestinationPath .
+Add the extracted directory to this session's PATH:
+  $env:PATH = "$PWD\\{stem};" + $env:PATH
+Run twigsmith.exe --help or tgi.exe --help.
+Windows downloads are unsigned. Browser/SmartScreen policy depends on the host;
+review the source and checksums and use your organization's approved execution path.'''
+    else:
+        install = f'''Extract with tar -xzf "{stem}.tar.gz", then add the directory to PATH:
+  export PATH="/absolute/path/to/{stem}:$PATH"
+Run twigsmith --help or tgi --help.
+macOS downloads are unsigned and not notarized. Gatekeeper/quarantine policy
+depends on download method and host; use your approved local execution procedure.'''
+    return f'''Twigsmith {version} — {target} native candidate
+
+{install}
+Both names use the same native implementation. Git 2.45 or newer is required.
+Rust, Node and npm are not required for native execution. Git's configured shell,
+editors, signing/transport helpers and checks are needed when selected.
+This candidate establishes no Windows/macOS minimum OS support claim.
+Dependency/deployment metadata is inspection evidence, not native runtime qualification.
+Verify the adjacent .sha256 and .manifest.json with tools/native_package.py verify.
+SHA-256 checks consistency; it does not independently authenticate a publisher.
+See docs/USAGE.md for configuration and recovery guidance.
+'''
+
+
+def write_bundle(output, version, payloads, provenance, epoch, requirements=None, target=TARGET):
     """Assemble only validated regular payload bytes; publish after full verification."""
-    requirements = validate_requirements(requirements, native_builder=True) if requirements is not None else load_requirements(Path(__file__).resolve().parents[1])
-    stem = f"twigsmith-{version}-{TARGET}"
-    archive = output / f"{stem}.tar.gz"
+    requirements = validate_target_requirements(requirements, target) if requirements is not None else load_requirements(Path(__file__).resolve().parents[1], target)
+    metadata = target_metadata(target)
+    members = members_for(target)
+    stem = f"twigsmith-{version}-{target}"
+    archive = output / f"{stem}{metadata['extension']}"
     files = dict(payloads)
-    files["README.txt"] = guidance(version, stem, requirements).encode()
-    for name in ("twigsmith", "tgi"):
-        validate_elf(files[name])
-    # Tar/Gzip metadata is stable; compiler/linker byte reproducibility is separate.
-    with archive.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as zipped:
-            with tarfile.open(fileobj=zipped, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-                for name, mode in MEMBERS.items():
-                    entry = tarfile.TarInfo(f"{stem}/{name}")
-                    entry.size = len(files[name])
-                    entry.mode = mode
-                    entry.mtime = epoch
-                    tar.addfile(entry, io.BytesIO(files[name]))
+    files["README.txt"] = candidate_guidance(version, stem, requirements, target).encode()
+    if set(files) != set(members):
+        raise ValueError("unexpected or missing payload files")
+    inspection = {name: inspect_payload(files[name], target) for name in executable_names(target)}
+    # Stable metadata describes packaging, not compiler output reproducibility.
+    if metadata["extension"] == ".zip":
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+            for name, data in files.items():
+                entry = zipfile.ZipInfo(f"{stem}/{name}", (1980, 1, 1, 0, 0, 0))
+                entry.create_system = 3
+                entry.external_attr = (stat.S_IFREG | members[name]) << 16
+                zipped.writestr(entry, data, compress_type=zipfile.ZIP_DEFLATED)
+    else:
+        with archive.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch) as zipped:
+                with tarfile.open(fileobj=zipped, mode="w", format=tarfile.USTAR_FORMAT) as tar:
+                    for name, mode in members.items():
+                        entry = tarfile.TarInfo(f"{stem}/{name}")
+                        entry.size = len(files[name])
+                        entry.mode = mode
+                        entry.mtime = epoch
+                        tar.addfile(entry, io.BytesIO(files[name]))
     manifest = {
-        "schema": 3, "name": "twigsmith", "version": version, "target": TARGET,
+        "schema": 3 if target == TARGET else 4, "name": "twigsmith", "version": version, "target": target,
         "requirements": requirements,
         "archive": {"name": archive.name, "sha256": digest(archive.read_bytes())},
         "files": {name: {"sha256": digest(data), "size": len(data),
-                         "mode": format(MEMBERS[name], "04o")} for name, data in files.items()},
-        "npm_payload": "twigsmith", "provenance": provenance,
+                         "mode": format(members[name], "04o")} for name, data in files.items()},
+        "npm_payload": executable_names(target)[0], "provenance": provenance,
     }
+    if target != TARGET:
+        manifest["inspection"] = inspection
     manifest_path = output / f"{stem}.manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output / f"{stem}.sha256").write_text(
         f"{digest(archive.read_bytes())}  {archive.name}\n"
-        f"{digest(manifest_path.read_bytes())}  {manifest_path.name}\n"
+        f"{digest(manifest_path.read_bytes())}  {manifest_path.name}\n", encoding="utf-8"
     )
     verify(archive)
     return archive
@@ -206,9 +312,7 @@ def write_bundle(output, version, payloads, provenance, epoch, requirements=None
 
 def verify(archive, extract_to=None):
     archive = Path(archive).absolute()
-    if not archive.name.endswith(".tar.gz") or archive.is_symlink():
-        raise ValueError("expected a regular versioned .tar.gz archive")
-    stem = archive.name[:-7]
+    stem = archive_stem(archive)
     manifest_path = archive.with_name(stem + ".manifest.json")
     checksum_path = archive.with_name(stem + ".sha256")
     for path in (archive, manifest_path, checksum_path):
@@ -218,28 +322,30 @@ def verify(archive, extract_to=None):
     manifest_data = manifest_path.read_bytes()
     expected = (f"{digest(archive_data)}  {archive.name}\n"
                 f"{digest(manifest_data)}  {manifest_path.name}\n")
-    if checksum_path.read_text() != expected:
+    if checksum_path.read_text(encoding="utf-8") != expected:
         raise ValueError("archive/manifest checksums disagree")
     manifest = json.loads(manifest_data)
     version = manifest["version"]
+    target = manifest.get("target")
+    metadata = target_metadata(target)
+    members = members_for(target)
     if not isinstance(version, str) or not VERSION.fullmatch(version):
         raise ValueError("invalid manifest version")
-    if (manifest.get("schema") not in (2, 3) or manifest.get("name") != "twigsmith"
-            or manifest.get("target") != TARGET
-            or stem != f"twigsmith-{version}-{TARGET}"
+    if (manifest.get("schema") not in ((2, 3) if target == TARGET else (4,)) or manifest.get("name") != "twigsmith"
+            or archive.name != f"twigsmith-{version}-{target}{metadata['extension']}"
             or manifest.get("archive") != {"name": archive.name, "sha256": digest(archive_data)}
-            or manifest.get("npm_payload") != "twigsmith"
-            or set(manifest.get("files", {})) != set(MEMBERS)):
+            or manifest.get("npm_payload") != executable_names(target)[0]
+            or set(manifest.get("files", {})) != set(members)):
         raise ValueError("inconsistent package name, version, target or manifest entries")
-    if manifest["schema"] == 3:
-        validate_requirements(manifest["requirements"], native_builder=True)
+    if manifest["schema"] >= 3:
+        validate_target_requirements(manifest["requirements"], target)
     provenance = manifest["provenance"]
     source = provenance["source"]
     if (not re.fullmatch(r"[a-f0-9]{40}", source["revision"])
             or not re.fullmatch(r"[a-f0-9]{40}", source["tree"])
             or not isinstance(source["dirty"], bool)
             or provenance["kind"] not in ("ci-candidate", "development-probe")
-            or provenance["build"]["target"] != TARGET
+            or provenance["build"]["target"] != target
             or provenance["build"]["profile"] != "release"
             or not provenance["toolchain"]["rustc"]
             or not provenance["toolchain"]["cargo"]
@@ -252,26 +358,53 @@ def verify(archive, extract_to=None):
                            ("GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"))):
             raise ValueError("incomplete CI candidate source/run provenance")
     contents = {}
-    with tarfile.open(fileobj=io.BytesIO(archive_data), mode="r:gz") as tar:
-        entries = tar.getmembers()
-        if len(entries) != len(MEMBERS):
-            raise ValueError("unexpected or duplicate archive members")
-        for entry in entries:
-            name = entry.name.removeprefix(stem + "/")
-            if (entry.name != f"{stem}/{name}" or name not in MEMBERS
-                    or name in contents or not entry.isfile() or entry.mode != MEMBERS[name]
-                    or entry.uid != 0 or entry.gid != 0 or entry.linkname
-                    or entry.pax_headers):
-                raise ValueError(f"invalid archive entry: {entry.name}")
-            data = tar.extractfile(entry).read()
-            if manifest["files"][name] != {"sha256": digest(data), "size": len(data),
-                                           "mode": format(MEMBERS[name], "04o")}:
-                raise ValueError(f"payload hash, size or mode mismatch: {name}")
-            contents[name] = data
-    for name in ("twigsmith", "tgi"):
-        validate_elf(contents[name])
+    def add(name, data):
+        if manifest["files"][name] != {"sha256": digest(data), "size": len(data),
+                                       "mode": format(members[name], "04o")}:
+            raise ValueError(f"payload hash, size or mode mismatch: {name}")
+        contents[name] = data
+    if metadata["extension"] == ".zip":
+        with zipfile.ZipFile(io.BytesIO(archive_data)) as zipped:
+            entries = zipped.infolist()
+            if len(entries) != len(members):
+                raise ValueError("unexpected or duplicate archive members")
+            for entry in entries:
+                name = entry.filename.removeprefix(stem + "/")
+                mode = entry.external_attr >> 16
+                # ZIP metadata must explicitly identify regular files. Windows
+                # does not have Unix executable mode semantics at extraction.
+                if (name not in members or entry.filename != f"{stem}/{name}"
+                        or name in contents or entry.orig_filename != entry.filename
+                        or entry.create_system != 3 or not stat.S_ISREG(mode)
+                        or entry.external_attr & 0xffff or entry.extra or entry.comment
+                        or entry.flag_bits & 1 or entry.is_dir()):
+                    raise ValueError(f"invalid archive entry: {entry.filename}")
+                add(name, zipped.read(entry))
+    else:
+        with tarfile.open(fileobj=io.BytesIO(archive_data), mode="r:gz") as tar:
+            entries = tar.getmembers()
+            if len(entries) != len(members):
+                raise ValueError("unexpected or duplicate archive members")
+            for entry in entries:
+                name = entry.name.removeprefix(stem + "/")
+                if (entry.name != f"{stem}/{name}" or name not in members
+                        or name in contents or not entry.isfile() or entry.mode != members[name]
+                        or entry.uid != 0 or entry.gid != 0 or entry.linkname
+                        or entry.pax_headers):
+                    raise ValueError(f"invalid archive entry: {entry.name}")
+                add(name, tar.extractfile(entry).read())
+    inspection = {name: inspect_payload(contents[name], target) for name in executable_names(target)}
+    if target != TARGET:
+        if manifest.get("inspection") != inspection:
+            raise ValueError("executable inspection differs from manifest")
+        if (provenance["toolchain"].get("pin") is None
+                or f"host: {target}" not in provenance["toolchain"]["rustc"]
+                or provenance["build"].get("locked") is not True
+                or not provenance["build"].get("compiler")
+                or provenance["environment"].get("machine") != metadata["arch"]):
+            raise ValueError("incomplete platform toolchain/build provenance")
     expected_guidance = (GUIDANCE.format(version=version, stem=stem) if manifest["schema"] == 2
-                         else guidance(version, stem, manifest["requirements"]))
+                         else candidate_guidance(version, stem, manifest["requirements"], target))
     if (contents["README.txt"] != expected_guidance.encode()
             or b"MIT License" not in contents["LICENSE"]):
         raise ValueError("missing license or package guidance")
@@ -287,16 +420,44 @@ def verify(archive, extract_to=None):
             for name, data in contents.items():
                 path = root / name
                 path.write_bytes(data)
-                path.chmod(MEMBERS[name])
-                if stat.S_IMODE(path.stat().st_mode) != MEMBERS[name]:
+                path.chmod(members[name])
+                if os.name != "nt" and stat.S_IMODE(path.stat().st_mode) != members[name]:
                     raise ValueError(f"failed to preserve extracted mode: {name}")
             staged.rename(destination)
     return manifest
 
 
+def compiler_identity(metadata):
+    if metadata["os"] != "windows":
+        return run(["cc", "--version"]).splitlines()[0]
+    # Rust locates MSVC through Visual Studio discovery even when link.exe is
+    # absent from PATH. Record installed/default toolset evidence separately
+    # from a claim about the linker selected internally by rustc.
+    vswhere = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio/Installer/vswhere.exe"
+    installations = json.loads(run([str(vswhere), "-latest", "-products", "*", "-requires",
+                                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-format", "json", "-utf8"]))
+    if len(installations) != 1:
+        raise ValueError("could not identify installed MSVC build tools")
+    installation = installations[0]
+    version_path = Path(installation["installationPath"]) / "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
+    return {"installed_visual_studio": installation["installationVersion"],
+            "default_msvc_toolset": version_path.read_text(encoding="utf-8").strip(),
+            "selected_environment": {key: os.environ[key] for key in
+                                     ("VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "WindowsSDKVersion")
+                                     if key in os.environ}}
+
+
 def build(repo, output, allow_dirty, target):
-    if target != TARGET or platform.system() != "Linux" or platform.machine() != "x86_64":
-        raise ValueError(f"native packaging requires Linux x86_64 and target {TARGET}")
+    metadata = target_metadata(target)
+    systems = {"linux": "Linux", "windows": "Windows", "macos": "Darwin"}
+    machines = {"x86_64": ("x86_64", "amd64"), "aarch64": ("arm64", "aarch64")}
+    if platform.system() != systems[metadata["os"]] or platform.machine().lower() not in machines[metadata["arch"]]:
+        raise ValueError(f"native packaging requires matching host for target {target}")
+    if metadata["os"] == "macos":
+        translated = subprocess.run(["sysctl", "-in", "sysctl.proc_translated"],
+                                    capture_output=True, text=True, check=False)
+        if translated.stdout.strip() == "1":
+            raise ValueError("native packaging requires a host without Rosetta translation")
     output = Path(output).absolute()
     if output.exists() or output.is_symlink():
         raise ValueError("package output directory must not exist")
@@ -305,18 +466,33 @@ def build(repo, output, allow_dirty, target):
         raise ValueError("source is dirty; commit it or use --allow-dirty for a labelled probe")
     kind = provenance_kind(source)
     version = package_metadata(repo)
-    requirements = load_requirements(repo)
+    requirements = load_requirements(repo, target)
     for name, value in os.environ.items():
-        if value and (name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_BOOTSTRAP", "CC", "CFLAGS", "LDFLAGS")
+        if value and (name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_BOOTSTRAP",
+                                    "CC", "CXX", "CFLAGS", "CXXFLAGS", "AR", "ARFLAGS", "LDFLAGS",
+                                    "SDKROOT", "MACOSX_DEPLOYMENT_TARGET")
+                      or name.startswith(("CC_", "CXX_", "CFLAGS_", "CXXFLAGS_", "AR_", "ARFLAGS_", "LDFLAGS_"))
+                      or (name.startswith(("HOST_", "TARGET_")) and name.split("_", 1)[1] in
+                          ("CC", "CXX", "CFLAGS", "CXXFLAGS", "AR", "ARFLAGS", "LDFLAGS"))
                       or name.startswith("CARGO_PROFILE_RELEASE_")
                       or (name.startswith("CARGO_TARGET_") and name != "CARGO_TARGET_DIR")
                       or (name.startswith("CARGO_") and name.endswith("RUSTFLAGS"))):
             raise ValueError(f"unsupported build override: {name}")
     tools = repo / ".dev/cargo/bin"
-    rustc = run([str(tools / "rustc"), "-vV"], repo)
-    cargo = run([str(tools / "cargo"), "--version"], repo)
+    suffix = ".exe" if metadata["os"] == "windows" else ""
+    rustc_path = tools / ("rustc" + suffix)
+    cargo_path = tools / ("cargo" + suffix)
+    if not rustc_path.is_file() or not cargo_path.is_file():
+        rustc_path = shutil.which("rustc") or str(rustc_path)
+        cargo_path = shutil.which("cargo") or str(cargo_path)
+    # Keep rustup shim names intact: resolving their symlink to rustup would
+    # change argv[0] dispatch. Inspect and invoke the same absolute command.
+    rustc_path = Path(rustc_path).absolute()
+    cargo_path = Path(cargo_path).absolute()
+    rustc = run([str(rustc_path), "-vV"], repo)
+    cargo = run([str(cargo_path), "--version"], repo)
     pin = re.search(r'^channel = "([^"]+)"$', (repo / "rust-toolchain.toml").read_text(), re.M).group(1)
-    if not rustc.startswith(f"rustc {pin} ") or f"host: {TARGET}" not in rustc:
+    if not rustc.startswith(f"rustc {pin} ") or f"host: {target}" not in rustc:
         raise ValueError("compiler differs from the pinned native toolchain")
     epoch = int(git_output(repo, "show", "-s", "--format=%ct", source["revision"]))
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -325,31 +501,41 @@ def build(repo, output, allow_dirty, target):
     with tempfile.TemporaryDirectory(prefix="native-build-", dir=scratch) as temporary:
         target_dir = Path(temporary) / "target"
         environment = os.environ.copy()
-        environment.update(CARGO_TARGET_DIR=str(target_dir), CARGO_BUILD_BUILD_DIR=str(target_dir))
-        arguments = [str(tools / "cargo"), "build", "--locked", "--release", "--target", TARGET,
+        controlled_environment = {
+            "RUSTC": str(rustc_path), "CARGO_BUILD_RUSTC": str(rustc_path),
+            "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "",
+            "CARGO_BUILD_RUSTC_WRAPPER": "", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "",
+        }
+        # Cargo's documented empty wrapper values override personal config too.
+        # Direct Python invocation must have the same compiler boundary as ./dev.
+        environment.update(controlled_environment,
+                           CARGO_TARGET_DIR=str(target_dir), CARGO_BUILD_BUILD_DIR=str(target_dir))
+        arguments = [str(cargo_path), "build", "--locked", "--release", "--target", target,
                      "--bin", "twigsmith", "--bin", "tgi"]
         subprocess.run(arguments, cwd=repo, env=environment, check=True)
         payloads = {"LICENSE": (repo / "LICENSE").read_bytes()}
-        for name in ("twigsmith", "tgi"):
-            path = target_dir / TARGET / "release" / name
+        for name in executable_names(target):
+            path = target_dir / target / "release" / name
             if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
                 raise ValueError(f"missing regular executable: {name}")
             result = subprocess.run([str(path), "--version"], capture_output=True, text=True, check=True)
             if result.stdout.strip() != f"twigsmith {version}" or result.stderr:
                 raise ValueError(f"unexpected {name} --version output: {result!r}")
             payloads[name] = path.read_bytes()
-        if requirements != load_requirements(repo):
+        if requirements != load_requirements(repo, target):
             raise ValueError("requirements changed during packaging; no candidate published")
         if source != identity(repo):
             raise ValueError("source changed during packaging; no candidate published")
         provenance = {
             "kind": kind, "source": source,
             "toolchain": {"pin": pin, "rustc": rustc, "cargo": cargo},
-            "build": {"target": TARGET, "profile": "release", "locked": True,
+            "build": {"target": target, "profile": "release", "locked": True,
                       "arguments": arguments[1:], "rustflags": "", "source_date_epoch": epoch,
-                      "compiler": run(["cc", "--version"]).splitlines()[0]},
+                      "controlled_environment": controlled_environment,
+                      "compiler": compiler_identity(metadata)},
             "environment": {"system": platform.platform(), "kernel": platform.release(),
-                            "libc": platform.libc_ver(), "os_release": Path("/etc/os-release").read_text(),
+                            "machine": metadata["arch"],
+                            "libc": platform.libc_ver(), "os_release": Path("/etc/os-release").read_text() if metadata["os"] == "linux" else None,
                             "ci": {name: os.environ[name] for name in
                                    ("GITHUB_SHA", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
                                     "ImageOS", "ImageVersion", "RUNNER_OS", "RUNNER_ARCH") if name in os.environ}},
@@ -357,7 +543,7 @@ def build(repo, output, allow_dirty, target):
         with tempfile.TemporaryDirectory(prefix=".native-package-", dir=output.parent) as temp:
             staged = Path(temp) / "candidate"
             staged.mkdir()
-            archive = write_bundle(staged, version, payloads, provenance, epoch, requirements)
+            archive = write_bundle(staged, version, payloads, provenance, epoch, requirements, target=target)
             staged.rename(output)
     print(output / archive.name)
 
@@ -382,7 +568,7 @@ def main():
             print(f"verified {manifest['archive']['name']}: source {manifest['provenance']['source']['revision']}"
                   + f" ({manifest['provenance']['kind']})")
     except (ValueError, KeyError, IndexError, TypeError, AttributeError, OSError,
-            tarfile.TarError, subprocess.CalledProcessError) as error:
+            tarfile.TarError, zipfile.BadZipFile, UnicodeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
 
 
