@@ -623,7 +623,8 @@ def powershell_terminal_fixtures(bridge, harness, evidence, env):
                         TWIGSMITH_NPM_SHIM_TRACE=str(trace))
     report = {"profile": "launcher", "shim_kind": "ps1",
               "powershell_executable": str(pwsh),
-              "invocation": "qualification bridge -> pwsh -NoLogo -NoProfile -File installed .ps1 -> Node launcher -> native payload",
+              "invocation": "qualification bridge -> pwsh -NoLogo -NoProfile -Command fixed call-operator code with private environment JSON "
+                            "and explicit exit $LASTEXITCODE -> installed .ps1 -> Node launcher -> native payload",
               "scope": "Three existing launcher/terminal fixtures; no execution-policy override."}
     run_fixtures(bridge, harness, directory, report, kind="npm", env=selected_env,
                  selected_cases=npm_cases("launcher"))
@@ -645,10 +646,11 @@ def powershell_trace_report(trace, shim_dir, pwsh):
             raise ValueError("no actual bridge invocations recorded")
         cases, aliases = set(), set()
         for row in report["entries"]:
-            if not isinstance(row, dict) or set(row) != {"kind", "shim", "pwsh", "isolated_test", "alias"}:
+            if not isinstance(row, dict) or set(row) != {"kind", "shim", "pwsh", "pwsh_mode", "isolated_test", "alias"}:
                 raise ValueError("invalid shim invocation trace fields")
             alias = row["alias"]
-            if row["kind"] != "ps1" or alias not in ("twigsmith", "tgi") or row["isolated_test"] not in expected:
+            if (row["kind"] != "ps1" or row["pwsh_mode"] != "Command" or alias not in ("twigsmith", "tgi")
+                    or row["isolated_test"] not in expected):
                 raise ValueError("bridge used wrong shim kind, alias or isolated test")
             for field, selected in (("pwsh", pwsh), ("shim", shim_dir / f"{alias}.ps1")):
                 actual = Path(row[field])

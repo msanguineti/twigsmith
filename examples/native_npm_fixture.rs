@@ -4,6 +4,7 @@ use std::process::Command;
 #[cfg(windows)]
 use std::process::exit;
 use std::{
+    ffi::OsString,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -19,9 +20,24 @@ fn selected_powershell(path: &Path) -> PathBuf {
     fs::canonicalize(path).expect("selected PowerShell real path")
 }
 
-fn powershell_command(pwsh: &Path, shim: &Path) -> Command {
+fn powershell_command(
+    pwsh: &Path,
+    shim: &Path,
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Command {
+    // -File returns 0 when its pipeline is interrupted by Ctrl-C. Invoke the
+    // installed shim with the call operator, as in a PowerShell session, and
+    // preserve its ordinary status explicitly. Keep paths and arguments out of
+    // PowerShell source, including every quote character its lexer recognizes.
+    let invocation = serde_json::json!({"shim": shim, "arguments": arguments.into_iter()
+        .map(|value| value.into_string().expect("UTF-8 qualification argument"))
+        .collect::<Vec<_>>()});
+    const SCRIPT: &str = "$invocation = ConvertFrom-Json -InputObject $env:TWIGSMITH_NPM_BRIDGE_INVOCATION; \
+        [string]$shim = $invocation.shim; [string[]]$shimArguments = @($invocation.arguments); \
+        & $shim @shimArguments; exit $LASTEXITCODE";
     let mut command = Command::new(pwsh);
-    command.args(["-NoLogo", "-NoProfile", "-File"]).arg(shim);
+    command.args(["-NoLogo", "-NoProfile", "-Command", SCRIPT]);
+    command.env("TWIGSMITH_NPM_BRIDGE_INVOCATION", invocation.to_string());
     command
 }
 
@@ -45,7 +61,7 @@ fn trace_invocation(kind: &str, shim: &Path, pwsh: Option<&Path>, alias: &str) {
         "shim trace must be a regular file"
     );
     let value = serde_json::json!({"kind": kind, "shim": fs::canonicalize(shim).expect("installed shim real path"),
-        "pwsh": pwsh, "isolated_test": isolated_test, "alias": alias});
+        "pwsh": pwsh, "pwsh_mode": pwsh.map(|_| "Command"), "isolated_test": isolated_test, "alias": alias});
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(trace)
@@ -83,11 +99,12 @@ fn main() {
     });
     trace_invocation(&kind, &shim, pwsh.as_deref(), name);
     let mut command = if let Some(pwsh) = pwsh {
-        powershell_command(&pwsh, &shim)
+        powershell_command(&pwsh, &shim, std::env::args_os().skip(1))
     } else {
-        Command::new(shim)
+        let mut command = Command::new(shim);
+        command.args(std::env::args_os().skip(1));
+        command
     };
-    command.args(std::env::args_os().skip(1));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -113,6 +130,45 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires actual PowerShell selected by TWIGSMITH_TEST_PWSH"]
+    fn powershell_call_operator_preserves_literal_arguments_and_explicit_status() {
+        let executable = selected_powershell(Path::new(
+            &std::env::var_os("TWIGSMITH_TEST_PWSH").expect("selected test PowerShell"),
+        ));
+        let directory = tempfile::tempdir().unwrap();
+        let shim = directory
+            .path()
+            .join("installed λ ' ‘ ’ ‚ ‛ ; Write-Output INJECTED ; #.ps1");
+        fs::write(
+            &shim,
+            "foreach ($item in $args) { [Console]::Out.WriteLine($item) }\nexit 7\n",
+        )
+        .unwrap();
+        let arguments = [
+            "literal with spaces",
+            "'single' and \"double\"",
+            "",
+            "$(throw 'must stay literal')",
+            "λ 世界",
+            "trailing\\",
+            "a‘; Write-Output INJECTED; #",
+            "a’; Write-Output INJECTED; #",
+            "a‚; Write-Output INJECTED; #",
+            "a‛; Write-Output INJECTED; #",
+        ];
+        let output = powershell_command(&executable, &shim, arguments.map(OsString::from))
+            .env("PATH", directory.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(7), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+            format!("{}\n", arguments.join("\n"))
+        );
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
 
     #[test]
     fn absolute_selected_runtime_launches_with_no_shell_on_path() {

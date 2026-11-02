@@ -332,7 +332,7 @@ class DriverTests(unittest.TestCase):
         pwsh = self.root / "selected-pwsh"
         pwsh.write_bytes(b"selected PowerShell executable")
         pwsh.chmod(0o755)
-        entries = [{"kind": "ps1", "shim": str(shims / f"{alias}.ps1"), "pwsh": str(pwsh),
+        entries = [{"kind": "ps1", "shim": str(shims / f"{alias}.ps1"), "pwsh": str(pwsh), "pwsh_mode": "Command",
                     "isolated_test": name, "alias": alias}
                    for alias, name in zip(("twigsmith", "tgi", "twigsmith"),
                                           (name for names in driver.LAUNCHER_CASES.values() for name in names))]
@@ -352,6 +352,7 @@ class DriverTests(unittest.TestCase):
         wrong = self.root / "wrong-pwsh"
         wrong.write_bytes(b"different executable")
         variants = [[], entries[:-1], [dict(entry, kind="cmd") for entry in entries],
+                    [dict(entry, pwsh_mode="File") for entry in entries],
                     [dict(entry, pwsh=None) for entry in entries],
                     [dict(entry, pwsh=str(wrong)) for entry in entries],
                     [dict(entry, shim=str(shims / "tgi.ps1")) for entry in entries],

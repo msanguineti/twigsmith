@@ -65,7 +65,21 @@ fn actual_bridge_records_selected_shim_with_no_powershell_on_path() {
     let trace = directory.path().join("actual bridge trace.jsonl");
     fs::write(&trace, b"").unwrap();
     let mut command = Command::new(bridge);
+    let arguments = [
+        "--version",
+        "literal with spaces",
+        "'single' and \"double\"",
+        "",
+        "$(throw 'must stay literal')",
+        "λ 世界",
+        "trailing\\",
+        "a‘; Write-Output INJECTED; #",
+        "a’; Write-Output INJECTED; #",
+        "a‚; Write-Output INJECTED; #",
+        "a‛; Write-Output INJECTED; #",
+    ];
     command
+        .args(arguments)
         .env("PATH", directory.path())
         .env("TWIGSMITH_NPM_SHIM_DIR", directory.path())
         .env("TWIGSMITH_NPM_SHIM_TRACE", &trace)
@@ -90,8 +104,13 @@ fn actual_bridge_records_selected_shim_with_no_powershell_on_path() {
         command
             .env("TWIGSMITH_NPM_SHIM_KIND", "ps1")
             .env("TWIGSMITH_NPM_POWERSHELL", &selected);
-        let shim = directory.path().join("twigsmith.ps1");
-        fs::write(&shim, "Write-Output 'ACTUAL_SHIM_OK'\nexit 7\n").unwrap();
+        let shims = directory
+            .path()
+            .join("installed λ ' ‘ ’ ‚ ‛ ; Write-Output INJECTED ; #");
+        fs::create_dir(&shims).unwrap();
+        command.env("TWIGSMITH_NPM_SHIM_DIR", &shims);
+        let shim = shims.join("twigsmith.ps1");
+        fs::write(&shim, "[Console]::Out.WriteLine('ACTUAL_SHIM_OK')\nforeach ($item in $args) { [Console]::Out.WriteLine($item) }\nexit 7\n").unwrap();
         (shim, Some(fs::canonicalize(selected).unwrap()), "ps1")
     };
     #[cfg(unix)]
@@ -103,7 +122,11 @@ fn actual_bridge_records_selected_shim_with_no_powershell_on_path() {
         let shims = directory.path().join("installed");
         fs::create_dir(&shims).unwrap();
         let shim = shims.join(shim.file_name().unwrap());
-        fs::write(&shim, "#!/bin/sh\nprintf 'ACTUAL_SHIM_OK\\n'\nexit 7\n").unwrap();
+        fs::write(
+            &shim,
+            "#!/bin/sh\nprintf 'ACTUAL_SHIM_OK\\n'\nprintf '%s\\n' \"$@\"\nexit 7\n",
+        )
+        .unwrap();
         fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
         command.env("TWIGSMITH_NPM_SHIM_DIR", shims);
         (shim, None::<PathBuf>, "cmd")
@@ -111,8 +134,8 @@ fn actual_bridge_records_selected_shim_with_no_powershell_on_path() {
     let output = command.output().unwrap();
     assert_eq!(output.status.code(), Some(7), "{output:?}");
     assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "ACTUAL_SHIM_OK"
+        String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+        format!("ACTUAL_SHIM_OK\n{}\n", arguments.join("\n"))
     );
     assert!(output.stderr.is_empty(), "{output:?}");
     let rows: Vec<serde_json::Value> = fs::read_to_string(&trace)
@@ -132,4 +155,12 @@ fn actual_bridge_records_selected_shim_with_no_powershell_on_path() {
         fs::canonicalize(shim).unwrap()
     );
     assert_eq!(rows[0]["pwsh"], serde_json::to_value(pwsh).unwrap());
+    assert_eq!(
+        rows[0]["pwsh_mode"],
+        if cfg!(windows) {
+            serde_json::json!("Command")
+        } else {
+            serde_json::Value::Null
+        }
+    );
 }

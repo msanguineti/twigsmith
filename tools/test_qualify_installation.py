@@ -15,6 +15,8 @@ import zipfile
 
 import qualify_installation as probe
 import release_stage
+import native_package
+from test_native_package import pe_fixture, macho_fixture
 
 
 class FakeResponse(io.BytesIO):
@@ -24,6 +26,52 @@ class FakeResponse(io.BytesIO):
 
 
 class InstallationBoundaryTests(unittest.TestCase):
+    def test_native_aliases_bind_individual_manifest_hashes_and_selected_npm_payload(self):
+        # Real ZIP/tar and PE/Mach-O formats with synthetic bytes: no runtime claim.
+        for target in ('x86_64-pc-windows-msvc', 'aarch64-apple-darwin', 'x86_64-apple-darwin'):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                metadata = native_package.target_metadata(target)
+                image = pe_fixture() if metadata['os'] == 'windows' else macho_fixture(metadata['arch'])
+                main, alias = native_package.executable_names(target)
+                payloads = {main: image + b'primary-command-fixture',
+                            alias: image + b'alias-command-fixture', 'LICENSE': b'MIT License\nfixture'}
+                provenance = {
+                    'kind': 'ci-candidate',
+                    'source': {'revision': '1' * 40, 'tree': '2' * 40, 'dirty': False},
+                    'build': {'target': target, 'profile': 'release', 'locked': True, 'compiler': 'fixture'},
+                    'toolchain': {'pin': 'fixture', 'rustc': 'rustc fixture\nhost: ' + target, 'cargo': 'fixture'},
+                    'environment': {'system': 'synthetic format fixture only', 'machine': metadata['arch'],
+                                    'ci': {'GITHUB_REPOSITORY': 'msanguineti/twigsmith', 'GITHUB_SHA': '1' * 40,
+                                           'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}},
+                }
+                archive = native_package.write_bundle(root, '0.1.0', payloads, provenance, 1, target=target)
+                manifest_path = archive.with_name(native_package.archive_stem(archive) + '.manifest.json')
+                manifest = json.loads(manifest_path.read_text())
+                item = {'target': target, 'archive': archive.name,
+                        'sha256': native_package.digest(archive.read_bytes()),
+                        'manifest_sha256': native_package.digest(manifest_path.read_bytes()),
+                        'payload_sha256': manifest['files'][main]['sha256'],
+                        'source': provenance['source'], 'ci': provenance['environment']['ci']}
+                approval = {'version': '0.1.0', 'requirements': {target: manifest['requirements']}}
+                self.assertNotEqual(manifest['files'][main]['sha256'], manifest['files'][alias]['sha256'])
+                self.assertEqual(probe.verify_candidate(archive, approval, item), manifest)
+                for key, value in (('payload_sha256', manifest['files'][alias]['sha256']),
+                                   ('manifest_sha256', '0' * 64), ('sha256', '0' * 64)):
+                    changed = deepcopy(item)
+                    changed[key] = value
+                    with self.subTest(field=key), self.assertRaises(ValueError):
+                        probe.verify_candidate(archive, approval, changed)
+                # A validly repacked second alias still needs fresh archive/manifest approval.
+                payloads[alias] += b'changed-alias'
+                native_package.write_bundle(root, '0.1.0', payloads, provenance, 1, target=target)
+                with self.assertRaisesRegex(ValueError, 'archive differs'):
+                    probe.verify_candidate(archive, approval, item)
+                changed = deepcopy(item)
+                changed['sha256'] = native_package.digest(archive.read_bytes())
+                with self.assertRaisesRegex(ValueError, 'manifest differs'):
+                    probe.verify_candidate(archive, approval, changed)
+
     def test_token_only_reaches_canonical_api_and_redirects_are_not_followed(self):
         response = FakeResponse()
         seen = []

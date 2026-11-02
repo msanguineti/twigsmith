@@ -140,13 +140,14 @@ def verify_candidate(archive, approval, item):
         raise ValueError('native archive differs from approved bytes')
     if native_package.digest(manifest_path.read_bytes()) != item['manifest_sha256']:
         raise ValueError('native manifest differs from approved bytes')
+    # Native verification binds each alias separately; the external payload hash
+    # identifies only the executable selected for npm, not byte-identical aliases.
     manifest = native_package.verify(archive)
     if (manifest['version'] != approval['version'] or manifest['target'] != item['target']
             or manifest['provenance']['source'] != item['source']
             or manifest['provenance']['environment']['ci'] != item['ci']
             or manifest['requirements'] != approval['requirements'][item['target']]
-            or any(manifest['files'][name]['sha256'] != item['payload_sha256']
-                   for name in native_package.executable_names(item['target']))):
+            or manifest['files'][manifest['npm_payload']]['sha256'] != item['payload_sha256']):
         raise ValueError('native manifest differs from approved source/requirements/payload')
     return manifest
 
