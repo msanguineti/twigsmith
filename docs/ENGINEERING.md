@@ -272,9 +272,12 @@ private `__complete` entry point, handled before activity and workflow dispatch.
 Bash preserves Readline word-break and quote contexts, and suppresses mid-word
 replacement because Readline retains a suffix after the cursor; Zsh uses native
 completion quoting; Fish decodes shell quoting without expanding input; PowerShell reads AST
-literal values and quotes insertion text separately. PowerShell 7.3 or newer is
-required for Standard native argument passing; the completer selects that mode
-in its local scope for backend queries without changing the caller’s preference.
+literal values and quotes insertion text separately. PowerShell 7.3 or newer
+remains the adapter compatibility boundary. Its query transport uses a literal `ProcessStartInfo.ArgumentList` with explicit UTF-8
+output decoding and the shell’s current filesystem location. This avoids the
+host console code page changing ref names while preserving its encoding and
+argument-passing preferences. Redirected stderr is drained concurrently and
+transport failures yield no candidates.
 Actual command execution continues to use the shell’s selected argument mode;
 Legacy mode retains its ordinary embedded-quote conversion. See [PowerShell native parsing](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing).
 Terminal fixtures submit actual Tab input and inspect captured arguments or Git

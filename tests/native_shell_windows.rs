@@ -118,7 +118,7 @@ fn windows_powershell_actual_tab_and_native_arguments() {
             assert!(output.status.success(), "{output:?}");
             fs::write(&adapter, output.stdout).unwrap();
             let init = root.join("interactive.ps1");
-            fs::write(&init, format!("$ErrorActionPreference = 'Stop'\nImport-Module PSReadLine\nSet-PSReadLineOption -HistorySaveStyle SaveNothing\n. {}\n. {}\nfunction global:prompt {{ 'NATIVE_SHELL_READY> ' }}\n", quote_ps(&adapter), quote_ps(&adapter))).unwrap();
+            fs::write(&init, format!("$ErrorActionPreference = 'Stop'\nImport-Module PSReadLine\nSet-PSReadLineOption -HistorySaveStyle SaveNothing\n$global:NativeInputCodePage = [Console]::InputEncoding.CodePage\n[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437)\n. {}\n. {}\nfunction global:prompt {{ if ([Console]::OutputEncoding.CodePage -ne 437 -or [Console]::InputEncoding.CodePage -ne $global:NativeInputCodePage) {{ throw 'completion changed console encoding' }}; 'NATIVE_SHELL_READY> ' }}\n", quote_ps(&adapter), quote_ps(&adapter))).unwrap();
             let capture = root.join("arguments.json");
             let repo = fixture(root);
             let mut command = Command::new(&pwsh);

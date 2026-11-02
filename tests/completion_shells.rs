@@ -164,6 +164,39 @@ foreach ($line in @('tgi save --message irr', 'tgi start irr', 'twigsmith start 
     $result = TabExpansion2 $line $line.Length
     if ($result.CompletionMatches.Count -ne 0) { throw "unrelated completion fallback: $line" }
 }
+# Native stdout remains UTF-8 when the host uses a Windows OEM code page.
+# Set-Location also differs from the OS process cwd: the backend must observe
+# this filesystem location, including its repository discovery from a child.
+$nested = New-Item -ItemType Directory -Path 'encoding nested directory'
+Set-Location -LiteralPath $nested.FullName
+$originalInput = [Console]::InputEncoding
+$originalOutput = [Console]::OutputEncoding
+$originalPipe = $OutputEncoding
+$originalPassing = $global:PSNativeCommandArgumentPassing
+try {
+    foreach ($codepage in @(437, 65001)) {
+        [Console]::OutputEncoding = [Text.Encoding]::GetEncoding($codepage)
+        $hostOutput = [Console]::OutputEncoding
+        foreach ($mode in @('Legacy', 'Standard', 'Windows')) {
+            $global:PSNativeCommandArgumentPassing = $mode
+            foreach ($line in @('tgi s 中', 'twigsmith s 中')) {
+                $result = TabExpansion2 $line $line.Length
+                if ($result.CompletionMatches.Count -ne 1 -or $result.CompletionMatches[0].ListItemText -cne '中文工作') {
+                    throw "UTF-8 candidate changed under code page $codepage / $mode"
+                }
+                if (-not [object]::ReferenceEquals([Console]::InputEncoding, $originalInput) -or
+                    -not [object]::ReferenceEquals([Console]::OutputEncoding, $hostOutput) -or
+                    -not [object]::ReferenceEquals($OutputEncoding, $originalPipe) -or
+                    $global:PSNativeCommandArgumentPassing -ne $mode) {
+                    throw 'completion changed host encoding or argument preference'
+                }
+            }
+        }
+    }
+} finally {
+    [Console]::OutputEncoding = $originalOutput
+    $global:PSNativeCommandArgumentPassing = $originalPassing
+}
 "#).unwrap();
             let output = Command::new(&shell)
                 .args([
