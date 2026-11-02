@@ -1,5 +1,4 @@
-//! Native-host session contracts. Linux owns interactive terminal coverage;
-//! these tests check the adapters and literal shell syntax on their native OS.
+//! Native-host adapter query contracts, alongside separate real terminal tests.
 #![cfg(any(target_os = "macos", windows))]
 
 mod support;
@@ -146,7 +145,8 @@ check 'tgi start --from-tag irr' ''
 check 'tgi save --message $(touch SENTINEL)' ''
 for name in tgi twigsmith; do
     registration=$(complete -p "$name")
-    [[ $registration == "complete -o noquote -F _twigsmith $name" ]] || exit 1
+    [[ $registration == "complete -o noquote -F _twigsmith $name" ||
+       $registration == "complete -F _twigsmith $name" ]] || exit 1
 done
 printf 'NATIVE_OK\n'
 "#,
@@ -286,6 +286,15 @@ foreach ($line in @('tgi save --message irr', 'tgi start irr', 'twigsmith start 
     Assert-Candidates $line @()
 }
 if ($global:PSNativeCommandArgumentPassing -ne 'Legacy') { throw 'changed native passing preference' }
+# The historical syntax-floor probe also crosses the actual native argv boundary.
+$PSNativeCommandArgumentPassing = 'Standard'
+foreach ($name in @('tgi', 'twigsmith')) {
+    $actual = @(& $name __complete --shell powershell --index 2 -- $name s $env:TWIGSMITH_LITERAL)
+    if ($LASTEXITCODE -ne 0 -or $actual.Count -ne 1 -or $actual[0] -cne $env:TWIGSMITH_LITERAL) {
+        throw 'native adapter argument transport changed literal data'
+    }
+}
+
 Write-Output 'NATIVE_OK'
 "#,
             );
@@ -303,22 +312,34 @@ fn native_profile_install_refuses_without_changing_bytes() {
             // Select the real regular-file location so the platform refusal is tested.
             let profile = root.canonicalize().unwrap().join("profile with spaces");
             let original = b"# user profile\r\n# preserved without a final newline";
-            fs::write(&profile, original).unwrap();
-            for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
-                for shell in ["bash", "zsh", "fish", "powershell"] {
-                    let output = Command::new(executable)
-                        .args(["completion", "install", shell, "--file"])
-                        .arg(&profile)
-                        .arg("--yes")
-                        .output()
-                        .unwrap();
-                    assert!(!output.status.success(), "{output:?}");
-                    assert!(
-                        String::from_utf8_lossy(&output.stderr)
-                            .contains("requires Linux metadata inspection"),
-                        "{output:?}"
-                    );
-                    assert_eq!(fs::read(&profile).unwrap(), original);
+            for exists in [true, false] {
+                if exists {
+                    fs::write(&profile, original).unwrap();
+                } else {
+                    fs::remove_file(&profile).unwrap();
+                }
+                for executable in [env!("CARGO_BIN_EXE_twigsmith"), env!("CARGO_BIN_EXE_tgi")] {
+                    for shell in ["bash", "zsh", "fish", "powershell"] {
+                        for action in ["install", "uninstall"] {
+                            let output = Command::new(executable)
+                                .args(["completion", action, shell, "--file"])
+                                .arg(&profile)
+                                .arg("--yes")
+                                .output()
+                                .unwrap();
+                            assert!(!output.status.success(), "{output:?}");
+                            assert!(
+                                String::from_utf8_lossy(&output.stderr)
+                                    .contains("requires Linux metadata inspection"),
+                                "{output:?}"
+                            );
+                            if exists {
+                                assert_eq!(fs::read(&profile).unwrap(), original);
+                            } else {
+                                assert!(!profile.exists(), "created profile during refusal");
+                            }
+                        }
+                    }
                 }
             }
         },

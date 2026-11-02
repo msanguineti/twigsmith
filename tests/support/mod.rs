@@ -80,6 +80,7 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
         "TWIGSMITH_ARTIFACT_DIR",
         "GIT_EXEC_PATH",
         "TWIGSMITH_TEST_BASH",
+        "TWIGSMITH_TEST_CMD",
         "TWIGSMITH_TEST_ZSH",
         "TWIGSMITH_TEST_FISH",
         "TWIGSMITH_TEST_PWSH",

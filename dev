@@ -111,7 +111,7 @@ test_group() {
             ;;
         completion)
             group_description='Repository completion, shell insertion, and user registration'
-            group_targets='bash_completion completion_engine completion_setup completion_shells'
+            group_targets='bash_completion completion_engine completion_setup completion_shells native_completion native_shell_windows'
             ;;
         history-edit)
             group_description='Ordinary interactive history preparation and native recovery'
@@ -171,7 +171,7 @@ full_tests() {
         cli_smoke cli_activity
         settings cli_config
         @units dev_selection native_packaging git_execution repository_state remote_roles cli_status
-        bash_completion completion_engine completion_setup completion_shells native_completion
+        bash_completion completion_engine completion_setup completion_shells native_completion native_shell_windows
         start_resolution start_workflow cli_start native_journey
         save_planning save_execution save_publication cli_save
         finish_planning finish_checks native_checks native_check_guards native_recovery finish_roles finish_preparation
@@ -212,7 +212,7 @@ test_shells() {
     shell_requirement=${1:-available}
     case "$(uname -s)" in
         Linux) shell_targets='completion_shells completion_setup'; shell_names='fish zsh pwsh' ;;
-        Darwin) shell_targets='native_completion'; shell_names='bash fish zsh' ;;
+        Darwin) shell_targets='native_completion completion_shells'; shell_names='bash fish zsh' ;;
         *) echo 'Native shell tests unavailable through this Unix launcher on this host.' >&2; return 0 ;;
     esac
     missing_shells=''
@@ -251,6 +251,9 @@ test_shells() {
         for shell_target in $shell_targets; do
             set -- "$@" --test "$shell_target"
         done
+        if [ "$(uname -s)" = Darwin ] && [ "$shell_name" = bash ]; then
+            run_test 'native Bash terminal' "$cargo" test --locked ${cargo_failure_mode:+"$cargo_failure_mode"} --test bash_completion --test completion_shells -- --nocapture
+        fi
         run_test "native $shell_name" "$cargo" "$@" "$shell_filter" -- --ignored --nocapture
     done
 }

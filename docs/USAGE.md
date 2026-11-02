@@ -168,8 +168,9 @@ Persistent registration regenerates shell code on startup using `twigsmith`
 or `tgi` on PATH. Restart the shell after upgrading the executable. Moving it
 works when PATH resolves its new location; a missing executable yields no
 completion. Run `tgi completion --help` for installed setup and recovery details.
-The validated environment is Linux; Windows and macOS runtime compatibility
-remain unverified.
+Native shell checks separately exercise session adapters, Tab insertion and
+command launch. Their results cover the observed shell/terminal versions; they
+do not extend the published Linux distribution baseline to Windows or macOS.
 
 ## A working session
 

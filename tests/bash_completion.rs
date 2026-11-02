@@ -3,7 +3,6 @@
 #[path = "support/snapshot.rs"]
 mod preservation;
 mod support;
-#[cfg(target_os = "linux")]
 #[path = "support/terminal.rs"]
 #[allow(dead_code)]
 mod terminal;
@@ -34,25 +33,26 @@ fn complete(directory: &Path, line: &str) -> Vec<String> {
 
 fn complete_at(directory: &Path, line: &str, point: usize) -> Vec<String> {
     let executable = line.split_whitespace().next().unwrap();
-    let output = Command::new("bash")
-        .args([
-            "--noprofile",
-            "--norc",
-            "-c",
-            r#"source "$1"
+    let output =
+        Command::new(std::env::var_os("TWIGSMITH_TEST_BASH").unwrap_or_else(|| "bash".into()))
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                r#"source "$1"
 COMP_LINE=$2; COMP_POINT=$4
 _twigsmith "$3"
 if ((${#COMPREPLY[@]})); then printf '%s\0' "${COMPREPLY[@]}"; fi"#,
-            "completion-test",
-            artifact(),
-            line,
-            executable,
-            &point.to_string(),
-        ])
-        .env("PATH", backend_path())
-        .current_dir(directory)
-        .output()
-        .unwrap();
+                "completion-test",
+                artifact(),
+                line,
+                executable,
+                &point.to_string(),
+            ])
+            .env("PATH", backend_path())
+            .current_dir(directory)
+            .output()
+            .unwrap();
     assert!(output.status.success(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
     output
@@ -267,7 +267,6 @@ _twigsmith tgi
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
     isolated(
@@ -285,6 +284,10 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                 repository.success(&["branch", branch]);
             }
             fs::create_dir(repository.path().join("directory")).unwrap();
+            let nested = repository.path().join("nested directory");
+            fs::create_dir(&nested).unwrap();
+            fs::write(nested.join("irrelevant"), b"no fallback").unwrap();
+            let before = preservation::snapshot(repository.path());
             let capture = root.join("arguments");
             let rc = root.join("bashrc");
             fs::write(
@@ -296,13 +299,23 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                 ),
             )
             .unwrap();
-            let mut command = Command::new("bash");
+            let mut command = Command::new(
+                std::env::var_os("TWIGSMITH_TEST_BASH").unwrap_or_else(|| "bash".into()),
+            );
             command
                 .args(["--noprofile", "--rcfile", rc.to_str().unwrap(), "-i"])
-                .current_dir(repository.path())
+                .current_dir(&nested)
                 .env("PATH", backend_path())
-                .env("TERM", "dumb");
-            let mut terminal = terminal::Terminal::start_command(command);
+                .env("TERM", "dumb")
+                .env(
+                    "LC_ALL",
+                    if cfg!(target_os = "macos") {
+                        "en_US.UTF-8"
+                    } else {
+                        "C.UTF-8"
+                    },
+                );
+            let mut terminal = terminal::Terminal::start_session(command);
             terminal.until("TWIGSMITH_READY> ");
             for (index, (line, expected_arguments)) in [
                 ("tgi s 中", "s\0中文工作\0"),
@@ -357,13 +370,45 @@ fn readline_tab_preserves_literal_unicode_quotes_and_word_breaks() {
                 "{}",
                 terminal.output
             );
+            terminal.output.clear();
+            terminal.send(format!("cd {}\r", shell_quote(root.to_str().unwrap())).as_bytes());
+            terminal.until("TWIGSMITH_READY> ");
+            terminal.send(b"tgi stat\t\r");
+            terminal.until("DONE:14");
+            assert_eq!(fs::read(&capture).unwrap(), b"status\0");
+            terminal.output.clear();
+            terminal.send(format!("cd {}\r", shell_quote(nested.to_str().unwrap())).as_bytes());
+            terminal.until("TWIGSMITH_READY> ");
+            terminal.send(b"twigsmith start irrelevant\t\r");
+            terminal.until("DONE:15");
+            assert_eq!(fs::read(&capture).unwrap(), b"start\0irrelevant\0");
+            terminal.send(b"tgi save --message irrelevant\t\r");
+            terminal.until("DONE:16");
+            assert_eq!(
+                fs::read(&capture).unwrap(),
+                b"save\0--message\0irrelevant\0"
+            );
+            terminal.send("tgi start 中文工作 --target equals=\t\r".as_bytes());
+            terminal.until("DONE:17");
+            assert_eq!(
+                fs::read(&capture).unwrap(),
+                "start\0中文工作\0--target\0equals=work\0".as_bytes()
+            );
+            terminal.send("tgi s 中文ZZ tail".as_bytes());
+            terminal.send(b"\x01");
+            for _ in 0..7 {
+                terminal.send(b"\x1b[C");
+            }
+            terminal.send(b"\t\x05\r");
+            terminal.until("DONE:18");
+            assert_eq!(fs::read(&capture).unwrap(), "s\0中文ZZ\0tail\0".as_bytes());
+            assert_eq!(preservation::snapshot(repository.path()), before);
             terminal.send(b"exit\n");
             assert!(terminal.finish().success(), "{}", terminal.output);
         },
     );
 }
 
-#[cfg(target_os = "linux")]
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }

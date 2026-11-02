@@ -277,6 +277,11 @@ required for Standard native argument passing; the completer selects that mode
 in its local scope for backend queries without changing the caller’s preference.
 Actual command execution continues to use the shell’s selected argument mode;
 Legacy mode retains its ordinary embedded-quote conversion. See [PowerShell native parsing](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_parsing).
+Terminal fixtures submit actual Tab input and inspect captured arguments or Git
+effects independently of screen rendering. Unix uses PTYs and Windows uses
+ConPTY; adapter-query tests retain their separate transport/registration role.
+The [development guide](DEVELOPMENT.md#shell-completion) owns shell selection
+and reproduction, including stock macOS shells and Windows launch routes.
 Typed input is never evaluated by completion. Static choices need no repository. Repository candidates use
 inspection guards, current local refs and configured fetch mapping inversions,
 respect negative exclusions, and omit symbolic or ambiguous cache mappings.

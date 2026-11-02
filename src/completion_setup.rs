@@ -398,6 +398,11 @@ fn update(path: &Path, approved: &Snapshot, bytes: &[u8]) -> io::Result<()> {
 fn setup(request: &Request) -> io::Result<()> {
     let path = profile(request)?;
     let approved = snapshot(&path)?;
+    // Automatic registration is a Linux-only contract, including no-op removal
+    // and already-installed cases. Refuse consistently before interpreting bytes.
+    if cfg!(not(target_os = "linux")) {
+        return update(&path, &approved, &[]);
+    }
     if approved.bytes.as_ref().is_some_and(|bytes| {
         bytes.contains(&0) || bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff])
     }) {

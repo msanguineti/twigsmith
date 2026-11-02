@@ -217,20 +217,34 @@ passes nor failures. `./dev test-shells` runs this environment-aware selection o
 its own. Filtered Cargo invocations preserve their arguments; use `-- --ignored`
 to select external-runtime cases explicitly after provisioning that runtime.
 
-Native completion CI provisions Linux, macOS, and Windows runners. Linux executes
-Fish, Zsh and PowerShell interaction and profile-registration tests; Bash coverage
-also runs in the foundation suite. macOS tests Bash, Fish and Zsh session adapters;
-Windows tests PowerShell session completion. Both non-Linux jobs verify that
-persistent profile installation refuses changes, matching the current Linux-only
-metadata-safety contract. macOS Zsh adapter checks do not establish interactive
-Tab behavior; Linux retains the terminal interaction tests.
+Native completion CI selects Ubuntu 22.04 and 24.04 x64, macOS 15 ARM64
+and Intel, and Windows Server 2025 x64. Linux selects Fish, Zsh and PowerShell
+interaction and profile-registration tests, plus Bash terminal coverage. Each
+macOS architecture selects stock `/bin/bash` and `/bin/zsh`, Homebrew Bash and
+Fish, with actual Tab input through a Unix PTY. Windows selects PowerShell 7.6
+LTS through ConPTY and explicit command launch through cmd.exe and Git Bash.
+The Windows job also probes adapter syntax and native argument transport using
+an isolated historical PowerShell 7.3.12 runtime; this is a compatibility check,
+not a maintained-runtime recommendation.
 
-CI checks its required runtime environment before selecting tests. A missing
-required runtime is a setup error with tests not started, rather than a failed
-native behavior assertion. The workflow has no explicit job timeout; GitHub
-Actions applies its platform limits. Windows uses the pinned Rust toolchain
-with native Cargo; the Unix jobs use `./dev`. Native completion checks establish
-shell contracts, rather than whole-application platform compatibility.
+To reproduce the macOS selection, set `TWIGSMITH_TEST_BASH`,
+`TWIGSMITH_TEST_ZSH` and `TWIGSMITH_TEST_FISH` to the intended absolute runtime
+paths and run `./dev test-shells --require-all`. Repeat with
+`TWIGSMITH_TEST_BASH=/bin/bash` for stock Bash. On Windows, build
+`cargo build --locked --example native_argument_fixture`, then run
+`cargo test --locked --test native_shell_windows -- --ignored --nocapture`.
+Set `TWIGSMITH_TEST_PWSH`, `TWIGSMITH_TEST_CMD` and `TWIGSMITH_TEST_BASH`
+to the selected PowerShell, cmd.exe and Git Bash executables. The non-Linux
+`native_completion` target also checks automatic install/uninstall refusal for
+existing and absent isolated profile files.
+
+CI records source/tree, runner image, architecture, native compiler, Git and shell
+paths/versions and terminal mechanism. A selected job or an adapter query alone
+is not evidence of successful native Tab behavior; inspect the actual test result.
+Missing required runtimes fail setup before the selected checks. The workflow
+uses GitHub Actions platform timeout limits. Windows uses pinned native Cargo;
+Unix jobs use `./dev`. These checks establish bounded shell behavior, separately
+from whole-application support and shipped-artifact qualification.
 
 ### Native Git journey
 
