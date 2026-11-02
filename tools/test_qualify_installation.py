@@ -1,10 +1,12 @@
 """Synthetic trust-boundary tests; these never claim browser/Windows qualification."""
 from copy import deepcopy
 import contextlib
+import base64
 import hashlib
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +20,11 @@ import qualify_installation as probe
 import release_stage
 import native_package
 from test_native_package import pe_fixture, macho_fixture
+
+
+RUNTIME_MANIFEST = {'version': 'fixture', 'target': 'x86_64-pc-windows-msvc',
+                    'inspection': {name: {'msvc_runtime_imports': ['VCRUNTIME140.dll', 'api-ms-win-crt-heap-l1-1-0.dll']}
+                                   for name in ('twigsmith.exe', 'tgi.exe')}}
 
 
 class FakeResponse(io.BytesIO):
@@ -282,7 +289,7 @@ class InstallationBoundaryTests(unittest.TestCase):
                     {'exit': 124, 'timed_out': True, 'stdout': 'layer-a Download complete', 'stderr': 'layer-b Extracting'},
                     {'exit': 1, 'stdout': '', 'stderr': 'image not yet complete'}]
         with patch.object(probe.sys, 'platform', 'win32'), \
-             patch.object(probe, 'verify_candidate', return_value={'version': 'fixture'}), \
+             patch.object(probe, 'verify_candidate', return_value=RUNTIME_MANIFEST), \
              patch.object(probe.shutil, 'which', return_value='docker-fixture'), \
              patch.object(probe, 'command', side_effect=outcomes) as command:
             probe.runtime_probe(args, {}, {}, report)
@@ -303,7 +310,7 @@ class InstallationBoundaryTests(unittest.TestCase):
                     {'exit': 124, 'timed_out': True, 'stdout': 'last layer complete', 'stderr': ''},
                     {'exit': 0, 'stdout': json.dumps([identity]), 'stderr': ''}]
         with patch.object(probe.sys, 'platform', 'win32'), \
-             patch.object(probe, 'verify_candidate', return_value={'version': 'fixture'}), \
+             patch.object(probe, 'verify_candidate', return_value=RUNTIME_MANIFEST), \
              patch.object(probe.shutil, 'which', return_value='docker-fixture'), \
              patch.object(probe, 'command', side_effect=outcomes), \
              patch.object(probe.native_package, 'verify', side_effect=RuntimeError('bounded stop after image selection')) as prepare, \
@@ -444,7 +451,7 @@ class InstallationBoundaryTests(unittest.TestCase):
         report = {'checks': {}}
         args = SimpleNamespace(archive=Path('approved-candidate.zip'), redist_sha256='1' * 64)
         with patch.object(probe.sys, 'platform', 'win32'), \
-             patch.object(probe, 'verify_candidate', return_value={'version': 'fixture'}), \
+             patch.object(probe, 'verify_candidate', return_value=RUNTIME_MANIFEST), \
              patch.object(probe.shutil, 'which', return_value='docker-fixture'), \
              patch.object(probe, 'command', return_value={'exit': 1, 'stdout': '', 'stderr': 'no named pipe'}) as command, \
              patch.object(probe, 'runtime_host_state', return_value={'exit': 0, 'stdout': 'stopped-service', 'stderr': ''}) as host:
@@ -491,16 +498,64 @@ class InstallationBoundaryTests(unittest.TestCase):
                 probe.os_extract(archive, root / 'other', expected)
             command.assert_not_called()
 
-    def test_container_attaches_script_stdin_and_removes_only_named_container(self):
+    def test_encoded_transport_binds_exact_decoded_script_and_handles_unicode(self):
+        for script in (probe.CONTAINER_SCRIPT, "Write-Output 'δοκιμή'"):
+            arguments = probe.encoded_powershell_arguments(script)
+            self.assertEqual(arguments[0], '-EncodedCommand')
+            self.assertEqual(base64.b64decode(arguments[1], validate=True), script.encode('utf-16-le'))
+        transport = probe.container_script_transport()
+        payload = base64.b64decode(probe.encoded_powershell_arguments(probe.CONTAINER_SCRIPT)[1], validate=True)
+        self.assertEqual(transport['decoded_script_sha256'], hashlib.sha256(payload).hexdigest())
+        self.assertEqual(transport['decoded_script_bytes'], len(payload))
+        self.assertEqual(transport['encoding'], 'utf-16-le')
+        self.assertFalse(transport['stdin_required'])
+
+    def test_encoded_multiline_script_executes_real_powershell_logic_and_json(self):
+        # Optional local process evidence; never a Windows-container/runtime pass.
+        selected = shutil.which('powershell.exe') if os.name == 'nt' else None
+        selected = selected or shutil.which('pwsh')
+        local = Path(__file__).resolve().parents[1] / '.dev/cache/shell-runtimes/pwsh/pwsh'
+        if selected is None and local.is_file():
+            selected = str(local)
+        if selected is None:
+            self.skipTest('PowerShell is unavailable for the actual process transport regression')
+        script = r'''$ErrorActionPreference='Stop'
+function Values {
+  foreach ($number in @(1,2)) { $number * 2 }
+}
+$values=@(Values)
+if ($values.Count -eq 2) {
+  [pscustomobject]@{transport='observed';count=$values.Count;values=$values;nested=@{sum=($values[0]+$values[1])}} | ConvertTo-Json -Depth 4 -Compress
+}
+'''
+        environment = probe.child_env()
+        if Path(selected).name.casefold() == 'powershell.exe':
+            # This test deliberately covers Windows PowerShell 5.1. Prevent a
+            # parent pwsh 7 module path from selecting incompatible modules;
+            # the production container has its own independent environment.
+            environment = {name: value for name, value in environment.items()
+                           if name.casefold() != 'psmodulepath'}
+        output = subprocess.run([selected, '-NoLogo', '-NoProfile', '-NonInteractive',
+                                 *probe.encoded_powershell_arguments(script)],
+                                capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                timeout=30, env=environment)
+        self.assertEqual(output.returncode, 0, output.stderr)
+        self.assertEqual(output.stderr, '')
+        self.assertEqual(json.loads(output.stdout), {'transport': 'observed', 'count': 2,
+                                                    'values': [2, 4], 'nested': {'sum': 6}})
+
+    def test_container_encodes_fixed_script_and_removes_only_named_container(self):
         calls = []
         def docker(command, **kwargs):
             calls.append((command, kwargs))
             if command[1] == 'run':
-                self.assertIn('--interactive', command)
+                self.assertNotIn('--interactive', command)
                 self.assertIn('powershell.exe', command)
                 self.assertNotIn('pwsh', command)
-                self.assertEqual(kwargs['input'], probe.CONTAINER_SCRIPT)
-                self.assertEqual(command[-2:], ['-Command', '-'])
+                self.assertNotIn('input', kwargs)
+                self.assertEqual(command[-2], '-EncodedCommand')
+                self.assertEqual(base64.b64decode(command[-1]).decode('utf-16-le'), probe.CONTAINER_SCRIPT)
+                self.assertNotIn('-ExecutionPolicy', command)
                 self.assertIn('--isolation=process', command)
                 self.assertIn('--network=none', command)
                 self.assertIn('type=bind,source=candidate-fixture,target=C:\\candidate,readonly', command)
@@ -536,6 +591,14 @@ class InstallationBoundaryTests(unittest.TestCase):
         with patch.object(probe, 'powershell', return_value=result({'Status': 'NotSigned'})):
             self.assertFalse(probe.windows_policy()['available'])
 
+    def test_runtime_requirement_is_bound_to_each_verified_pe_import(self):
+        self.assertEqual(probe.required_runtime_dlls(RUNTIME_MANIFEST), ['VCRUNTIME140.dll'])
+        for name in ('vcruntime140_clr0400.dll', 'api-ms-win-crt-heap-l1-1-0.dll', 'msvcp140.dll'):
+            changed = deepcopy(RUNTIME_MANIFEST)
+            changed['inspection']['tgi.exe']['msvc_runtime_imports'] = [name]
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                probe.required_runtime_dlls(changed)
+
     def test_runtime_requires_specific_loader_failure_and_both_real_successes(self):
         observation = {
             'before': [], 'absent': {name: {'exit': -1073741515} for name in ('twigsmith', 'tgi')},
@@ -545,20 +608,26 @@ class InstallationBoundaryTests(unittest.TestCase):
         }
         required = probe.RUNTIME_ROWS[2:]
         report = {'checks': {}}
-        probe.record_runtime_observation(report, observation, '1.0.0')
+        probe.record_runtime_observation(report, observation, '1.0.0', ['VCRUNTIME140.dll'])
+        self.assertTrue(probe.passed(report, required))
+        unrelated = deepcopy(observation)
+        unrelated['before'] = [{'name': 'vcruntime140_clr0400.dll', 'version': 'unrelated-CLR-runtime'}]
+        report = {'checks': {}}
+        probe.record_runtime_observation(report, unrelated, '1.0.0', ['VCRUNTIME140.dll'])
         self.assertTrue(probe.passed(report, required))
         mutations = [lambda value: value['absent']['tgi'].update(exit=1),
                      lambda value: value['absent']['twigsmith'].clear(),
                      lambda value: value.update(before=[{'name': 'vcruntime140.dll'}]),
                      lambda value: value.update(installer_exit=1603),
                      lambda value: value.update(after=[]),
+                     lambda value: value.update(after=[{'name': 'vcruntime140_clr0400.dll'}]),
                      lambda value: value['installed']['tgi'].update(stdout='twigsmith other'),
                      lambda value: value['installed'].pop('twigsmith')]
         for mutation in mutations:
             changed = deepcopy(observation)
             mutation(changed)
             report = {'checks': {}}
-            probe.record_runtime_observation(report, changed, '1.0.0')
+            probe.record_runtime_observation(report, changed, '1.0.0', ['VCRUNTIME140.dll'])
             self.assertFalse(probe.passed(report, required))
 
     def test_redist_rejects_unapproved_hash_and_foreign_redirect(self):

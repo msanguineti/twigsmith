@@ -715,26 +715,40 @@ function Launch($name) {
     return @{exit=$p.ExitCode;stdout=$p.StandardOutput.ReadToEnd();stderr=$p.StandardError.ReadToEnd()}
   } catch { return @{error=$_.Exception.Message} }
 }
-$before=@(Dlls); $absent=@{}; $after=@{}; $installed=@{}; $code=$null; $log=''
+$required=@('VCRUNTIME140.dll')
+$before=@(Dlls); $requiredBefore=@($before | Where-Object { $required -contains $_.name })
+$absent=@{}; $after=@{}; $installed=@{}; $code=$null; $log=''
 foreach ($name in @('twigsmith','tgi')) { $absent[$name]=Launch $name }
-if ($before.Count -eq 0 -and $absent.twigsmith.exit -eq -1073741515 -and $absent.tgi.exit -eq -1073741515) {
+if ($requiredBefore.Count -eq 0 -and $absent.twigsmith.exit -eq -1073741515 -and $absent.tgi.exit -eq -1073741515) {
   $p=Start-Process -FilePath C:\candidate\vc_redist.x64.exe -ArgumentList '/install /quiet /norestart /log C:\runtime-install.log' -PassThru
   if (!$p.WaitForExit(180000)) { $p.Kill(); $code='timeout' } else { $code=$p.ExitCode }
   $after=@(Dlls)
   if (Test-Path C:\runtime-install.log) { $log=(Get-Content C:\runtime-install.log -Tail 120 | Out-String) }
   foreach ($name in @('twigsmith','tgi')) { $installed[$name]=Launch $name }
 }
-[pscustomobject]@{before=$before;absent=$absent;installer_exit=$code;after=$after;installed=$installed;installer_log=$log} | ConvertTo-Json -Depth 8 -Compress
+$shell=@{version=$PSVersionTable.PSVersion.ToString();edition=$PSVersionTable.PSEdition;process_bits=([IntPtr]::Size*8);executable=[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName}
+[pscustomobject]@{powershell=$shell;required_dlls=$required;before=$before;required_before=$requiredBefore;absent=$absent;installer_exit=$code;after=$after;installed=$installed;installer_log=$log} | ConvertTo-Json -Depth 8 -Compress
 '''
+
+
+def encoded_powershell_arguments(script):
+    return ['-EncodedCommand', base64.b64encode(script.encode('utf-16-le')).decode('ascii')]
+
+
+def container_script_transport():
+    payload = CONTAINER_SCRIPT.encode('utf-16-le')
+    return {'argument': '-EncodedCommand', 'encoding': 'utf-16-le',
+            'decoded_script_sha256': hashlib.sha256(payload).hexdigest(),
+            'decoded_script_bytes': len(payload), 'stdin_required': False}
 
 
 def run_container(docker, image, candidate, name):
     try:
-        return command([docker, 'run', '--rm', '--interactive', '--name', name,
+        return command([docker, 'run', '--rm', '--name', name,
                         '--isolation=process', '--network=none',
                         '--mount', f'type=bind,source={candidate},target=C:\\candidate,readonly',
                         image, 'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
-                        '-Command', '-'], input=CONTAINER_SCRIPT, timeout=300, max_stdout=None)
+                        *encoded_powershell_arguments(CONTAINER_SCRIPT)], timeout=300, max_stdout=None)
     finally:
         command([docker, 'rm', '--force', name], timeout=30)
 
@@ -748,10 +762,23 @@ def runtime_host_state():
         ' | ConvertTo-Json -Depth 5 -Compress')
 
 
+def required_runtime_dlls(manifest):
+    # The current inspected MSVC payloads require this exact VC DLL. API-set
+    # imports are OS contracts, not filenames to search for in System32.
+    for alias in native_package.executable_names(manifest['target']):
+        imports = manifest['inspection'][alias]['msvc_runtime_imports']
+        vc = {name.casefold() for name in imports if name.casefold().startswith(('vcruntime', 'msvcp', 'msvcr'))}
+        if vc != {'vcruntime140.dll'}:
+            raise ValueError('runtime probe requires the inspected VCRUNTIME140.dll dependency on both aliases')
+    return ['VCRUNTIME140.dll']
+
+
 def runtime_probe(args, approval, item, report):
     if sys.platform != 'win32':
         raise ValueError('isolated MSVC runtime qualification requires native Windows')
     manifest = verify_candidate(args.archive, approval, item)
+    required_dlls = required_runtime_dlls(manifest)
+    report['required_runtime_dlls'] = required_dlls
     if not args.redist_sha256:
         raise ValueError('runtime probe requires an externally approved official installer SHA-256')
     docker = shutil.which('docker')
@@ -808,6 +835,7 @@ def runtime_probe(args, approval, item, report):
         installer = redist_download(candidate / 'vc_redist.x64.exe', args.redist_sha256)
         row(report, 'official_installer', 'passed', installer)
         container_name = 'twigsmith-runtime-' + os.urandom(8).hex()
+        report['container_script_transport'] = container_script_transport()
         result = run_container(docker, identity['Id'], candidate, container_name)
     report['container'] = {'image': IMAGE, 'id': identity['Id'], 'repo_digests': identity['RepoDigests'],
                            'os_version': identity.get('OsVersion'), 'engine_version': engine.get('ServerVersion'),
@@ -822,16 +850,22 @@ def runtime_probe(args, approval, item, report):
         return
     row(report, 'isolated_container', 'passed', report['container'])
     report['runtime'] = observation
-    record_runtime_observation(report, observation, manifest['version'])
+    record_runtime_observation(report, observation, manifest['version'], required_dlls)
 
 
-def record_runtime_observation(report, observation, version):
-    row(report, 'runtime_absent', 'passed' if not observation['before'] else 'unmet', observation['before'])
+def record_runtime_observation(report, observation, version, required_dlls):
+    required = {name.casefold() for name in required_dlls}
+    if required != {'vcruntime140.dll'}:
+        raise ValueError('unbound runtime dependency selection')
+    before = {item['name'].casefold() for item in observation['before']}
+    after = {item['name'].casefold() for item in observation.get('after', [])}
+    row(report, 'runtime_absent', 'passed' if required.isdisjoint(before) else 'unmet',
+        {'required_dlls': required_dlls, 'family_inventory': observation['before']})
     for name in ('twigsmith', 'tgi'):
         child = observation['absent'].get(name, {})
         missing = child.get('exit') in (-1073741515, 3221225781)
         row(report, 'absent_launch_' + name, 'passed' if missing else 'unmet', child)
-    installed = observation.get('installer_exit') in (0, 3010) and bool(observation.get('after'))
+    installed = observation.get('installer_exit') in (0, 3010) and required.issubset(after)
     row(report, 'runtime_install', 'passed' if installed else 'unmet', {
         'exit': observation.get('installer_exit'), 'dlls': observation.get('after'),
         'log': observation.get('installer_log'), 'source': 'verified official Microsoft x64 v14 installer'})
