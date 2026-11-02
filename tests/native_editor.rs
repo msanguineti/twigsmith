@@ -73,6 +73,67 @@ fn editor(root: &Path) -> PathBuf {
     fs::copy(source, &target).unwrap();
     target
 }
+fn restricted_editor_path(
+    git_directory: &Path,
+    node: Option<&Path>,
+) -> Result<std::ffi::OsString, String> {
+    let mut directories = vec![git_directory.to_path_buf()];
+    if let Some(node) = node {
+        if !node.is_absolute()
+            || !node
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("node.exe"))
+        {
+            return Err("npm editor qualification requires an absolute selected node.exe".into());
+        }
+        let metadata =
+            fs::symlink_metadata(node).map_err(|error| format!("selected npm Node: {error}"))?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err("selected npm Node must be a nonempty regular file".into());
+        }
+        directories.push(node.parent().unwrap().to_path_buf());
+    }
+    if directories
+        .iter()
+        .any(|directory| directory.join("sh.exe").exists())
+    {
+        return Err("qualify Git editor shell discovery without sh.exe on PATH".into());
+    }
+    std::env::join_paths(directories).map_err(|error| error.to_string())
+}
+
+#[test]
+fn restricted_editor_path_retains_only_verified_optional_node_without_path_shell() {
+    let root = tempfile::tempdir().unwrap();
+    let git = root.path().join("git cmd");
+    let node_directory = root.path().join("selected node");
+    fs::create_dir(&git).unwrap();
+    fs::create_dir(&node_directory).unwrap();
+    let node = node_directory.join("node.exe");
+    fs::write(&node, b"fixture Node file").unwrap();
+    assert_eq!(restricted_editor_path(&git, None).unwrap(), git.as_os_str());
+    let path = restricted_editor_path(&git, Some(&node)).unwrap();
+    assert_eq!(
+        std::env::split_paths(&path).collect::<Vec<_>>(),
+        [git.clone(), node_directory.clone()]
+    );
+    fs::write(&node, b"").unwrap();
+    assert!(
+        restricted_editor_path(&git, Some(&node))
+            .unwrap_err()
+            .contains("nonempty regular file")
+    );
+    fs::write(&node, b"fixture Node file").unwrap();
+    fs::write(node_directory.join("sh.exe"), b"unwanted PATH shell").unwrap();
+    assert!(
+        restricted_editor_path(&git, Some(&node))
+            .unwrap_err()
+            .contains("without sh.exe")
+    );
+    assert_eq!(restricted_editor_path(&git, None).unwrap(), git.as_os_str());
+}
+
 fn command(exe: &str, local: &Repository, root: &Path, action: &str) -> Command {
     let content = root.join("literal message.txt");
     fs::write(&content, MESSAGE).unwrap();
@@ -161,8 +222,16 @@ fn native_git_editor_accept_and_cancel_retry() {
                     !directory.join("sh.exe").exists(),
                     "qualify Git-only PATH without sh.exe"
                 );
-                cmd.env("PATH", directory);
-                println!("Git-only PATH: {}", directory.display());
+                let node = std::env::var_os("TWIGSMITH_NPM_SHIM_DIR").map(|_| {
+                    PathBuf::from(
+                        std::env::var_os("TWIGSMITH_NPM_NODE")
+                            .expect("selected npm Node executable"),
+                    )
+                });
+                let path = restricted_editor_path(directory, node.as_deref())
+                    .expect("restricted editor runtime PATH");
+                println!("Git editor qualification PATH: {}", path.to_string_lossy());
+                cmd.env("PATH", path);
             }
             finish_editor(cmd, b"accept\n", 0);
             let trace: serde_json::Value =

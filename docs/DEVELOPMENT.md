@@ -467,7 +467,12 @@ Inspect the resulting evidence for platform, Node/npm versions, failures and gap
 For explicit hosted preparation, dispatch `Native release qualification` with
 `qualification=platform-packages`. This read-only mode builds native candidates on
 the four matching hosts, assembles the package set, then exercises npm installation
-on those hosts with Node 22, 24 and 26. It checks the selected workflow revision;
+on those hosts with Node 22, 24 and 26.
+Node 24 runs the full workflow selection; Node 22 and 26 run the launcher-focused
+journey, editor and cancellation selection. Every runtime runs installation, npx
+and dependency-refusal probes. This avoids repeating Git graph scenarios for each
+Node version while retaining checks at the changed process boundary.
+The workflow checks the selected revision;
 it does not apply the protected-main eligibility contract used for public release
 preparation. Its artifacts are qualification inputs, not approved public releases.
 The default Linux release mode and published-release events retain their existing

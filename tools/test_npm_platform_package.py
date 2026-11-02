@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 VERSION = '0.1.0-beta.1'
 
 
-def candidate(root, target, payload=None, version=VERSION, revision='1' * 40):
+def candidate(root, target, payload=None, version=VERSION, revision='1' * 40, license_bytes=None):
     platform = native_package.target_metadata(target)
     if payload is None:
         if platform['os'] == 'windows':
@@ -39,7 +39,8 @@ def candidate(root, target, payload=None, version=VERSION, revision='1' * 40):
     directory = root / target
     directory.mkdir(parents=True)
     archive = native_package.write_bundle(directory, version,
-        {name: payload for name in platform['executables']} | {'LICENSE': (REPO / 'LICENSE').read_bytes()},
+        {name: payload for name in platform['executables']}
+        | {'LICENSE': (REPO / 'LICENSE').read_bytes() if license_bytes is None else license_bytes},
         provenance, 1, target=target)
     return {'archive': str(archive), 'archive_sha256': package.sha256(archive),
             'payload_sha256': native_package.digest(payload)}
@@ -97,6 +98,33 @@ class PlatformPackageTests(unittest.TestCase):
         self.assertFalse(json.loads((probe / 'manifest.json').read_text())['complete'])
         with self.assertRaisesRegex(ValueError, 'must not exist'):
             package.make_package_set(REPO, inputs, output)
+
+    def test_crlf_windows_license_preserved_in_full_set_with_source_license_on_top(self):
+        canonical = (REPO / 'LICENSE').read_bytes()
+        lf = canonical.replace(b'\r\n', b'\n')
+        expected = {target: lf.replace(b'\n', b'\r\n') if target == 'x86_64-pc-windows-msvc' else lf
+                    for target in package.PACKAGES}
+        # Put the Windows input first: top bytes must never depend on input order.
+        targets = ['x86_64-pc-windows-msvc', *[target for target in package.PACKAGES
+                                            if target != 'x86_64-pc-windows-msvc']]
+        inputs = [candidate(self.root, target, license_bytes=expected[target]) for target in targets]
+        output = self.root / 'complete'
+        record = json.loads(package.make_package_set(REPO, inputs, output).read_text())
+        self.assertEqual(len(record['packages']), 5)
+        self.assertEqual(record['packaging']['inputs_sha256']['LICENSE'], native_package.digest(canonical))
+        for item in record['packages']:
+            license_bytes = contents(output / item['filename'])['package/LICENSE']
+            self.assertEqual(license_bytes, canonical if item['name'] == 'twigsmith'
+                             else expected[item['native']['target']])
+
+    def test_genuinely_different_native_license_is_rejected_atomically(self):
+        first = candidate(self.root, native_package.TARGET)
+        other = candidate(self.root, 'x86_64-pc-windows-msvc',
+                          license_bytes=(REPO / 'LICENSE').read_bytes() + b'Additional license condition.\n')
+        output = self.root / 'different-license'
+        with self.assertRaisesRegex(ValueError, 'licenses disagree'):
+            package.make_package_set(REPO, [first, other], output, partial=True)
+        self.assertFalse(output.exists())
 
     def test_missing_duplicate_version_and_source_are_rejected_atomically(self):
         first = candidate(self.root / 'first', native_package.TARGET)

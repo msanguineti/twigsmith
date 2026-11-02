@@ -83,6 +83,7 @@ pub fn isolated(name: &str, git_available: bool, test: impl FnOnce(&Path)) {
     for name in [
         "TWIGSMITH_ARTIFACT_DIR",
         "TWIGSMITH_NPM_SHIM_DIR",
+        "TWIGSMITH_NPM_NODE",
         "TWIGSMITH_QUALIFICATION_CHILD",
         "GIT_EXEC_PATH",
         "TWIGSMITH_TEST_BASH",

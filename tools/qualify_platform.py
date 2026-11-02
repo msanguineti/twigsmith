@@ -51,6 +51,22 @@ CASES = {
         "native_bundle_selection_gitflow_roles_and_creation",
     ],
 }
+# Alternate Node lines exercise the launcher/terminal boundary while the full
+# profile retains all real-Git workflow cases on the reference Node line.
+LAUNCHER_CASES = {
+    "native_journey": ["native_start_status_journey"],
+    "native_checks": ["native_cli_interrupt_contains_tree_and_preserves_retry"],
+    "native_editor": ["native_git_editor_accept_and_cancel_retry"],
+}
+
+
+def npm_cases(profile):
+    if profile not in ("full", "launcher"):
+        raise ValueError(f"unknown npm qualification profile: {profile}")
+    selected = CASES if profile == "full" else LAUNCHER_CASES
+    return {suite: list(names) for suite, names in selected.items()}
+
+
 EXAMPLES = ["native_check_fixture", "native_editor_fixture", "native_npm_fixture"]
 GAPS = [
     "Finite selected real-Git fixtures; not the complete source suite or every shell/provider.",
@@ -194,10 +210,16 @@ def fixture_passed(output, name):
             and f"TWIGSMITH_QUALIFICATION_CHILD {name}\n" in output.stdout)
 
 
-def run_fixtures(artifact, harness, evidence, report, *, kind="native", env=None):
+def run_fixtures(artifact, harness, evidence, report, *, kind="native", env=None, selected_cases=None):
+    selected = {suite: list(names) for suite, names in (CASES if selected_cases is None else selected_cases).items()}
+    if (not selected or any(not names or suite not in CASES or len(names) != len(set(names))
+                            or any(name not in CASES[suite] for name in names)
+                            for suite, names in selected.items())):
+        raise ValueError("invalid selected qualification fixtures")
     target = host_target()
     manifest = harness_manifest(harness, target)
-    report.update(harnesses=manifest, tests=[], passed=False)
+    report.update(harnesses=manifest, selected_cases=selected, tests=[], passed=False)
+    report.setdefault("profile", "full")
     env = dict(os.environ if env is None else env)
     env.update(TWIGSMITH_ARTIFACT_DIR=str(artifact), TWIGSMITH_ARTIFACT_KIND=kind,
                TWIGSMITH_QUALIFICATION_CHILD="1", LC_ALL="C", TZ="UTC")
@@ -208,7 +230,7 @@ def run_fixtures(artifact, harness, evidence, report, *, kind="native", env=None
         if kind == "native":
             env = native_environment(Path(temporary), env)
             report["runtime_path"] = env["PATH"]
-        for suite, names in CASES.items():
+        for suite, names in selected.items():
             executable = str(harness / manifest["executables"][suite]["path"])
             listing = fixture_output([executable, "--list"], evidence / f"{suite}--list.log", env, temporary)
             if listing.returncode:
@@ -277,7 +299,7 @@ def native_run(args, evidence, report):
     artifact = extracted / native_package.archive_stem(args.archive)
     binaries = {name: checked_file(artifact / name) for name in native_package.executable_names(target)}
     hashes = {name: digest(path) for name, path in binaries.items()}
-    report.update(kind="native", manifest=manifest, archive_sha256=digest(args.archive), payload_sha256=hashes)
+    report.update(kind="native", profile="full", manifest=manifest, archive_sha256=digest(args.archive), payload_sha256=hashes)
     if native_package.target_metadata(target)["os"] == "linux":
         inspector = Path(__file__).resolve().parents[1] / "scripts/ci/inspect-native-elf.py"
         inspection = evidence / "elf"
@@ -421,6 +443,16 @@ def powershell_shim_probes(shim_dir, version, evidence, env):
     return report
 
 
+def selected_npm_node(env):
+    executable = shutil.which("node", path=env.get("PATH"))
+    if not executable:
+        raise ValueError("selected npm Node executable was not found")
+    node = checked_file(Path(executable).resolve(strict=True))
+    if not node.stat().st_size:
+        raise ValueError("selected npm Node executable must be nonempty")
+    return node
+
+
 def npm_run(args, evidence, report):
     import npm_platform_package
     directory = args.package_set_dir.resolve()
@@ -431,17 +463,21 @@ def npm_run(args, evidence, report):
         raise ValueError("npm package set lacks the exact native host payload")
     native = packages[expected][0]["native"]
     version = manifest["version"]
+    profile = getattr(args, "profile", "full")
+    selected = npm_cases(profile)
     harness = args.harness_dir.resolve()
     prepared = harness_manifest(harness, target)
     if prepared["source"] != manifest["source"]:
         raise ValueError("fixture harness and npm artifact source identities differ")
-    report.update(kind="npm", package_set=manifest,
-                  node=subprocess.check_output(["node", "--version"], text=True).strip(),
+    node = selected_npm_node(os.environ)
+    report.update(kind="npm", profile=profile, package_set=manifest, node_executable=str(node),
+                  node=subprocess.check_output([str(node), "--version"], text=True).strip(),
                   npm=subprocess.check_output(npm_invocation(args) + ["--version"], text=True).strip(),
                   invocation="qualification bridge -> actual npm shim -> Node launcher -> exact native payload")
     with tempfile.TemporaryDirectory(prefix="twigsmith-npm-qualification-") as temporary:
         temporary = Path(temporary)
         env = npm_platform_package.npm_environment(temporary)
+        env["TWIGSMITH_NPM_NODE"] = str(node)
         env["npm_config_offline"] = "false"
         env["npm_config_audit"] = "false"
         env["npm_config_fund"] = "false"
@@ -457,7 +493,7 @@ def npm_run(args, evidence, report):
                 raise RuntimeError("local npm global installation failed")
             modules = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules")
             resolved_metadata = Path(subprocess.check_output([
-                shutil.which("node") or "node", "-e",
+                str(node), "-e",
                 "process.stdout.write(require.resolve(process.argv[1]+'/package.json',{paths:[process.argv[2]]}))",
                 expected, str(modules / "twigsmith")], env=env, text=True))
             payload = resolved_metadata.parent / native["payload"]
@@ -482,7 +518,7 @@ def npm_run(args, evidence, report):
                 output = fixture_output(command, evidence / f"npm-{name}--version.log", env, temporary)
                 if output.returncode or output.stdout.strip() != f"twigsmith {version}":
                     raise ValueError(f"installed npm {name} shim failed")
-            passed = run_fixtures(bridge_dir, harness, evidence, report, kind="npm", env=env)
+            passed = run_fixtures(bridge_dir, harness, evidence, report, kind="npm", env=env, selected_cases=selected)
             report["probes"] = []
             if os.name == "nt":
                 report["powershell"] = powershell_shim_probes(shim_dir, version, evidence, env)
@@ -494,7 +530,7 @@ def npm_run(args, evidence, report):
                     changed = json.loads(original_metadata)
                     changed[field] = value
                     write_json(resolved_metadata, changed)
-                    output = fixture_output([shutil.which("node") or "node", str(modules / "twigsmith/launcher.cjs"), "--version"],
+                    output = fixture_output([str(node), str(modules / "twigsmith/launcher.cjs"), "--version"],
                                             evidence / f"npm-{label}.log", env, temporary)
                     report["probes"].append({"name": label, "passed": output.returncode != 0
                                             and f"invalid {expected}" in output.stdout})
@@ -516,7 +552,7 @@ def npm_run(args, evidence, report):
             if output.returncode:
                 raise RuntimeError("omitted-optional npm installation failed")
             launcher = omitted / "node_modules/twigsmith/launcher.cjs"
-            output = fixture_output([shutil.which("node") or "node", str(launcher), "--version"],
+            output = fixture_output([str(node), str(launcher), "--version"],
                                     evidence / "npm-omit-launch.log", env, temporary)
             report["probes"].append({"name": "omitted-optional-refusal", "passed": output.returncode != 0
                                       and f"missing {expected}@{version}" in output.stdout})
@@ -554,6 +590,8 @@ def main():
     npm = commands.add_parser("npm", help="qualify unpublished exact packages with local npm install/npx")
     npm.add_argument("--package-set-dir", required=True, type=Path)
     npm.add_argument("--npm", type=Path)
+    npm.add_argument("--profile", choices=["full", "launcher"], default="full",
+                     help="full workflow coverage (default), or bounded launcher/terminal fixtures; all npm probes run")
     for command in (native, npm):
         command.add_argument("--harness-dir", required=True, type=Path)
         command.add_argument("--evidence-dir", required=True, type=Path)

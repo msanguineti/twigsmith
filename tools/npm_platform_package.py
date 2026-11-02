@@ -122,10 +122,11 @@ def make_package_set(repo, inputs, output, *, partial=False):
     packaging_source = native_package.identity(repo)
     source_files = ['tools/npm_platform_package.py', 'tools/npm_package.py',
                     'tools/native_package.py', 'tools/native_formats.py',
-                    'tools/npm_launcher.cjs', 'README.md']
+                    'tools/npm_launcher.cjs', 'README.md', 'LICENSE']
     source_hashes = {name: sha256(repo / name) for name in source_files}
     readme = (repo / 'README.md').read_bytes()
     launcher = (repo / 'tools/npm_launcher.cjs').read_bytes()
+    license_bytes = (repo / 'LICENSE').read_bytes()
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.npm-platform-', dir=output.parent) as temp:
         temporary = Path(temp)
@@ -136,7 +137,6 @@ def make_package_set(repo, inputs, output, *, partial=False):
         staged.mkdir()
         records, targets, native_inputs = [], set(), []
         version, source = None, None
-        license_bytes = None
         for index, item in enumerate(inputs):
             if not isinstance(item, dict) or set(item) != {'archive', 'archive_sha256', 'payload_sha256'}:
                 raise ValueError('invalid native package input fields')
@@ -165,9 +165,10 @@ def make_package_set(repo, inputs, output, *, partial=False):
             if sha256(payload) != item['payload_sha256']:
                 raise ValueError('native payload does not match the expected SHA-256')
             current_license = (root / 'LICENSE').read_bytes()
-            if license_bytes is not None and current_license != license_bytes:
+            # Git checkouts may use LF or CRLF. Compare text without changing
+            # the verified native archive's original license bytes in its package.
+            if current_license.replace(b'\r\n', b'\n') != license_bytes.replace(b'\r\n', b'\n'):
                 raise ValueError('native input licenses disagree')
-            license_bytes = current_license
             platform = native_package.target_metadata(target)
             npm_os = {'linux': 'linux', 'windows': 'win32', 'macos': 'darwin'}[platform['os']]
             npm_arch = {'x86_64': 'x64', 'aarch64': 'arm64'}[platform['arch']]
@@ -178,7 +179,7 @@ def make_package_set(repo, inputs, output, *, partial=False):
             if platform['libc'] is not None:
                 metadata['libc'] = [platform['libc']]
             record = pack(temporary / f'package-{index}', staged, metadata,
-                          {payload_name: payload.read_bytes(), 'LICENSE': license_bytes,
+                          {payload_name: payload.read_bytes(), 'LICENSE': current_license,
                            'README.md': (root / 'README.txt').read_bytes()}, payload_name, env)
             record['native'] = {'target': target, 'archive': archive.name,
                                 'archive_sha256': item['archive_sha256'],

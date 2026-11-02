@@ -1,5 +1,6 @@
 """Driver integrity and false-positive boundaries; synthetic fixtures are not native evidence."""
 import argparse
+import contextlib
 import io
 import json
 import os
@@ -37,6 +38,62 @@ class DriverTests(unittest.TestCase):
             manifest["executables"][name] = {"path": name, "sha256": driver.digest(path)}
         driver.write_json(self.root / "harnesses.json", manifest)
         return manifest
+
+    def test_npm_full_profile_preserves_complete_catalog_and_prepared_manifest(self):
+        selected = driver.npm_cases("full")
+        self.assertEqual(selected, driver.CASES)
+        self.assertEqual(sum(map(len, selected.values())), 17)
+        selected["native_journey"].clear()
+        self.assertTrue(driver.CASES["native_journey"])
+        manifest = self.harnesses()
+        self.assertEqual(driver.harness_manifest(self.root, "fixture-target"), manifest)
+
+    def test_npm_launcher_profile_selects_alias_journey_cancellation_and_editor_handoff(self):
+        selected = driver.npm_cases("launcher")
+        self.assertEqual(selected, {
+            "native_journey": ["native_start_status_journey"],
+            "native_checks": ["native_cli_interrupt_contains_tree_and_preserves_retry"],
+            "native_editor": ["native_git_editor_accept_and_cancel_retry"],
+        })
+        for suite, names in selected.items():
+            self.assertTrue(set(names).issubset(driver.CASES[suite]))
+        with self.assertRaisesRegex(ValueError, "unknown npm qualification profile"):
+            driver.npm_cases("empty")
+
+    def test_selected_profile_runs_only_listed_cases_and_records_exact_selection(self):
+        self.harnesses()
+        selected = driver.npm_cases("launcher")
+        report = {"profile": "launcher"}
+        def output(command, *_):
+            if command[-1] == "--list":
+                suite = Path(command[0]).name
+                return subprocess.CompletedProcess(command, 0, "".join(f"{name}: test\n" for name in selected[suite]))
+            name = command[2]
+            return subprocess.CompletedProcess(command, 0, f"TWIGSMITH_QUALIFICATION_CHILD {name}\n1 passed; 0 failed\n")
+        with patch.object(driver, "host_target", return_value="fixture-target"), \
+                patch.object(driver, "fixture_output", side_effect=output) as execute, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(driver.run_fixtures(self.root, self.root, self.root, report, kind="npm",
+                                               selected_cases=selected))
+        self.assertEqual(execute.call_count, 6)
+        self.assertEqual(report["profile"], "launcher")
+        self.assertEqual(report["selected_cases"], selected)
+        self.assertEqual([(case["suite"], case["name"]) for case in report["tests"]],
+                         [(suite, name) for suite, names in selected.items() for name in names])
+
+    def test_selected_fixture_missing_from_prepared_harness_listing_refuses(self):
+        self.harnesses()
+        selected = {"native_journey": ["native_start_status_journey"]}
+        with patch.object(driver, "host_target", return_value="fixture-target"), \
+                patch.object(driver, "fixture_output", return_value=subprocess.CompletedProcess([], 0, "other: test\n")):
+            with self.assertRaisesRegex(ValueError, "selected fixture absent"):
+                driver.run_fixtures(self.root, self.root, self.root, {}, kind="npm", selected_cases=selected)
+
+    def test_empty_or_unknown_selected_cases_cannot_qualify(self):
+        for selected in ({}, {"native_journey": []}, {"unknown_suite": ["fixture"]},
+                         {"native_journey": ["unknown_fixture"]}):
+            with self.assertRaisesRegex(ValueError, "invalid selected qualification fixtures"):
+                driver.run_fixtures(self.root, self.root, self.root, {}, selected_cases=selected)
 
     def test_downloaded_harness_modes_are_restored_without_changing_bytes(self):
         manifest = self.harnesses()
@@ -141,6 +198,25 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(kind, "application/octet-stream")
         with self.assertRaisesRegex(ValueError, "outside the exact local set"):
             driver.registry_response("../../etc/passwd", packages, "unused")
+
+    def test_selected_npm_node_is_absolute_verified_file_from_runtime_path(self):
+        node = self.root / "node.exe"
+        node.write_bytes(b"fixture Node executable")
+        node.chmod(0o755)
+        with patch.object(driver.shutil, "which", return_value=str(node)) as lookup:
+            self.assertEqual(driver.selected_npm_node({"PATH": "selected runtime"}), node.resolve())
+        lookup.assert_called_once_with("node", path="selected runtime")
+
+    def test_selected_npm_node_refuses_missing_or_empty_runtime(self):
+        with patch.object(driver.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(ValueError, "was not found"):
+                driver.selected_npm_node({})
+        node = self.root / "node.exe"
+        node.touch()
+        node.chmod(0o755)
+        with patch.object(driver.shutil, "which", return_value=str(node)):
+            with self.assertRaisesRegex(ValueError, "must be nonempty"):
+                driver.selected_npm_node({})
 
     def test_real_unicode_child_capture_and_log_ignore_host_ansi_locale(self):
         log = self.root / "unicode.log"
