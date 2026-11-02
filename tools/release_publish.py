@@ -325,6 +325,9 @@ class Providers:
 
 
 def approved_inputs(archive, npm_dir, approval):
+    if (approval.get('schema', 1) != 1 or 'topology' in approval
+            or not isinstance(approval.get('native'), dict)):
+        raise PublicationError('integrated platform sets require a full-set publisher; publication is unavailable')
     publication = approval['publication']
     version_is_prerelease = semver_key(approval['version'])[3] == 0
     if (set(publication) != {'source', 'channel', 'staging_channel', 'prerelease', 'release_id'}

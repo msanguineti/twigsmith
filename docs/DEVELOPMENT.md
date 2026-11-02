@@ -207,7 +207,8 @@ Zsh, Fish or PowerShell. The sourceable `completions/twigsmith.bash` is the Bash
 adapter used by executable-generated session setup; it needs a built executable
 on PATH. Grammar and repository candidates live in Rust.
 
-PowerShell completion requires 7.3 or newer.
+PowerShell adapter syntax requires 7.3 or newer; cross-platform candidate
+qualification selects the maintained 7.6 line.
 Completion tests use isolated repositories and profiles. Tests requiring optional
 shell runtimes are marked ignored in the regular Cargo suite. Complete
 `./dev test`, `./dev check`, and an unfiltered `./dev test-group completion`
@@ -482,6 +483,91 @@ Windows and macOS downloads are unsigned. Native hosted transfer/execution does 
 model a browser download's security metadata or managed desktop policies. Record
 the actual download/extraction/launch experience before adopting desktop support
 claims; do not remove security protections to turn an unavailable route into a pass.
+
+### Integrated offline candidate sets
+
+`tools/release_set.py NATIVE_DIRECTORY NPM_DIRECTORY --approval APPROVAL.json`
+verifies a complete schema-2 set without contacting providers. The flat native
+directory contains exactly four archives and their manifest/checksum sidecars;
+the npm directory contains exactly five tarballs and its set manifest. The approval
+binds the tag/version, each target's archive/manifest/payload hashes, native
+source/tree and CI identities, packaging source/input hashes, requirements snapshots
+and all package identities. Each artifact also has an exact run, attempt, artifact
+ID, workflow path and downloaded ZIP hash. Review these values independently and
+retain them for retries; regenerating expected hashes from changed files supplies
+no independent approval.
+
+To stage existing inputs locally, place those directories under `INPUT` and run:
+
+```sh
+python3 tools/release_stage.py prepare-platforms APPROVAL.json --input INPUT --output BUNDLE
+python3 site/candidate.py BUNDLE > CANDIDATE.json
+python3 site/build.py --bundle BUNDLE PREVIEW_DIRECTORY
+```
+
+The output directories must be new. Staging verifies before and after copying,
+then exposes the completed bundle by renaming the temporary directory. Its
+`identity.json` is the verified approval. `inspect-platforms` checks canonical
+successful hosted run/attempt/artifact identities; `acquire-platforms` additionally
+checks source eligibility, downloads only those artifacts, verifies their ZIP hashes
+and exact member allowlists, and stages the set. Both operations use read-only
+GitHub acquisition. They neither publish nor configure providers.
+
+The generated integrated descriptor and preview describe local candidate bytes,
+including every native target and npm payload. Frozen candidate requirements can
+still contain historical explicitly unqualified OS floors; format verification
+does not qualify a desktop. New packaging selects one approved target snapshot
+from `site/current-requirements.json`; the four-target envelope is not embedded
+in a native manifest. Each manifest retains only its own frozen native/npm
+requirements. Changes to current policy never update old packages or descriptors.
+Historical 0.1.0 descriptors retain their
+original requirements and rendering. The existing publisher and published site
+consumers refuse the integrated schema before publication or promotion. Full-set
+publication/recovery must verify payload packages before the common package and
+channel, then verify public consumption before channel/site promotion.
+
+### Candidate installation observations
+
+`./dev installation-qualify --help` describes the browser and Windows runtime
+probes. Explicit `Native release qualification` dispatch with
+`qualification=platform-installation` consumes `platform_approval`, the complete
+reviewed identity JSON, and `runtime_sha256`, the independently reviewed official
+x64 v14 Redistributable installer hash. It uses existing Windows Server 2025,
+macOS 15 ARM64 and macOS 15 Intel runners. It creates no Windows 11 runner and
+requires only read access to source and Actions artifacts.
+
+The browser probe downloads the exact approved Actions artifact with the installed
+headed browser, retains the original downloaded file, checks its ZIP hash and
+allowlist, and uses OS extraction tools. On macOS it opens the original native
+tarball with Archive Utility and retains the resulting files and attributes. It
+records quarantine/Zone.Identifier inheritance and actual execution of both aliases
+and a representative Git journey. Windows extraction and policy queries use the
+selected PowerShell 7.6, recording actual executable and module versions.
+An Actions artifact wraps the native archive in another ZIP; its observed security
+metadata and extraction route do not establish the eventual direct release-asset
+experience. Qualify that route again on published candidate bytes. The original
+browser download must retain Internet-origin metadata; macOS also requires
+quarantine after extraction. Windows records extracted Internet streams as present,
+observed absent or unavailable. Observed absence limits the launch evidence: it
+does not exercise protection triggered by marked payloads. Unavailable queries,
+blocked execution or unavailable browser interaction leave explicit unmet checks.
+The probe does not manufacture download metadata or disable protections; terminal
+launch and signature queries do not establish a SmartScreen UI verdict.
+
+The Windows runtime probe uses a disposable process-isolated official ServerCore
+2025 container through the runner's existing Docker daemon. It checks an actual
+missing-runtime failure for both aliases, installs the hash-pinned official
+Microsoft-signed Redistributable, then requires successful version results. It
+never removes host runtime DLLs or provisions a Docker daemon. The workflow starts
+an already registered, enabled Docker service when stopped and records before/after
+state and engine readiness. It leaves missing or disabled services unchanged.
+A missing daemon, preinstalled runtime or different failure remains unmet. This is ServerCore
+provisioning evidence; it is not desktop/UAC evidence. Reports record actual host
+policies, including any security protections disabled by the hosted image.
+
+The browser profile and short-lived signed download URLs stay outside uploaded
+evidence. Review the reports' individual checks and limits, not just the job status.
+These probes do not publish native assets, npm packages or the website.
 
 ## Release preparation and publication
 

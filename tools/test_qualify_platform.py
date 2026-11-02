@@ -302,6 +302,184 @@ class DriverTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "PowerShell is required"):
                 driver.powershell_shim_probes(self.root, "1.0.0-rc.7", self.root, {})
 
+    def test_powershell_terminal_cases_keep_original_report_and_environment(self):
+        original = self.root / "qualification.json"
+        original.write_text('original cmd evidence')
+        pwsh = self.root / "selected-pwsh"
+        pwsh.write_bytes(b"selected PowerShell executable")
+        pwsh.chmod(0o755)
+        env = {"TWIGSMITH_NPM_SHIM_KIND": "cmd", "PATH": "selected runtime",
+               "TWIGSMITH_NPM_SHIM_DIR": str(self.powershell_shims())}
+        def fixtures(bridge, harness, evidence, report, **options):
+            self.assertEqual(evidence, self.root / "powershell-terminal")
+            self.assertEqual(options["selected_cases"], driver.LAUNCHER_CASES)
+            self.assertEqual(options["env"]["TWIGSMITH_NPM_SHIM_KIND"], "ps1")
+            self.assertEqual(options["env"]["TWIGSMITH_NPM_POWERSHELL"], str(pwsh.resolve()))
+            self.assertEqual(options["env"]["TWIGSMITH_NPM_SHIM_TRACE"], str(evidence / "shim-invocations.jsonl"))
+            self.assertEqual(options["kind"], "npm")
+            report.update(passed=False, tests=[{"name": "failed terminal fixture", "passed": False}])
+            return False
+        with patch.object(driver, "run_fixtures", side_effect=fixtures), \
+                patch.object(driver.shutil, "which", return_value=str(pwsh)):
+            report = driver.powershell_terminal_fixtures(self.root, self.root, self.root, env)
+        self.assertFalse(report["passed"])
+        self.assertEqual(env["TWIGSMITH_NPM_SHIM_KIND"], "cmd")
+        self.assertEqual(original.read_text(), 'original cmd evidence')
+        self.assertEqual(json.loads((self.root / "powershell-terminal/qualification.json").read_text()), report)
+
+    def shim_trace(self):
+        shims = self.powershell_shims()
+        pwsh = self.root / "selected-pwsh"
+        pwsh.write_bytes(b"selected PowerShell executable")
+        pwsh.chmod(0o755)
+        entries = [{"kind": "ps1", "shim": str(shims / f"{alias}.ps1"), "pwsh": str(pwsh), "pwsh_mode": "Command",
+                    "isolated_test": name, "alias": alias}
+                   for alias, name in zip(("twigsmith", "tgi", "twigsmith"),
+                                          (name for names in driver.LAUNCHER_CASES.values() for name in names))]
+        return shims, pwsh, entries
+
+    def test_trace_requires_actual_ps1_invocations_from_every_case_and_both_aliases(self):
+        shims, pwsh, entries = self.shim_trace()
+        trace = self.root / "trace.jsonl"
+        trace.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+        report = driver.powershell_trace_report(trace, shims, pwsh)
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["entries"], entries)
+
+    def test_trace_refuses_dropped_selector_trace_runtime_or_selected_case(self):
+        shims, pwsh, entries = self.shim_trace()
+        trace = self.root / "trace.jsonl"
+        wrong = self.root / "wrong-pwsh"
+        wrong.write_bytes(b"different executable")
+        variants = [[], entries[:-1], [dict(entry, kind="cmd") for entry in entries],
+                    [dict(entry, pwsh_mode="File") for entry in entries],
+                    [dict(entry, pwsh=None) for entry in entries],
+                    [dict(entry, pwsh=str(wrong)) for entry in entries],
+                    [dict(entry, shim=str(shims / "tgi.ps1")) for entry in entries],
+                    [dict(entry, isolated_test="unselected-case") for entry in entries]]
+        for changed in variants:
+            with self.subTest(entries=changed):
+                trace.write_text("".join(json.dumps(entry) + "\n" for entry in changed))
+                report = driver.powershell_trace_report(trace, shims, pwsh)
+                self.assertFalse(report["passed"])
+                self.assertTrue(report["errors"])
+        trace.unlink()
+        self.assertFalse(driver.powershell_trace_report(trace, shims, pwsh)["passed"])
+
+    def test_passing_terminal_fixtures_without_bridge_trace_are_rejected(self):
+        shims, pwsh, _ = self.shim_trace()
+        def fixtures(bridge, harness, evidence, report, **options):
+            report.update(passed=True, tests=[{"passed": True}])
+            return True
+        with patch.object(driver, "run_fixtures", side_effect=fixtures), \
+                patch.object(driver.shutil, "which", return_value=str(pwsh)):
+            report = driver.powershell_terminal_fixtures(self.root, self.root, self.root,
+                                                       {"TWIGSMITH_NPM_SHIM_DIR": str(shims)})
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["shim_trace"]["passed"])
+
+    def test_shell_matrix_has_only_approved_completion_and_launch_routes(self):
+        for target in ("x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin"):
+            self.assertEqual(driver.supported_shells(target), ("bash", "zsh", "fish"))
+        self.assertEqual(driver.supported_shells("x86_64-pc-windows-msvc"), ("powershell", "cmd", "git-bash"))
+
+    def test_windows_git_bash_does_not_select_the_wsl_bash_launcher(self):
+        git = self.root / "Git/cmd/git.exe"
+        git.parent.mkdir(parents=True)
+        git.touch()
+        bash = self.root / "Git/bin/bash.exe"
+        bash.parent.mkdir()
+        bash.touch()
+        with patch.object(driver.shutil, "which", return_value=str(git)) as lookup:
+            self.assertEqual(driver.shell_executable("git-bash", {}), str(bash))
+        lookup.assert_called_once_with("git", path=None)
+        bash.unlink()
+        with patch.object(driver.shutil, "which", return_value=str(git)):
+            self.assertIsNone(driver.shell_executable("git-bash", {}))
+
+    def shell_routes(self, outputs, *, required=True, target="x86_64-unknown-linux-gnu", missing=()):
+        def selected(name, _):
+            return None if name in missing else "/host/" + name
+        with patch.object(driver, "host_target", return_value=target), \
+                patch.object(driver, "native_environment", return_value={"PATH": "runtime"}), \
+                patch.object(driver, "shell_executable", side_effect=selected), \
+                patch.object(driver, "fixture_output", side_effect=outputs):
+            return driver.shell_routes(self.root, "1.0.0-rc.7", self.root, require=required)
+
+    @staticmethod
+    def shell_output(command, *_):
+        if command[-1] == "--version":
+            return subprocess.CompletedProcess(command, 0, "host shell 1.2.3\n")
+        if command[-1] == "$PSVersionTable.PSVersion.ToString()":
+            return subprocess.CompletedProcess(command, 0, "7.6.7\n")
+        if "completion" in command:
+            return subprocess.CompletedProcess(command, 0, "# generated adapter bytes\n")
+        return subprocess.CompletedProcess(command, 0, "SHELL_PROBE_OK\n")
+
+    def test_required_missing_shells_cannot_produce_successful_acceptance(self):
+        report = self.shell_routes(self.shell_output, missing=("zsh", "fish"))
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["coverage_complete"])
+        self.assertTrue(report["routes"][0]["passed"])
+        self.assertEqual([route["name"] for route in report["routes"] if not route["available"]], ["zsh", "fish"])
+        self.assertEqual(json.loads((self.root / "shell-routes/shell-routes.json").read_text()), report)
+
+    def test_optional_missing_shells_remain_incomplete_and_do_not_imply_actual_tab(self):
+        report = self.shell_routes(self.shell_output, required=False, missing=("zsh", "fish"))
+        self.assertTrue(report["passed"])
+        self.assertFalse(report["coverage_complete"])
+        self.assertIn("not actual Tab", report["scope"])
+
+    def test_each_shell_loads_actual_generated_adapter_and_checks_both_aliases(self):
+        calls = []
+        def outputs(command, log, env, cwd):
+            calls.append((command, dict(env)))
+            return self.shell_output(command, log, env, cwd)
+        report = self.shell_routes(outputs)
+        self.assertTrue(report["coverage_complete"])
+        for route in report["routes"]:
+            self.assertEqual([probe["name"] for probe in route["probes"]],
+                             ["launch-twigsmith", "launch-tgi", "completion-twigsmith", "completion-tgi"])
+            adapter = self.root / f"shell-routes/adapter-{route['name']}.txt"
+            self.assertEqual(adapter.read_text(), "# generated adapter bytes\n")
+            self.assertEqual(route["adapter_sha256"], driver.digest(adapter))
+            self.assertEqual(route["adapter_generation"]["command"],
+                             [str(self.root / "twigsmith"), "completion", route["name"]])
+        self.assertTrue(all("-ExecutionPolicy" not in command for command, _ in calls))
+
+    def test_zero_status_without_probe_marker_fails_even_in_optional_mode(self):
+        def outputs(command, *args):
+            result = self.shell_output(command, *args)
+            if "bash-launch" in command[-1]:
+                result.stdout = ""
+            return result
+        report = self.shell_routes(outputs, required=False)
+        self.assertFalse(report["passed"])
+        self.assertFalse(report["routes"][0]["probes"][0]["passed"])
+
+    def test_powershell_other_line_refuses_before_adapter_or_launch(self):
+        def outputs(command, *args):
+            return subprocess.CompletedProcess(command, 0, "7.5.4\n")
+        report = self.shell_routes(outputs, target="x86_64-pc-windows-msvc", missing=("cmd", "git-bash"))
+        self.assertFalse(report["passed"])
+        self.assertIn("7.6", report["routes"][0]["gap"])
+        self.assertEqual(report["routes"][0]["probes"], [])
+
+    def test_windows_requires_powershell_adapter_but_cmd_and_git_bash_launch_only(self):
+        def outputs(command, *args):
+            if command[-1].endswith("cmd-launch.cmd"):
+                return subprocess.CompletedProcess(command, 0, "twigsmith 1.0.0-rc.7\n")
+            return self.shell_output(command, *args)
+        report = self.shell_routes(outputs, target="x86_64-pc-windows-msvc")
+        self.assertTrue(report["coverage_complete"])
+        self.assertEqual([len(route["probes"]) for route in report["routes"]], [4, 2, 2])
+        self.assertTrue((self.root / "shell-routes/adapter-powershell.ps1").is_file())
+        for route in report["routes"]:
+            for probe in route["probes"]:
+                self.assertNotIn("-ExecutionPolicy", probe["command"])
+                if route["name"] == "powershell":
+                    self.assertEqual(probe["command"][1:4], ["-NoLogo", "-NoProfile", "-File"])
+
     def test_rosetta_is_not_native_intel_qualification(self):
         with patch.object(driver.sys, "platform", "darwin"), patch.object(driver.platform, "machine", return_value="x86_64"):
             with patch.object(driver.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \

@@ -64,6 +64,64 @@ If Git reports `unknown option: --no-lazy-fetch`, upgrade Git to 2.45 or newer.
 The [developer packaging guide](DEVELOPMENT.md#npm-candidate-packaging) covers
 candidate creation, provenance and qualification.
 
+Unpublished platform candidates use a common Node launcher and four optional
+payload packages for Linux x64 GNU, Windows x64 and macOS ARM64/Intel. Both command
+names select the installed payload for the current platform. This installation
+route uses no lifecycle scripts, compiler or fallback download. Keep the complete
+verified package set when testing locally; installing only the launcher tarball
+does not supply its platform dependencies. See the
+[platform candidate guide](DEVELOPMENT.md#platform-selected-npm-candidates) for
+offline preparation and qualification.
+
+New cross-platform candidates target maintained Windows 11 x64 releases and macOS
+Sequoia 15 on ARM64 and Intel, with Git 2.45 or newer. Windows candidates use the
+dynamic MSVC runtime and require Microsoft's [official x64 v14 Visual C++
+Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)
+at least as recent as the candidate's build tools. Linux candidates retain the
+glibc 2.35 baseline. Windows qualification uses Server 2025 CI; this records a
+server test environment, not an observed Windows 11 desktop result.
+
+The selected shell routes are Bash, Zsh and Fish launch/completion on Linux/macOS;
+PowerShell 7.6 launch/completion on Windows; and cmd/Git Bash launch on Windows.
+Editors and checks need their configured executables. Native execution needs
+neither Node nor Rust; the npm route requires Node.js LTS and npm.
+
+Windows and macOS archives are unsigned, and macOS archives are not notarized.
+Download-security behavior depends on the download route and host policy. Consult
+the exact candidate's qualification evidence for observed runtime, quarantine and
+policy behavior. Build/deployment metadata alone establishes no such result. The
+published Linux requirements above continue to describe the existing release.
+
+For an unpublished native candidate, use its approved archive and checksum; replace
+`VERSION` below with that candidate's exact version. Install the Windows runtime
+prerequisite above first. In PowerShell 7.6, extract the downloaded native ZIP and
+add its directory to the current session:
+
+```powershell
+Expand-Archive -LiteralPath ./twigsmith-VERSION-x86_64-pc-windows-msvc.zip -DestinationPath .
+$env:PATH = (Join-Path $PWD 'twigsmith-VERSION-x86_64-pc-windows-msvc') + ';' + $env:PATH
+twigsmith --version
+tgi --version
+```
+
+On macOS, open the downloaded native `.tar.gz` with Archive Utility. Choose the
+ARM64 archive (`aarch64-apple-darwin`) or Intel archive (`x86_64-apple-darwin`) for
+your Mac. In Bash or Zsh, add the extracted directory to the current session,
+using its actual location and architecture:
+
+```sh
+export PATH="$HOME/Downloads/twigsmith-VERSION-aarch64-apple-darwin:$PATH"
+twigsmith --version
+tgi --version
+```
+
+These are terminal launch routes. Extraction can preserve or omit download-origin
+metadata depending on the tool and host; successful terminal launch does not
+establish an Explorer/SmartScreen approval or a warning-free macOS installation.
+If host policy blocks execution, follow your organization's approved procedure.
+The qualification route uses browser-downloaded Actions artifacts with an extra
+outer ZIP; direct published release downloads require their own checks.
+
 ## Transition from the earlier Rust identity
 
 Before switching to Twigsmith, finish or recover outstanding operations with the
@@ -84,8 +142,9 @@ reinterpret those records.
 
 ## Shell completion
 
-PowerShell completion requires PowerShell 7.3 or newer. Put either executable
-on PATH. Enable completion for the current session with one command appropriate
+The PowerShell adapter supports syntax from 7.3 onward; the selected maintained
+cross-platform route is PowerShell 7.6. Put either executable on PATH.
+Enable completion for the current session with one command appropriate
 to your active shell:
 
 | Shell | Current session |

@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import tarfile
 import tempfile
 from urllib.parse import quote
 
@@ -25,6 +26,8 @@ import release_set
 
 def validate_receipt(record, receipt, *, now=None):
     """Require recent native, npm install and npx observations of this exact tuple."""
+    if record.get('schema') == 2:
+        raise ValueError('complete platform sets cannot use legacy publication receipts')
     try:
         if (receipt['identity'] != record
                 or receipt['native_sha256'] != record['native']['sha256']
@@ -46,6 +49,8 @@ def validate_receipt(record, receipt, *, now=None):
 
 
 def _validate_identity(record, published):
+    if record.get('schema') == 2:
+        raise ValueError('complete platform sets require a verified bundle preview; full-set publication is unavailable')
     if (record['repository'] != release_set.REPOSITORY
             or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', record['version'])
             or record['tag'] != 'v' + record['version']
@@ -168,6 +173,8 @@ class _ReleaseFields(HTMLParser):
 
 def _render_resolved(model):
     """Render an already provider-validated, release-bound model."""
+    if model.get('schema') == 2:
+        raise ValueError('complete platform sets support unpublished previews only; full-set publication is unavailable')
     escape = html.escape
     expected = {}
 
@@ -260,6 +267,71 @@ def build_resolved(output, model):
     _build_source(output, source)
 
 
+def _render_candidate(descriptor):
+    """Render a complete offline set without suggesting public availability."""
+    escape = html.escape
+    notice = ('<div class="notice"><strong>Unpublished candidate</strong>'
+              '<p>This preview describes verified local files. Release downloads and npm registry '
+              'installation are not published yet.</p></div>')
+    details = '<div class="candidate"><h3>Candidate ' + escape(descriptor['version']) + '</h3>'
+    details += '<p>Four native archives and five npm packages.</p><details><summary>SHA-256 checksums</summary><dl>'
+    for native in descriptor['native']:
+        for asset in native['assets'].values():
+            details += '<dt>' + escape(asset['name']) + '</dt><dd><code>' + asset['sha256'] + '</code></dd>'
+    details += '<dt>npm/manifest.json</dt><dd><code>' + descriptor['npm']['manifest_sha256'] + '</code></dd>'
+    for package in descriptor['npm']['packages']:
+        details += '<dt>' + escape(package['filename']) + '</dt><dd><code>' + package['sha256'] + '</code></dd>'
+    details += '</dl></details></div>'
+    requirements = '<h3>Requirements frozen in this candidate</h3><dl class="requirements">'
+    instructions = ('<p>From a source checkout, replace BUNDLE with the local candidate directory '
+                    'and DESTINATION with a new extraction directory. The verification helper needs '
+                    'Python; the extracted native commands need neither Node/npm nor Rust.</p>')
+    for native in descriptor['native']:
+        target = native['target']
+        requirements += '<div><dt>' + escape(target) + '</dt><dd>'
+        requirements += '; '.join(escape(value) for value in native['requirements'].values()) + '</dd></div>'
+        npm_requirements = descriptor['npm']['requirements'][target]
+        coverage = '; '.join(' / '.join(str(platform[key]) for key in ('os', 'arch', 'libc') if platform.get(key))
+                             for platform in npm_requirements['coverage'])
+        requirements += '<div><dt>Frozen npm requirements for ' + escape(target) + '</dt><dd>'
+        requirements += escape(npm_requirements['requirements']) + ' (' + escape(coverage) + ')</dd></div>'
+        shell = 'PowerShell' if native['platform']['os'] == 'windows' else 'Bash or Zsh'
+        instructions += '<h3>Local native candidate: ' + escape(target) + '</h3><p>' + shell + ':</p>'
+        instructions += '<pre tabindex="0"><code>' + escape('\n'.join(native['commands'])) + '</code></pre>'
+    requirements += '</dl><p>Frozen candidate metadata does not establish additional supported OS or shell versions.</p>'
+    instructions += ('<h3>Local npm package set</h3><p>The common launcher selects one exact-version '
+                     'optional platform package. Keep all five tarballs together for local qualification; '
+                     'registry installation instructions follow publication.</p><ul>')
+    for coverage in descriptor['npm']['coverage']:
+        label = ' / '.join(str(coverage[key]) for key in ('os', 'arch', 'libc') if coverage.get(key))
+        instructions += '<li>' + escape(label + ': ' + coverage['package']) + '</li>'
+    instructions += '</ul><dl>'
+    for package in descriptor['npm']['packages']:
+        instructions += '<dt>' + escape(package['name'] + '@' + package['version']) + '</dt><dd>'
+        instructions += escape(package['filename']) + '<br><code>' + escape(package['integrity']) + '</code></dd>'
+    instructions += '</dl>'
+    source = (ROOT / 'site' / 'index.html').read_text(encoding='utf-8')
+    for marker, content in [('AVAILABILITY-NOTICE', notice), ('RELEASE-IDENTITY', details),
+                            ('REQUIREMENTS', requirements), ('INSTALLATION-INSTRUCTIONS', instructions)]:
+        placeholder = f'<!-- {marker} -->'
+        if source.count(placeholder) != 1:
+            raise ValueError(f'site template requires exactly one {marker} placeholder')
+        source = source.replace(placeholder, content)
+    return source
+
+
+def build_candidate(output, bundle):
+    """Verify and build an unpublished complete-set preview using only local files."""
+    import candidate
+    destination, source = Path(output).resolve(), Path(bundle).resolve()
+    if destination.is_relative_to(source) or source.is_relative_to(destination):
+        raise ValueError('candidate preview output must be separate from its input bundle')
+    descriptor = candidate.from_bundle(bundle)
+    if descriptor.get('schema') != 2:
+        raise ValueError('complete-set preview requires a schema 2 candidate bundle')
+    _build_source(output, _render_candidate(descriptor))
+
+
 def _promote(staged, output):
     """Retain the old directory if replacing a staged artifact fails."""
     if output.is_symlink() or (output.exists() and not output.is_dir()):
@@ -342,19 +414,29 @@ def promotion_matches(output, record, receipt):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('archive')
-    parser.add_argument('npm_dir')
-    parser.add_argument('output')
-    parser.add_argument('--archive-sha256', required=True)
-    parser.add_argument('--payload-sha256', required=True)
-    parser.add_argument('--package-sha256', required=True)
-    parser.add_argument('--tag', required=True)
-    parser.add_argument('--native-manifest-sha256', required=True)
-    parser.add_argument('--npm-manifest-sha256', required=True)
+    parser.add_argument('archive', nargs='?', help='native archive; with --bundle, preview output directory')
+    parser.add_argument('npm_dir', nargs='?')
+    parser.add_argument('output', nargs='?')
+    parser.add_argument('--bundle', type=Path, help='verified complete-set candidate directory; use --bundle BUNDLE OUTPUT')
+    parser.add_argument('--archive-sha256')
+    parser.add_argument('--payload-sha256')
+    parser.add_argument('--package-sha256')
+    parser.add_argument('--tag')
+    parser.add_argument('--native-manifest-sha256')
+    parser.add_argument('--npm-manifest-sha256')
     parser.add_argument('--channel')
     parser.add_argument('--receipt', type=Path, help='fresh consumption receipt from the publication verifier')
     args = parser.parse_args()
     try:
+        hashes = [args.archive_sha256, args.payload_sha256, args.package_sha256,
+                  args.native_manifest_sha256, args.npm_manifest_sha256, args.tag]
+        if args.bundle:
+            if not args.archive or args.npm_dir or args.output or any(hashes) or args.receipt or args.channel:
+                raise ValueError('use --bundle BUNDLE OUTPUT without publication or legacy candidate options')
+            build_candidate(args.archive, args.bundle)
+            return
+        if not all([args.archive, args.npm_dir, args.output, *hashes]):
+            raise ValueError('legacy preview requires archive, npm_dir, output, tag and all five hashes')
         record = release_set.verify(args.archive, args.npm_dir, args.archive_sha256,
                                     args.payload_sha256, args.package_sha256, args.tag,
                                     args.native_manifest_sha256, args.npm_manifest_sha256)
@@ -366,7 +448,7 @@ def main():
         elif args.channel:
             raise ValueError('--channel requires a consumption receipt')
         build(args.output, record, receipt=receipt)
-    except (ValueError, KeyError, TypeError, OSError) as error:
+    except (ValueError, KeyError, TypeError, OSError, tarfile.TarError) as error:
         parser.exit(1, f'error: {error}\n')
 
 

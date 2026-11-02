@@ -38,6 +38,10 @@ class ReleaseModelTests(unittest.TestCase):
                          'twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz')
         self.assertNotIn('url', self.descriptor['native'][0]['assets']['archive'])
 
+    def test_complete_set_format_refuses_public_resolution_before_provider_fields(self):
+        with self.assertRaisesRegex(ValueError, 'full-set publication is unavailable'):
+            release_model.resolve({'schema': 2}, None, None, None)
+
     def test_rejects_provider_disagreement_incomplete_or_changed_assets(self):
         cases = [
             lambda gh, npm: npm.update(version='0.2.0'),

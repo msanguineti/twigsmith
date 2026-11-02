@@ -193,8 +193,10 @@ nor a recorded source identity authenticates a publisher.
 Native Windows candidates use ZIP and `.exe` names; macOS candidates have separate
 tar.gz archives for ARM64 and Intel. Schema 4 manifests freeze executable-format
 inspection and candidate requirements for these targets, while Linux retains its
-schema 3 contract. Candidate requirements do not claim approved Windows/macOS OS
-floors. Native execution requires neither Rust nor Node/npm.
+schema 3 contract. New snapshots describe the selected Windows/macOS support
+targets separately from recorded build and qualification environments. Historical
+unqualified snapshots retain their original interpretation. Native execution
+requires neither Rust nor Node/npm.
 
 [`npm_platform_package.py`](../tools/npm_platform_package.py) assembles a separate
 four-platform npm candidate set: a common `twigsmith` Node launcher and exact-version
@@ -202,9 +204,9 @@ optional platform dependencies. The launcher selects the installed native payloa
 preserves invocation/terminal behavior and refuses missing or incompatible packages;
 it performs no runtime download or consumer build. Both command names share the
 launcher. The set manifest binds package and native identities. The current
-Linux-only release-set verifier/publisher remains separate until it can verify and
-recover publication of the complete package set; new platform candidates must not
-be passed off as the existing Linux publication format.
+Linux-only publisher remains separate until it can recover publication of the
+complete package set. Integrated offline verification uses a distinct schema and
+the publisher refuses that schema before provider effects.
 
 [`qualify_platform.py`](../tools/qualify_platform.py) runs selected existing real-Git
 fixtures against extracted archives and installed npm commands, recording actual
@@ -234,6 +236,22 @@ successful prepared candidate and validates native and publisher sources with th
 same protected-main eligibility rule as qualification. It runs on main to retain
 the release environment and npm trusted publisher identity.
 
+The integrated offline set binds exactly four native archives and five npm tarballs
+to externally reviewed hashes, source/tree identities, individual Actions
+run/attempt/artifact identities and per-target requirements snapshots. Requirements
+approval remains separate from format consistency: historical Windows/macOS
+candidate snapshots retain their explicitly unqualified OS floors. Packaging source
+may differ from native source; its exact identity and input hashes are bound
+separately. Archive verification and npm member allowlists reject substituted
+payloads, metadata and incomplete sets at this preparation boundary. Staging uses
+a temporary directory and exposes the completed set only after verification.
+
+Integrated candidate descriptors and previews retain every platform and npm payload
+identity. They describe local bytes and frozen candidate requirements. Legacy
+published descriptors retain their original interpretation; public resolution and
+write-capable consumers refuse the integrated format until full-set publication
+and recovery are implemented. These checks add no application Git observations.
+
 `tools/release_publish.py` snapshots verified local bytes, observes downloaded provider
 bytes and applies one `release_recovery` decision at a time. Unknown/conflicting
 observations stop; every attempted effect is followed by fresh observation, including
@@ -246,9 +264,14 @@ only a verified stable release promotes the site after consumption checks.
 
 ### Release data and website publication
 
-[Current packaging requirements](../site/current-requirements.json) define native
-requirements and npm coverage separately. Native schema 3 manifests freeze that
-supported-runtime snapshot alongside build provenance. Package README text and npm
+[Current packaging requirements](../site/current-requirements.json) select an exact
+per-target snapshot from a four-target schema-2 envelope. Each snapshot retains
+the schema-1 native requirements and npm coverage format; Linux schema-3 and
+other-target schema-4 native manifests freeze the selected snapshot alongside
+build provenance. New policy covers Linux glibc 2.35+, maintained Windows 11 x64
+with the official matching x64 v14 Redistributable, and Sequoia 15 on both Mac
+architectures, all with Git 2.45+. Qualification separately records observed hosts;
+Windows CI uses Server 2025. Package README text and npm
 metadata use the snapshot rather than the build machine's incidental environment.
 The verifier can still read schema 2 manifests; the website's historical 0.1.0
 bootstrap is bound to its exact published manifest.

@@ -1,11 +1,102 @@
 {
-  "schema": 1,
-  "native": {
-    "platform": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
-    "requirements": {"system": "Linux x86_64 with glibc 2.35+ and Git 2.45+", "shell": "POSIX sh for editors and checks"}
-  },
-  "npm": {
-    "coverage": [{"os": "linux", "arch": "x64", "libc": "glibc"}],
-    "requirements": "Node.js LTS and npm; Linux x86_64 with glibc 2.35+ and Git 2.45+"
+  "schema": 2,
+  "targets": {
+    "x86_64-unknown-linux-gnu": {
+      "schema": 1,
+      "native": {
+        "platform": {
+          "os": "linux",
+          "arch": "x86_64",
+          "libc": "glibc"
+        },
+        "requirements": {
+          "system": "Linux x86_64 with glibc 2.35+ and Git 2.45+",
+          "shell": "Bash, Zsh or Fish for launch and completion; POSIX sh for editors and checks"
+        }
+      },
+      "npm": {
+        "coverage": [
+          {
+            "os": "linux",
+            "arch": "x64",
+            "libc": "glibc"
+          }
+        ],
+        "requirements": "Node.js LTS and npm; Linux x86_64 with glibc 2.35+ and Git 2.45+"
+      }
+    },
+    "x86_64-pc-windows-msvc": {
+      "schema": 1,
+      "native": {
+        "platform": {
+          "os": "windows",
+          "arch": "x86_64",
+          "libc": null
+        },
+        "requirements": {
+          "system": "Selected support target: maintained Windows 11 x64 releases with Git 2.45+",
+          "runtime": "Microsoft official x64 v14 Visual C++ Redistributable at least as recent as the build tools, for the dynamic MSVC runtime",
+          "shell": "PowerShell 7.6 for launch and completion; cmd and Git Bash for launch; Git-configured shell for editors and checks"
+        }
+      },
+      "npm": {
+        "coverage": [
+          {
+            "os": "win32",
+            "arch": "x64",
+            "libc": null
+          }
+        ],
+        "requirements": "Node.js LTS and npm; selected support target: maintained Windows 11 x64 releases with Git 2.45+ and Microsoft official x64 v14 Visual C++ Redistributable at least as recent as the build tools"
+      }
+    },
+    "aarch64-apple-darwin": {
+      "schema": 1,
+      "native": {
+        "platform": {
+          "os": "macos",
+          "arch": "aarch64",
+          "libc": null
+        },
+        "requirements": {
+          "system": "Selected support target: macOS Sequoia 15 on ARM64 with Git 2.45+",
+          "shell": "Bash, Zsh or Fish for launch and completion; Git-configured shell for editors and checks"
+        }
+      },
+      "npm": {
+        "coverage": [
+          {
+            "os": "darwin",
+            "arch": "arm64",
+            "libc": null
+          }
+        ],
+        "requirements": "Node.js LTS and npm; selected support target: macOS Sequoia 15 on ARM64 with Git 2.45+"
+      }
+    },
+    "x86_64-apple-darwin": {
+      "schema": 1,
+      "native": {
+        "platform": {
+          "os": "macos",
+          "arch": "x86_64",
+          "libc": null
+        },
+        "requirements": {
+          "system": "Selected support target: macOS Sequoia 15 on Intel x64 with Git 2.45+",
+          "shell": "Bash, Zsh or Fish for launch and completion; Git-configured shell for editors and checks"
+        }
+      },
+      "npm": {
+        "coverage": [
+          {
+            "os": "darwin",
+            "arch": "x64",
+            "libc": null
+          }
+        ],
+        "requirements": "Node.js LTS and npm; selected support target: macOS Sequoia 15 on Intel x64 with Git 2.45+"
+      }
+    }
   }
 }

@@ -6,6 +6,7 @@ source is eligible or that any artifact is published. Supply independently appro
 hashes; do not regenerate them from the files immediately before a retry.
 """
 import argparse
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -15,6 +16,7 @@ import tarfile
 import tempfile
 
 import native_package
+import npm_platform_package
 
 REPOSITORY = 'msanguineti/twigsmith'
 MEMBERS = {'package/package.json', 'package/twigsmith', 'package/LICENSE', 'package/README.md'}
@@ -103,18 +105,281 @@ def verify(archive, npm_dir, archive_hash, payload_hash, package_hash, tag,
                         'manifest_sha256': npm_manifest_hash, 'packaging': record['packaging']}}
 
 
+PLATFORM_SCHEMA = 2
+TOPOLOGY = 'optional-platform-packages'
+PACKAGING_INPUTS = {'tools/npm_platform_package.py', 'tools/npm_package.py',
+                    'tools/native_package.py', 'tools/native_formats.py',
+                    'tools/npm_launcher.cjs', 'README.md', 'LICENSE'}
+
+
+def expected_hash(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value):
+        raise ValueError('expected lowercase SHA-256 values')
+    return value
+
+
+def clean_source(value):
+    if (not isinstance(value, dict) or set(value) != {'revision', 'tree', 'dirty'}
+            or value['dirty'] is not False
+            or any(not isinstance(value[key], str) or not re.fullmatch(r'[0-9a-f]{40}', value[key])
+                   for key in ('revision', 'tree'))):
+        raise ValueError('expected an approved clean source identity')
+
+
+def artifact_identity(value, name):
+    if (not isinstance(value, dict)
+            or set(value) != {'run_id', 'run_attempt', 'artifact_id', 'name', 'workflow', 'sha256'}
+            or value['name'] != name
+            or value['workflow'] not in ('.github/workflows/release.yml',
+                                          '.github/workflows/platform-packages.yml')
+            or any(not isinstance(value[key], str) or not re.fullmatch(r'[1-9][0-9]*', value[key])
+                   for key in ('run_id', 'run_attempt', 'artifact_id'))):
+        raise ValueError('invalid approved platform artifact identity')
+    expected_hash(value['sha256'])
+
+
+def validate_platform_approval(approval):
+    """Validate the independently reviewed contract, without reading candidate bytes.
+
+    requirements maps each target to its exact frozen native manifest snapshot.
+    Artifact IDs and run/attempts are review inputs, never inferred approvals.
+    """
+    if (not isinstance(approval, dict)
+            or set(approval) != {'schema', 'topology', 'repository', 'tag', 'version',
+                                 'requirements', 'native', 'npm'}
+            or type(approval['schema']) is not int or approval['schema'] != PLATFORM_SCHEMA
+            or approval['topology'] != TOPOLOGY or approval['repository'] != REPOSITORY
+            or not isinstance(approval['version'], str)
+            or not native_package.VERSION.fullmatch(approval['version'])
+            or approval['tag'] != 'v' + approval['version']):
+        raise ValueError('invalid integrated release approval')
+    targets = set(npm_platform_package.PACKAGES)
+    if (not isinstance(approval['requirements'], dict) or set(approval['requirements']) != targets
+            or not isinstance(approval['native'], list) or len(approval['native']) != len(targets)):
+        raise ValueError('integrated approval requires exactly four native targets and requirements')
+    seen, artifacts, source = set(), set(), None
+    for item in approval['native']:
+        if (not isinstance(item, dict)
+                or set(item) != {'target', 'archive', 'sha256', 'manifest_sha256',
+                                 'payload_sha256', 'source', 'ci', 'artifact'}
+                or item['target'] not in targets or item['target'] in seen):
+            raise ValueError('unsupported or duplicate native target in approval')
+        target = item['target']
+        seen.add(target)
+        platform = native_package.target_metadata(target)
+        if item['archive'] != f"twigsmith-{approval['version']}-{target}{platform['extension']}":
+            raise ValueError('approved native archive name differs from version/target')
+        for key in ('sha256', 'manifest_sha256', 'payload_sha256'):
+            expected_hash(item[key])
+        clean_source(item['source'])
+        if source is not None and source != item['source']:
+            raise ValueError('native candidates have mixed source identities')
+        source = item['source']
+        artifact_identity(item['artifact'], 'platform-archive-' + target)
+        if item['artifact']['artifact_id'] in artifacts:
+            raise ValueError('duplicate native artifact identity')
+        artifacts.add(item['artifact']['artifact_id'])
+        ci = item['ci']
+        if (not isinstance(ci, dict) or ci.get('GITHUB_REPOSITORY') != REPOSITORY
+                or ci.get('GITHUB_SHA') != source['revision']
+                or ci.get('GITHUB_RUN_ID') != item['artifact']['run_id']
+                or ci.get('GITHUB_RUN_ATTEMPT') != item['artifact']['run_attempt']):
+            raise ValueError('native approval differs from canonical source/run/attempt')
+        native_package.validate_target_requirements(approval['requirements'][target], target)
+    npm = approval['npm']
+    if (not isinstance(npm, dict)
+            or set(npm) != {'manifest_sha256', 'packaging', 'artifact', 'packages'}):
+        raise ValueError('invalid npm set approval')
+    expected_hash(npm['manifest_sha256'])
+    artifact_identity(npm['artifact'], 'platform-npm-set')
+    if npm['artifact']['artifact_id'] in artifacts:
+        raise ValueError('duplicate npm artifact identity')
+    packaging = npm['packaging']
+    if (not isinstance(packaging, dict)
+            or set(packaging) != {'source', 'node', 'npm', 'inputs_sha256'}
+            or not isinstance(packaging['node'], str) or not packaging['node']
+            or not isinstance(packaging['npm'], str) or not packaging['npm']
+            or not isinstance(packaging['inputs_sha256'], dict)
+            or set(packaging['inputs_sha256']) != PACKAGING_INPUTS):
+        raise ValueError('invalid approved packaging inputs')
+    clean_source(packaging['source'])
+    for value in packaging['inputs_sha256'].values():
+        expected_hash(value)
+    names = {'twigsmith', *npm_platform_package.PACKAGES.values()}
+    if not isinstance(npm['packages'], list) or len(npm['packages']) != len(names):
+        raise ValueError('integrated approval requires exactly five npm packages')
+    seen = set()
+    for item in npm['packages']:
+        if (not isinstance(item, dict) or set(item) != {'name', 'version', 'filename', 'sha256'}
+                or item['name'] not in names or item['name'] in seen
+                or item['version'] != approval['version']
+                or item['filename'] != f"{item['name']}-{approval['version']}.tgz"):
+            raise ValueError('unsupported, duplicate or mixed npm package identity')
+        seen.add(item['name'])
+        expected_hash(item['sha256'])
+    return deepcopy(approval)
+
+
+def platform_files(native_dir, npm_dir, approval):
+    """Return the exact flat native/npm input allowlists."""
+    native_dir, npm_dir = Path(native_dir), Path(npm_dir)
+    native = []
+    for item in approval['native']:
+        archive = native_dir / item['archive']
+        stem = native_package.archive_stem(archive)
+        native.extend((archive, native_dir / (stem + '.manifest.json'), native_dir / (stem + '.sha256')))
+    return native, [npm_dir / 'manifest.json', *[npm_dir / item['filename'] for item in approval['npm']['packages']]]
+
+
+def read_exact_files(directory, files):
+    directory = Path(directory)
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError('candidate input must be a regular directory')
+    if {path.name for path in directory.iterdir()} != {path.name for path in files}:
+        raise ValueError('candidate directory contains missing or extra files')
+    result = {}
+    for path in files:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('candidate input must be a regular file')
+        result[path] = path.read_bytes()
+    return result
+
+
+def npm_contents(data, payload, windows=False):
+    members = {'package/package.json', 'package/LICENSE', 'package/README.md', 'package/' + payload}
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
+        entries = tar.getmembers()
+        if len(entries) != len(members) or {entry.name for entry in entries} != members:
+            raise ValueError('npm package contains missing, duplicate or extra members')
+        result = {}
+        for entry in entries:
+            modes = {0o755} if entry.name == 'package/' + payload else {0o644}
+            if windows and entry.name == 'package/' + payload:
+                modes.add(0o644)
+            if not entry.isfile() or entry.linkname or entry.mode not in modes or entry.pax_headers:
+                raise ValueError('invalid npm member type or mode')
+            result[entry.name.removeprefix('package/')] = tar.extractfile(entry).read()
+        return result
+
+
+def verify_platform_set(native_dir, npm_dir, approval):
+    """Verify exactly four native archives and five existing npm tarballs offline.
+
+    The returned schema-2 identity equals the supplied independent approval. It is
+    not source eligibility, qualification, publication authority or provider state.
+    Native and packaging sources are deliberately separate approved identities.
+    """
+    approval = validate_platform_approval(approval)
+    native_dir, npm_dir = Path(native_dir), Path(npm_dir)
+    native_files, npm_files = platform_files(native_dir, npm_dir, approval)
+    before = {**read_exact_files(native_dir, native_files), **read_exact_files(npm_dir, npm_files)}
+    manifest_path = npm_dir / 'manifest.json'
+    if digest(before[manifest_path]) != approval['npm']['manifest_sha256']:
+        raise ValueError('npm manifest differs from approved hash')
+    npm = json.loads(before[manifest_path])
+    source = approval['native'][0]['source']
+    if (set(npm) != {'schema', 'topology', 'version', 'complete', 'source', 'packages', 'packaging'}
+            or type(npm['schema']) is not int or npm['schema'] != 2 or npm['topology'] != TOPOLOGY
+            or npm['complete'] is not True or npm['version'] != approval['version']
+            or npm['source'] != source or npm['packaging'] != approval['npm']['packaging']
+            or not isinstance(npm['packages'], list) or len(npm['packages']) != 5):
+        raise ValueError('npm set manifest differs from complete approved set')
+    records = {}
+    for record in npm['packages']:
+        if not isinstance(record, dict) or record.get('name') in records:
+            raise ValueError('duplicate or invalid npm package record')
+        records[record.get('name')] = record
+    if set(records) != {item['name'] for item in approval['npm']['packages']}:
+        raise ValueError('npm set contains missing or extra package identities')
+    with tempfile.TemporaryDirectory() as temp:
+        natives = {}
+        for index, item in enumerate(approval['native']):
+            archive = native_dir / item['archive']
+            manifest_path = native_dir / (native_package.archive_stem(archive) + '.manifest.json')
+            if digest(before[archive]) != item['sha256'] or digest(before[manifest_path]) != item['manifest_sha256']:
+                raise ValueError('native archive/manifest differs from approved hashes')
+            extracted = Path(temp) / str(index)
+            native = native_package.verify(archive, extracted)
+            if (native['target'] != item['target'] or native['version'] != approval['version']
+                    or native['provenance']['kind'] != 'ci-candidate'
+                    or native['provenance']['source'] != item['source']
+                    or native['provenance']['environment']['ci'] != item['ci']
+                    or native.get('requirements') != approval['requirements'][item['target']]
+                    or native['files'][native['npm_payload']]['sha256'] != item['payload_sha256']):
+                raise ValueError('native candidate differs from approved source/run/requirements/payload')
+            natives[item['target']] = (item, native, extracted / native_package.archive_stem(archive))
+        for item in approval['npm']['packages']:
+            name = item['name']
+            record = records[name]
+            fields = {'name', 'version', 'filename', 'sha256'}
+            if set(record) != (fields if name == 'twigsmith' else fields | {'native'}):
+                raise ValueError('invalid npm package record fields')
+            if {key: record[key] for key in fields} != item:
+                raise ValueError('npm package record differs from approved identity')
+            data = before[npm_dir / item['filename']]
+            if digest(data) != item['sha256']:
+                raise ValueError('npm package differs from approved hash')
+            if name == 'twigsmith':
+                contents = npm_contents(data, 'launcher.cjs')
+                expected = npm_platform_package.top_metadata(approval['version'])
+                for file, input_name in (('launcher.cjs', 'tools/npm_launcher.cjs'),
+                                          ('README.md', 'README.md'), ('LICENSE', 'LICENSE')):
+                    if digest(contents[file]) != npm['packaging']['inputs_sha256'][input_name]:
+                        raise ValueError('common npm package differs from approved packaging inputs')
+            else:
+                target = next(target for target, package in npm_platform_package.PACKAGES.items() if package == name)
+                native_item, native, extracted = natives[target]
+                payload = native['npm_payload']
+                expected_native = {'target': target, 'archive': native_item['archive'],
+                                   'archive_sha256': native_item['sha256'],
+                                   'manifest_sha256': native_item['manifest_sha256'],
+                                   'payload': payload, 'payload_sha256': native_item['payload_sha256'],
+                                   'provenance': native['provenance']}
+                if record['native'] != expected_native:
+                    raise ValueError('npm payload record differs from approved native candidate')
+                platform = native_package.target_metadata(target)
+                contents = npm_contents(data, payload, windows=platform['os'] == 'windows')
+                for file, native_file in ((payload, payload), ('README.md', 'README.txt'), ('LICENSE', 'LICENSE')):
+                    if contents[file] != (extracted / native_file).read_bytes():
+                        raise ValueError('npm package bytes differ from verified native candidate')
+                expected = npm_platform_package.base_metadata(name, approval['version'])
+                expected.update({'os': [{'linux': 'linux', 'windows': 'win32', 'macos': 'darwin'}[platform['os']]],
+                                 'cpu': [{'x86_64': 'x64', 'aarch64': 'arm64'}[platform['arch']]],
+                                 'twigsmithNative': {'target': target, 'file': payload,
+                                                     'sha256': native_item['payload_sha256']}})
+                if platform['libc'] is not None:
+                    expected['libc'] = [platform['libc']]
+            if json.loads(contents['package.json']) != expected:
+                raise ValueError('npm metadata does not match the complete platform contract')
+    after = {**read_exact_files(native_dir, native_files), **read_exact_files(npm_dir, npm_files)}
+    if after != before:
+        raise ValueError('release inputs changed during verification')
+    return approval
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive')
     parser.add_argument('npm_dir')
-    parser.add_argument('--archive-sha256', required=True)
-    parser.add_argument('--payload-sha256', required=True)
-    parser.add_argument('--package-sha256', required=True)
-    parser.add_argument('--tag', required=True)
-    parser.add_argument('--native-manifest-sha256', required=True)
-    parser.add_argument('--npm-manifest-sha256', required=True)
+    parser.add_argument('--approval', type=Path, help='independently reviewed schema-2 complete-set approval; archive argument is native directory')
+    parser.add_argument('--archive-sha256')
+    parser.add_argument('--payload-sha256')
+    parser.add_argument('--package-sha256')
+    parser.add_argument('--tag')
+    parser.add_argument('--native-manifest-sha256')
+    parser.add_argument('--npm-manifest-sha256')
     args = parser.parse_args()
     try:
+        if args.approval:
+            legacy = (args.archive_sha256, args.payload_sha256, args.package_sha256, args.tag,
+                      args.native_manifest_sha256, args.npm_manifest_sha256)
+            if any(value is not None for value in legacy):
+                raise ValueError('complete-set approval cannot be combined with legacy hash flags')
+            print(json.dumps(verify_platform_set(args.archive, args.npm_dir, json.loads(args.approval.read_text())), indent=2))
+            return
+        if any(value is None for value in (args.archive_sha256, args.payload_sha256, args.package_sha256,
+                args.tag, args.native_manifest_sha256, args.npm_manifest_sha256)):
+            raise ValueError('legacy verification requires all hash flags and --tag')
         print(json.dumps(verify(args.archive, args.npm_dir, args.archive_sha256,
                                 args.payload_sha256, args.package_sha256, args.tag,
                                 args.native_manifest_sha256, args.npm_manifest_sha256), indent=2))
