@@ -1,6 +1,8 @@
 //! Ordered tagged integration and one-time preparation through fresh CLI processes.
 #[path = "cli_direct_sequence/completed_guards.rs"]
 mod completed_guards;
+#[path = "support/native.rs"]
+mod native;
 mod support;
 use std::{
     fs,
@@ -256,29 +258,37 @@ fn hotfix_accepts_native_preparation_before_independent_destinations() {
         "hotfix_accepts_native_preparation_before_independent_destinations",
         true,
         |root| {
-            let f = Fixture::with_policy(root, "work-source", false, "keep", "hotfix");
-            let original = commit(&f.local, "fix", "hotfix\n");
-            f.local.success(&["rebase", "preparation"]);
-            let prepared = oid(&f.local, "HEAD");
-            assert_ne!(prepared, original);
-            let source_log =
-                fs::read(f.local.path().join(".git/logs/refs/heads/release-work")).unwrap();
-            success(&f.local, &["finish", "--tag", "v-hotfix"]);
-            assert_eq!(oid(&f.local, "v-hotfix"), prepared);
-            assert_eq!(oid(&f.local, "main^2"), prepared);
-            assert_eq!(oid(&f.local, "maintenance^2"), prepared);
-            assert_eq!(f.remote_oid("stable"), prepared);
-            let subject = String::from_utf8(
-                f.local
-                    .success(&["show", "-s", "--format=%s", "maintenance"])
-                    .stdout,
-            )
-            .unwrap();
-            assert_eq!(subject.trim(), "Integrate release-work into maintenance");
-            assert_eq!(
-                fs::read(f.local.path().join(".git/logs/refs/heads/release-work")).unwrap(),
-                source_log
-            );
+            for identity in ["work-source", "integrated-result"] {
+                let f = Fixture::with_policy(root, identity, false, "keep", "hotfix");
+                let original = commit(&f.local, "fix", "hotfix\n");
+                f.local.success(&["rebase", "preparation"]);
+                let prepared = oid(&f.local, "HEAD");
+                assert_ne!(prepared, original);
+                let source_log =
+                    fs::read(f.local.path().join(".git/logs/refs/heads/release-work")).unwrap();
+                success(&f.local, &["finish", "--tag", "v-hotfix"]);
+                let first = oid(&f.local, "main");
+                let version = if identity == "work-source" {
+                    &prepared
+                } else {
+                    &first
+                };
+                assert_eq!(oid(&f.local, "v-hotfix"), *version);
+                assert_eq!(oid(&f.local, "main^2"), prepared);
+                assert_eq!(oid(&f.local, "maintenance^2"), prepared);
+                assert_eq!(f.remote_oid("stable"), *version);
+                let subject = String::from_utf8(
+                    f.local
+                        .success(&["show", "-s", "--format=%s", "maintenance"])
+                        .stdout,
+                )
+                .unwrap();
+                assert_eq!(subject.trim(), "Integrate release-work into maintenance");
+                assert_eq!(
+                    fs::read(f.local.path().join(".git/logs/refs/heads/release-work")).unwrap(),
+                    source_log
+                );
+            }
         },
     );
 }
@@ -292,8 +302,21 @@ fn failed_work_first_result_and_later_checks_preserve_selected_version() {
             let f = Fixture::new(root, "integrated-result", false, "local");
             let config = f.local.path().join(".git/twigsmith.config.toml");
             let settings = fs::read_to_string(&config).unwrap();
-            fs::write(&config, format!("{settings}\n[[finish-checks]]\nname='Result gate'\ncommand=['sh','.git/check']\n")).unwrap();
-            fs::write(f.local.path().join(".git/check"), "branch=$(git symbolic-ref --short HEAD)\necho \"$branch $(git rev-parse HEAD)\" >> .git/check-log\ntest -f \".git/allow-$branch\"\n").unwrap();
+            let log = f.local.path().join(".git/check-log");
+            let permits = f.local.path().join(".git/allowed-candidates");
+            fs::create_dir(&permits).unwrap();
+            let command = native::command(
+                "branch-gate",
+                &[log.to_str().unwrap(), permits.to_str().unwrap()],
+            );
+            fs::write(
+                &config,
+                format!(
+                    "{settings}\n[[finish-checks]]\nname='Result gate'\ncommand={}\n",
+                    serde_json::to_string(&command).unwrap()
+                ),
+            )
+            .unwrap();
             let source = commit(&f.local, "version", "release\n");
             let first_before = oid(&f.local, "main");
             let later_before = oid(&f.local, "maintenance");
@@ -311,14 +334,14 @@ fn failed_work_first_result_and_later_checks_preserve_selected_version() {
             assert_eq!(oid(&f.local, "main"), first_before);
             assert_eq!(oid(&f.local, "maintenance"), later_before);
             assert!(f.local.success(&["tag", "--list"]).stdout.is_empty());
-            fs::write(f.local.path().join(".git/allow-release-work"), "").unwrap();
+            fs::write(permits.join("release-work"), "").unwrap();
             let first_failed = cli(&f.local, &["finish"]);
             assert!(!first_failed.status.success(), "{first_failed:?}");
             let first = oid(&f.local, "main");
             assert_ne!(first, first_before);
             assert_eq!(f.remote_oid("main"), first_before);
             assert!(f.local.success(&["tag", "--list"]).stdout.is_empty());
-            fs::write(f.local.path().join(".git/allow-main"), "").unwrap();
+            fs::write(permits.join("main"), "").unwrap();
             let later_failed = cli(&f.local, &["finish"]);
             assert!(!later_failed.status.success(), "{later_failed:?}");
             let second = oid(&f.local, "maintenance");
@@ -327,7 +350,7 @@ fn failed_work_first_result_and_later_checks_preserve_selected_version() {
             assert_eq!(f.remote_oid("maintenance"), later_before);
             assert_eq!(oid(&f.local, "v-checks^{commit}"), first);
             assert_eq!(oid(&f.local, "release-work"), source);
-            fs::write(f.local.path().join(".git/allow-maintenance"), "").unwrap();
+            fs::write(permits.join("maintenance"), "").unwrap();
             success(&f.local, &["finish"]);
             assert_eq!(oid(&f.local, "main"), first);
             assert_eq!(oid(&f.local, "maintenance"), second);
@@ -336,69 +359,241 @@ fn failed_work_first_result_and_later_checks_preserve_selected_version() {
             assert_eq!(f.remote_oid("v-checks"), tag);
             let checks = fs::read_to_string(f.local.path().join(".git/check-log")).unwrap();
             assert_eq!(
-                checks
-                    .lines()
-                    .filter(|line| line.starts_with("release-work "))
-                    .count(),
-                2,
-                "{checks}"
+                checks.lines().collect::<Vec<_>>(),
+                [
+                    format!("release-work {source}"),
+                    format!("release-work {source}"),
+                    format!("main {first}"),
+                    format!("main {first}"),
+                    format!("maintenance {second}"),
+                    format!("maintenance {second}")
+                ]
             );
         },
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn later_push_rejection_retries_exact_result_before_any_cleanup() {
     isolated(
         "later_push_rejection_retries_exact_result_before_any_cleanup",
         true,
         |root| {
-            use std::os::unix::fs::PermissionsExt;
+            for identity in ["work-source", "integrated-result"] {
+                let f = Fixture::new(root, identity, false, "both");
+                let log = f.local.path().join(".git/checked-candidates");
+                let config = f.local.path().join(".git/twigsmith.config.toml");
+                let settings = fs::read_to_string(&config).unwrap();
+                let command = native::command("ordered", &[log.to_str().unwrap(), "candidate"]);
+                fs::write(
+                    &config,
+                    format!(
+                        "{settings}\n[[finish-checks]]\nname='Exact candidate'\ncommand={}\n",
+                        serde_json::to_string(&command).unwrap()
+                    ),
+                )
+                .unwrap();
+                let hook = f.remote.path().join("hooks/pre-receive");
+                fs::create_dir_all(hook.parent().unwrap()).unwrap();
+                // Git executes this hook with its native shell, including Git for Windows.
+                fs::write(&hook, "#!/bin/sh\nwhile read old new ref; do\n if test \"$ref\" = refs/heads/maintenance; then echo later-publication-refused >&2; exit 1; fi\ndone\n").unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                let source = commit(&f.local, "version", "release\n");
+                success(&f.local, &["save"]);
+                let later_before = f.remote_oid("maintenance");
+                let failed = cli(
+                    &f.local,
+                    &[
+                        "finish",
+                        "--tag",
+                        "v-push",
+                        "--tag-message",
+                        "released version",
+                    ],
+                );
+                assert_eq!(failed.status.code(), Some(1), "{failed:?}");
+                assert!(
+                    String::from_utf8_lossy(&failed.stderr).contains("later-publication-refused"),
+                    "{failed:?}"
+                );
+                let first = oid(&f.local, "main");
+                let second = oid(&f.local, "maintenance");
+                let tag = oid(&f.local, "v-push");
+                let version = if identity == "work-source" {
+                    &source
+                } else {
+                    &first
+                };
+                assert_ne!(first, source);
+                assert_ne!(second, first);
+                assert_eq!(oid(&f.local, "main^2"), source);
+                assert_eq!(oid(&f.local, "maintenance^2"), source);
+                assert_eq!(oid(&f.local, "v-push^{}"), *version);
+                assert_eq!(f.remote_oid("main"), first);
+                assert_eq!(f.remote_oid("maintenance"), later_before);
+                assert_eq!(oid(&f.local, "release-work"), source);
+                assert_eq!(f.remote_oid("release-work"), source);
+                // Required publication is still pending: no final checkout or cleanup.
+                assert_eq!(oid(&f.local, "HEAD"), second);
+                assert_eq!(
+                    String::from_utf8(f.local.success(&["symbolic-ref", "--short", "HEAD"]).stdout)
+                        .unwrap()
+                        .trim(),
+                    "maintenance"
+                );
+                assert!(
+                    f.local
+                        .path()
+                        .join(".git/twigsmith-integration/active.json")
+                        .is_file()
+                );
+                assert!(
+                    !f.local
+                        .success(&["for-each-ref", "refs/twigsmith/integration"])
+                        .stdout
+                        .is_empty()
+                );
+                assert!(
+                    f.local
+                        .success(&[
+                            "--git-dir",
+                            f.remote.path().to_str().unwrap(),
+                            "tag",
+                            "--list"
+                        ])
+                        .stdout
+                        .is_empty()
+                );
+                assert!(
+                    f.local
+                        .success(&[
+                            "--git-dir",
+                            f.remote.path().to_str().unwrap(),
+                            "branch",
+                            "--list",
+                            "stable"
+                        ])
+                        .stdout
+                        .is_empty()
+                );
+                let checks = fs::read_to_string(&log).unwrap();
+                assert_eq!(
+                    checks.lines().collect::<Vec<_>>(),
+                    [
+                        format!("candidate {source}"),
+                        format!("candidate {first}"),
+                        format!("candidate {second}")
+                    ]
+                );
+                let first_reflog =
+                    fs::read(f.local.path().join(".git/logs/refs/heads/main")).unwrap();
+                fs::remove_file(&hook).unwrap();
+                // A new invocation must corroborate completed work, not publish it again.
+                fs::write(&hook, "#!/bin/sh\nwhile read old new ref; do\n if test \"$ref\" = refs/heads/main; then echo repeated-completed-publication >&2; exit 1; fi\ndone\n").unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+                }
+                success(&f.local, &["finish"]);
+                assert_eq!(fs::read_to_string(&log).unwrap(), checks);
+                assert_eq!(
+                    fs::read(f.local.path().join(".git/logs/refs/heads/main")).unwrap(),
+                    first_reflog
+                );
+                assert_eq!(f.remote_oid("main"), first);
+                assert_eq!(f.remote_oid("maintenance"), second);
+                assert_eq!(oid(&f.local, "maintenance^2"), source);
+                assert_eq!(oid(&f.local, "v-push"), tag);
+                assert_eq!(f.remote_oid("v-push"), tag);
+                assert_eq!(f.remote_oid("v-push^{}"), *version);
+                assert_eq!(f.remote_oid("stable"), *version);
+                assert_eq!(oid(&f.local, "HEAD"), first);
+                assert_eq!(
+                    String::from_utf8(f.local.success(&["symbolic-ref", "--short", "HEAD"]).stdout)
+                        .unwrap()
+                        .trim(),
+                    "main"
+                );
+                assert!(
+                    f.local
+                        .success(&["branch", "--list", "release-work"])
+                        .stdout
+                        .is_empty()
+                );
+                assert!(
+                    f.local
+                        .success(&[
+                            "--git-dir",
+                            f.remote.path().to_str().unwrap(),
+                            "branch",
+                            "--list",
+                            "release-work"
+                        ])
+                        .stdout
+                        .is_empty()
+                );
+                println!(
+                    "direct tagged {identity}: fixed source {source}; confirmed first {first}; rejected/retried second {second}; exact tag {tag}; marker {version}; cleanup after confirmation"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn marker_lock_preserves_confirmed_delivery_until_fresh_process_retry() {
+    isolated(
+        "marker_lock_preserves_confirmed_delivery_until_fresh_process_retry",
+        true,
+        |root| {
             let f = Fixture::new(root, "work-source", false, "both");
-            let hook = f.remote.path().join("hooks/pre-receive");
-            fs::create_dir_all(hook.parent().unwrap()).unwrap();
-            fs::write(&hook, "#!/bin/sh\nwhile read old new ref; do\n if test \"$ref\" = refs/heads/maintenance && ! test -f allow-maintenance; then exit 1; fi\ndone\n").unwrap();
-            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
             let source = commit(&f.local, "version", "release\n");
             success(&f.local, &["save"]);
-            let later_before = f.remote_oid("maintenance");
-            let failed = cli(
-                &f.local,
-                &[
-                    "finish",
-                    "--tag",
-                    "v-push",
-                    "--tag-message",
-                    "released version",
-                ],
+            let lock = f.local.path().join(".git/refs/heads/stable.lock");
+            fs::write(&lock, "held by another process\n").unwrap();
+            let stopped = cli(&f.local, &["finish", "--tag", "locked-marker"]);
+            assert_eq!(stopped.status.code(), Some(1), "{stopped:?}");
+            assert!(
+                String::from_utf8_lossy(&stopped.stderr).contains("stable.lock"),
+                "{stopped:?}"
             );
-            assert!(!failed.status.success(), "{failed:?}");
             let first = oid(&f.local, "main");
             let second = oid(&f.local, "maintenance");
-            let tag = oid(&f.local, "v-push");
+            let tag = oid(&f.local, "locked-marker");
             assert_eq!(f.remote_oid("main"), first);
-            assert_eq!(f.remote_oid("maintenance"), later_before);
+            assert_eq!(f.remote_oid("maintenance"), second);
+            assert_eq!(f.remote_oid("locked-marker"), tag);
             assert_eq!(oid(&f.local, "release-work"), source);
             assert_eq!(f.remote_oid("release-work"), source);
+            assert_eq!(oid(&f.local, "HEAD"), second);
             assert!(
                 f.local
-                    .success(&[
-                        "--git-dir",
-                        f.remote.path().to_str().unwrap(),
-                        "tag",
-                        "--list"
-                    ])
+                    .path()
+                    .join(".git/twigsmith-integration/active.json")
+                    .is_file()
+            );
+            assert!(
+                f.local
+                    .success(&["branch", "--list", "stable"])
                     .stdout
                     .is_empty()
             );
-            fs::write(f.remote.path().join("allow-maintenance"), "").unwrap();
+            assert_eq!(
+                fs::read_to_string(&lock).unwrap(),
+                "held by another process\n"
+            );
+            fs::remove_file(lock).unwrap();
             success(&f.local, &["finish"]);
-            assert_eq!(oid(&f.local, "main"), first);
-            assert_eq!(oid(&f.local, "maintenance"), second);
+            assert_eq!(f.remote_oid("main"), first);
             assert_eq!(f.remote_oid("maintenance"), second);
-            assert_eq!(oid(&f.local, "v-push"), tag);
-            assert_eq!(f.remote_oid("v-push"), tag);
+            assert_eq!(f.remote_oid("locked-marker"), tag);
+            assert_eq!(f.remote_oid("stable"), source);
+            assert_eq!(oid(&f.local, "HEAD"), first);
             assert!(
                 f.local
                     .success(&["branch", "--list", "release-work"])

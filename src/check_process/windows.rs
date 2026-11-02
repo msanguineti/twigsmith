@@ -19,8 +19,9 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_BROKEN_PIPE, ERROR_MORE_DATA, ERROR_NO_MORE_FILES, ERROR_PIPE_NOT_CONNECTED, HANDLE,
-        INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_MORE_DATA, ERROR_NO_MORE_FILES,
+        ERROR_PIPE_NOT_CONNECTED, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
     },
     System::{
         Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler},
@@ -256,12 +257,7 @@ impl Job {
                     // failed termination request safe to treat as completed.
                     if unsafe { TerminateProcess(process.as_raw_handle(), 1) } == 0 {
                         let error = io::Error::last_os_error();
-                        if !process_stopped(process, 0)? {
-                            return Err(io::Error::new(
-                                error.kind(),
-                                format!("TerminateProcess for retained check job member: {error}"),
-                            ));
-                        }
+                        confirm_failed_termination(process, error)?;
                     }
                 }
             }
@@ -272,6 +268,27 @@ impl Job {
             // requested. Once all captured parents have signaled, acquire the
             // remaining members and repeat; do not assume one snapshot is final.
         }
+    }
+}
+
+fn confirm_failed_termination(process: &OwnedHandle, error: io::Error) -> io::Result<()> {
+    // ACCESS_DENIED does not establish that the process object has signaled.
+    // A concurrent exit may still be completing its asynchronous teardown.
+    // Reconcile that race on the SAME retained handle, with a bounded wait so a
+    // genuine denied live process remains an error. Never infer exit from code 5.
+    // https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess
+    let timeout = if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+        1_000
+    } else {
+        0
+    };
+    if process_stopped(process, timeout)? {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            error.kind(),
+            format!("TerminateProcess for retained check job member: {error}"),
+        ))
     }
 }
 
@@ -501,6 +518,77 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Suspended(Child);
+    impl Suspended {
+        fn new() -> Self {
+            // Listing the current test binary runs no tests and creates no
+            // descendants. Suspension gives the test control over its exit.
+            Self(
+                Command::new(std::env::current_exe().unwrap())
+                    .arg("--list")
+                    .creation_flags(CREATE_SUSPENDED)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
+        }
+        fn observed(&self) -> OwnedHandle {
+            // Deliberately omit terminate access for the live-denial control.
+            owned_handle(unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                    0,
+                    self.0.id(),
+                )
+            })
+            .unwrap()
+        }
+    }
+    impl Drop for Suspended {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn denied_termination_requires_the_retained_process_to_signal() {
+        let child = Suspended::new();
+        let process = child.observed();
+        assert!(!process_stopped(&process, 0).unwrap());
+        // A controlled error exercises the reconciliation branch without
+        // pretending to reproduce Windows' concurrent console-exit ordering.
+        // The positive control is the real process object signaling later.
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                thread::sleep(Duration::from_millis(100));
+                resume(&child.0).unwrap();
+            });
+            confirm_failed_termination(
+                &process,
+                io::Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32),
+            )
+            .unwrap();
+        });
+        assert!(process_stopped(&process, 0).unwrap());
+    }
+
+    #[test]
+    fn denied_live_process_remains_a_cleanup_error() {
+        let child = Suspended::new();
+        let process = child.observed();
+        // This failure is real: the observed handle has no terminate right.
+        assert_eq!(unsafe { TerminateProcess(process.as_raw_handle(), 1) }, 0);
+        let error = io::Error::last_os_error();
+        assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+        let error = confirm_failed_termination(&process, error).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("os error 5"), "{error}");
+        assert!(!process_stopped(&process, 0).unwrap());
+    }
 
     #[test]
     fn batch_files_require_an_explicit_shell() {

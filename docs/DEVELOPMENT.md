@@ -241,6 +241,9 @@ Complete checks build the fixtures and include these suites. On Windows, use nat
 Cargo with the toolchain pinned in `rust-toolchain.toml`:
 `cargo build --locked --example native_check_fixture --example native_editor_fixture`, followed by
 `cargo test --locked --test native_journey --test native_checks --test native_check_guards --test native_editor --test native_prompts -- --nocapture`.
+The tagged and hosted journeys plus filesystem recovery guards run with
+`./dev test --test cli_oneflow --test cli_direct_sequence --test cli_hosted_oneflow --test cli_hosted_recovery --test native_recovery -- --nocapture`.
+On Windows, use the same Cargo test selectors with `cargo test --locked`.
 Build the fixtures before any focused group run; every group includes the
 presentation unit tests that use terminal restoration. The presentation keyboard
 unit test also uses the terminal restoration fixture. To run that boundary alone
@@ -265,8 +268,7 @@ architecture, use the pinned native Rust toolchain and record source, image, OS,
 Git and compiler versions alongside test observations in their logs. Missing or
 failed jobs leave that environment unverified. Successful results cover the
 tested journeys only; they do not qualify Windows desktop versions,
-real shell Tab completion, broader tagged/hosted
-recovery, packaging or installation. Published
+real shell Tab completion, packaging or installation. Published
 distribution remains Linux x86_64 GNU.
 The `native_editor` suite uses real Unix PTYs and Windows ConPTY with a foreground
 Rust editor fixture. Both command names exercise merge/squash acceptance, literal
@@ -284,6 +286,17 @@ filtering, defaults, in-prompt Tab suggestions, narrow widths and colour suppres
 The native matrix selects both suites explicitly. These tests use the same PTY/ConPTY
 harness as editor tests and check usable line input and echo after prompts.
 A fallback-only execution does not establish capable keyboard behavior.
+
+The tagged and hosted suites use real Git and disposable local remotes for
+release/hotfix routing, fixed version identity, independent integration destinations,
+partial publication and fresh-process recovery. Git executes the hook fixtures
+through its own shell, including Git for Windows; configured checks use a native
+Rust fixture. The `native_recovery` suite covers worktree isolation, settings
+checkout and retained recovery storage. Capability-dependent filesystem cases
+report their actual observations; an unavailable capability supplies no evidence
+that its guard passed. These suites retain platform-specific historical cases
+where their process or filesystem mechanism requires it. The native matrix selects
+the portable cases alongside the earlier journey, process, editor and prompt tests.
 
 The native suite selection uses `--no-fail-fast` so a failing test binary still
 leaves evidence from the other selected binaries; the job remains unsuccessful

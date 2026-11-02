@@ -1,4 +1,6 @@
 //! Hosted preparation retries operate only on their retained version and publication refs.
+#[path = "support/native.rs"]
+mod native;
 mod support;
 
 use std::{
@@ -64,14 +66,16 @@ fn clone_bare(root: &Path, local: &Repository, source: &Path) -> tempfile::TempD
     ]);
     result
 }
-#[cfg(unix)]
 fn hook(path: &Path, name: &str, body: &str) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let hooks = path.join("hooks");
     fs::create_dir_all(&hooks).unwrap();
     let result = hooks.join(name);
     fs::write(&result, format!("#!/bin/sh\n{body}\n")).unwrap();
-    fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&result, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let output = git::run(
         path,
         [
@@ -84,9 +88,14 @@ fn hook(path: &Path, name: &str, body: &str) -> std::path::PathBuf {
     assert!(output.status.success(), "{output:?}");
     result
 }
-#[cfg(unix)]
 fn quote(path: &Path) -> String {
-    format!("'{}'", path.to_str().unwrap().replace('\'', "'\\''"))
+    format!(
+        "'{}'",
+        path.to_str()
+            .unwrap()
+            .replace('\\', "/")
+            .replace('\'', "'\\''")
+    )
 }
 struct Fixture {
     local: Repository,
@@ -163,14 +172,19 @@ impl Fixture {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn hosted_partial_multiple_destination_retry_preserves_confirmed_effects() {
     isolated(
         "hosted_partial_multiple_destination_retry_preserves_confirmed_effects",
         true,
         |root| {
-            let fixture = Fixture::new(root, vec![]);
+            let fixture = Fixture::new(
+                root,
+                vec![FinishCheck {
+                    name: "exact hosted source and candidate".into(),
+                    command: native::command("ordered", &[".git/checked-trees", "checked"]),
+                }],
+            );
             let project_second = clone_bare(root, &fixture.local, fixture.project.path());
             let review_second = clone_bare(root, &fixture.local, fixture.review.path());
             for (name, first, second) in [
@@ -191,6 +205,7 @@ fn hosted_partial_multiple_destination_retry_preserves_confirmed_effects() {
                 ]);
             }
             let released = fixture.start();
+            let target = fixture.advance_target(root);
             let logs: Vec<_> = (0..4)
                 .map(|index| root.join(format!("pushes-{index}")))
                 .collect();
@@ -222,6 +237,27 @@ fn hosted_partial_multiple_destination_retry_preserves_confirmed_effects() {
             );
             assert!(fixture.first(&[], 1).contains("paused-review"));
             let tag = oid(fixture.local.path(), "refs/tags/v1").unwrap();
+            let candidate = oid(fixture.local.path(), "refs/heads/review/v1").unwrap();
+            assert_ne!(candidate, released);
+            assert_eq!(
+                value(&fixture.local, &["show", "-s", "--format=%P", &candidate]),
+                format!("{released} {target}")
+            );
+            let checked =
+                fs::read_to_string(fixture.local.path().join(".git/checked-trees")).unwrap();
+            assert_eq!(
+                checked.lines().collect::<Vec<_>>(),
+                [
+                    format!("checked {released}"),
+                    format!("checked {candidate}")
+                ]
+            );
+            assert_eq!(
+                value(&fixture.local, &["branch", "--show-current"]),
+                "review/v1"
+            );
+            let attempts = fixture.local.path().join(".git/twigsmith-hosted/attempts");
+            assert_eq!(fs::read_dir(attempts).unwrap().count(), 1);
             for project in [&fixture.project, &project_second] {
                 assert_eq!(
                     oid(project.path(), "refs/heads/release/train"),
@@ -232,7 +268,7 @@ fn hosted_partial_multiple_destination_retry_preserves_confirmed_effects() {
             }
             assert_eq!(
                 oid(fixture.review.path(), "refs/heads/review/v1"),
-                Some(released.clone())
+                Some(candidate.clone())
             );
             assert_eq!(oid(review_second.path(), "refs/heads/review/v1"), None);
             let before: Vec<_> = logs.iter().map(|log| fs::read(log).unwrap()).collect();
@@ -250,7 +286,7 @@ fn hosted_partial_multiple_destination_retry_preserves_confirmed_effects() {
             assert_eq!(fs::read_to_string(&logs[3]).unwrap().lines().count(), 2);
             assert_eq!(
                 oid(review_second.path(), "refs/heads/review/v1"),
-                Some(released.clone())
+                Some(candidate.clone())
             );
             assert_eq!(
                 fs::read(fixture.local.path().join(".git/logs/refs/tags/v1")).unwrap(),
@@ -270,11 +306,19 @@ fn hosted_partial_multiple_destination_retry_preserves_confirmed_effects() {
                 Some(released)
             );
             assert_eq!(oid(fixture.local.path(), "refs/heads/stable"), None);
+            assert_eq!(oid(fixture.project.path(), "refs/heads/main"), Some(target));
+            assert_eq!(
+                value(&fixture.local, &["branch", "--show-current"]),
+                "review/v1"
+            );
+            assert_eq!(
+                fs::read_to_string(fixture.local.path().join(".git/checked-trees")).unwrap(),
+                checked
+            );
         },
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn hosted_bypass_does_not_validate_source_or_distinct_candidate_on_retry() {
     isolated(
@@ -285,11 +329,10 @@ fn hosted_bypass_does_not_validate_source_or_distinct_candidate_on_retry() {
                 root,
                 vec![FinishCheck {
                     name: "version and candidate gate".into(),
-                    command: vec![
-                        "sh".into(),
-                        "-c".into(),
-                        "git rev-parse HEAD >> .git/checked-trees; test -f .git/check-pass".into(),
-                    ],
+                    command: native::command(
+                        "ordered",
+                        &[".git/checked-trees", "checked", ".git/check-pass"],
+                    ),
                 }],
             );
             let released = fixture.start();
@@ -316,7 +359,7 @@ fn hosted_bypass_does_not_validate_source_or_distinct_candidate_on_retry() {
                     .unwrap()
                     .lines()
                     .collect::<Vec<_>>(),
-                [released.as_str()]
+                [format!("checked {released}")]
             );
             fs::write(fixture.local.path().join(".git/check-pass"), "").unwrap();
             status(run(&fixture.local, "finish", &[]), 0);
@@ -324,7 +367,11 @@ fn hosted_bypass_does_not_validate_source_or_distinct_candidate_on_retry() {
                 fs::read_to_string(fixture.local.path().join(".git/checked-trees")).unwrap();
             assert_eq!(
                 checked.lines().collect::<Vec<_>>(),
-                [released.as_str(), released.as_str(), candidate.as_str()]
+                [
+                    format!("checked {released}"),
+                    format!("checked {released}"),
+                    format!("checked {candidate}"),
+                ]
             );
             status(run(&fixture.local, "finish", &[]), 0);
             assert_eq!(
@@ -340,7 +387,6 @@ fn hosted_bypass_does_not_validate_source_or_distinct_candidate_on_retry() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn hosted_signing_failure_preserves_unsigned_and_publication_boundary() {
     isolated(
@@ -349,16 +395,22 @@ fn hosted_signing_failure_preserves_unsigned_and_publication_boundary() {
         |root| {
             for preference in [false, true] {
                 let fixture = Fixture::new(root, vec![]);
-                fixture
-                    .local
-                    .success(&["config", "gpg.program", "/missing-oneflow-hosted-signer"]);
+                fixture.local.success(&[
+                    "config",
+                    "gpg.program",
+                    native::helper().to_str().unwrap(),
+                ]);
                 if preference {
                     fixture.local.success(&["config", "tag.gpgSign", "true"]);
                 }
                 let released = fixture.start();
                 let project_before = refs(fixture.project.path());
                 let review_before = refs(fixture.review.path());
-                fixture.first(if preference { &[] } else { &["--sign-tag"] }, 1);
+                let failure = fixture.first(if preference { &[] } else { &["--sign-tag"] }, 1);
+                assert!(
+                    failure.contains("native-fixture-signing-refused"),
+                    "{failure}"
+                );
                 assert_eq!(oid(fixture.local.path(), "refs/tags/v1"), None);
                 assert_eq!(oid(fixture.local.path(), "refs/heads/review/v1"), None);
                 assert_eq!(
@@ -376,7 +428,6 @@ fn hosted_signing_failure_preserves_unsigned_and_publication_boundary() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn hosted_retry_refuses_changed_instances_tag_objects_settings_and_endpoints() {
     isolated(

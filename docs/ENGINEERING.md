@@ -25,7 +25,9 @@ remote, save/review delivery and direct candidate retry, with independent ref,
 index and worktree assertions. Native prompt tests cover guided configuration and
 representative save/finish keyboard interaction, fallback and terminal restoration.
 Companion native process and guard suites exercise
-managed checks and refusal boundaries. The four-platform
+managed checks and refusal boundaries. Tagged/direct and hosted CLI suites exercise
+version identity, partial publication and fresh-process retry; native recovery
+fixtures cover filesystem and linked-worktree guards. The four-platform
 pull-request matrix is separate from completion coverage and distribution
 qualification; only actual successful native jobs establish that slice on an OS.
 
@@ -893,6 +895,9 @@ descendant breakaway. It handles console Ctrl-C and Ctrl-Break during the check
 stage and stops job members on cancellation, collection failure or leader exit.
 It retains member process handles before requesting termination and waits for
 their signaled state, then enumerates again for children spawned during cleanup.
+If a termination request returns access denied, it waits up to one second for
+that same retained process handle to signal. Only observed termination resolves
+the error; a still-live or unobservable process keeps cleanup unsuccessful.
 Job accounting alone cannot establish process-handle completion; job-wide
 termination remains an error/unwinding fallback.
 Both backends stop ordinary descendants and reap the leader before returning.
@@ -1407,6 +1412,9 @@ preparation retention refs corroborate transitions. A recreated branch at the sa
 OID cannot inherit ownership. Conflict resolution must establish the recorded
 source/target merge; it cannot redefine the released version. Native continuation
 and abandonment keep that identity; missing or changed evidence blocks reuse.
+Record files synchronize before atomic replacement. Parent-directory synchronization
+is Unix-only, as for direct integration; Windows power-loss durability remains
+outside this boundary.
 
 Responsibility ends at verified publication and readiness for manual submission.
 Later PR state is neither observed nor reconstructed. Provider submission, subsequent
