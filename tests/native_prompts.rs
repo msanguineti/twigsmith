@@ -99,6 +99,8 @@ fn native_config_literal_suggestions_and_explicit_creation() {
             let git_before = snapshot(&repo.path().join(".git"));
             let mut term =
                 NativeTerminal::start_command_width(command("twigsmith", &repo, &["config"]), 34);
+            term.until("Settings bundle:");
+            term.send(b"\r");
             term.until("Remote receiving work");
             term.send("ré\t\r".as_bytes());
             term.until("Project source remote");
@@ -132,6 +134,7 @@ fn native_config_default_is_explicit_and_creation_defaults_to_cancel() {
             let before = snapshot(repo.path());
             let mut term = terminal("tgi", &repo, &["config"]);
             for prompt in [
+                "Settings bundle:",
                 "Remote receiving work",
                 "Project source remote",
                 "Project base branch",
@@ -159,6 +162,8 @@ fn native_keyboard_cancellations_preserve_config_and_lifecycle_work() {
                 let repo = Repository::new(root);
                 let before = snapshot(repo.path());
                 let mut term = terminal("twigsmith", &repo, &["config"]);
+                term.until("Settings bundle:");
+                term.send(b"\r");
                 term.until("Remote receiving work");
                 keyboard(&term);
                 term.send(cancel);
@@ -309,6 +314,8 @@ fn native_dumb_complete_lines_and_eof_do_not_approve_partial_input() {
                 let mut cmd = command("twigsmith", &repo, &["config"]);
                 cmd.env("TERM", "dumb");
                 let mut term = NativeTerminal::start_command(cmd);
+                term.until("Settings bundle:");
+                term.send(b"\r");
                 term.until("Remote receiving work");
                 if partial {
                     term.send(b"future-remote\x04\x04");
@@ -403,6 +410,8 @@ fn native_redirected_output_uses_complete_line_fallback_and_plain_report() {
                 .env("TERM", "xterm-256color")
                 .env("CLICOLOR", "0");
             let mut term = NativeTerminal::start_command(cmd);
+            term.until("Settings bundle:");
+            term.send(b"\r");
             term.until("Remote receiving work");
             // With terminal input/stderr and redirected stdout, complete lines own
             // submission even though TERM advertises keyboard capabilities.
@@ -435,6 +444,53 @@ fn native_redirected_output_uses_complete_line_fallback_and_plain_report() {
                 term.output
             );
             assert!(term.output.contains("  1) keep"), "{}", term.output);
+        },
+    );
+}
+
+#[test]
+fn native_bundle_selection_gitflow_roles_and_creation() {
+    isolated(
+        "native_bundle_selection_gitflow_roles_and_creation",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let before = snapshot(&repo.path().join(".git"));
+            let mut term = terminal("tgi", &repo, &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"gitflow\r");
+            for prompt in ["Remote receiving work", "Project source remote"] {
+                term.until(prompt);
+                term.send(b"\r");
+            }
+            term.until("Project base branch [develop]");
+            term.send(b"team/develop\r");
+            term.until("Production branch");
+            term.send(b"team/main\r");
+            term.until("Active release branch or none");
+            term.send(b"release/current\r");
+            for prompt in [
+                "Saving preferences:",
+                "Finishing preferences:",
+                "Finish checks:",
+                "ordinary workstream:",
+                "release workstream:",
+                "hotfix workstream:",
+            ] {
+                term.until(prompt);
+                term.send(b"\r");
+            }
+            term.until("Create this file?");
+            term.send(b"yes\r");
+            finish(&mut term, 0);
+            assert_eq!(snapshot(&repo.path().join(".git")), before);
+            let mut value = load(&repo);
+            assert_eq!(value.base, "team/develop");
+            settings::resolve_workstream(&mut value, settings::WorkstreamKind::Hotfix, None)
+                .unwrap();
+            let route = value.workstream.unwrap();
+            assert_eq!(route.integration_targets, ["team/main", "release/current"]);
+            assert_eq!(route.active_release.as_deref(), Some("release/current"));
         },
     );
 }

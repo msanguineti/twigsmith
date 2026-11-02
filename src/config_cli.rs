@@ -17,53 +17,167 @@ use crate::{
 fn text(value: impl std::fmt::Display) -> String {
     display(value.to_string().as_bytes())
 }
-#[derive(Clone, Copy)]
-enum OneflowBundle {
-    Direct,
-    Hosted,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bundle {
+    Oneflow,
+    OneflowHosted,
+    GithubFlow,
+    Gitflow,
+    Trunk,
 }
-impl OneflowBundle {
-    fn apply(self, settings: &mut settings::Settings, marker: Option<String>) {
+impl Bundle {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "oneflow" => Some(Self::Oneflow),
+            "oneflow-hosted" => Some(Self::OneflowHosted),
+            "github-flow" => Some(Self::GithubFlow),
+            "gitflow" => Some(Self::Gitflow),
+            "trunk" => Some(Self::Trunk),
+            _ => None,
+        }
+    }
+    fn apply(self, settings: &mut settings::Settings, options: &Options) {
         match self {
-            Self::Direct => settings::oneflow_bundle(settings, marker),
-            Self::Hosted => settings::oneflow_hosted_bundle(settings, marker),
+            Self::Oneflow => {
+                if options.delivery == Some(Delivery::Review) {
+                    settings::oneflow_hosted_bundle(settings, options.marker.clone())
+                } else {
+                    settings::oneflow_bundle(settings, options.marker.clone())
+                }
+            }
+            Self::OneflowHosted => {
+                settings::oneflow_hosted_bundle(settings, options.marker.clone())
+            }
+            Self::GithubFlow => settings::github_flow_bundle(settings),
+            Self::Trunk => {
+                settings::trunk_bundle(settings, options.delivery == Some(Delivery::Review))
+            }
+            Self::Gitflow => settings::gitflow_bundle(
+                settings,
+                options.production.clone().unwrap_or_else(|| "main".into()),
+                options
+                    .active_release
+                    .clone()
+                    .filter(|value| value != "none"),
+            ),
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    Direct,
+    Review,
+}
+#[derive(Default)]
+struct Options {
+    bundle: Option<Bundle>,
+    delivery: Option<Delivery>,
+    marker: Option<String>,
+    base: Option<String>,
+    publish_remote: Option<String>,
+    base_remote: Option<String>,
+    production: Option<String>,
+    active_release: Option<String>,
+}
+impl Options {
+    fn roles(&self, plan: &mut config::GenerationPlan) {
+        if let Some(value) = &self.publish_remote {
+            plan.proposed.publish_remote = value.clone();
+            if plan.proposed.sources.base_remote.is_none() {
+                plan.proposed.base_remote = value.clone();
+            }
+        }
+        if let Some(value) = &self.base_remote {
+            plan.proposed.base_remote = value.clone();
+            plan.proposed.sources.base_remote = Some(SettingSource::Shared(plan.destination()));
+        }
+        if let Some(value) = &self.base {
+            plan.proposed.base = value.clone();
+        } else if self.bundle == Some(Bundle::Gitflow) {
+            plan.proposed.base = "develop".into();
+        }
+    }
+    fn validate(&self, directory: &Path, base: &str) -> Result<(), ConfigError> {
+        let invalid =
+            |reason: &str| ConfigError::Settings(SettingsError::InvalidSettings(reason.into()));
+        if let Some(marker) = &self.marker
+            && !settings::valid_branch(directory, marker)?
+        {
+            return Err(invalid("invalid release marker branch"));
+        }
+        if self.bundle == Some(Bundle::Gitflow) {
+            let production = self.production.as_deref().unwrap_or("main");
+            if !settings::valid_branch(directory, production)? || production == base {
+                return Err(invalid(
+                    "GitFlow production must be a valid branch distinct from the development base",
+                ));
+            }
+            if let Some(active) = self
+                .active_release
+                .as_deref()
+                .filter(|value| *value != "none")
+                && (!settings::valid_branch(directory, active)?
+                    || active == base
+                    || active == production)
+            {
+                return Err(invalid(
+                    "GitFlow active release must be a valid branch distinct from development and production",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 enum Command {
+    Invalid(&'static str),
     Help,
-    Guided(Format, Option<OneflowBundle>, Option<String>),
+    Guided(Format, Options),
     Show,
-    Generate(Format, Option<OneflowBundle>, Option<String>),
+    Generate(Format, Options),
 }
 fn parse(args: &[OsString]) -> Option<Command> {
     match args {
-        [] => return Some(Command::Guided(Format::Toml, None, None)),
+        [] => return Some(Command::Guided(Format::Toml, Options::default())),
         [arg] if arg == "--help" || arg == "-h" => return Some(Command::Help),
         [arg] if arg == "show" => return Some(Command::Show),
         _ => {}
     }
     let mut yes = false;
-    let mut oneflow = None;
-    let mut marker = None;
+    let mut options = Options::default();
     let mut format = None;
+    let mut alias_delivery = None;
     let mut rest = args;
     while let [arg, tail @ ..] = rest {
         if (arg == "--yes" || arg == "-y") && !yes {
             yes = true;
             rest = tail;
-        } else if (arg == "--oneflow" || arg == "--oneflow-hosted") && oneflow.is_none() {
-            oneflow = Some(if arg == "--oneflow" {
-                OneflowBundle::Direct
+        } else if (arg == "--oneflow" || arg == "--oneflow-hosted") && options.bundle.is_none() {
+            options.bundle = Some(if arg == "--oneflow" {
+                Bundle::Oneflow
             } else {
-                OneflowBundle::Hosted
+                Bundle::OneflowHosted
+            });
+            alias_delivery = Some(if arg == "--oneflow" {
+                Delivery::Direct
+            } else {
+                Delivery::Review
             });
             rest = tail;
-        } else if arg == "--marker" && marker.is_none() {
+        } else if arg == "--bundle" && options.bundle.is_none() {
             let [value, tail @ ..] = tail else {
                 return None;
             };
-            marker = Some(value.to_str()?.to_owned());
+            options.bundle = Some(Bundle::parse(value.to_str()?)?);
+            rest = tail;
+        } else if arg == "--delivery" && options.delivery.is_none() {
+            let [value, tail @ ..] = tail else {
+                return None;
+            };
+            options.delivery = Some(match value.to_str()? {
+                "direct" => Delivery::Direct,
+                "review" => Delivery::Review,
+                _ => return None,
+            });
             rest = tail;
         } else if arg == "--format" && format.is_none() {
             let [value, tail @ ..] = tail else {
@@ -77,17 +191,64 @@ fn parse(args: &[OsString]) -> Option<Command> {
             });
             rest = tail;
         } else {
-            return None;
+            let field = match arg.to_str()? {
+                "--marker" => &mut options.marker,
+                "--base" => &mut options.base,
+                "--publish-remote" => &mut options.publish_remote,
+                "--base-remote" => &mut options.base_remote,
+                "--production" => &mut options.production,
+                "--active-release" => &mut options.active_release,
+                _ => return None,
+            };
+            if field.is_some() {
+                return None;
+            }
+            let [value, tail @ ..] = tail else {
+                return None;
+            };
+            *field = Some(value.to_str()?.to_owned());
+            rest = tail;
         }
     }
-    if marker.is_some() && oneflow.is_none() {
+    if options.delivery.is_some() && options.bundle.is_none() {
+        return None;
+    }
+    if alias_delivery.is_some() && options.delivery.is_some() && alias_delivery != options.delivery
+    {
+        return None;
+    }
+    options.delivery = options.delivery.or(alias_delivery);
+    if options.bundle == Some(Bundle::OneflowHosted) && options.delivery == Some(Delivery::Direct) {
+        return None;
+    }
+    if options.bundle == Some(Bundle::GithubFlow) && options.delivery == Some(Delivery::Direct) {
+        return Some(Command::Invalid(
+            "GitHub Flow supports review delivery; use --delivery review",
+        ));
+    }
+    if options.bundle == Some(Bundle::Gitflow) && options.delivery == Some(Delivery::Review) {
+        return Some(Command::Invalid(
+            "GitFlow currently supports direct delivery; use --delivery direct",
+        ));
+    }
+    if options.marker.is_some()
+        && !matches!(
+            options.bundle,
+            Some(Bundle::Oneflow | Bundle::OneflowHosted)
+        )
+    {
+        return None;
+    }
+    if (options.production.is_some() || options.active_release.is_some())
+        && options.bundle != Some(Bundle::Gitflow)
+    {
         return None;
     }
     let format = format.unwrap_or(Format::Toml);
     Some(if yes {
-        Command::Generate(format, oneflow, marker)
+        Command::Generate(format, options)
     } else {
-        Command::Guided(format, oneflow, marker)
+        Command::Guided(format, options)
     })
 }
 pub fn run(args: &[OsString]) -> ExitCode {
@@ -98,6 +259,10 @@ pub fn run(args: &[OsString]) -> ExitCode {
         return ExitCode::from(2);
     };
     match command {
+        Command::Invalid(reason) => {
+            crate::presentation::error(format!("error: {reason}"));
+            return ExitCode::from(2);
+        }
         Command::Help => {
             help();
             return ExitCode::SUCCESS;
@@ -122,9 +287,11 @@ pub fn run(args: &[OsString]) -> ExitCode {
     };
     let result = match command {
         Command::Show => config::inspect(&directory).map(|inspection| show(&inspection)),
-        Command::Generate(format, oneflow, marker) => config::prepare(&directory, format)
+        Command::Generate(format, options) => config::prepare(&directory, format)
             .and_then(|mut plan| {
-                if let Some(bundle) = oneflow { bundle.apply(&mut plan.proposed, marker); }
+                options.roles(&mut plan);
+                options.validate(&directory, &plan.proposed.base)?;
+                if let Some(bundle) = options.bundle { bundle.apply(&mut plan.proposed, &options); }
                 config::generate(&directory, &plan)
             })
             .map(|generated| {
@@ -133,8 +300,8 @@ pub fn run(args: &[OsString]) -> ExitCode {
                     println!("Local overrides in {} take precedence over generated values; use tgi config show to inspect effective settings.", text(path.display()));
                 }
             }),
-        Command::Guided(format, oneflow, marker) => guided(&directory, format, oneflow, marker),
-        Command::Help => unreachable!(),
+        Command::Guided(format, options) => guided(&directory, format, options),
+        Command::Help | Command::Invalid(_) => unreachable!(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -204,6 +371,44 @@ fn edit_group(prompt: &str) -> Result<Option<bool>, ConfigError> {
     .map(|answer| answer == "edit"))
 }
 fn repository_group(
+    directory: &Path,
+    plan: &mut config::GenerationPlan,
+) -> Result<bool, ConfigError> {
+    let before = plan.proposed.clone();
+    if !repository_fields(directory, plan)? {
+        return Ok(false);
+    }
+    // Settings still naming the previous role follow a repository correction;
+    // routes customized to another name retain that explicit choice.
+    for policy in plan.proposed.workstreams.values_mut() {
+        for branch in [
+            &mut policy.creation_source,
+            &mut policy.preparation_source,
+            &mut policy.integration_target,
+        ] {
+            if branch.as_deref() == Some(&before.base) {
+                *branch = Some(plan.proposed.base.clone());
+            }
+        }
+        if let Some(targets) = &mut policy.integration_targets {
+            for target in targets {
+                if target == &before.base {
+                    *target = plan.proposed.base.clone();
+                }
+            }
+        }
+        for remote in [&mut policy.publish_remote, &mut policy.base_remote] {
+            if remote.as_deref() == Some(&before.base_remote) {
+                *remote = Some(plan.proposed.base_remote.clone());
+            }
+        }
+        if policy.review_remote.as_deref() == Some(&before.publish_remote) {
+            policy.review_remote = Some(plan.proposed.publish_remote.clone());
+        }
+    }
+    Ok(true)
+}
+fn repository_fields(
     directory: &Path,
     plan: &mut config::GenerationPlan,
 ) -> Result<bool, ConfigError> {
@@ -485,11 +690,21 @@ fn finish_group(plan: &mut config::GenerationPlan) -> Result<bool, ConfigError> 
     }
     macro_rules! field {
         ($field:ident, $prompt:expr, $choices:expr, $parse:expr) => {
+            field!($field, $field, $prompt, $choices, $parse);
+        };
+        ($field:ident, $policy:ident, $prompt:expr, $choices:expr, $parse:expr) => {
             let Some(value) = choose($prompt, plan.proposed.$field.as_str(), $choices, $parse)?
             else {
                 return Ok(false);
             };
             plan.proposed.$field = value;
+            if let Some(ordinary) = plan
+                .proposed
+                .workstreams
+                .get_mut(&settings::WorkstreamKind::Ordinary)
+            {
+                ordinary.$policy = Some(value.as_str().into());
+            }
         };
     }
     field!(
@@ -555,6 +770,7 @@ fn finish_group(plan: &mut config::GenerationPlan) -> Result<bool, ConfigError> 
     if advanced == "edit" {
         field!(
             history_edit,
+            finish_history_edit,
             "History editing during rebase preparation: ",
             HISTORY_CHOICES,
             settings::parse_history_edit
@@ -854,28 +1070,69 @@ fn workflow_summary(value: &settings::Settings) {
         ));
     }
 }
-fn guided(
-    directory: &Path,
-    format: Format,
-    oneflow: Option<OneflowBundle>,
-    marker: Option<String>,
-) -> Result<(), ConfigError> {
+fn guided(directory: &Path, format: Format, mut options: Options) -> Result<(), ConfigError> {
     let mut plan = config::prepare_guided(directory, format)?;
     crate::presentation::prose(
         "Set up shared start, save and finish preferences. Names may be configured before they exist.",
     );
-    if !repository_group(directory, &mut plan)?
-        || !save_group(&mut plan)?
-        || !finish_group(&mut plan)?
-        || !checks_group(&mut plan)?
+    if options.bundle.is_none() {
+        let Some(answer) = described(
+            "Settings bundle: ",
+            &[
+                ("none", "Keep ordinary defaults without a bundle"),
+                ("oneflow", "OneFlow with a single development line"),
+                ("github-flow", "GitHub Flow with manual review"),
+                (
+                    "gitflow",
+                    "GitFlow with production and development branches",
+                ),
+                (
+                    "trunk",
+                    "Short branches with staged saves and fast-forward delivery",
+                ),
+            ],
+            "none",
+        )?
+        else {
+            return cancelled();
+        };
+        options.bundle = Bundle::parse(&answer);
+    }
+    if options.delivery.is_none() && matches!(options.bundle, Some(Bundle::Oneflow | Bundle::Trunk))
     {
+        let Some(answer) = described(
+            "Delivery route: ",
+            &[
+                ("direct", "Integrate into the project target"),
+                ("review", "Publish work for manual review"),
+            ],
+            "direct",
+        )?
+        else {
+            return cancelled();
+        };
+        options.delivery = Some(if answer == "review" {
+            Delivery::Review
+        } else {
+            Delivery::Direct
+        });
+    }
+    options.roles(&mut plan);
+    if !repository_group(directory, &mut plan)? {
         return cancelled();
     }
-    if let Some(bundle) = oneflow {
-        bundle.apply(&mut plan.proposed, marker);
-        if !policies_group(directory, &mut plan)? {
-            return cancelled();
-        }
+    if options.bundle == Some(Bundle::Gitflow) && !gitflow_roles(directory, &plan, &mut options)? {
+        return cancelled();
+    }
+    options.validate(directory, &plan.proposed.base)?;
+    if let Some(bundle) = options.bundle {
+        bundle.apply(&mut plan.proposed, &options);
+    }
+    if !save_group(&mut plan)? || !finish_group(&mut plan)? || !checks_group(&mut plan)? {
+        return cancelled();
+    }
+    if options.bundle.is_some() && !policies_group(directory, &mut plan)? {
+        return cancelled();
     }
     let mut private_shown = Vec::new();
     loop {
@@ -1042,6 +1299,62 @@ fn guided(
             return cancelled();
         }
     }
+}
+fn gitflow_roles(
+    directory: &Path,
+    plan: &config::GenerationPlan,
+    options: &mut Options,
+) -> Result<bool, ConfigError> {
+    let branches = plan.review().branch_suggestions(&plan.proposed.base_remote);
+    for production in [true, false] {
+        loop {
+            let default = if production {
+                options.production.as_deref().unwrap_or("main")
+            } else {
+                options.active_release.as_deref().unwrap_or("none")
+            };
+            let Some(answer) = hinted(
+                &format!(
+                    "{} [{}]: ",
+                    if production {
+                        "Production branch"
+                    } else {
+                        "Active release branch or none"
+                    },
+                    text(default)
+                ),
+                &branches,
+            )?
+            else {
+                return Ok(false);
+            };
+            let value = if answer.is_empty() {
+                default.to_owned()
+            } else {
+                answer
+            };
+            let valid = if production {
+                settings::valid_branch(directory, &value)? && value != plan.proposed.base
+            } else {
+                value == "none"
+                    || (settings::valid_branch(directory, &value)?
+                        && value != plan.proposed.base
+                        && Some(&value) != options.production.as_ref())
+            };
+            if valid {
+                if production {
+                    options.production = Some(value);
+                } else {
+                    options.active_release = Some(value);
+                }
+                break;
+            }
+            crate::presentation::prose(
+                "Use a literal branch distinct from the other GitFlow roles; active release also accepts none.",
+            );
+        }
+    }
+    Ok(true)
 }
 fn private_summary(
     plan: &config::GenerationPlan,
@@ -1772,8 +2085,16 @@ Arguments:
 Options:
   -y, --yes                 Create shared defaults without terminal input
   --format <toml|yaml|json>  Select the new file format (default: toml)
-  --oneflow                 Generate editable direct OneFlow workstream policies
-  --oneflow-hosted          Generate editable review OneFlow workstream policies
+  --bundle <name>           Select oneflow, oneflow-hosted, github-flow, gitflow, or trunk
+  --delivery <direct|review> Select a supported delivery route (GitHub Flow: review)
+  --base <branch>           Set the project base (GitFlow: develop; others: main)
+  --publish-remote <name>   Set the remote receiving work (default: origin)
+  --base-remote <name>      Set the project remote (default: follow publication)
+  --production <branch>     Set GitFlow production (default: main)
+  --active-release <branch|none>
+                            Set GitFlow hotfix backmerge context (default: none)
+  --oneflow                 Alias for --bundle oneflow --delivery direct
+  --oneflow-hosted          Alias for --bundle oneflow --delivery review
   --marker <branch>         Enable a release marker with either OneFlow bundle
   -h, --help                Show help
 
@@ -1782,6 +2103,9 @@ Examples:
   tgi config show
   tgi config --yes --format yaml
   tgi config --oneflow --yes --marker stable
+  tgi config --yes --bundle github-flow --publish-remote fork --base-remote upstream
+  tgi config --yes --bundle gitflow --production main --active-release release/2
+  tgi config --yes --bundle trunk --delivery review
 
 Notes:
   Setup creates twigsmith.config.<format> at the working-tree root, including
@@ -1795,7 +2119,10 @@ Notes:
   Cancel or end-of-input creates no file. Changed review context stops creation.
   --yes needs no terminal and retains unresolved ask choices; it creates no checks.
   Setup changes no branches, contacts no remote, and runs no configured checks.
-  The OneFlow bundles are alternatives; edit their generated routes to suit the project.
+  Bundles generate ordinary editable settings; no workflow mode is stored.
+  Delivery defaults: OneFlow, GitFlow and trunk use direct; GitHub Flow uses review.
+  GitFlow currently supports direct delivery. GitHub Flow supports review delivery.
+  Guided setup offers a bundle with no-bundle defaults and editable literal branch roles.
   Direct tagged policies integrate and clean up work; hosted policies prepare manual
   review and retain work. Marker advancement after hosted review remains manual.
 

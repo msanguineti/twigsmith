@@ -505,13 +505,52 @@ arguments. [`finish_cli.rs`](../src/finish_cli.rs) owns that presentation policy
 Settings include sparse `workstreams.ordinary`, `workstreams.release`, and
 `workstreams.hotfix` templates. Creation source, preparation source, integration
 destinations, work publication, version tagging and identity, active-release
-context, marker, and
-finish choices are independent data. The explicit `config --oneflow` bundle
-serializes editable templates using the same schema as custom settings; there
-is no strategy dispatch during lifecycle execution. `config --oneflow-hosted`
-serializes tagged review templates with separate work and merge-back publication
-routes through that same schema. Built-in ordinary settings
-remain the default when the bundle is not selected.
+context, marker, and finish choices are independent data. The setup catalogue includes OneFlow direct
+and hosted review, GitHub Flow review, GitFlow direct, and lightweight trunk direct
+or review. Bundle helpers in [`settings.rs`](../src/settings.rs) generate ordinary
+values and templates using the existing schema; no bundle identity or strategy
+dispatch survives serialization. Built-in ordinary defaults remain unchanged when
+no bundle is selected. `config --oneflow` and `config --oneflow-hosted` retain their
+fixed direct/review meanings; general selection uses `--bundle` and a supported
+`--delivery`. GitHub Flow direct and GitFlow review are rejected before generation.
+The [user manual](USAGE.md#settings-bundles) specifies the catalogue, generated
+values, role options, and representative journeys.
+
+Guided setup selects a bundle and applicable delivery route, resolves editable
+branch/remote roles, and applies the selected settings before customization.
+GitFlow role validation distinguishes development, production, and optional active
+release without creating or moving refs. Save plans, labels, checks, policy edits,
+and private layering continue through the normal generation/audit path. Explicit
+workstream finish values retain precedence over top-level preferences. Guided
+finishing edits update the ordinary template alongside top-level values while
+leaving release/hotfix policy edits explicit. Revisiting repository roles updates
+matching generated branch and remote roles while preserving independent edits.
+
+GitHub Flow, GitFlow ordinary work, and trunk omit `creation-source`, preserving
+ordinary start's fetch of the fresh project base. OneFlow retains explicit local
+creation sources. GitHub Flow supplies only ordinary review; trunk supplies only
+ordinary work with staged saving, merge preparation, and either direct `ff-only`
+delivery/target checkout/both cleanup or review/work checkout/keep cleanup. Both
+use no history editing or rewriting. These settings do not implement deployment,
+review-provider automation, integration cadence, or feature-flag policy.
+
+GitFlow's top-level base is development. Features integrate there. Releases start
+from the selected development cutoff, prepare against development without an
+update, and independently integrate their fixed source into production then
+development. Hotfixes require an explicit released tag, prepare against production
+without an update, and independently integrate into production then the declared
+active release, or development when no release is active. Tagged policies use
+merge integration, no history editing or rewriting, and integrated-result version
+identity on production; production is the first destination and final target
+checkout. Work publishes through the project remote for release/hotfix and the work
+remote for ordinary contributions. GitFlow supplies no marker. Its review variant
+is deferred because this generated multi-destination route uses direct delivery;
+selecting review cannot silently drop destinations or change the version identity.
+
+OneFlow direct and hosted helpers retain their existing source-tagging routes.
+Hosted tagged review separates project work/tag publication from merge-back
+publication on the work remote. Hosting submission, external merges and any
+post-review marker advancement remain manual.
 
 Start resolves explicit policy and retains its association with the exact work
 branch in private Git configuration. The association binds resolved routes,
@@ -528,10 +567,12 @@ A tagged direct template can select `integration-targets` instead of the singula
 `integration-target`; resolution retains the first destination as the primary
 target. The singular and plural route are alternatives: a later layer replaces
 the earlier route and its effective provenance; both in one layer are ambiguous.
-Plural routes require version tagging. A declared active release remains the first
-hotfix destination. Empty, duplicate, conflicting, and invalid routes are
-rejected, as are source/marker
-aliases. Lists do not select per-destination methods or derive routes from history.
+Plural routes require version tagging. A declared active release must be a member
+of an explicit plural hotfix route; it need not be first. Destination order still
+selects the first integrated-result version identity, so GitFlow can put production
+first and the declared active release second. Singular hotfix routing continues
+to select the declared active release as its destination. Empty, duplicate,
+conflicting, and invalid routes are rejected, as are source/marker aliases. Lists do not select per-destination methods or derive routes from history.
 Integration recovery selects the original source association after temporary
 target checkout and after source
 cleanup; the target's own policy cannot replace the contribution's policy.
@@ -1368,9 +1409,11 @@ transition. Fresh-process retries revalidate active and completed evidence. Chan
 refs, missing retention or incompatible policy block reuse. Replacement refs cannot
 supply validation of the original released tree.
 
-Hotfix routing takes an explicit active-release branch or declared absence. A fix
-on an active release reaches development when that release is completed. Branch
-scans and tag order supply no routing authority. The optional marker is independent
+Hotfix routing takes an explicit active-release branch or declared absence. The
+singular route selects that branch; an explicit plural route must include it while
+retaining its declared order. Thus production can receive the version tag before
+the same work source reaches an active release. A fix on an active release reaches
+development when that release is completed. Branch scans and tag order supply no routing authority. The optional marker is independent
 of source and destination results: it is initialized or conditionally fast-forwarded
 to the selected released commit. Divergence, changed refs or occupied worktrees stop
 marker effects. Disabled markers have no effect.
@@ -1386,6 +1429,10 @@ the fixed source, version, destination results, marker, cleanup and pending work
 Provider submission and deployment remain external. The
 [OneFlow CLI fixtures](../tests/cli_oneflow.rs) and
 [ordered delivery fixtures](../tests/cli_direct_sequence.rs) exercise those boundaries.
+Their [generated GitFlow cases](../tests/cli_direct_sequence/bundles.rs) cover
+feature/release/hotfix destinations, production-result tag identity, active-release
+membership, conflict continuation and retry. Configuration serialization and setup
+are checked separately in [`cli_config.rs`](../tests/cli_config.rs).
 
 ## Hosted version preparation
 

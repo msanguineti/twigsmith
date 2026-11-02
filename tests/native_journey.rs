@@ -1,4 +1,6 @@
 //! A deliberately portable application slice, executed natively by the CI matrix.
+#[path = "native_journey/bundles.rs"]
+mod bundles;
 mod support;
 
 use std::{fs, path::Path, process::Command};

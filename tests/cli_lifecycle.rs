@@ -289,6 +289,8 @@ fn guided_setup_checks_prepared_work_before_successful_publication() {
                     ];
                 let mut term =
                     terminal::Terminal::start(exe, local.path(), &["config", "--format", format]);
+                term.until("Settings bundle:");
+                term.send(b"\n");
                 term.until("Remote receiving work");
                 let mut answers = "\n\n\n\nedit\nreview\nmerge\ndeny\n\n".to_string();
                 for check in &checks {

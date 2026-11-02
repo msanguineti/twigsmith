@@ -880,6 +880,8 @@ fn guided_rechecks_changes_during_answers_and_confirmation() {
                         .unwrap();
                     }
                     let mut terminal = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                    terminal.until("Settings bundle:");
+                    terminal.send(b"\n");
                     terminal.until("Remote receiving work");
                     if confirmation {
                         terminal.send(b"\n\n\n\n\n\n");
@@ -1527,6 +1529,8 @@ fn unattended_generation_audits_combined_private_policy_without_writing_invalid_
 
 #[cfg(target_os = "linux")]
 fn default_journey(term: &mut terminal::Terminal) {
+    term.until("Settings bundle:");
+    term.send(b"\n");
     term.until("Remote receiving work");
     term.send(b"\n\n\n\n\n\n");
     term.until("Create this file?");
@@ -1535,454 +1539,868 @@ fn default_journey(term: &mut terminal::Terminal) {
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_group_defaults_formats_exact_contents_and_private_isolation() {
-    cases("guided_group_defaults_formats", true, |root, exe| {
-        for (format, filename) in [
-            ("toml", CONFIG_FILES[0]),
-            ("yaml", CONFIG_FILES[1]),
-            ("json", CONFIG_FILES[3]),
-        ] {
-            let repo = Repository::new(root);
-            let private = repo.path().join(".git/twigsmith.config.toml");
-            fs::write(&private, "publish-remote='private'\nsave-plan=['stash:all']\nfinish-update='none'\nfinish-rewrite='deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
-            let before = snapshot(&repo.path().join(".git"));
-            let mut term =
-                terminal::Terminal::start(exe, repo.path(), &["config", "--format", format]);
-            default_journey(&mut term);
-            assert!(!repo.path().join(filename).exists());
-            assert!(
-                term.output
-                    .contains("Work is published to private. New work starts from private/main.")
-            );
-            assert!(term.output.contains("Private overrides in"));
-            assert!(
-                term.output
-                    .contains("finish checks replace the shared list")
-            );
-            assert!(!term.output.contains("Exact shared contents"));
-            assert!(!term.output.contains("private-check"));
-            term.send(b"contents\n");
-            term.until("Exact shared contents");
-            term.until("finish-checks");
-            assert!(!repo.path().join(filename).exists());
-            term.send(b"yes\n");
-            assert!(term.finish().success(), "{}", term.output);
-            let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
-            assert!(!contents.contains("private"));
-            assert!(!contents.contains("redact-credentials"));
-            assert!(term.output.replace('\r', "").contains(&contents));
-            assert_eq!(term.output.matches("Private overrides in").count(), 1);
-            assert_eq!(snapshot(&repo.path().join(".git")), before);
-            let effective = load(repo.path());
-            assert_eq!(effective.publish_remote, "private");
-            assert_eq!(
-                effective.save_plan,
-                SavePlan::parse(&["stash:all".into()]).unwrap()
-            );
-            assert_eq!(effective.finish_update, FinishUpdate::None);
-            assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
-            fs::remove_file(private).unwrap();
-            assert_defaults(repo.path(), filename);
-        }
-    });
+    cases(
+        "guided_group_defaults_formats_exact_contents_and_private_isolation",
+        true,
+        |root, exe| {
+            for (format, filename) in [
+                ("toml", CONFIG_FILES[0]),
+                ("yaml", CONFIG_FILES[1]),
+                ("json", CONFIG_FILES[3]),
+            ] {
+                let repo = Repository::new(root);
+                let private = repo.path().join(".git/twigsmith.config.toml");
+                fs::write(&private, "publish-remote='private'\nsave-plan=['stash:all']\nfinish-update='none'\nfinish-rewrite='deny'\n[[finish-checks]]\nname='Private tests'\ncommand=['private-check','']\n").unwrap();
+                let before = snapshot(&repo.path().join(".git"));
+                let mut term =
+                    terminal::Terminal::start(exe, repo.path(), &["config", "--format", format]);
+                default_journey(&mut term);
+                assert!(!repo.path().join(filename).exists());
+                assert!(
+                    term.output.contains(
+                        "Work is published to private. New work starts from private/main."
+                    )
+                );
+                assert!(term.output.contains("Private overrides in"));
+                assert!(
+                    term.output
+                        .contains("finish checks replace the shared list")
+                );
+                assert!(!term.output.contains("Exact shared contents"));
+                assert!(!term.output.contains("private-check"));
+                term.send(b"contents\n");
+                term.until("Exact shared contents");
+                term.until("finish-checks");
+                assert!(!repo.path().join(filename).exists());
+                term.send(b"yes\n");
+                assert!(term.finish().success(), "{}", term.output);
+                let contents = fs::read_to_string(repo.path().join(filename)).unwrap();
+                assert!(!contents.contains("private"));
+                assert!(!contents.contains("redact-credentials"));
+                assert!(term.output.replace('\r', "").contains(&contents));
+                assert_eq!(term.output.matches("Private overrides in").count(), 1);
+                assert_eq!(snapshot(&repo.path().join(".git")), before);
+                let effective = load(repo.path());
+                assert_eq!(effective.publish_remote, "private");
+                assert_eq!(
+                    effective.save_plan,
+                    SavePlan::parse(&["stash:all".into()]).unwrap()
+                );
+                assert_eq!(effective.finish_update, FinishUpdate::None);
+                assert_eq!(effective.finish_rewrite, FinishRewrite::Deny);
+                fs::remove_file(private).unwrap();
+                assert_defaults(repo.path(), filename);
+            }
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_custom_direct_preferences_and_earlier_correction() {
-    cases("guided_custom_direct_preferences", true, |root, exe| {
-        let repo = Repository::new(root);
-        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-        term.until("Remote receiving work");
-        term.send("future-remote\nupstream\nfeature/β\nedit\ncommit:staged,commit:unstaged\n\n\nedit\nintegrate\nrebase\nallow\nsquash\nauto\nwork\nboth\nedit\ninteractive\nkeep\n".as_bytes());
-        term.until("Create this file?");
-        term.send(b"repository\n\nfuture-project\nfuture/base\nyes\n");
-        assert!(term.finish().success(), "{}", term.output);
-        let value = load(repo.path());
-        assert_eq!(value.publish_remote, "future-remote");
-        assert_eq!(value.base_remote, "future-project");
-        assert_eq!(value.base, "future/base");
-        assert_eq!(
-            value.save_plan,
-            SavePlan::parse(&["commit:staged".into(), "commit:unstaged".into()]).unwrap()
-        );
-        assert_eq!(value.finish_mode, settings::FinishMode::Integrate);
-        assert_eq!(value.finish_update, FinishUpdate::Rebase);
-        assert_eq!(value.finish_rewrite, FinishRewrite::Allow);
-        assert_eq!(value.history_edit, settings::HistoryEdit::Interactive);
-        assert_eq!(
-            value.finish_integration,
-            settings::FinishIntegration::Squash
-        );
-        assert_eq!(value.finish_message, settings::FinishMessage::Auto);
-        assert_eq!(value.finish_checkout, settings::FinishCheckout::Work);
-        assert_eq!(value.finish_cleanup, settings::FinishCleanup::Both);
-    });
+    cases(
+        "guided_custom_direct_preferences_and_earlier_correction",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"\n");
+            term.until("Remote receiving work");
+            term.send("future-remote\nupstream\nfeature/β\nedit\ncommit:staged,commit:unstaged\n\n\nedit\nintegrate\nrebase\nallow\nsquash\nauto\nwork\nboth\nedit\ninteractive\nkeep\n".as_bytes());
+            term.until("Create this file?");
+            term.send(b"repository\n\nfuture-project\nfuture/base\nyes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            let value = load(repo.path());
+            assert_eq!(value.publish_remote, "future-remote");
+            assert_eq!(value.base_remote, "future-project");
+            assert_eq!(value.base, "future/base");
+            assert_eq!(
+                value.save_plan,
+                SavePlan::parse(&["commit:staged".into(), "commit:unstaged".into()]).unwrap()
+            );
+            assert_eq!(value.finish_mode, settings::FinishMode::Integrate);
+            assert_eq!(value.finish_update, FinishUpdate::Rebase);
+            assert_eq!(value.finish_rewrite, FinishRewrite::Allow);
+            assert_eq!(value.history_edit, settings::HistoryEdit::Interactive);
+            assert_eq!(
+                value.finish_integration,
+                settings::FinishIntegration::Squash
+            );
+            assert_eq!(value.finish_message, settings::FinishMessage::Auto);
+            assert_eq!(value.finish_checkout, settings::FinishCheckout::Work);
+            assert_eq!(value.finish_cleanup, settings::FinishCleanup::Both);
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_review_skips_inactive_delivery_choices_and_ff_skips_message() {
-    cases("guided_review_skips_inactive", true, |root, exe| {
-        for review in [true, false] {
-            let repo = Repository::new(root);
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            term.until("Remote receiving work");
-            term.send(if review {
+    cases(
+        "guided_review_skips_inactive_delivery_choices_and_ff_skips_message",
+        true,
+        |root, exe| {
+            for review in [true, false] {
+                let repo = Repository::new(root);
+                let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                term.until("Settings bundle:");
+                term.send(b"\n");
+                term.until("Remote receiving work");
+                term.send(if review {
                 b"\n\n\nkeep\nedit\nreview\nmerge\ndeny\nkeep\nkeep\nyes\n"
             } else {
                 b"\n\n\nkeep\nedit\nintegrate\nnone\ndeny\nff-only\ntarget\nkeep\nkeep\nkeep\nyes\n"
             });
-            assert!(term.finish().success(), "{}", term.output);
-            assert_eq!(
-                term.output.contains("How should work enter the target?"),
-                !review
-            );
-            assert!(!term.output.contains("Integration commit message:"));
-            assert_eq!(
-                term.output.contains("Work branches after direct delivery:"),
-                !review
-            );
-            let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
-            assert!(!contents.contains("finish-message"));
-            if review {
-                assert!(!contents.contains("finish-integration"));
+                assert!(term.finish().success(), "{}", term.output);
+                assert_eq!(
+                    term.output.contains("How should work enter the target?"),
+                    !review
+                );
+                assert!(!term.output.contains("Integration commit message:"));
+                assert_eq!(
+                    term.output.contains("Work branches after direct delivery:"),
+                    !review
+                );
+                let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
+                assert!(!contents.contains("finish-message"));
+                if review {
+                    assert!(!contents.contains("finish-integration"));
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_invalid_input_correctable_and_creation_explicit() {
-    cases("guided_invalid_input_correctable", true, |root, exe| {
-        let repo = Repository::new(root);
-        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-        term.until("Remote receiving work");
-        term.send(b"bad remote\n");
-        term.until("Use a named Git remote");
-        term.send(b"follow\nbad remote\n\nHEAD\ntrunk\ninvalid\nkeep\nkeep\nkeep\ny\n");
-        term.until("Create this file?");
-        term.until("Enter a listed number");
-        assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-        term.send(b"yes\n");
-        assert!(term.finish().success(), "{}", term.output);
-        assert_eq!(load(repo.path()).publish_remote, "follow");
-        assert_eq!(load(repo.path()).base_remote, "follow");
-        assert_eq!(load(repo.path()).base, "trunk");
-    });
+    cases(
+        "guided_invalid_input_correctable_and_creation_explicit",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"\n");
+            term.until("Remote receiving work");
+            term.send(b"bad remote\n");
+            term.until("Use a named Git remote");
+            term.send(b"follow\nbad remote\n\nHEAD\ntrunk\ninvalid\nkeep\nkeep\nkeep\ny\n");
+            term.until("Create this file?");
+            term.until("Choose a listed name or number");
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            term.send(b"yes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(load(repo.path()).publish_remote, "follow");
+            assert_eq!(load(repo.path()).base_remote, "follow");
+            assert_eq!(load(repo.path()).base, "trunk");
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_cancellation_at_group_and_literal_entry_preserves_repository() {
-    cases("guided_cancellation_at_group", true, |root, exe| {
-        for (answers, prompt) in [
-            ("", "Remote receiving work"),
-            ("\n", "Project source remote"),
-            ("\n\n", "Project base branch"),
-            ("\n\n\n", "Saving preferences:"),
-            ("\n\n\nedit\n", "When saving uncommitted work:"),
-            ("\n\n\nkeep\n", "Finishing preferences:"),
-            (
-                "\n\n\nkeep\nedit\n",
-                "How should finished work be delivered?",
-            ),
-            ("\n\n\nkeep\nkeep\n", "Finish checks:"),
-            ("\n\n\nkeep\nkeep\nadd\n", "Check display name:"),
-            ("\n\n\nkeep\nkeep\nadd\nTests\n", "Executable name or path:"),
-            (
-                "\n\n\nkeep\nkeep\nadd\nTests\ncargo\nadd\n",
-                "Literal argument",
-            ),
-            ("\n\n\nkeep\nkeep\nkeep\n", "Create this file?"),
-        ] {
+    cases(
+        "guided_cancellation_at_group_and_literal_entry_preserves_repository",
+        true,
+        |root, exe| {
+            for (answers, prompt) in [
+                ("", "Remote receiving work"),
+                ("\n", "Project source remote"),
+                ("\n\n", "Project base branch"),
+                ("\n\n\n", "Saving preferences:"),
+                ("\n\n\nedit\n", "When saving uncommitted work:"),
+                ("\n\n\nkeep\n", "Finishing preferences:"),
+                (
+                    "\n\n\nkeep\nedit\n",
+                    "How should finished work be delivered?",
+                ),
+                ("\n\n\nkeep\nkeep\n", "Finish checks:"),
+                ("\n\n\nkeep\nkeep\nadd\n", "Check display name:"),
+                ("\n\n\nkeep\nkeep\nadd\nTests\n", "Executable name or path:"),
+                (
+                    "\n\n\nkeep\nkeep\nadd\nTests\ncargo\nadd\n",
+                    "Literal argument",
+                ),
+                ("\n\n\nkeep\nkeep\nkeep\n", "Create this file?"),
+            ] {
+                let repo = Repository::new(root);
+                let before = snapshot(repo.path());
+                let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                term.until("Settings bundle:");
+                term.send(b"\n");
+                term.until("Remote receiving work");
+                term.send(answers.as_bytes());
+                term.until(prompt);
+                term.send(b"\x04");
+                assert!(term.finish().success(), "{}", term.output);
+                assert!(term.output.contains("Setup cancelled"));
+                assert_eq!(snapshot(repo.path()), before);
+            }
             let repo = Repository::new(root);
             let before = snapshot(repo.path());
             let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"\n");
             term.until("Remote receiving work");
-            term.send(answers.as_bytes());
-            term.until(prompt);
-            term.send(b"\x04");
-            assert!(term.finish().success(), "{}", term.output);
-            assert!(term.output.contains("Setup cancelled"));
+            term.interrupt();
+            assert!(!term.finish().success());
             assert_eq!(snapshot(repo.path()), before);
-        }
-        let repo = Repository::new(root);
-        let before = snapshot(repo.path());
-        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-        term.until("Remote receiving work");
-        term.interrupt();
-        assert!(!term.finish().success());
-        assert_eq!(snapshot(repo.path()), before);
-        for answer in [b"\n".as_slice(), b"no\n", b"cancel\n"] {
-            let repo = Repository::new(root);
-            let before = snapshot(repo.path());
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            default_journey(&mut term);
-            term.send(answer);
-            assert!(term.finish().success(), "{}", term.output);
-            assert_eq!(snapshot(repo.path()), before);
-        }
-    });
+            for answer in [b"\n".as_slice(), b"no\n", b"cancel\n"] {
+                let repo = Repository::new(root);
+                let before = snapshot(repo.path());
+                let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                default_journey(&mut term);
+                term.send(answer);
+                assert!(term.finish().success(), "{}", term.output);
+                assert_eq!(snapshot(repo.path()), before);
+            }
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_literal_checks_order_empty_arguments_and_private_replacement() {
-    cases("guided_literal_checks_order", true, |root, exe| {
-        for replacement in [false, true] {
-            let repo = Repository::new(root);
-            if replacement {
-                fs::write(
-                    repo.path().join(".git/twigsmith.config.toml"),
-                    "finish-checks=[]\n",
-                )
-                .unwrap();
+    cases(
+        "guided_literal_checks_order_empty_arguments_and_private_replacement",
+        true,
+        |root, exe| {
+            for replacement in [false, true] {
+                let repo = Repository::new(root);
+                if replacement {
+                    fs::write(
+                        repo.path().join(".git/twigsmith.config.toml"),
+                        "finish-checks=[]\n",
+                    )
+                    .unwrap();
+                }
+                let before = snapshot(&repo.path().join(".git"));
+                let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                term.until("Settings bundle:");
+                term.send(b"\n");
+                term.until("Remote receiving work");
+                term.send(b"\n\n\nkeep\nkeep\nadd\n   \nTests\n\n/offline/executable\nadd\n\nadd\ncancel\nadd\n$(touch NEVER)\ndone\nadd\nSecond\ncancel\nadd\nspace argument\ndone\nkeep\nchecks\nedit\n1\nexecutable\n/offline/edited\ndone\nkeep\nyes\n");
+                assert!(term.finish().success(), "{}", term.output);
+                assert!(term.output.contains("Use a nonblank display name"));
+                assert!(term.output.contains("Use a nonempty executable"));
+                assert_eq!(snapshot(&repo.path().join(".git")), before);
+                let expected = vec![
+                    settings::FinishCheck {
+                        name: "Tests".into(),
+                        command: vec![
+                            "/offline/edited".into(),
+                            "".into(),
+                            "cancel".into(),
+                            "$(touch NEVER)".into(),
+                        ],
+                    },
+                    settings::FinishCheck {
+                        name: "Second".into(),
+                        command: vec!["cancel".into(), "space argument".into()],
+                    },
+                ];
+                let effective = load(repo.path());
+                if replacement {
+                    assert!(effective.finish_checks.is_empty());
+                    assert!(
+                        term.output
+                            .contains("finish checks replace the shared list")
+                    );
+                    fs::remove_file(repo.path().join(".git/twigsmith.config.toml")).unwrap();
+                }
+                assert_eq!(load(repo.path()).finish_checks, expected);
+                assert!(!repo.path().join("NEVER").exists());
             }
-            let before = snapshot(&repo.path().join(".git"));
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            term.until("Remote receiving work");
-            term.send(b"\n\n\nkeep\nkeep\nadd\n   \nTests\n\n/offline/executable\nadd\n\nadd\ncancel\nadd\n$(touch NEVER)\ndone\nadd\nSecond\ncancel\nadd\nspace argument\ndone\nkeep\nchecks\nedit\n1\nexecutable\n/offline/edited\ndone\nkeep\nyes\n");
-            assert!(term.finish().success(), "{}", term.output);
-            assert!(term.output.contains("Use a nonblank display name"));
-            assert!(term.output.contains("Use a nonempty executable"));
-            assert_eq!(snapshot(&repo.path().join(".git")), before);
-            let expected = vec![
-                settings::FinishCheck {
-                    name: "Tests".into(),
-                    command: vec![
-                        "/offline/edited".into(),
-                        "".into(),
-                        "cancel".into(),
-                        "$(touch NEVER)".into(),
-                    ],
-                },
-                settings::FinishCheck {
-                    name: "Second".into(),
-                    command: vec!["cancel".into(), "space argument".into()],
-                },
-            ];
-            let effective = load(repo.path());
-            if replacement {
-                assert!(effective.finish_checks.is_empty());
-                assert!(
-                    term.output
-                        .contains("finish checks replace the shared list")
-                );
-                fs::remove_file(repo.path().join(".git/twigsmith.config.toml")).unwrap();
-            }
-            assert_eq!(load(repo.path()).finish_checks, expected);
-            assert!(!repo.path().join("NEVER").exists());
-        }
-    });
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_bundle_structured_edit_and_relationship_correction() {
-    cases("guided_bundle_structured_edit", true, |root, exe| {
-        for hosted in [false, true] {
-            let repo = Repository::new(root);
-            let mut term = terminal::Terminal::start(
-                exe,
-                repo.path(),
-                &[
-                    "config",
-                    if hosted {
-                        "--oneflow-hosted"
-                    } else {
-                        "--oneflow"
-                    },
-                ],
-            );
-            term.until("Remote receiving work");
-            term.send(b"\n\n\nkeep\nkeep\nkeep\nedit\ncreation-source\nset\nfuture/base\ndone\nedit\nrelease-marker\nset\nmain\ndone\n");
-            term.until("preferences need correction:");
-            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-            term.send(if hosted { b"release-marker\nset\nstable\nreview-remote\nset\nfuture-fork\nmerge-back-branch\nset\nreview/version\ndone\nkeep\nyes\n" } else { b"release-marker\nset\nstable\nintegration-targets\nset\nadd\nmain\nadd\nstable/base\ndone\ndone\nkeep\nyes\n" });
-            assert!(term.finish().success(), "{}", term.output);
-            let value = load(repo.path());
-            assert_eq!(
-                value.workstreams[&settings::WorkstreamKind::Ordinary]
-                    .creation_source
-                    .as_deref(),
-                Some("future/base")
-            );
-            let release = &value.workstreams[&settings::WorkstreamKind::Release];
-            assert_eq!(release.release_marker.as_deref(), Some("stable"));
-            if hosted {
-                assert_eq!(release.review_remote.as_deref(), Some("future-fork"));
-                assert_eq!(release.merge_back_branch.as_deref(), Some("review/version"));
-            } else {
-                assert!(release.integration_target.is_none());
-                assert_eq!(
-                    release.integration_targets,
-                    Some(vec!["main".into(), "stable/base".into()])
+    cases(
+        "guided_bundle_structured_edit_and_relationship_correction",
+        true,
+        |root, exe| {
+            for hosted in [false, true] {
+                let repo = Repository::new(root);
+                let mut term = terminal::Terminal::start(
+                    exe,
+                    repo.path(),
+                    &[
+                        "config",
+                        if hosted {
+                            "--oneflow-hosted"
+                        } else {
+                            "--oneflow"
+                        },
+                    ],
                 );
+                term.until("Remote receiving work"); // explicit bundle skips selection
+                term.send(b"\n\n\nkeep\nkeep\nkeep\nedit\ncreation-source\nset\nfuture/base\ndone\nedit\nrelease-marker\nset\nmain\ndone\n");
+                term.until("preferences need correction:");
+                assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+                term.send(if hosted { b"release-marker\nset\nstable\nreview-remote\nset\nfuture-fork\nmerge-back-branch\nset\nreview/version\ndone\nkeep\nyes\n" } else { b"release-marker\nset\nstable\nintegration-targets\nset\nadd\nmain\nadd\nstable/base\ndone\ndone\nkeep\nyes\n" });
+                assert!(term.finish().success(), "{}", term.output);
+                let value = load(repo.path());
+                assert_eq!(
+                    value.workstreams[&settings::WorkstreamKind::Ordinary]
+                        .creation_source
+                        .as_deref(),
+                    Some("future/base")
+                );
+                let release = &value.workstreams[&settings::WorkstreamKind::Release];
+                assert_eq!(release.release_marker.as_deref(), Some("stable"));
+                if hosted {
+                    assert_eq!(release.review_remote.as_deref(), Some("future-fork"));
+                    assert_eq!(release.merge_back_branch.as_deref(), Some("review/version"));
+                } else {
+                    assert!(release.integration_target.is_none());
+                    assert_eq!(
+                        release.integration_targets,
+                        Some(vec!["main".into(), "stable/base".into()])
+                    );
+                }
             }
-        }
-    });
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_private_only_policy_audit_and_changed_override_review() {
-    cases("guided_private_only_policy_audit", true, |root, exe| {
-        let repo = Repository::new(root);
-        fs::write(repo.path().join(".git/twigsmith.config.toml"), "save-plan=['stash:all']\n[workstreams.release]\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nrelease-marker='stable'\n").unwrap();
-        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-        term.until("Remote receiving work");
-        term.send(b"\n\nstable\nkeep\nkeep\nkeep\n");
-        term.until("preferences need correction:");
-        term.send(b"integration-target\nset\nfuture/base\ndone\n");
-        term.until("Create this file?");
-        assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-        term.send(b"save\nedit\nstash\nsave\nedit\nwip\nyes\n");
-        assert!(term.finish().success(), "{}", term.output);
-        assert_eq!(term.output.matches("saving: Keep a local stash").count(), 2);
-        let generated = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
-        assert!(generated.contains("future/base"));
-        assert!(!generated.contains("version-tagging"));
-        assert_eq!(
-            load(repo.path()).save_plan,
-            SavePlan::parse(&["stash:all".into()]).unwrap()
-        );
-    });
+    cases(
+        "guided_private_only_policy_audit_and_changed_override_review",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            fs::write(repo.path().join(".git/twigsmith.config.toml"), "save-plan=['stash:all']\n[workstreams.release]\nversion-tagging='required'\nfinish-mode='integrate'\nfinish-update='none'\nrelease-marker='stable'\n").unwrap();
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"\n");
+            term.until("Remote receiving work");
+            term.send(b"\n\nstable\nkeep\nkeep\nkeep\n");
+            term.until("preferences need correction:");
+            term.send(b"integration-target\nset\nfuture/base\ndone\n");
+            term.until("Create this file?");
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            term.send(b"save\nedit\nstash:all\n\n\nsave\nedit\ncommit:all\n\n\nyes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(term.output.matches("saving: stash:all").count(), 2);
+            let generated = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
+            assert!(generated.contains("future/base"));
+            assert!(!generated.contains("version-tagging"));
+            assert_eq!(
+                load(repo.path()).save_plan,
+                SavePlan::parse(&["stash:all".into()]).unwrap()
+            );
+        },
+    );
 }
 
 #[test]
 fn local_branch_hints_invert_fetch_mappings_and_omit_ambiguity() {
-    isolated("local_branch_hints", true, |root| {
-        let repo = Repository::new(root);
-        commit(&repo);
-        repo.success(&["branch", "local/β;$"]);
-        repo.success(&["remote", "add", "project", "/offline"]);
-        repo.success(&["config", "--unset-all", "remote.project.fetch"]);
-        for mapping in [
-            "+refs/heads/topic/*:refs/cache/project/*",
-            "refs/heads/fixed:refs/cache/exact",
-            "^refs/heads/topic/hidden",
-            "refs/heads/first/*:refs/cache/ambiguous/*",
-            "refs/heads/second/*:refs/cache/ambiguous/*",
-        ] {
-            repo.success(&["config", "--add", "remote.project.fetch", mapping]);
-        }
-        for reference in [
-            "refs/cache/project/β;$",
-            "refs/cache/project/hidden",
-            "refs/cache/exact",
-            "refs/cache/ambiguous/value",
-            "refs/remotes/other/nope",
-        ] {
-            repo.success(&["update-ref", reference, "HEAD"]);
-        }
-        repo.success(&[
-            "symbolic-ref",
-            "refs/cache/project/HEAD",
-            "refs/cache/project/β;$",
-        ]);
-        let before = snapshot(repo.path());
-        let plan = config::prepare_guided(repo.path(), Format::Toml).unwrap();
-        assert_eq!(plan.review().remote_suggestions(), ["project"]);
-        assert_eq!(
-            plan.review().branch_suggestions("project"),
-            ["fixed", "local/β;$", "main", "topic/β;$"]
-        );
-        assert_eq!(
-            plan.review().branch_suggestions("future"),
-            ["local/β;$", "main"]
-        );
-        assert_eq!(snapshot(repo.path()), before);
-    });
+    isolated(
+        "local_branch_hints_invert_fetch_mappings_and_omit_ambiguity",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            commit(&repo);
+            repo.success(&["branch", "local/β;$"]);
+            repo.success(&["remote", "add", "project", "/offline"]);
+            repo.success(&["config", "--unset-all", "remote.project.fetch"]);
+            for mapping in [
+                "+refs/heads/topic/*:refs/cache/project/*",
+                "refs/heads/fixed:refs/cache/exact",
+                "^refs/heads/topic/hidden",
+                "refs/heads/first/*:refs/cache/ambiguous/*",
+                "refs/heads/second/*:refs/cache/ambiguous/*",
+            ] {
+                repo.success(&["config", "--add", "remote.project.fetch", mapping]);
+            }
+            for reference in [
+                "refs/cache/project/β;$",
+                "refs/cache/project/hidden",
+                "refs/cache/exact",
+                "refs/cache/ambiguous/value",
+                "refs/remotes/other/nope",
+            ] {
+                repo.success(&["update-ref", reference, "HEAD"]);
+            }
+            repo.success(&[
+                "symbolic-ref",
+                "refs/cache/project/HEAD",
+                "refs/cache/project/β;$",
+            ]);
+            let before = snapshot(repo.path());
+            let plan = config::prepare_guided(repo.path(), Format::Toml).unwrap();
+            assert_eq!(plan.review().remote_suggestions(), ["project"]);
+            assert_eq!(
+                plan.review().branch_suggestions("project"),
+                ["fixed", "local/β;$", "main", "topic/β;$"]
+            );
+            assert_eq!(
+                plan.review().branch_suggestions("future"),
+                ["local/β;$", "main"]
+            );
+            assert_eq!(snapshot(repo.path()), before);
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_remote_roles_keep_literal_names_and_sparse_follow_relationship() {
-    cases("guided_remote_roles_sparse_follow", true, |root, exe| {
-        for (project, expected, follows) in [
-            ("work", "private", true),
-            ("follow", "follow", false),
-            ("cancel", "cancel", false),
-        ] {
-            let repo = Repository::new(root);
-            fs::write(
-                repo.path().join(".git/twigsmith.config.toml"),
-                "publish-remote='private'\n",
-            )
-            .unwrap();
-            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-            term.until("Remote receiving work");
-            term.send(format!("work\n{project}\ncancel\nkeep\nkeep\nkeep\nyes\n").as_bytes());
-            assert!(term.finish().success(), "{}", term.output);
-            assert_eq!(load(repo.path()).base_remote, expected);
-            assert_eq!(load(repo.path()).base, "cancel");
-            let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
-            assert_eq!(contents.contains("base-remote"), !follows);
-            fs::remove_file(repo.path().join(".git/twigsmith.config.toml")).unwrap();
-            assert_eq!(
-                load(repo.path()).base_remote,
-                if follows { "work" } else { project }
-            );
-        }
-    });
+    cases(
+        "guided_remote_roles_keep_literal_names_and_sparse_follow_relationship",
+        true,
+        |root, exe| {
+            for (project, expected, follows) in [
+                ("work", "private", true),
+                ("follow", "follow", false),
+                ("cancel", "cancel", false),
+            ] {
+                let repo = Repository::new(root);
+                fs::write(
+                    repo.path().join(".git/twigsmith.config.toml"),
+                    "publish-remote='private'\n",
+                )
+                .unwrap();
+                let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+                term.until("Settings bundle:");
+                term.send(b"\n");
+                term.until("Remote receiving work");
+                term.send(format!("work\n{project}\ncancel\nkeep\nkeep\nkeep\nyes\n").as_bytes());
+                assert!(term.finish().success(), "{}", term.output);
+                assert_eq!(load(repo.path()).base_remote, expected);
+                assert_eq!(load(repo.path()).base, "cancel");
+                let contents = fs::read_to_string(repo.path().join(CONFIG_FILES[0])).unwrap();
+                assert_eq!(contents.contains("base-remote"), !follows);
+                fs::remove_file(repo.path().join(".git/twigsmith.config.toml")).unwrap();
+                assert_eq!(
+                    load(repo.path()).base_remote,
+                    if follows { "work" } else { project }
+                );
+            }
+        },
+    );
 }
 
 #[test]
 fn generation_audits_composable_plans_and_labels_in_all_formats() {
-    isolated("generation_audits_composable_plans", true, |root| {
-        let repo = Repository::new(root);
-        for format in [Format::Toml, Format::Yaml, Format::Json] {
-            let mut plan = config::prepare(repo.path(), format).unwrap();
-            plan.proposed.save_plan =
-                SavePlan::parse(&["stash:staged".into(), "commit:unstaged".into()]).unwrap();
-            plan.proposed.save_message = "Literal $message `text`".into();
-            plan.proposed.save_stash_message = "Local work".into();
-            config::generate(repo.path(), &plan).unwrap();
-            let loaded = load(repo.path());
-            assert_eq!(loaded.save_plan, plan.proposed.save_plan);
-            assert_eq!(loaded.save_message, plan.proposed.save_message);
-            assert_eq!(loaded.save_stash_message, plan.proposed.save_stash_message);
-            fs::remove_file(repo.path().join(format.filename())).unwrap();
-            let step = settings::SaveOperation {
-                action: settings::SaveKind::Commit,
-                scope: settings::SaveScope::Staged,
-            };
-            plan.proposed.save_plan = SavePlan::Operations(vec![step, step]);
-            assert!(config::generate(repo.path(), &plan).is_err());
-            assert!(!plan.destination().exists());
-            plan.proposed.save_plan = SavePlan::Ask;
-            plan.proposed.save_message = " \t".into();
-            assert!(config::generate(repo.path(), &plan).is_err());
-            assert!(!plan.destination().exists());
-        }
-    });
+    isolated(
+        "generation_audits_composable_plans_and_labels_in_all_formats",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            for format in [Format::Toml, Format::Yaml, Format::Json] {
+                let mut plan = config::prepare(repo.path(), format).unwrap();
+                plan.proposed.save_plan =
+                    SavePlan::parse(&["stash:staged".into(), "commit:unstaged".into()]).unwrap();
+                plan.proposed.save_message = "Literal $message `text`".into();
+                plan.proposed.save_stash_message = "Local work".into();
+                config::generate(repo.path(), &plan).unwrap();
+                let loaded = load(repo.path());
+                assert_eq!(loaded.save_plan, plan.proposed.save_plan);
+                assert_eq!(loaded.save_message, plan.proposed.save_message);
+                assert_eq!(loaded.save_stash_message, plan.proposed.save_stash_message);
+                fs::remove_file(repo.path().join(format.filename())).unwrap();
+                let step = settings::SaveOperation {
+                    action: settings::SaveKind::Commit,
+                    scope: settings::SaveScope::Staged,
+                };
+                plan.proposed.save_plan = SavePlan::Operations(vec![step, step]);
+                assert!(config::generate(repo.path(), &plan).is_err());
+                assert!(!plan.destination().exists());
+                plan.proposed.save_plan = SavePlan::Ask;
+                plan.proposed.save_message = " \t".into();
+                assert!(config::generate(repo.path(), &plan).is_err());
+                assert!(!plan.destination().exists());
+            }
+        },
+    );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn guided_save_plan_and_literal_labels_remain_correctable() {
-    cases("guided_save_plan_and_literal_labels", true, |root, exe| {
-        let repo = Repository::new(root);
-        let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
-        term.until("Remote receiving work");
-        term.send(b"\n\n\nedit\ncustom\ncommit:all,stash:staged\ncustom\nstash:staged,commit:unstaged\n \nLiteral $message `text`\nLocal $label\nkeep\nkeep\n");
-        term.until("Create this file?");
-        assert!(
-            term.output.contains("repeats or overlaps"),
-            "{}",
-            term.output
-        );
-        assert!(term.output.contains("must be nonblank"), "{}", term.output);
-        assert!(!repo.path().join(CONFIG_FILES[0]).exists());
-        term.send(b"yes\n");
-        assert!(term.finish().success(), "{}", term.output);
-        let loaded = load(repo.path());
-        assert_eq!(
-            loaded.save_plan,
-            SavePlan::parse(&["stash:staged".into(), "commit:unstaged".into()]).unwrap()
-        );
-        assert_eq!(loaded.save_message, "Literal $message `text`");
-        assert_eq!(loaded.save_stash_message, "Local $label");
-    });
+    cases(
+        "guided_save_plan_and_literal_labels_remain_correctable",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"\n");
+            term.until("Remote receiving work");
+            term.send(b"\n\n\nedit\ncustom\ncommit:all,stash:staged\ncustom\nstash:staged,commit:unstaged\n \nLiteral $message `text`\nLocal $label\nkeep\nkeep\n");
+            term.until("Create this file?");
+            assert!(
+                term.output.contains("repeats or overlaps"),
+                "{}",
+                term.output
+            );
+            assert!(term.output.contains("must be nonblank"), "{}", term.output);
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            term.send(b"yes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            let loaded = load(repo.path());
+            assert_eq!(
+                loaded.save_plan,
+                SavePlan::parse(&["stash:staged".into(), "commit:unstaged".into()]).unwrap()
+            );
+            assert_eq!(loaded.save_message, "Literal $message `text`");
+            assert_eq!(loaded.save_stash_message, "Local $label");
+        },
+    );
+}
+
+#[test]
+fn selected_bundles_roles_round_trip_every_format_without_git_mutation() {
+    use settings::{FinishMode, WorkstreamKind};
+    cases(
+        "selected_bundles_roles_round_trip_every_format_without_git_mutation",
+        true,
+        |root, exe| {
+            for bundle in ["github-flow", "gitflow"] {
+                for (format, filename) in [
+                    ("toml", CONFIG_FILES[0]),
+                    ("yaml", CONFIG_FILES[1]),
+                    ("json", CONFIG_FILES[3]),
+                ] {
+                    let repo = Repository::new(root);
+                    let before = snapshot(&repo.path().join(".git"));
+                    let mut args = vec![
+                        "config",
+                        "--yes",
+                        "--bundle",
+                        bundle,
+                        "--format",
+                        format,
+                        "--base",
+                        "integration/β",
+                        "--publish-remote",
+                        "fork",
+                        "--base-remote",
+                        "project",
+                    ];
+                    if bundle == "gitflow" {
+                        args.extend([
+                            "--production",
+                            "production/stable",
+                            "--active-release",
+                            "release/current",
+                        ]);
+                    }
+                    check(run(exe, repo.path(), &args), 0, &[filename]);
+                    assert_eq!(snapshot(&repo.path().join(".git")), before);
+                    let value = load(repo.path());
+                    assert_eq!(value.base, "integration/β");
+                    assert_eq!(value.publish_remote, "fork");
+                    assert_eq!(value.base_remote, "project");
+                    assert_eq!(value.save_plan, Settings::default().save_plan);
+                    let mut ordinary = value.clone();
+                    settings::resolve_workstream(&mut ordinary, WorkstreamKind::Ordinary, None)
+                        .unwrap();
+                    assert_eq!(
+                        ordinary.finish_mode,
+                        if bundle == "github-flow" {
+                            FinishMode::Review
+                        } else {
+                            FinishMode::Integrate
+                        }
+                    );
+                    assert_eq!(
+                        ordinary.workstream.unwrap().integration_targets,
+                        ["integration/β"]
+                    );
+                    if bundle == "github-flow" {
+                        assert_eq!(value.workstreams.len(), 1);
+                    } else {
+                        let mut hotfix = value;
+                        settings::resolve_workstream(&mut hotfix, WorkstreamKind::Hotfix, None)
+                            .unwrap();
+                        let route = hotfix.workstream.unwrap();
+                        assert_eq!(
+                            route.integration_targets,
+                            ["production/stable", "release/current"]
+                        );
+                        assert_eq!(route.active_release.as_deref(), Some("release/current"));
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn bundle_selection_and_role_errors_preserve_repository() {
+    cases(
+        "bundle_selection_and_role_errors_preserve_repository",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let before = snapshot(repo.path());
+            for tail in [
+                vec!["--bundle", "unknown"],
+                vec!["--bundle", "gitflow", "--bundle", "github-flow"],
+                vec!["--bundle", "github-flow", "--oneflow"],
+                vec!["--oneflow-hosted", "--bundle", "oneflow"],
+                vec!["--bundle", "github-flow", "--marker", "stable"],
+                vec!["--bundle", "gitflow", "--marker", "stable"],
+                vec!["--production", "production"],
+                vec!["--active-release", "release/x"],
+                vec!["--base", "main", "--base", "other"],
+            ] {
+                let mut args = vec!["config", "--yes"];
+                args.extend(tail);
+                check(run(exe, repo.path(), &args), 2, &["use config --help"]);
+                assert_eq!(snapshot(repo.path()), before);
+            }
+            for tail in [
+                vec!["--base", "HEAD"],
+                vec!["--publish-remote", "bad remote"],
+                vec!["--base-remote", "-bad"],
+                vec!["--bundle", "gitflow", "--production", "develop"],
+                vec!["--bundle", "gitflow", "--production", "HEAD"],
+                vec!["--bundle", "gitflow", "--active-release", "main"],
+                vec!["--bundle", "gitflow", "--active-release", "develop"],
+                vec!["--bundle", "gitflow", "--active-release", "bad branch"],
+            ] {
+                let mut args = vec!["config", "--yes"];
+                args.extend(tail);
+                check(run(exe, repo.path(), &args), 1, &["error:"]);
+                assert_eq!(snapshot(repo.path()), before);
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_gitflow_selection_custom_roles_and_shared_preferences_survive_private_layer() {
+    cases(
+        "guided_gitflow_selection_custom_roles_and_shared_preferences_survive_private_layer",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let private = repo.path().join(".git/twigsmith.config.toml");
+            fs::write(&private, "save-plan=['stash:all']\n").unwrap();
+            let before = snapshot(&repo.path().join(".git"));
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"gitflow\n");
+            term.until("Remote receiving work");
+            term.send(b"fork\nupstream\nteam/develop\nteam/main\nrelease/current\nedit\ncustom\ncommit:staged\nShared commit\nShared stash\nkeep\nadd\nTests\n/offline/check\ndone\nkeep\nkeep\nkeep\nkeep\n");
+            term.until("Create this file?");
+            assert!(term.output.contains("Private overrides in"));
+            assert!(!repo.path().join(CONFIG_FILES[0]).exists());
+            term.send(b"yes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(snapshot(&repo.path().join(".git")), before);
+            assert_eq!(load(repo.path()).save_plan.tokens(), ["stash:all"]);
+            fs::remove_file(private).unwrap();
+            let value = load(repo.path());
+            assert_eq!(value.save_plan.tokens(), ["commit:staged"]);
+            assert_eq!(value.save_message, "Shared commit");
+            assert_eq!(value.save_stash_message, "Shared stash");
+            assert_eq!(value.finish_checks[0].command, ["/offline/check"]);
+            assert_eq!(value.base, "team/develop");
+            assert_eq!(value.publish_remote, "fork");
+            assert_eq!(value.base_remote, "upstream");
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_bundle_selection_cancellation_preserves_repository() {
+    cases(
+        "guided_bundle_selection_cancellation_preserves_repository",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let before = snapshot(repo.path());
+            let mut term = terminal::Terminal::start(exe, repo.path(), &["config"]);
+            term.until("Settings bundle:");
+            term.send(b"cancel\n");
+            assert!(term.finish().success(), "{}", term.output);
+            assert_eq!(snapshot(repo.path()), before);
+        },
+    );
+}
+
+#[test]
+fn bundle_delivery_routes_and_aliases_round_trip_all_formats() {
+    cases(
+        "bundle_delivery_routes_and_aliases_round_trip_all_formats",
+        true,
+        |root, exe| {
+            for (bundle, delivery) in [
+                ("oneflow", "direct"),
+                ("oneflow", "review"),
+                ("oneflow-hosted", "review"),
+                ("github-flow", "review"),
+                ("gitflow", "direct"),
+                ("trunk", "direct"),
+                ("trunk", "review"),
+            ] {
+                for (format, filename) in [
+                    ("toml", CONFIG_FILES[0]),
+                    ("yaml", CONFIG_FILES[1]),
+                    ("json", CONFIG_FILES[3]),
+                ] {
+                    let repo = Repository::new(root);
+                    let before = snapshot(&repo.path().join(".git"));
+                    check(
+                        run(
+                            exe,
+                            repo.path(),
+                            &[
+                                "config",
+                                "--yes",
+                                "--bundle",
+                                bundle,
+                                "--delivery",
+                                delivery,
+                                "--format",
+                                format,
+                            ],
+                        ),
+                        0,
+                        &[filename],
+                    );
+                    assert_eq!(snapshot(&repo.path().join(".git")), before);
+                    let mut value = load(repo.path());
+                    assert_eq!(
+                        value.base,
+                        if bundle == "gitflow" {
+                            "develop"
+                        } else {
+                            "main"
+                        }
+                    );
+                    if bundle == "trunk" {
+                        assert_eq!(value.save_plan.tokens(), ["commit:staged"]);
+                    }
+                    settings::resolve_workstream(
+                        &mut value,
+                        settings::WorkstreamKind::Ordinary,
+                        None,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        value.finish_mode.as_str(),
+                        if delivery == "direct" {
+                            "integrate"
+                        } else {
+                            "review"
+                        }
+                    );
+                    assert_eq!(
+                        value.finish_checkout.as_str(),
+                        if delivery == "direct" {
+                            "target"
+                        } else {
+                            "work"
+                        }
+                    );
+                    assert_eq!(
+                        value.finish_cleanup.as_str(),
+                        if delivery == "direct" { "both" } else { "keep" }
+                    );
+                    if bundle == "trunk" {
+                        assert_eq!(value.finish_integration.as_str(), "ff-only");
+                    }
+                }
+            }
+            for (bundle, delivery, reason) in [
+                (
+                    "github-flow",
+                    "direct",
+                    "GitHub Flow supports review delivery",
+                ),
+                (
+                    "gitflow",
+                    "review",
+                    "GitFlow currently supports direct delivery",
+                ),
+            ] {
+                let repo = Repository::new(root);
+                let before = snapshot(repo.path());
+                check(
+                    run(
+                        exe,
+                        repo.path(),
+                        &[
+                            "config",
+                            "--bundle",
+                            bundle,
+                            "--delivery",
+                            delivery,
+                            "--yes",
+                        ],
+                    ),
+                    2,
+                    &[reason],
+                );
+                assert_eq!(snapshot(repo.path()), before);
+            }
+            for args in [
+                vec!["--delivery", "direct"],
+                vec!["--bundle", "trunk", "--delivery", "other"],
+                vec![
+                    "--bundle",
+                    "trunk",
+                    "--delivery",
+                    "direct",
+                    "--delivery",
+                    "review",
+                ],
+                vec!["--oneflow", "--delivery", "review"],
+                vec!["--oneflow-hosted", "--delivery", "direct"],
+            ] {
+                let repo = Repository::new(root);
+                let before = snapshot(repo.path());
+                let mut full = vec!["config", "--yes"];
+                full.extend(args);
+                check(run(exe, repo.path(), &full), 2, &["use config --help"]);
+                assert_eq!(snapshot(repo.path()), before);
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guided_trunk_route_customization_applies_before_save_and_finish_choices() {
+    cases(
+        "guided_trunk_route_customization_applies_before_save_and_finish_choices",
+        true,
+        |root, exe| {
+            let repo = Repository::new(root);
+            let mut term =
+                terminal::Terminal::start(exe, repo.path(), &["config", "--bundle", "trunk"]);
+            term.until("Delivery route:");
+            assert!(!term.output.contains("Settings bundle:"));
+            term.send(b"review\n");
+            term.until("Remote receiving work");
+            term.send(b"\n\n\nedit\nstash:all\nCustom commit\nCustom stash\nedit\nintegrate\nnone\ndeny\nff-only\nwork\nkeep\nkeep\nkeep\nkeep\nyes\n");
+            assert!(term.finish().success(), "{}", term.output);
+            let mut value = load(repo.path());
+            assert_eq!(value.save_plan.tokens(), ["stash:all"]);
+            assert_eq!(value.save_message, "Custom commit");
+            assert_eq!(value.finish_mode.as_str(), "integrate");
+            assert_eq!(value.finish_update.as_str(), "none");
+            settings::resolve_workstream(&mut value, settings::WorkstreamKind::Ordinary, None)
+                .unwrap();
+            assert_eq!(value.finish_mode.as_str(), "integrate");
+            assert_eq!(value.finish_checkout.as_str(), "work");
+            assert_eq!(value.finish_cleanup.as_str(), "keep");
+            assert_eq!(value.finish_update.as_str(), "none");
+        },
+    );
 }

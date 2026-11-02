@@ -20,6 +20,8 @@ enum Values {
     CurrentTargets,
     Sources,
     Tags,
+    ActiveRelease,
+    Remotes,
 }
 
 fn flag(name: &'static str) -> Arg {
@@ -115,9 +117,28 @@ fn command_in(directory: &Path, policy: Option<settings::WorkstreamKind>) -> Com
         .subcommand(Command::new("show").disable_help_flag(true))
         .arg(flag("yes").short('y'))
         .args([
-            flag("oneflow").conflicts_with("oneflow-hosted"),
-            flag("oneflow-hosted").conflicts_with("oneflow"),
+            flag("oneflow").conflicts_with_all(["oneflow-hosted", "bundle"]),
+            flag("oneflow-hosted").conflicts_with_all(["oneflow", "bundle"]),
         ])
+        .arg(
+            fixed(
+                "bundle",
+                [
+                    "oneflow",
+                    "oneflow-hosted",
+                    "github-flow",
+                    "gitflow",
+                    "trunk",
+                ],
+            )
+            .conflicts_with_all(["oneflow", "oneflow-hosted"]),
+        )
+        .arg(fixed("delivery", ["direct", "review"]))
+        .arg(branches(value("base"), Values::TargetBranches))
+        .arg(branches(value("publish-remote"), Values::Remotes))
+        .arg(branches(value("base-remote"), Values::Remotes))
+        .arg(branches(value("production"), Values::TargetBranches))
+        .arg(branches(value("active-release"), Values::ActiveRelease))
         .arg(branches(value("marker"), Values::TargetBranches))
         .arg(fixed("format", ["toml", "yaml", "json"]));
     let shells = ["bash", "zsh", "fish", "powershell"];
@@ -417,8 +438,24 @@ fn repository_values(
         return Vec::new();
     };
     let mut values = BTreeSet::new();
+    if matches!(kind, Values::ActiveRelease) {
+        values.insert("none".into());
+    }
     match kind {
-        Values::WorkBranches | Values::TargetBranches | Values::CurrentTargets => {
+        Values::Remotes => {
+            if let Some(raw) = read(directory, &["remote"]) {
+                values.extend(
+                    raw.split(|byte| *byte == b'\n')
+                        .filter_map(|line| std::str::from_utf8(line).ok())
+                        .filter(|value| safe(value))
+                        .map(str::to_owned),
+                );
+            }
+        }
+        Values::WorkBranches
+        | Values::TargetBranches
+        | Values::CurrentTargets
+        | Values::ActiveRelease => {
             let settings = resolved_settings(directory, kind, policy);
             let mappings = settings
                 .as_ref()
