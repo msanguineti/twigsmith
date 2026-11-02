@@ -539,13 +539,20 @@ requires only read access to source and Actions artifacts.
 The browser probe downloads the exact approved Actions artifact with the installed
 headed browser, retains the original downloaded file, checks its ZIP hash and
 allowlist, and uses OS extraction tools. On macOS it opens the original native
-tarball with Archive Utility and retains the resulting files and attributes. It records quarantine/Zone.Identifier
-inheritance and actual execution of both aliases and a representative Git journey.
+tarball with Archive Utility and retains the resulting files and attributes. It
+records quarantine/Zone.Identifier inheritance and actual execution of both aliases
+and a representative Git journey. Windows extraction and policy queries use the
+selected PowerShell 7.6, recording actual executable and module versions.
 An Actions artifact wraps the native archive in another ZIP; its observed security
 metadata and extraction route do not establish the eventual direct release-asset
-experience. Qualify that route again on published candidate bytes. Missing marks,
-blocked execution or unavailable browser interaction leave explicit unmet checks;
-the probe does not manufacture download metadata or disable protections.
+experience. Qualify that route again on published candidate bytes. The original
+browser download must retain Internet-origin metadata; macOS also requires
+quarantine after extraction. Windows records extracted Internet streams as present,
+observed absent or unavailable. Observed absence limits the launch evidence: it
+does not exercise protection triggered by marked payloads. Unavailable queries,
+blocked execution or unavailable browser interaction leave explicit unmet checks.
+The probe does not manufacture download metadata or disable protections; terminal
+launch and signature queries do not establish a SmartScreen UI verdict.
 
 The Windows runtime probe uses a disposable process-isolated official ServerCore
 2025 container through the runner's existing Docker daemon. It checks an actual

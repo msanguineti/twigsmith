@@ -2,11 +2,12 @@
 """Observe unsigned browser downloads and isolated Windows runtime provisioning.
 
 These finite probes never approve a release, change host policy or publish files.
-Missing security metadata, UI access or clean runtime is an unmet check, not a pass.
+Unavailable required security observations, UI access or clean runtime remain unmet.
 """
 import argparse
 import base64
 import contextlib
+import functools
 import hashlib
 import http.client
 import json
@@ -62,11 +63,29 @@ def child_env():
             if key not in ('GH_TOKEN', 'GITHUB_TOKEN', 'ACTIONS_RUNTIME_TOKEN')}
 
 
-def command(args, *, timeout=TIMEOUT, input=None):
-    result = subprocess.run(args, input=input, capture_output=True, text=True,
-                            encoding='utf-8', errors='replace', timeout=timeout, env=child_env())
-    return {'exit': result.returncode, 'stdout': clean(result.stdout[-24000:]),
-            'stderr': clean(result.stderr[-12000:])}
+def output_text(value):
+    return value.decode('utf-8', errors='replace') if isinstance(value, bytes) else value or ''
+
+
+def command(args, *, timeout=TIMEOUT, input=None, max_stdout=24000):
+    started = time.monotonic()
+    try:
+        result = subprocess.run(args, input=input, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace', timeout=timeout, env=child_env())
+        record = {'exit': result.returncode, 'stdout': output_text(result.stdout),
+                  'stderr': output_text(result.stderr), 'timed_out': False}
+    except subprocess.TimeoutExpired as error:
+        # TimeoutExpired may hold bytes even when subprocess.run used text=True.
+        # Preserve partial progress without recording raw command arguments.
+        record = {'exit': 124, 'stdout': output_text(error.stdout), 'stderr': output_text(error.stderr),
+                  'timed_out': True, 'timeout_seconds': timeout}
+    record['seconds'] = round(time.monotonic() - started, 3)
+    for name, limit in (('stdout', max_stdout), ('stderr', 12000)):
+        record[name + '_characters'] = len(record[name])
+        sanitized = clean(record[name])
+        record[name + '_truncated'] = limit is not None and len(sanitized) > limit
+        record[name] = sanitized if limit is None else sanitized[-limit:]
+    return record
 
 
 def row(report, name, status, observation):
@@ -353,16 +372,85 @@ def ps_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+@functools.lru_cache(maxsize=1)
+def powershell_host():
+    selected = shutil.which('pwsh')
+    if not selected:
+        raise RuntimeError('the selected maintained PowerShell 7.6 host is unavailable')
+    selected = str(Path(selected).resolve())
+    script = ("$modules=@{}; foreach ($name in @('Expand-Archive','Get-AuthenticodeSignature')) {"
+              "try { $c=Get-Command $name -ErrorAction Stop; $modules[$name]=@{status='observed';"
+              "name=$c.ModuleName;version=$c.Module.Version.ToString();path=$c.Module.Path} }"
+              "catch { $modules[$name]=@{status='unavailable';error=$_.Exception.Message} } }; "
+              '[pscustomobject]@{executable=[System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName;'
+              'version=$PSVersionTable.PSVersion.ToString();edition=$PSVersionTable.PSEdition;'
+              'home=$PSHOME;module_search_path=$env:PSModulePath;modules=$modules}'
+              ' | ConvertTo-Json -Depth 5 -Compress')
+    result = command([selected, '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], timeout=30, max_stdout=None)
+    if result['exit']:
+        raise RuntimeError('could not inspect selected PowerShell 7.6 host: ' + json.dumps(result))
+    identity = json.loads(result['stdout'])
+    if (identity.get('edition') != 'Core' or not re.fullmatch(r'7\.6\.[0-9]+', identity.get('version', ''))
+            or Path(identity.get('executable', '')).resolve() != Path(selected)):
+        raise ValueError('host helpers require the selected native PowerShell Core 7.6 executable')
+    modules = identity.get('modules')
+    expected = {'Expand-Archive': 'Microsoft.PowerShell.Archive',
+                'Get-AuthenticodeSignature': 'Microsoft.PowerShell.Security'}
+    if (not isinstance(modules, dict) or set(modules) != set(expected)
+            or any(not isinstance(modules[name], dict) or modules[name].get('status') != 'observed'
+                   or modules[name].get('name') != module or not modules[name].get('version')
+                   or not modules[name].get('path') for name, module in expected.items())):
+        raise ValueError('selected PowerShell module identities are unavailable: ' + json.dumps(clean(identity)))
+    return identity
+
+
 def powershell(script, **kwargs):
-    return command(['powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], **kwargs)
+    host = powershell_host()
+    kwargs.setdefault('max_stdout', None)
+    result = command([host['executable'], '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], **kwargs)
+    return {**result, 'host_powershell': host}
 
 
 def security_metadata(path):
     if sys.platform == 'darwin':
         result = command(['/usr/bin/xattr', '-p', 'com.apple.quarantine', str(path)])
         return {'present': result['exit'] == 0 and bool(result['stdout'].strip()), 'probe': result}
-    result = powershell(f"$ErrorActionPreference='Stop'; Get-Content -LiteralPath {ps_literal(path)} -Stream Zone.Identifier")
-    return {'present': result['exit'] == 0 and bool(re.search(r'ZoneId=[34]', result['stdout'])), 'probe': result}
+    script = ("$ErrorActionPreference='Stop'; $p=" + ps_literal(path) +
+              "; if (!(Test-Path -LiteralPath $p -PathType Leaf)) { throw 'original file is unavailable' }; " +
+              "$readable=[System.IO.File]::OpenRead($p); $readable.Dispose(); " +
+              "$streams=@(Get-Item -LiteralPath $p -Stream * | Select-Object Stream,Length); " +
+              "$zone=@($streams | Where-Object Stream -eq 'Zone.Identifier'); " +
+              "$content=if ($zone.Count) { Get-Content -LiteralPath $p -Stream Zone.Identifier -Raw } else { '' }; " +
+              "[pscustomobject]@{streams=$streams;zone_identifier=$content;zone_stream_present=($zone.Count -gt 0)}" +
+              ' | ConvertTo-Json -Depth 5 -Compress')
+    result = powershell(script)
+    if result['exit']:
+        return {'state': 'unavailable', 'present': False, 'probe': result}
+    try:
+        observation = json.loads(result['stdout'])
+        zone = observation['zone_stream_present']
+        if type(zone) is not bool or not isinstance(observation['streams'], list):
+            raise ValueError('unexpected stream observation')
+        matched = re.search(r'(?m)^ZoneId=([0-9]+)\s*$', observation['zone_identifier'])
+        zone_id = int(matched[1]) if matched else None
+        marked = zone and zone_id in (3, 4)
+        return {'state': 'observed_present' if zone else 'observed_absent', 'present': marked, 'zone_id': zone_id,
+                'streams': observation['streams'], 'zone_identifier': observation['zone_identifier'], 'probe': result}
+    except (ValueError, KeyError, TypeError):
+        return {'state': 'unavailable', 'present': False, 'probe': result,
+                'reason': 'stream observation is unreadable or incomplete'}
+
+
+def browser_origin_observed(metadata):
+    return (metadata.get('state') == 'observed_present' and metadata.get('zone_id') == 3
+            if sys.platform == 'win32' else metadata.get('present') is True)
+
+
+def extraction_metadata_observed(marks):
+    if sys.platform == 'win32':
+        return browser_origin_observed(marks['outer']) and all(
+            item.get('state') in ('observed_present', 'observed_absent') for item in marks.values())
+    return all(item.get('present') is True for item in marks.values())
 
 
 WINDOWS_POLICY_SCRIPT = r'''
@@ -409,7 +497,7 @@ def windows_policy():
                         ('SmartScreenEnabled', 'PreventSmartScreenPromptOverride',
                          'PreventSmartScreenPromptOverrideForFiles', 'SmartScreenForTrustedDownloadsEnabled'))
         available = set(checks) == expected and all(value.get('status') == 'observed' for value in checks.values())
-        return {'available': available, **observation}
+        return {'available': available, 'host_powershell': result.get('host_powershell'), **observation}
     except (ValueError, KeyError, TypeError):
         return {'available': False, 'probe': result, 'reason': 'policy observation is unreadable or incomplete'}
 
@@ -476,7 +564,7 @@ def browser_probe(args, approval, item, report):
             retained = retained and native_package.digest(outer.read_bytes()) == item['artifact']['sha256']
             metadata = security_metadata(outer)
             row(report, 'original_retained_after_browser_close',
-                'passed' if retained and metadata['present'] else 'unmet',
+                'passed' if retained and browser_origin_observed(metadata) else 'unmet',
                 {'same_original_hash': bool(retained), 'security_metadata': metadata})
         if sys.platform == 'win32':
             report['windows_policy_after_download'] = windows_policy()
@@ -487,7 +575,7 @@ def inspect_browser_download(args, approval, item, report, outer, observation):
     observation['lifecycle'].append(download_snapshot(outer.parent, 'before_original_metadata'))
     row(report, 'browser_download', 'passed', observation)
     marks = {'outer': security_metadata(outer)}
-    row(report, 'outer_security_metadata', 'passed' if marks['outer']['present'] else 'unmet', marks['outer'])
+    row(report, 'outer_security_metadata', 'passed' if browser_origin_observed(marks['outer']) else 'unmet', marks['outer'])
     # Existing exact ZIP verifier supplies safe allowlists BEFORE invoking the OS.
     stem = native_package.archive_stem(item['archive'])
     names = [item['archive'], stem + '.manifest.json', stem + '.sha256']
@@ -513,7 +601,10 @@ def inspect_browser_download(args, approval, item, report, outer, observation):
     for name, binary in binaries.items():
         marks[name] = security_metadata(binary)
     row(report, 'inherited_security_metadata',
-        'passed' if all(item['present'] for item in marks.values()) else 'unmet', marks)
+        'passed' if extraction_metadata_observed(marks) else 'unmet', marks)
+    if sys.platform == 'win32' and any(marks[name].get('state') == 'observed_absent' for name in binaries):
+        report.setdefault('limits', []).append(
+            'Extracted Windows payloads lack Zone.Identifier; terminal launch did not exercise payload-MOTW-triggered security or SmartScreen UI.')
     if sys.platform == 'darwin':
         policy = {'gatekeeper': command(['/usr/sbin/spctl', '--status']),
                   'system_integrity': command(['/usr/bin/csrutil', 'status'])}
@@ -532,6 +623,11 @@ def inspect_browser_download(args, approval, item, report, outer, observation):
     else:
         policy = windows_policy()
         policy_observed = policy['available']
+        defender = policy.get('checks', {}).get('defender', {}).get('value', {})
+        disabled = [name for name in ('RealTimeProtectionEnabled', 'BehaviorMonitorEnabled', 'IoavProtectionEnabled')
+                    if defender.get(name) is False]
+        if disabled:
+            report.setdefault('limits', []).append('Hosted Windows reports disabled Defender components: ' + ', '.join(disabled))
         assessment_observed = all(result['exit'] == 0 for result in assessments.values())
     row(report, 'security_policy', 'passed' if policy_observed else 'unmet', policy)
     row(report, 'security_assessment', 'passed' if assessment_observed else 'unmet', assessments)
@@ -638,7 +734,7 @@ def run_container(docker, image, candidate, name):
                         '--isolation=process', '--network=none',
                         '--mount', f'type=bind,source={candidate},target=C:\\candidate,readonly',
                         image, 'powershell.exe', '-NoLogo', '-NoProfile', '-NonInteractive',
-                        '-Command', '-'], input=CONTAINER_SCRIPT, timeout=300)
+                        '-Command', '-'], input=CONTAINER_SCRIPT, timeout=300, max_stdout=None)
     finally:
         command([docker, 'rm', '--force', name], timeout=30)
 
@@ -662,7 +758,7 @@ def runtime_probe(args, approval, item, report):
     if not docker:
         report['runtime_host_state'] = runtime_host_state()
         return
-    info = command([docker, 'info', '--format', '{{json .}}'], timeout=30)
+    info = command([docker, 'info', '--format', '{{json .}}'], timeout=30, max_stdout=None)
     if info['exit']:
         report['runtime_host_state'] = runtime_host_state()
         row(report, 'isolated_container', 'unmet', info)
@@ -671,15 +767,34 @@ def runtime_probe(args, approval, item, report):
     if engine.get('OSType') != 'windows':
         row(report, 'isolated_container', 'unmet', {'reason': 'existing daemon is not a Windows container engine'})
         return
-    image = command([docker, 'pull', IMAGE], timeout=300)
-    if image['exit']:
+    report['container_engine'] = {key: engine.get(key) for key in
+                                  ('ServerVersion', 'OSType', 'OSVersion', 'Architecture',
+                                   'OperatingSystem', 'Isolation')}
+    report['container_storage'] = []
+    for location in dict.fromkeys(filter(None, (engine.get('DockerRootDir'), tempfile.gettempdir()))):
+        try:
+            usage = shutil.disk_usage(location)
+            report['container_storage'].append({'path': location, 'total_bytes': usage.total, 'free_bytes': usage.free})
+        except OSError as error:
+            report['container_storage'].append({'path': location, 'unavailable': clean(str(error))})
+    # The Windows 2025 runner deliberately omits cached base images. This finite
+    # cold-pull diagnostic budget is separate from the 300-second container probe.
+    image = command([docker, 'pull', IMAGE], timeout=900)
+    report['container_pull'] = image
+    if image['exit'] and not image.get('timed_out'):
         row(report, 'isolated_container', 'unmet', image)
         return
-    inspection = command([docker, 'image', 'inspect', IMAGE], timeout=30)
+    # A killed pull client can race with daemon completion. Inspect the actual
+    # local image separately; never reinterpret a timeout as command success.
+    inspection = command([docker, 'image', 'inspect', IMAGE], timeout=30, max_stdout=None)
+    report['container_image_inspection'] = inspection
     if inspection['exit']:
-        raise ValueError('could not identify official container image')
+        row(report, 'isolated_container', 'unmet', {'pull': image, 'image_inspection': inspection})
+        return
     identities = json.loads(inspection['stdout'])
-    if len(identities) != 1 or not identities[0].get('Id') or not identities[0].get('RepoDigests'):
+    if (len(identities) != 1 or not re.fullmatch(r'sha256:[0-9a-f]{64}', identities[0].get('Id', ''))
+            or not any(re.fullmatch(r'mcr\.microsoft\.com/windows/servercore@sha256:[0-9a-f]{64}', value)
+                       for value in identities[0].get('RepoDigests', []))):
         raise ValueError('official container image has no immutable content identity')
     identity = identities[0]
     with tempfile.TemporaryDirectory(prefix='twigsmith-runtime-') as temporary:
@@ -748,6 +863,8 @@ def run(args):
         row(report, name, 'unmet', 'not observed')
     try:
         approval, item = approved(json.loads(args.approval.read_text()), args.target)
+        if sys.platform == 'win32':
+            report['host']['powershell'] = powershell_host()
         report.update(target=args.target, approved_native=item,
                       approval_sha256=native_package.digest(args.approval.read_bytes()))
         if args.operation == 'browser':

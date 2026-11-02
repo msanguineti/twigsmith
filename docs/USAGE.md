@@ -92,6 +92,36 @@ the exact candidate's qualification evidence for observed runtime, quarantine an
 policy behavior. Build/deployment metadata alone establishes no such result. The
 published Linux requirements above continue to describe the existing release.
 
+For an unpublished native candidate, use its approved archive and checksum; replace
+`VERSION` below with that candidate's exact version. Install the Windows runtime
+prerequisite above first. In PowerShell 7.6, extract the downloaded native ZIP and
+add its directory to the current session:
+
+```powershell
+Expand-Archive -LiteralPath ./twigsmith-VERSION-x86_64-pc-windows-msvc.zip -DestinationPath .
+$env:PATH = (Join-Path $PWD 'twigsmith-VERSION-x86_64-pc-windows-msvc') + ';' + $env:PATH
+twigsmith --version
+tgi --version
+```
+
+On macOS, open the downloaded native `.tar.gz` with Archive Utility. Choose the
+ARM64 archive (`aarch64-apple-darwin`) or Intel archive (`x86_64-apple-darwin`) for
+your Mac. In Bash or Zsh, add the extracted directory to the current session,
+using its actual location and architecture:
+
+```sh
+export PATH="$HOME/Downloads/twigsmith-VERSION-aarch64-apple-darwin:$PATH"
+twigsmith --version
+tgi --version
+```
+
+These are terminal launch routes. Extraction can preserve or omit download-origin
+metadata depending on the tool and host; successful terminal launch does not
+establish an Explorer/SmartScreen approval or a warning-free macOS installation.
+If host policy blocks execution, follow your organization's approved procedure.
+The qualification route uses browser-downloaded Actions artifacts with an extra
+outer ZIP; direct published release downloads require their own checks.
+
 ## Transition from the earlier Rust identity
 
 Before switching to Twigsmith, finish or recover outstanding operations with the

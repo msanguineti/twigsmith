@@ -164,6 +164,157 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertTrue(all(row['status'] == 'unmet' for row in report['checks'].values()))
             self.assertNotIn('sig=', json.dumps(report))
 
+    def test_command_timeout_preserves_redacted_partial_progress_and_nonzero_status(self):
+        error = subprocess.TimeoutExpired(['unrecorded', 'https://private.invalid/?sig=private'], 300,
+            output=b'layer-a Download complete\nlayer-b Extracting https://signed.invalid/?sig=private',
+            stderr=b'partial-progress private-token')
+        with patch.dict(os.environ, {'GH_TOKEN': 'private-token'}), \
+             patch.object(probe.subprocess, 'run', side_effect=error):
+            result = probe.command(['docker', 'pull', probe.IMAGE], timeout=300)
+        self.assertTrue(result['timed_out'])
+        self.assertNotEqual(result['exit'], 0)
+        self.assertEqual(result['timeout_seconds'], 300)
+        self.assertIn('layer-a Download complete', result['stdout'])
+        self.assertIn('layer-b Extracting', result['stdout'])
+        self.assertIn('partial-progress', result['stderr'])
+        self.assertNotIn('private-token', json.dumps(result))
+        self.assertNotIn('sig=', json.dumps(result))
+        self.assertNotIn('unrecorded', json.dumps(result))
+
+    def test_structured_command_preserves_parseable_long_json_while_progress_is_bounded(self):
+        body = json.dumps({'path': 'a' * 30000})
+        completed = subprocess.CompletedProcess([], 0, body, '')
+        with patch.object(probe.subprocess, 'run', return_value=completed):
+            structured = probe.command(['structured-query'], max_stdout=None)
+            progress = probe.command(['progress-query'])
+        self.assertEqual(json.loads(structured['stdout']), {'path': 'a' * 30000})
+        self.assertFalse(structured['stdout_truncated'])
+        self.assertEqual(len(progress['stdout']), 24000)
+        self.assertTrue(progress['stdout_truncated'])
+
+    def test_host_helper_selects_and_reports_actual_core_76_without_51_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            selected = Path(temporary) / 'pwsh.exe'
+            selected.write_bytes(b'never-executed-host-seam')
+            identity = {'executable': str(selected), 'version': '7.6.7', 'edition': 'Core',
+                        'home': str(selected.parent), 'module_search_path': 'selected-module-search',
+                        'modules': {command: {'status': 'observed', 'name': module, 'version': '1.2.6',
+                                             'path': str(selected.parent / module / 'module.psd1')}
+                                    for command, module in (('Expand-Archive', 'Microsoft.PowerShell.Archive'),
+                                                            ('Get-AuthenticodeSignature', 'Microsoft.PowerShell.Security'))}}
+            inspected = {'exit': 0, 'stdout': json.dumps(identity), 'stderr': ''}
+            probe.powershell_host.cache_clear()
+            self.addCleanup(probe.powershell_host.cache_clear)
+            with patch.object(probe.shutil, 'which', return_value=str(selected)), \
+                 patch.object(probe, 'command', side_effect=[inspected, {'exit': 0, 'stdout': 'helper-result', 'stderr': ''}]) as run:
+                result = probe.powershell('Get-ExecutionPolicy -List')
+                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_args.args[0][0], str(selected))
+                self.assertNotIn('powershell.exe', run.call_args.args[0])
+                self.assertEqual(result['host_powershell'], identity)
+                self.assertIn('Get-Command', run.call_args_list[0].args[0][-1])
+                self.assertIn('$env:PSModulePath', run.call_args_list[0].args[0][-1])
+            for version, edition in (('5.1.0', 'Desktop'), ('7.5.4', 'Core'), ('7.7.0', 'Core')):
+                probe.powershell_host.cache_clear()
+                identity.update(version=version, edition=edition)
+                with patch.object(probe.shutil, 'which', return_value=str(selected)), \
+                     patch.object(probe, 'command', return_value={'exit': 0, 'stdout': json.dumps(identity), 'stderr': ''}), \
+                     self.assertRaises(ValueError):
+                    probe.powershell_host()
+            probe.powershell_host.cache_clear()
+            identity.update(version='7.6.7', edition='Core')
+            identity['modules']['Get-AuthenticodeSignature']['status'] = 'unavailable'
+            with patch.object(probe.shutil, 'which', return_value=str(selected)), \
+                 patch.object(probe, 'command', return_value={'exit': 0, 'stdout': json.dumps(identity), 'stderr': ''}), \
+                 self.assertRaisesRegex(ValueError, 'module identities'):
+                probe.powershell_host()
+            probe.powershell_host.cache_clear()
+            with patch.object(probe.shutil, 'which', return_value=None), self.assertRaises(RuntimeError):
+                probe.powershell_host()
+
+    def test_ads_enumeration_distinguishes_absence_unavailability_and_zone_class(self):
+        for observed, state, present in (
+            ({'streams': [{'Stream': ':$DATA', 'Length': 1}], 'zone_stream_present': False, 'zone_identifier': ''},
+             'observed_absent', False),
+            ({'streams': [{'Stream': 'Zone.Identifier', 'Length': 20}], 'zone_stream_present': True,
+              'zone_identifier': '[ZoneTransfer]\r\nZoneId=3\r\n'}, 'observed_present', True),
+            ({'streams': [{'Stream': 'Zone.Identifier', 'Length': 20}], 'zone_stream_present': True,
+              'zone_identifier': '[ZoneTransfer]\r\nZoneId=2\r\n'}, 'observed_present', False)):
+            with patch.object(probe.sys, 'platform', 'win32'), \
+                 patch.object(probe, 'powershell', return_value={'exit': 0, 'stdout': json.dumps(observed), 'stderr': ''}) as query:
+                metadata = probe.security_metadata(Path('original-file'))
+            self.assertEqual(metadata['state'], state)
+            self.assertEqual(metadata['present'], present)
+            self.assertIn('Get-Item -LiteralPath $p -Stream *', query.call_args.args[0])
+            self.assertIn('[System.IO.File]::OpenRead($p)', query.call_args.args[0])
+        with patch.object(probe.sys, 'platform', 'win32'), \
+             patch.object(probe, 'powershell', return_value={'exit': 1, 'stdout': '', 'stderr': 'file cannot be read'}):
+            metadata = probe.security_metadata(Path('unreadable-file'))
+        self.assertEqual(metadata['state'], 'unavailable')
+        self.assertFalse(metadata['present'])
+        with patch.object(probe.sys, 'platform', 'win32'), \
+             patch.object(probe, 'powershell', return_value={'exit': 0, 'stdout': '{}', 'stderr': ''}):
+            self.assertEqual(probe.security_metadata(Path('unknown-file'))['state'], 'unavailable')
+
+    def test_windows_extracted_metadata_is_observed_without_forging_inheritance(self):
+        marks = {'outer': {'state': 'observed_present', 'present': True, 'zone_id': 3},
+                 'archive': {'state': 'observed_absent', 'present': False},
+                 'twigsmith.exe': {'state': 'observed_absent', 'present': False},
+                 'tgi.exe': {'state': 'observed_present', 'present': True, 'zone_id': 3}}
+        with patch.object(probe.sys, 'platform', 'win32'):
+            self.assertTrue(probe.extraction_metadata_observed(marks))
+            for name in marks:
+                unavailable = deepcopy(marks)
+                unavailable[name]['state'] = 'unavailable'
+                self.assertFalse(probe.extraction_metadata_observed(unavailable))
+            for zone in (None, 0, 1, 2, 4):
+                wrong_origin = deepcopy(marks)
+                wrong_origin['outer']['zone_id'] = zone
+                self.assertFalse(probe.extraction_metadata_observed(wrong_origin))
+        with patch.object(probe.sys, 'platform', 'darwin'):
+            self.assertFalse(probe.extraction_metadata_observed(marks))
+            self.assertTrue(probe.extraction_metadata_observed({'outer': {'present': True}, 'alias': {'present': True}}))
+
+    def test_runtime_pull_timeout_retains_progress_and_observes_image_state_separately(self):
+        report = {'checks': {}}
+        args = SimpleNamespace(archive=Path('approved-candidate.zip'), redist_sha256='1' * 64)
+        outcomes = [{'exit': 0, 'stdout': json.dumps({'OSType': 'windows', 'ServerVersion': 'actual-fixture'}), 'stderr': ''},
+                    {'exit': 124, 'timed_out': True, 'stdout': 'layer-a Download complete', 'stderr': 'layer-b Extracting'},
+                    {'exit': 1, 'stdout': '', 'stderr': 'image not yet complete'}]
+        with patch.object(probe.sys, 'platform', 'win32'), \
+             patch.object(probe, 'verify_candidate', return_value={'version': 'fixture'}), \
+             patch.object(probe.shutil, 'which', return_value='docker-fixture'), \
+             patch.object(probe, 'command', side_effect=outcomes) as command:
+            probe.runtime_probe(args, {}, {}, report)
+        self.assertEqual(command.call_args_list[1].kwargs['timeout'], 900)
+        self.assertEqual(command.call_args_list[2].args[0][1:3], ['image', 'inspect'])
+        self.assertEqual(report['container_engine']['ServerVersion'], 'actual-fixture')
+        self.assertTrue(report['container_pull']['timed_out'])
+        self.assertIn('Download complete', report['container_pull']['stdout'])
+        self.assertIn('image not yet complete', report['container_image_inspection']['stderr'])
+        self.assertEqual(report['checks']['isolated_container']['status'], 'unmet')
+
+    def test_timeout_client_can_observe_completed_official_image_without_claiming_pull_success(self):
+        report = {'checks': {}}
+        args = SimpleNamespace(archive=Path('approved-candidate.zip'), redist_sha256='1' * 64)
+        identity = {'Id': 'sha256:' + '1' * 64,
+                    'RepoDigests': ['mcr.microsoft.com/windows/servercore@sha256:' + '2' * 64]}
+        outcomes = [{'exit': 0, 'stdout': json.dumps({'OSType': 'windows'}), 'stderr': ''},
+                    {'exit': 124, 'timed_out': True, 'stdout': 'last layer complete', 'stderr': ''},
+                    {'exit': 0, 'stdout': json.dumps([identity]), 'stderr': ''}]
+        with patch.object(probe.sys, 'platform', 'win32'), \
+             patch.object(probe, 'verify_candidate', return_value={'version': 'fixture'}), \
+             patch.object(probe.shutil, 'which', return_value='docker-fixture'), \
+             patch.object(probe, 'command', side_effect=outcomes), \
+             patch.object(probe.native_package, 'verify', side_effect=RuntimeError('bounded stop after image selection')) as prepare, \
+             self.assertRaisesRegex(RuntimeError, 'bounded stop'):
+            probe.runtime_probe(args, {}, {}, report)
+        prepare.assert_called_once()
+        self.assertTrue(report['container_pull']['timed_out'])
+        self.assertEqual(report['container_pull']['exit'], 124)
+        self.assertEqual(report['container_image_inspection']['exit'], 0)
+        self.assertFalse(probe.passed(report, probe.RUNTIME_ROWS))
+
     def test_download_progress_uses_matching_guid_and_requires_browser_completion(self):
         begin = {'event': 'Browser.downloadWillBegin', 'guid': 'selected', 'suggestedFilename': 'original.zip'}
         events = [begin, {'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': 'inProgress'}]
@@ -346,6 +497,8 @@ class InstallationBoundaryTests(unittest.TestCase):
             calls.append((command, kwargs))
             if command[1] == 'run':
                 self.assertIn('--interactive', command)
+                self.assertIn('powershell.exe', command)
+                self.assertNotIn('pwsh', command)
                 self.assertEqual(kwargs['input'], probe.CONTAINER_SCRIPT)
                 self.assertEqual(command[-2:], ['-Command', '-'])
                 self.assertIn('--isolation=process', command)
