@@ -93,6 +93,25 @@ class SiteWorkflowTests(unittest.TestCase):
         self.assertEqual(permissions(self.deploy_job, 4),
                          {'contents': 'read', 'pages': 'write', 'id-token': 'write'})
 
+    def test_installation_dispatch_is_read_only_and_separate_from_release_preparation(self):
+        release = (WORKFLOWS / 'release.yml').read_text()
+        installation = (WORKFLOWS / 'platform-installation.yml').read_text()
+        jobs = block(release, 'jobs')
+        caller = block(jobs, 'platform-installation', 2)
+        candidate = block(jobs, 'candidate', 2)
+        self.assertIn("inputs.qualification == 'platform-installation'", caller)
+        self.assertIn("inputs.qualification != 'platform-installation'", candidate)
+        self.assertEqual(permissions(caller, 4), {'contents': 'read', 'actions': 'read'})
+        self.assertEqual(permissions(installation, 0), {'contents': 'read', 'actions': 'read'})
+        self.assertNotRegex(installation, r'(?m)^\s*[a-z-]+: write\s*$')
+        self.assertNotIn('windows-11', installation)
+        for host in ('windows-2025', 'macos-15', 'macos-15-intel'):
+            self.assertIn('os: ' + host + '\n', installation)
+        self.assertIn('release_stage.inspect_platform_request(approval)', installation)
+        self.assertIn('APPROVAL_JSON: ${{ inputs.approval }}', installation)
+        self.assertNotIn("json.loads('${{", installation)
+        self.assertNotRegex(installation, r'npm publish|release_publish.py|deploy-pages@')
+
 
 if __name__ == '__main__':
     unittest.main()

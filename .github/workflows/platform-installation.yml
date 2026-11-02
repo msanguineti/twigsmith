@@ -1,0 +1,107 @@
+name: Candidate installation observations
+
+on:
+  workflow_call:
+    inputs:
+      approval:
+        type: string
+        required: true
+      runtime_sha256:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  installation:
+    name: Installation (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Inspect the reviewed canonical input identities
+        id: input
+        shell: pwsh
+        env:
+          APPROVAL_JSON: ${{ inputs.approval }}
+          INSTALLATION_TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json, os, pathlib, sys
+          sys.path.insert(0, 'tools')
+          import release_stage
+          approval = json.loads(os.environ['APPROVAL_JSON'])
+          release_stage.inspect_platform_request(approval)
+          target = os.environ['INSTALLATION_TARGET']
+          native = next(item for item in approval['native'] if item['target'] == target)
+          path = pathlib.Path(os.environ['RUNNER_TEMP'], 'installation-approval.json')
+          path.write_text(json.dumps(approval), encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('run=' + native['artifact']['run_id'] + '\n')
+              output.write('archive=' + native['archive'] + '\n')
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Select maintained macOS Git
+        if: runner.os == 'macOS'
+        run: |
+          brew install git
+          echo "$(brew --prefix git)/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: platform-harness-${{ matrix.target }}
+          path: ${{ runner.temp }}/installation-harness
+          run-id: ${{ steps.input.outputs.run }}
+          github-token: ${{ github.token }}
+          digest-mismatch: error
+      - name: Observe a real browser download and first execution
+        shell: pwsh
+        env:
+          INSTALLATION_TARGET: ${{ matrix.target }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python tools/qualify_installation.py browser --approval (Join-Path $env:RUNNER_TEMP 'installation-approval.json') --target $env:INSTALLATION_TARGET --harness-dir (Join-Path $env:RUNNER_TEMP 'installation-harness') --evidence-dir (Join-Path $env:RUNNER_TEMP 'installation-browser')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: always() && runner.os == 'Windows' && steps.input.outcome == 'success'
+        with:
+          name: platform-archive-${{ matrix.target }}
+          path: ${{ runner.temp }}/installation-native
+          run-id: ${{ steps.input.outputs.run }}
+          github-token: ${{ github.token }}
+          digest-mismatch: error
+      - name: Observe clean ServerCore runtime absence and official provisioning
+        if: always() && runner.os == 'Windows' && steps.input.outcome == 'success'
+        shell: pwsh
+        env:
+          INSTALLATION_TARGET: ${{ matrix.target }}
+          INSTALLATION_ARCHIVE: ${{ steps.input.outputs.archive }}
+          RUNTIME_SHA256: ${{ inputs.runtime_sha256 }}
+        run: |
+          $archive = Join-Path (Join-Path $env:RUNNER_TEMP 'installation-native') $env:INSTALLATION_ARCHIVE
+          python tools/qualify_installation.py runtime --approval (Join-Path $env:RUNNER_TEMP 'installation-approval.json') --target $env:INSTALLATION_TARGET --archive $archive --redist-sha256 $env:RUNTIME_SHA256 --evidence-dir (Join-Path $env:RUNNER_TEMP 'installation-runtime')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: platform-installation-evidence-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/installation-browser/
+            ${{ runner.temp }}/installation-runtime/
+          if-no-files-found: warn
+          retention-days: 30

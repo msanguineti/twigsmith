@@ -61,6 +61,8 @@ Usage: ./dev COMMAND [ARGS]
                   Run extracted-artifact workflow/runtime qualification
   platform-qualify [ARGS]
                   Prepare/run native archive and npm qualification on this host
+  installation-qualify [ARGS]
+                  Observe exact candidate browser downloads and Windows runtime provisioning
   test-shells [--require-all]
                   Run native shell tests available on this host
   test-groups     List focused test groups and their Cargo targets
@@ -311,6 +313,7 @@ case "$command" in
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_package.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_platform_package.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_platform.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_installation.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_set.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_recovery.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_stage.py' "$@"
@@ -319,6 +322,7 @@ case "$command" in
         ;;
     native-qualify) exec python3 "$repo_dir/tools/qualify_native.py" "$@" ;;
     platform-qualify) exec python3 "$repo_dir/tools/qualify_platform.py" "$@" ;;
+    installation-qualify) exec python3 "$repo_dir/tools/qualify_installation.py" "$@" ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;
     *) usage >&2; exit 2 ;;
 esac

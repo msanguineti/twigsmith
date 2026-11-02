@@ -64,6 +64,34 @@ If Git reports `unknown option: --no-lazy-fetch`, upgrade Git to 2.45 or newer.
 The [developer packaging guide](DEVELOPMENT.md#npm-candidate-packaging) covers
 candidate creation, provenance and qualification.
 
+Unpublished platform candidates use a common Node launcher and four optional
+payload packages for Linux x64 GNU, Windows x64 and macOS ARM64/Intel. Both command
+names select the installed payload for the current platform. This installation
+route uses no lifecycle scripts, compiler or fallback download. Keep the complete
+verified package set when testing locally; installing only the launcher tarball
+does not supply its platform dependencies. See the
+[platform candidate guide](DEVELOPMENT.md#platform-selected-npm-candidates) for
+offline preparation and qualification.
+
+New cross-platform candidates target maintained Windows 11 x64 releases and macOS
+Sequoia 15 on ARM64 and Intel, with Git 2.45 or newer. Windows candidates use the
+dynamic MSVC runtime and require Microsoft's [official x64 v14 Visual C++
+Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)
+at least as recent as the candidate's build tools. Linux candidates retain the
+glibc 2.35 baseline. Windows qualification uses Server 2025 CI; this records a
+server test environment, not an observed Windows 11 desktop result.
+
+The selected shell routes are Bash, Zsh and Fish launch/completion on Linux/macOS;
+PowerShell 7.6 launch/completion on Windows; and cmd/Git Bash launch on Windows.
+Editors and checks need their configured executables. Native execution needs
+neither Node nor Rust; the npm route requires Node.js LTS and npm.
+
+Windows and macOS archives are unsigned, and macOS archives are not notarized.
+Download-security behavior depends on the download route and host policy. Consult
+the exact candidate's qualification evidence for observed runtime, quarantine and
+policy behavior. Build/deployment metadata alone establishes no such result. The
+published Linux requirements above continue to describe the existing release.
+
 ## Transition from the earlier Rust identity
 
 Before switching to Twigsmith, finish or recover outstanding operations with the
@@ -84,8 +112,9 @@ reinterpret those records.
 
 ## Shell completion
 
-PowerShell completion requires PowerShell 7.3 or newer. Put either executable
-on PATH. Enable completion for the current session with one command appropriate
+The PowerShell adapter supports syntax from 7.3 onward; the selected maintained
+cross-platform route is PowerShell 7.6. Put either executable on PATH.
+Enable completion for the current session with one command appropriate
 to your active shell:
 
 | Shell | Current session |

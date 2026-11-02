@@ -171,15 +171,31 @@ def validate_requirements(requirements, *, native_builder=False):
 
 
 def load_requirements(repo, target=TARGET):
-    current = validate_requirements(json.loads((repo / "site/current-requirements.json").read_text()), native_builder=True)
-    if target == TARGET:
-        return current
-    metadata = target_metadata(target)
-    # The public requirements remain Linux-only until qualification and approval.
-    current["native"] = {"platform": {key: metadata[key] for key in ("os", "arch", "libc")},
-                         "requirements": {"system": "Candidate platform; OS support floor is unqualified",
-                                          "shell": "Git 2.45 or newer; native execution needs no Node/npm or Rust"}}
-    return current
+    """Select a frozen schema 1 snapshot from current policy, without rewriting it.
+
+    The schema 2 envelope belongs only to the editable source. Native manifests
+    retain their existing per-target snapshot formats and historical validation.
+    """
+    target_metadata(target)
+    current = json.loads((repo / "site/current-requirements.json").read_text())
+    if isinstance(current, dict) and type(current.get("schema")) is int and current["schema"] == 1:
+        # Historical Linux checkouts used the snapshot directly as current policy.
+        if target != TARGET:
+            raise ValueError("legacy current requirements contain only the Linux target")
+        return validate_target_requirements(current, target)
+    if (not isinstance(current, dict) or set(current) != {"schema", "targets"}
+            or type(current["schema"]) is not int or current["schema"] != 2
+            or not isinstance(current["targets"], dict) or set(current["targets"]) != set(TARGETS)):
+        raise ValueError("invalid current requirements target set")
+    for selected, snapshot in current["targets"].items():
+        validated = validate_target_requirements(snapshot, selected)
+        metadata = target_metadata(selected)
+        coverage = {"os": {"linux": "linux", "windows": "win32", "macos": "darwin"}[metadata["os"]],
+                    "arch": {"x86_64": "x64", "aarch64": "arm64"}[metadata["arch"]],
+                    "libc": metadata["libc"]}
+        if validated["npm"]["coverage"] != [coverage]:
+            raise ValueError("current npm coverage does not match native target")
+    return deepcopy(current["targets"][target])
 
 
 def validate_target_requirements(requirements, target):
@@ -228,32 +244,62 @@ See the repository docs/USAGE.md for configuration and recovery guidance.
 """
 
 
-def candidate_guidance(version, stem, requirements, target):
-    if target == TARGET:
-        return guidance(version, stem, requirements)
+def platform_install_guidance(stem, target):
     metadata = target_metadata(target)
     if metadata["os"] == "windows":
-        install = f'''Extract with PowerShell:
+        return f'''Extract with PowerShell:
   Expand-Archive -LiteralPath "{stem}.zip" -DestinationPath .
 Add the extracted directory to this session's PATH:
   $env:PATH = "$PWD\\{stem};" + $env:PATH
 Run twigsmith.exe --help or tgi.exe --help.
 Windows downloads are unsigned. Browser/SmartScreen policy depends on the host;
 review the source and checksums and use your organization's approved execution path.'''
-    else:
-        install = f'''Extract with tar -xzf "{stem}.tar.gz", then add the directory to PATH:
+    return f'''Extract with tar -xzf "{stem}.tar.gz", then add the directory to PATH:
   export PATH="/absolute/path/to/{stem}:$PATH"
 Run twigsmith --help or tgi --help.
 macOS downloads are unsigned and not notarized. Gatekeeper/quarantine policy
 depends on download method and host; use your approved local execution procedure.'''
+
+
+def legacy_platform_guidance(version, stem, requirements, target):
+    """Keep the README contract of frozen pre-policy platform candidates."""
+    if target == TARGET:
+        return guidance(version, stem, requirements)
     return f'''Twigsmith {version} — {target} native candidate
 
-{install}
+{platform_install_guidance(stem, target)}
 Both names use the same native implementation. Git 2.45 or newer is required.
 Rust, Node and npm are not required for native execution. Git's configured shell,
 editors, signing/transport helpers and checks are needed when selected.
 This candidate establishes no Windows/macOS minimum OS support claim.
 Dependency/deployment metadata is inspection evidence, not native runtime qualification.
+Verify the adjacent .sha256 and .manifest.json with tools/native_package.py verify.
+SHA-256 checks consistency; it does not independently authenticate a publisher.
+See docs/USAGE.md for configuration and recovery guidance.
+'''
+
+
+def candidate_guidance(version, stem, requirements, target):
+    if target == TARGET:
+        return guidance(version, stem, requirements)
+    native = requirements["native"]["requirements"]
+    if native == {"system": "Candidate platform; OS support floor is unqualified",
+                  "shell": "Git 2.45 or newer; native execution needs no Node/npm or Rust"}:
+        return legacy_platform_guidance(version, stem, requirements, target)
+    selected = "\n".join(f"{key.capitalize()}: {value}." for key, value in sorted(native.items()))
+    qualification = ("Windows qualification uses Windows Server 2025 CI. Those observations\n"
+                     "do not represent tests on a Windows 11 desktop.\n"
+                     if target_metadata(target)["os"] == "windows" else "")
+    return f'''Twigsmith {version} — {target} native candidate
+
+{platform_install_guidance(stem, target)}
+Both names use the same native implementation.
+{selected}
+Rust, Node and npm are not required for native execution. Git's configured shell,
+editors, signing/transport helpers and checks are needed when selected.
+Selected support targets are policy; qualification applies only to recorded hosts
+and these exact bytes.
+{qualification}Dependency/deployment metadata is inspection evidence, not native runtime qualification.
 Verify the adjacent .sha256 and .manifest.json with tools/native_package.py verify.
 SHA-256 checks consistency; it does not independently authenticate a publisher.
 See docs/USAGE.md for configuration and recovery guidance.

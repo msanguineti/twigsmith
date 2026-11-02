@@ -12,6 +12,7 @@ import unittest
 from unittest import mock
 
 import publish
+import candidate
 
 
 class PublishTests(unittest.TestCase):
@@ -64,7 +65,7 @@ class PublishTests(unittest.TestCase):
         fixture = ReleaseModelTests()
         fixture.setUp()
         descriptor, github, npm = fixture.descriptor, fixture.github, fixture.npm
-        requirements = json.loads((Path(__file__).parent / 'current-requirements.json').read_text())
+        requirements = deepcopy(candidate.LEGACY_REQUIREMENTS)
         manifest = {'schema': 3, 'version': '0.1.0', 'requirements': requirements}
         data = json.dumps(manifest).encode()
         digest = hashlib.sha256(data).hexdigest()
@@ -129,7 +130,7 @@ class PublishTests(unittest.TestCase):
             asset['name'] = {'archive': 'fixture.zip', 'manifest': 'fixture.manifest.json', 'checksums': 'fixture.sha256'}[kind]
         other['commands'] = []
         descriptor['native'].append(other)
-        base_requirements = json.loads((Path(__file__).parent / 'current-requirements.json').read_text())
+        base_requirements = deepcopy(candidate.LEGACY_REQUIREMENTS)
         manifests = {}
         for native in descriptor['native']:
             req = deepcopy(base_requirements)

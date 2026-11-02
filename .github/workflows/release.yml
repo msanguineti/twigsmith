@@ -10,6 +10,15 @@ on:
         options:
           - linux-release
           - platform-packages
+          - platform-installation
+      platform_approval:
+        description: Reviewed complete-set identity JSON (platform-installation only)
+        type: string
+        default: ''
+      runtime_sha256:
+        description: Reviewed official x64 v14 Redistributable SHA-256 (platform-installation only)
+        type: string
+        default: ''
   release:
     types: [published]
 
@@ -24,8 +33,18 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'platform-packages'
     uses: ./.github/workflows/platform-packages.yml
 
+  platform-installation:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualification == 'platform-installation'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/platform-installation.yml
+    with:
+      approval: ${{ inputs.platform_approval }}
+      runtime_sha256: ${{ inputs.runtime_sha256 }}
+
   candidate:
-    if: github.event_name != 'workflow_dispatch' || inputs.qualification != 'platform-packages'
+    if: github.event_name != 'workflow_dispatch' || (inputs.qualification != 'platform-packages' && inputs.qualification != 'platform-installation')
     permissions:
       contents: read
       actions: read

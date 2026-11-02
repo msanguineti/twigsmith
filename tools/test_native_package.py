@@ -18,6 +18,55 @@ from unittest.mock import patch
 import native_package as package
 
 
+class CurrentRequirementsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name)
+        (self.repo / "site").mkdir()
+        self.path = self.repo / "site/current-requirements.json"
+        self.current = json.loads((Path(__file__).resolve().parents[1]
+                                   / "site/current-requirements.json").read_text())
+        self.path.write_text(json.dumps(self.current))
+
+    def test_selects_exact_snapshot_without_envelope_or_mutation(self):
+        self.assertEqual(self.current["schema"], 2)
+        self.assertEqual(set(self.current["targets"]), set(package.TARGETS))
+        for target, snapshot in self.current["targets"].items():
+            with self.subTest(target=target):
+                selected = package.load_requirements(self.repo, target)
+                self.assertEqual(selected, snapshot)
+                self.assertEqual(selected["schema"], 1)
+                selected["native"]["requirements"]["system"] = "caller mutation"
+                self.assertEqual(package.load_requirements(self.repo, target), snapshot)
+
+    def test_rejects_incomplete_extra_misassigned_or_wrong_npm_targets(self):
+        windows = "x86_64-pc-windows-msvc"
+        for mutation in (
+            lambda value: value["targets"].pop(windows),
+            lambda value: value["targets"].update(unknown=value["targets"][package.TARGET]),
+            lambda value: value["targets"][windows]["native"]["platform"].update(os="linux"),
+            lambda value: value["targets"][windows]["npm"].update(
+                coverage=value["targets"][package.TARGET]["npm"]["coverage"]),
+            lambda value: value["targets"][windows]["npm"]["coverage"].append(
+                {"os": "darwin", "arch": "arm64", "libc": None}),
+            lambda value: value.update(schema=True),
+        ):
+            changed = deepcopy(self.current)
+            mutation(changed)
+            self.path.write_text(json.dumps(changed))
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                # Validate the entire current policy even when another target is selected.
+                package.load_requirements(self.repo)
+
+    def test_legacy_current_file_remains_linux_only(self):
+        snapshot = self.current["targets"][package.TARGET]
+        self.path.write_text(json.dumps(snapshot))
+        self.assertEqual(package.load_requirements(self.repo), snapshot)
+        with self.assertRaisesRegex(ValueError, "only the Linux target"):
+            package.load_requirements(self.repo, "x86_64-pc-windows-msvc")
+
+
 class PackageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -274,7 +323,12 @@ class NewPlatformTests(unittest.TestCase):
             f"{package.digest(archive.read_bytes())}  {archive.name}\n"
             f"{package.digest(path.read_bytes())}  {path.name}\n")
 
-    def test_all_new_targets_roundtrip_without_expanding_supported_requirements(self):
+    def test_all_new_targets_roundtrip_with_target_npm_coverage(self):
+        coverage = {
+            "x86_64-pc-windows-msvc": {"os": "win32", "arch": "x64", "libc": None},
+            "aarch64-apple-darwin": {"os": "darwin", "arch": "arm64", "libc": None},
+            "x86_64-apple-darwin": {"os": "darwin", "arch": "x64", "libc": None},
+        }
         for target in ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"):
             with self.subTest(target=target):
                 archive = self.candidate(target)
@@ -284,17 +338,40 @@ class NewPlatformTests(unittest.TestCase):
                 self.assertEqual(manifest["target"], target)
                 self.assertEqual(set(manifest["files"]), set(package.members_for(target)))
                 self.assertEqual(manifest["requirements"]["npm"]["coverage"],
-                                 [{"os": "linux", "arch": "x64", "libc": "glibc"}])
+                                 [coverage[target]])
                 root = destination / package.archive_stem(archive)
+                readme = (root / "README.txt").read_text()
+                for value in manifest["requirements"]["native"]["requirements"].values():
+                    self.assertIn(value, readme)
+                self.assertIn("Selected support targets are policy", readme)
+                self.assertNotIn("OS support floor is unqualified", readme)
                 for name in package.executable_names(target):
                     self.assertEqual(package.inspect_payload((root / name).read_bytes(), target),
                                      manifest["inspection"][name])
                 if target.endswith("windows-msvc"):
+                    self.assertIn("Windows Server 2025 CI", readme)
+                    self.assertIn("do not represent tests on a Windows 11 desktop", readme)
                     self.assertEqual(manifest["inspection"]["twigsmith.exe"]["imports"], ["KERNEL32.dll"])
                     self.assertEqual(manifest["npm_payload"], "twigsmith.exe")
                 else:
                     self.assertEqual(manifest["inspection"]["twigsmith"]["deployment"],
                                      {"minimum": "11.0.0", "sdk": "15.0.0"})
+
+    def test_historical_unqualified_platform_snapshots_and_readme_still_verify(self):
+        for target in ("x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"):
+            frozen = package.load_requirements(Path(__file__).resolve().parents[1], target)
+            frozen["native"]["requirements"] = {
+                "system": "Candidate platform; OS support floor is unqualified",
+                "shell": "Git 2.45 or newer; native execution needs no Node/npm or Rust"}
+            frozen["npm"] = {
+                "coverage": [{"os": "linux", "arch": "x64", "libc": "glibc"}],
+                "requirements": "Node.js LTS and npm; Linux x86_64 with glibc 2.35+ and Git 2.45+"}
+            with patch.object(package, "load_requirements", return_value=frozen), \
+                 patch.object(package, "candidate_guidance", side_effect=package.legacy_platform_guidance):
+                archive = self.candidate(target)
+            with patch.object(package, "load_requirements", side_effect=AssertionError("current policy read")):
+                manifest = package.verify(archive)
+            self.assertEqual(manifest["requirements"], frozen)
 
     def test_windows_archive_rejects_unsafe_forms_before_extraction(self):
         archive = self.candidate("x86_64-pc-windows-msvc")

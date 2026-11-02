@@ -286,6 +286,165 @@ def environment():
                  "ImageOS", "ImageVersion", "RUNNER_OS", "RUNNER_ARCH") if name in os.environ}}
 
 
+def supported_shells(target):
+    return ("powershell", "cmd", "git-bash") if target.endswith("windows-msvc") else ("bash", "zsh", "fish")
+
+
+def shell_executable(name, env):
+    """Select real host shells, avoiding the Windows WSL bash launcher."""
+    override = env.get("TWIGSMITH_QUALIFY_SHELL_" + name.upper().replace("-", "_"))
+    if override:
+        return str(checked_file(Path(override)))
+    if name == "cmd":
+        return env.get("COMSPEC") or shutil.which("cmd", path=env.get("PATH"))
+    if name == "git-bash":
+        git = shutil.which("git", path=env.get("PATH"))
+        if git:
+            for root in (Path(git).resolve().parent.parent, Path(git).resolve().parent):
+                for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+                    candidate = root / relative
+                    if candidate.is_file():
+                        return str(candidate)
+        return None
+    return shutil.which("pwsh" if name == "powershell" else name, path=env.get("PATH"))
+
+
+def shell_command(name, executable, script):
+    if name in ("bash", "git-bash"):
+        return [executable, "--noprofile", "--norc", script.as_posix()]
+    if name == "zsh":
+        return [executable, "-f", str(script)]
+    if name == "fish":
+        return [executable, "--no-config", str(script)]
+    if name == "powershell":
+        return [executable, "-NoLogo", "-NoProfile", "-File", str(script)]
+    if name == "cmd":
+        return [executable, "/d", "/c", str(script)]
+    raise ValueError(f"unknown qualification shell: {name}")
+
+
+def shell_script(name, completion=False):
+    """Adapter invocation smoke only: no line-editor/actual-Tab claim."""
+    if completion:
+        scripts = {
+            "bash": '''source "$TWIGSMITH_ADAPTER" || exit 1
+complete -p "$TWIGSMITH_ALIAS" >/dev/null || exit 1
+COMP_LINE="$TWIGSMITH_ALIAS st"; COMP_POINT=${#COMP_LINE}
+_twigsmith "$TWIGSMITH_ALIAS"
+[[ "$(printf '%s\\n' "${COMPREPLY[@]}")" == $'start\\nstatus' ]] || exit 1
+printf 'SHELL_PROBE_OK\\n'
+''',
+            "zsh": '''autoload -Uz compinit
+compinit -u -D
+source "$TWIGSMITH_ADAPTER" || exit 1
+[[ ${_comps[$TWIGSMITH_ALIAS]} == _twigsmith ]] || exit 1
+compadd() { shift; printf '%s\\n' "$@"; }
+words=("$TWIGSMITH_ALIAS" st); CURRENT=2; PREFIX=st
+[[ "$(_twigsmith)" == $'start\\nstatus' ]] || exit 1
+printf 'SHELL_PROBE_OK\\n'
+''',
+            "fish": '''source "$TWIGSMITH_ADAPTER"; or exit 1
+set -l actual (complete -C "$TWIGSMITH_ALIAS st" | string split -f 1 \\t)
+test (count $actual) -eq 2; or exit 1
+test "$actual[1]" = start; and test "$actual[2]" = status; or exit 1
+printf 'SHELL_PROBE_OK\\n'
+''',
+            "powershell": '''$ErrorActionPreference = 'Stop'
+. $env:TWIGSMITH_ADAPTER
+$line = "$env:TWIGSMITH_ALIAS st"
+$matches = @((TabExpansion2 $line $line.Length).CompletionMatches)
+if ($matches.Count -ne 2 -or $matches[0].ListItemText -cne 'start' -or $matches[1].ListItemText -cne 'status') { throw 'unexpected adapter candidates' }
+Write-Output 'SHELL_PROBE_OK'
+''',
+        }
+        return scripts[name]
+    if name == "powershell":
+        return '''$ErrorActionPreference = 'Stop'
+$actual = & $env:TWIGSMITH_ALIAS --version
+if ($LASTEXITCODE -ne 0 -or $actual -cne $env:TWIGSMITH_EXPECTED_VERSION) { throw 'unexpected version' }
+Write-Output 'SHELL_PROBE_OK'
+'''
+    if name == "cmd":
+        # The driver checks exact output and status. No policy/profile changes.
+        return '@echo off\n%TWIGSMITH_ALIAS% --version\nexit /b %errorlevel%\n'
+    if name == "fish":
+        return '''set -l actual ($TWIGSMITH_ALIAS --version); or exit 1
+test "$actual" = "$TWIGSMITH_EXPECTED_VERSION"; or exit 1
+printf 'SHELL_PROBE_OK\\n'
+'''
+    return '''actual=$("$TWIGSMITH_ALIAS" --version) || exit 1
+[ "$actual" = "$TWIGSMITH_EXPECTED_VERSION" ] || exit 1
+printf 'SHELL_PROBE_OK\\n'
+'''
+
+
+def shell_routes(artifact, version, evidence, *, require=False):
+    """Bind selected launch/adapter routes to the final archive's actual bytes."""
+    target = host_target()
+    report = {"required": require, "selected": list(supported_shells(target)), "routes": [],
+              "scope": "Final-artifact launch and generated-adapter invocation smoke for both aliases; "
+                       "not actual Tab, terminal/editor/cancellation, profile installation or arbitrary shell versions. "
+                       "Phase 2e actual-Tab source evidence is separate and does not qualify these archive bytes."}
+    directory = evidence / "shell-routes"
+    directory.mkdir()
+    with tempfile.TemporaryDirectory(prefix="twigsmith-shell-routes-") as temporary:
+        temporary = Path(temporary)
+        env = native_environment(temporary, os.environ)
+        env["PATH"] = str(artifact) + os.pathsep + env["PATH"]
+        env["TWIGSMITH_EXPECTED_VERSION"] = f"twigsmith {version}"
+        for name in report["selected"]:
+            executable = shell_executable(name, os.environ)
+            route = {"name": name, "executable": executable, "available": bool(executable), "probes": [], "passed": False}
+            report["routes"].append(route)
+            if not executable:
+                route["gap"] = "required host shell unavailable"
+                continue
+            version_command = ([executable, "-NoLogo", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"]
+                               if name == "powershell" else [executable, "/d", "/c", "ver"]
+                               if name == "cmd" else [executable, "--version"])
+            output = fixture_output(version_command, directory / f"{name}-version.log", env, temporary)
+            route.update(version=output.stdout.strip(), version_command=version_command, version_exit=output.returncode)
+            if output.returncode or not output.stdout.strip():
+                route["gap"] = "shell version observation failed"
+                continue
+            if name == "powershell" and not re.match(r"^7\.6\.", output.stdout.strip()):
+                route["gap"] = "approved PowerShell 7.6 line required"
+                continue
+            adapter = directory / (f"adapter-{name}.ps1" if name == "powershell" else f"adapter-{name}.txt")
+            completion = name not in ("cmd", "git-bash")
+            if completion:
+                binary = artifact / ("twigsmith.exe" if target.endswith("windows-msvc") else "twigsmith")
+                command = [str(binary), "completion", name]
+                output = fixture_output(command, directory / f"{name}-generate.log", env, temporary)
+                route["adapter_generation"] = {"command": command, "exit": output.returncode}
+                if output.returncode or not output.stdout.strip():
+                    route["gap"] = "artifact adapter generation failed"
+                    continue
+                adapter.write_text(output.stdout, encoding="utf-8")
+                route["adapter_sha256"] = digest(adapter)
+                env["TWIGSMITH_ADAPTER"] = str(adapter)
+            for action in (["launch", "completion"] if completion else ["launch"]):
+                suffix = ".ps1" if name == "powershell" else ".cmd" if name == "cmd" else ".sh"
+                script = directory / f"{name}-{action}{suffix}"
+                script.write_text(shell_script(name, completion=action == "completion"), encoding="utf-8")
+                for alias in ("twigsmith", "tgi"):
+                    env["TWIGSMITH_ALIAS"] = alias
+                    command = shell_command(name, executable, script)
+                    output = fixture_output(command, directory / f"{name}-{action}-{alias}.log", env, temporary)
+                    expected = f"twigsmith {version}" if name == "cmd" else "SHELL_PROBE_OK"
+                    route["probes"].append({"name": f"{action}-{alias}", "command": command, "alias": alias,
+                                            "exit": output.returncode, "passed": output.returncode == 0
+                                            and output.stdout.strip() == expected})
+            route["passed"] = all(probe["passed"] for probe in route["probes"])
+    report["coverage_complete"] = all(route["passed"] for route in report["routes"])
+    # Missing optional runtimes remain explicit gaps; failures of available routes
+    # always fail, and acceptance mode requires every approved host shell.
+    report["passed"] = all(route["passed"] for route in report["routes"] if route["available"]) and (
+        report["coverage_complete"] or not require)
+    write_json(directory / "shell-routes.json", report)
+    return report
+
+
 def native_run(args, evidence, report):
     manifest = native_package.verify(args.archive)
     target = host_target()
@@ -314,6 +473,10 @@ def native_run(args, evidence, report):
         if output.returncode or output.stdout.strip() != f"twigsmith {manifest['version']}" or output.stderr:
             raise ValueError(f"unexpected archived {name} --version result")
     passed = run_fixtures(artifact, args.harness_dir.resolve(), evidence, report)
+    report["shell_routes"] = shell_routes(artifact, manifest["version"], evidence,
+                                          require=getattr(args, "require_shells", False))
+    passed = passed and report["shell_routes"]["passed"]
+    report["passed"] = passed
     if hashes != {name: digest(path) for name, path in binaries.items()}:
         raise ValueError("artifact bytes changed during qualification")
     return 0 if passed else 1
@@ -407,8 +570,8 @@ def npm_invocation(args, *, npx=False):
 def powershell_shim_probes(shim_dir, version, evidence, env):
     """Observe installed .ps1 launch/diagnostics under the host's default policy.
 
-    This noninteractive probe complements the .cmd terminal fixtures; it does
-    not establish PowerShell-shim interactive or console-cancellation behavior.
+    This probe alone does not establish interactive/cancellation behavior;
+    the separate powershell_terminal report records those installed-shim fixtures.
     """
     pwsh = shutil.which("pwsh", path=env.get("PATH"))
     if not pwsh:
@@ -418,7 +581,8 @@ def powershell_shim_probes(shim_dir, version, evidence, env):
     if output.returncode or not output.stdout.strip():
         raise ValueError("PowerShell version observation failed")
     report = {"executable": pwsh, "version": output.stdout.strip(), "shim_sha256": {},
-              "scope": "Noninteractive installed .ps1 invocation with default execution policy; terminal/cancellation unqualified.",
+              "scope": "Noninteractive installed .ps1 invocation with default execution policy; "
+                       "terminal/cancellation results are recorded separately under powershell_terminal.",
               "probes": []}
     for name in ("twigsmith", "tgi"):
         shim = shim_dir / f"{name}.ps1"
@@ -440,6 +604,63 @@ def powershell_shim_probes(shim_dir, version, evidence, env):
                                      "exit": output.returncode})
         if digest(shim) != report["shim_sha256"][name]:
             raise ValueError("installed PowerShell shim changed during qualification")
+    return report
+
+
+def powershell_terminal_fixtures(bridge, harness, evidence, env):
+    """Keep .cmd evidence intact while exercising actual installed .ps1 shims."""
+    directory = evidence / "powershell-terminal"
+    directory.mkdir()
+    executable = shutil.which("pwsh", path=env.get("PATH"))
+    if not executable:
+        raise ValueError("PowerShell is required for Windows npm terminal qualification")
+    pwsh = checked_file(Path(executable).resolve(strict=True))
+    if not pwsh.stat().st_size:
+        raise ValueError("selected npm PowerShell must be nonempty")
+    trace = directory / "shim-invocations.jsonl"
+    trace.touch(exist_ok=False)
+    selected_env = dict(env, TWIGSMITH_NPM_SHIM_KIND="ps1", TWIGSMITH_NPM_POWERSHELL=str(pwsh),
+                        TWIGSMITH_NPM_SHIM_TRACE=str(trace))
+    report = {"profile": "launcher", "shim_kind": "ps1",
+              "powershell_executable": str(pwsh),
+              "invocation": "qualification bridge -> pwsh -NoLogo -NoProfile -File installed .ps1 -> Node launcher -> native payload",
+              "scope": "Three existing launcher/terminal fixtures; no execution-policy override."}
+    run_fixtures(bridge, harness, directory, report, kind="npm", env=selected_env,
+                 selected_cases=npm_cases("launcher"))
+    report["shim_trace"] = powershell_trace_report(trace, Path(env["TWIGSMITH_NPM_SHIM_DIR"]), pwsh)
+    report["passed"] = report["passed"] and report["shim_trace"]["passed"]
+    write_json(directory / "qualification.json", report)
+    return report
+
+
+def powershell_trace_report(trace, shim_dir, pwsh):
+    """A passing fixture is insufficient unless the isolated bridge used .ps1."""
+    expected = {name for names in LAUNCHER_CASES.values() for name in names}
+    report = {"path": str(trace), "entries": [], "errors": [], "passed": False}
+    try:
+        if trace.is_symlink() or not trace.is_file():
+            raise ValueError("expected regular qualification shim trace")
+        report["entries"] = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+        if not report["entries"]:
+            raise ValueError("no actual bridge invocations recorded")
+        cases, aliases = set(), set()
+        for row in report["entries"]:
+            if not isinstance(row, dict) or set(row) != {"kind", "shim", "pwsh", "isolated_test", "alias"}:
+                raise ValueError("invalid shim invocation trace fields")
+            alias = row["alias"]
+            if row["kind"] != "ps1" or alias not in ("twigsmith", "tgi") or row["isolated_test"] not in expected:
+                raise ValueError("bridge used wrong shim kind, alias or isolated test")
+            for field, selected in (("pwsh", pwsh), ("shim", shim_dir / f"{alias}.ps1")):
+                actual = Path(row[field])
+                if not actual.is_absolute() or not actual.samefile(selected):
+                    raise ValueError(f"bridge used unexpected {field}")
+            cases.add(row["isolated_test"])
+            aliases.add(alias)
+        if cases != expected or aliases != {"twigsmith", "tgi"}:
+            raise ValueError("shim invocation trace lacks a selected fixture or alias")
+        report["passed"] = True
+    except (OSError, ValueError, TypeError) as error:
+        report["errors"].append(str(error))
     return report
 
 
@@ -511,6 +732,7 @@ def npm_run(args, evidence, report):
             for name in ("twigsmith", "tgi"):
                 shutil.copy2(bridge, bridge_dir / (name + (".exe" if os.name == "nt" else "")))
             env["TWIGSMITH_NPM_SHIM_DIR"] = str(shim_dir)
+            env["TWIGSMITH_NPM_SHIM_KIND"] = "cmd"
             # Both commands go through the real installed npm shim even under
             # native PTY/ConPTY fixtures; the fixture bridge adds no product logic.
             for name in ("twigsmith", "tgi"):
@@ -523,6 +745,8 @@ def npm_run(args, evidence, report):
             if os.name == "nt":
                 report["powershell"] = powershell_shim_probes(shim_dir, version, evidence, env)
                 report["probes"].extend(report["powershell"]["probes"])
+                report["powershell_terminal"] = powershell_terminal_fixtures(bridge_dir, harness, evidence, env)
+                passed = passed and report["powershell_terminal"]["passed"]
             original_metadata = resolved_metadata.read_bytes()
             try:
                 for label, field, value in [("wrong-version-refusal", "version", "0.0.0-invalid"),
@@ -587,6 +811,8 @@ def main():
     prepare_parser.add_argument("--cargo", type=Path)
     native = commands.add_parser("run", help="verify/extract and qualify exact native archive; never compiles")
     native.add_argument("--archive", required=True, type=Path)
+    native.add_argument("--require-shells", action="store_true",
+                        help="require every approved host shell launch/completion route; missing shells fail")
     npm = commands.add_parser("npm", help="qualify unpublished exact packages with local npm install/npx")
     npm.add_argument("--package-set-dir", required=True, type=Path)
     npm.add_argument("--npm", type=Path)

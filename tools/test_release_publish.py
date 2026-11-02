@@ -471,6 +471,13 @@ class PublicationTests(unittest.TestCase):
 
 
 class NpmDiagnosticTests(unittest.TestCase):
+    def test_integrated_set_refuses_before_input_or_provider_access(self):
+        for approval in ({'schema': 2}, {'topology': 'optional-platform-packages'},
+                         {'native': []}):
+            with self.subTest(approval=approval), self.assertRaisesRegex(
+                    publish.PublicationError, 'full-set publisher'):
+                publish.approved_inputs('/absent/archive', '/absent/npm', approval)
+
     def test_anonymous_npm_exec_does_not_inherit_publication_credentials(self):
         credentials = {'GH_TOKEN': 'x', 'GITHUB_TOKEN': 'x', 'NODE_AUTH_TOKEN': 'x',
                        'NPM_TOKEN': 'x', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'x',
