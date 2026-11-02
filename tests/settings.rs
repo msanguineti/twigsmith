@@ -1849,6 +1849,47 @@ fn ordered_tagged_routes_layer_replace_and_select_identity() {
 }
 
 #[test]
+fn hotfix_active_release_membership_preserves_explicit_order_and_singular_routing() {
+    use settings::WorkstreamKind;
+    isolated(
+        "hotfix_active_release_membership_preserves_explicit_order_and_singular_routing",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let path = repo.path().join(CONFIG_FILES[3]);
+            for targets in [vec!["main", "release/train"], vec!["release/train", "main"]] {
+                fs::write(
+                    &path,
+                    serde_json::json!({"workstreams": {"hotfix": {
+                        "active-release": "release/train", "integration-targets": targets,
+                        "version-tagging": "required", "version-tag-identity": "integrated-result",
+                        "finish-mode": "integrate", "finish-update": "none"
+                    }}})
+                    .to_string(),
+                )
+                .unwrap();
+                let mut loaded = load(repo.path()).unwrap();
+                settings::resolve_workstream(&mut loaded, WorkstreamKind::Hotfix, None).unwrap();
+                let policy = loaded.workstream.unwrap();
+                assert_eq!(policy.integration_targets, targets);
+                assert_eq!(policy.integration_target, targets[0]);
+                assert_eq!(policy.active_release.as_deref(), Some("release/train"));
+            }
+            fs::write(&path, r#"{"workstreams":{"hotfix":{"active-release":"release/train","integration-targets":["main","develop"],"version-tagging":"required","finish-mode":"integrate","finish-update":"none"}}}"#).unwrap();
+            let error = load(repo.path()).unwrap_err().to_string();
+            assert!(error.contains("declared active-release"), "{error}");
+            fs::write(&path, r#"{"workstreams":{"hotfix":{"active-release":"release/train","integration-target":"main"}}}"#).unwrap();
+            let mut loaded = load(repo.path()).unwrap();
+            settings::resolve_workstream(&mut loaded, WorkstreamKind::Hotfix, None).unwrap();
+            assert_eq!(
+                loaded.workstream.unwrap().integration_targets,
+                ["release/train"]
+            );
+        },
+    );
+}
+
+#[test]
 fn ordered_routes_reject_ambiguity_aliases_and_review_before_effects() {
     isolated(
         "ordered_routes_reject_ambiguity_aliases_and_review_before_effects",
@@ -2065,4 +2106,209 @@ fn composable_save_settings_are_strict_equivalent_and_replace_whole_plans() {
             settings::SavePlan::Operations(vec![])
         );
     });
+}
+
+#[test]
+fn workflow_bundles_round_trip_explicit_roles_and_preserve_custom_choices() {
+    use settings::{
+        FinishCheck, FinishCheckout, FinishCleanup, FinishIntegration, FinishMessage, FinishMode,
+        VersionTagIdentity, WorkstreamKind,
+    };
+    use twigsmith::config::Format;
+    isolated(
+        "workflow_bundles_round_trip_explicit_roles_and_preserve_custom_choices",
+        true,
+        |root| {
+            let repo = Repository::new(root);
+            let original = Settings {
+                base: "integration/next".into(),
+                publish_remote: "fork".into(),
+                base_remote: "project".into(),
+                save_plan: save_plan("commit:staged,stash:unstaged"),
+                finish_checks: vec![FinishCheck {
+                    name: "Project gate".into(),
+                    command: vec!["project-check".into(), "literal argument".into()],
+                }],
+                ..Settings::default()
+            };
+            for github in [true, false] {
+                for active in [None, Some("release/train".to_string())] {
+                    let mut proposed = original.clone();
+                    // Changing the selected bundle replaces its templates.
+                    settings::oneflow_bundle(&mut proposed, Some("stable".into()));
+                    if github {
+                        settings::github_flow_bundle(&mut proposed);
+                    } else {
+                        settings::gitflow_bundle(
+                            &mut proposed,
+                            "production/live".into(),
+                            active.clone(),
+                        );
+                    }
+                    assert_eq!(proposed.save_plan, original.save_plan);
+                    assert_eq!(proposed.finish_checks, original.finish_checks);
+                    assert_eq!(proposed.publish_remote, "fork");
+                    assert_eq!(proposed.base_remote, "project");
+                    assert_eq!(proposed.workstreams.len(), if github { 1 } else { 3 });
+                    for format in [Format::Toml, Format::Yaml, Format::Json] {
+                        let path = repo.path().join(format.filename());
+                        fs::write(&path, twigsmith::config::render(format, &proposed)).unwrap();
+                        let loaded = load(repo.path()).unwrap();
+                        assert_eq!(loaded.workstreams, proposed.workstreams);
+                        assert_eq!(loaded.save_plan, original.save_plan);
+                        assert_eq!(loaded.finish_checks, original.finish_checks);
+                        let mut ordinary = loaded.clone();
+                        settings::resolve_workstream(&mut ordinary, WorkstreamKind::Ordinary, None)
+                            .unwrap();
+                        assert_eq!(ordinary.base, "integration/next");
+                        assert_eq!(ordinary.publish_remote, "fork");
+                        assert_eq!(ordinary.base_remote, "project");
+                        assert_eq!(
+                            ordinary.finish_mode,
+                            if github {
+                                FinishMode::Review
+                            } else {
+                                FinishMode::Integrate
+                            }
+                        );
+                        assert_eq!(
+                            ordinary.finish_checkout,
+                            if github {
+                                FinishCheckout::Work
+                            } else {
+                                FinishCheckout::Target
+                            }
+                        );
+                        assert_eq!(
+                            ordinary.finish_cleanup,
+                            if github {
+                                FinishCleanup::Keep
+                            } else {
+                                FinishCleanup::Both
+                            }
+                        );
+                        assert_eq!(ordinary.finish_update, FinishUpdate::Merge);
+                        assert_eq!(ordinary.history_edit, HistoryEdit::None);
+                        assert_eq!(ordinary.finish_rewrite, FinishRewrite::Deny);
+                        assert_eq!(ordinary.finish_integration, FinishIntegration::Merge);
+                        assert_eq!(ordinary.finish_message, FinishMessage::Auto);
+                        let policy = ordinary.workstream.unwrap();
+                        assert_eq!(policy.creation_source, None);
+                        assert_eq!(policy.preparation_source, "integration/next");
+                        assert_eq!(policy.integration_targets, ["integration/next"]);
+                        assert!(!policy.version_tagging);
+                        assert_eq!(policy.release_marker, None);
+                        for kind in [WorkstreamKind::Release, WorkstreamKind::Hotfix] {
+                            let mut tagged = loaded.clone();
+                            if github {
+                                assert!(
+                                    settings::resolve_workstream(&mut tagged, kind, None).is_err()
+                                );
+                                continue;
+                            }
+                            settings::resolve_workstream(&mut tagged, kind, None).unwrap();
+                            assert_eq!(tagged.publish_remote, "project");
+                            assert_eq!(tagged.base_remote, "project");
+                            assert_eq!(tagged.finish_mode, FinishMode::Integrate);
+                            assert_eq!(tagged.finish_checkout, FinishCheckout::Target);
+                            assert_eq!(tagged.finish_cleanup, FinishCleanup::Both);
+                            assert_eq!(tagged.finish_update, FinishUpdate::None);
+                            assert_eq!(tagged.history_edit, HistoryEdit::None);
+                            assert_eq!(tagged.finish_rewrite, FinishRewrite::Deny);
+                            assert_eq!(tagged.finish_integration, FinishIntegration::Merge);
+                            assert_eq!(tagged.finish_message, FinishMessage::Auto);
+                            let policy = tagged.workstream.unwrap();
+                            assert!(policy.version_tagging);
+                            assert_eq!(
+                                policy.version_tag_identity,
+                                VersionTagIdentity::IntegratedResult
+                            );
+                            assert_eq!(policy.release_marker, None);
+                            assert_eq!(policy.integration_target, "production/live");
+                            if kind == WorkstreamKind::Release {
+                                assert_eq!(
+                                    policy.creation_source.as_deref(),
+                                    Some("integration/next")
+                                );
+                                assert_eq!(policy.preparation_source, "integration/next");
+                                assert_eq!(
+                                    policy.integration_targets,
+                                    ["production/live", "integration/next"]
+                                );
+                            } else {
+                                assert_eq!(policy.creation_source, None);
+                                assert_eq!(policy.preparation_source, "production/live");
+                                assert_eq!(policy.active_release, active);
+                                assert_eq!(
+                                    policy.integration_targets,
+                                    [
+                                        "production/live",
+                                        active.as_deref().unwrap_or("integration/next")
+                                    ]
+                                );
+                            }
+                        }
+                        fs::remove_file(path).unwrap();
+                    }
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn trunk_bundle_selects_staged_save_and_explicit_finish_route() {
+    use settings::{
+        FinishCheckout, FinishCleanup, FinishIntegration, FinishMessage, FinishMode, WorkstreamKind,
+    };
+    for review in [false, true] {
+        let mut proposed = Settings {
+            base: "trunk/next".into(),
+            publish_remote: "fork".into(),
+            base_remote: "project".into(),
+            ..Settings::default()
+        };
+        settings::oneflow_bundle(&mut proposed, Some("stable".into()));
+        settings::trunk_bundle(&mut proposed, review);
+        assert_eq!(proposed.save_plan, save_plan("commit:staged"));
+        assert_eq!(proposed.base, "trunk/next");
+        assert_eq!(proposed.publish_remote, "fork");
+        assert_eq!(proposed.base_remote, "project");
+        assert_eq!(proposed.workstreams.len(), 1);
+        settings::resolve_workstream(&mut proposed, WorkstreamKind::Ordinary, None).unwrap();
+        assert_eq!(
+            proposed.finish_mode,
+            if review {
+                FinishMode::Review
+            } else {
+                FinishMode::Integrate
+            }
+        );
+        assert_eq!(proposed.finish_integration, FinishIntegration::FfOnly);
+        assert_eq!(proposed.finish_message, FinishMessage::Auto);
+        assert_eq!(proposed.finish_update, FinishUpdate::Merge);
+        assert_eq!(proposed.history_edit, HistoryEdit::None);
+        assert_eq!(proposed.finish_rewrite, FinishRewrite::Deny);
+        assert_eq!(
+            proposed.finish_checkout,
+            if review {
+                FinishCheckout::Work
+            } else {
+                FinishCheckout::Target
+            }
+        );
+        assert_eq!(
+            proposed.finish_cleanup,
+            if review {
+                FinishCleanup::Keep
+            } else {
+                FinishCleanup::Both
+            }
+        );
+        let ordinary = proposed.workstream.unwrap();
+        assert_eq!(ordinary.creation_source, None);
+        assert_eq!(ordinary.preparation_source, "trunk/next");
+        assert_eq!(ordinary.integration_targets, ["trunk/next"]);
+        assert!(!ordinary.version_tagging);
+    }
 }

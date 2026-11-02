@@ -271,6 +271,15 @@ checks and retained-candidate retry. Real Git checks refs, raw index preservatio
 index-tree identity, tracked content and checkout cleanliness in isolated repositories with spaces in their
 paths and literal punctuation in branch names. Fixtures supply their own Git
 identity and configuration and require no credentials or network service.
+The [generated-settings journeys](../tests/native_journey/bundles.rs), included in
+`native_journey`, exercise GitHub Flow review and trunk direct/review with custom
+branch names and separate project/work remotes. They check generation's Git-state
+preservation, creation from a freshly advanced project base, save publication,
+unfinished-work refusal, review retention, and direct checkout/cleanup. These are
+actual CLI processes using generated shared settings. The
+[GitFlow cases](../tests/cli_direct_sequence/bundles.rs), included in
+`cli_direct_sequence`, exercise generated policies, independent release/hotfix
+destinations, production-result version tags, active-release routing, and retry.
 The companion process suite checks literal arguments, environment, EOF input,
 streaming, output volume and managed descendant cancellation. Guard fixtures check
 local mutations, hidden tracked work, ignored output, remote movement, retry,
@@ -295,8 +304,12 @@ handoff, not arbitrary detached GUI editor containment or full interactive cover
 
 The `native_prompts` suite exercises guided setup and representative save/finish
 choices in capable terminals, with literal Unicode input, cancellation, context
-revalidation and complete-line fallback. The presentation unit test adds keyboard
-filtering, defaults, in-prompt Tab suggestions, narrow widths and colour suppression.
+revalidation and complete-line fallback. Setup coverage includes the bundle menu,
+GitFlow's development default, editable production/active-release roles, and
+explicit file creation. The configuration suite adds all-format generation,
+supported/refused delivery routes, role validation, private layering, and guided
+customization/cancellation; completion tests cover the new vocabulary and values.
+The presentation unit test adds keyboard filtering, defaults, in-prompt Tab suggestions, narrow widths and colour suppression.
 The native matrix selects both suites explicitly. These tests use the same PTY/ConPTY
 harness as editor tests and check usable line input and echo after prompts.
 A fallback-only execution does not establish capable keyboard behavior.
@@ -311,6 +324,10 @@ report their actual observations; an unavailable capability supplies no evidence
 that its guard passed. These suites retain platform-specific historical cases
 where their process or filesystem mechanism requires it. The native matrix selects
 the portable cases alongside the earlier journey, process, editor and prompt tests.
+Bundle journeys use those existing source-test targets and runner selections;
+adding their cases establishes no new runner, desktop, or shipped-artifact scope.
+Judge native execution from each job's actual results, including explicit skips
+and unavailable capabilities.
 
 The native suite selection uses `--no-fail-fast` so a failing test binary still
 leaves evidence from the other selected binaries; the job remains unsuccessful

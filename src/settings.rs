@@ -1590,9 +1590,9 @@ pub fn resolve_workstream(
         && let Some(active) = &active_release
     {
         if config.integration_targets.is_some() {
-            if &integration_targets[0] != active {
+            if !integration_targets.contains(active) {
                 return Err(SettingsError::InvalidSettings(
-                    "hotfix integration-targets must start with the declared active-release branch"
+                    "hotfix integration-targets must contain the declared active-release branch"
                         .into(),
                 ));
             }
@@ -2064,6 +2064,120 @@ fn apply_branch_policy(
     }
     Ok(())
 }
+/// Short work branches published for review; all behavior remains ordinary settings.
+pub fn github_flow_bundle(settings: &mut Settings) {
+    ordinary_work_bundle(settings, FinishMode::Review);
+}
+
+/// Frequent staged saves with fast-forward delivery or retained review work.
+pub fn trunk_bundle(settings: &mut Settings, review: bool) {
+    ordinary_work_bundle(
+        settings,
+        if review {
+            FinishMode::Review
+        } else {
+            FinishMode::Integrate
+        },
+    );
+    settings.save_plan = SavePlan::Operations(vec![SaveOperation {
+        action: SaveKind::Commit,
+        scope: SaveScope::Staged,
+    }]);
+    settings.finish_integration = FinishIntegration::FfOnly;
+    settings
+        .workstreams
+        .get_mut(&WorkstreamKind::Ordinary)
+        .expect("ordinary bundle template")
+        .finish_integration = Some("ff-only".into());
+}
+
+/// Separate development and production lines, with production-result version tags.
+pub fn gitflow_bundle(settings: &mut Settings, production: String, active_release: Option<String>) {
+    ordinary_work_bundle(settings, FinishMode::Integrate);
+    let development = settings.base.clone();
+    let project_remote = settings.base_remote.clone();
+    for kind in [WorkstreamKind::Release, WorkstreamKind::Hotfix] {
+        let release = kind == WorkstreamKind::Release;
+        settings.workstreams.insert(
+            kind,
+            WorkstreamConfig {
+                creation_source: release.then(|| development.clone()),
+                preparation_source: Some(if release {
+                    development.clone()
+                } else {
+                    production.clone()
+                }),
+                integration_targets: Some(vec![
+                    production.clone(),
+                    if release {
+                        development.clone()
+                    } else {
+                        active_release
+                            .clone()
+                            .unwrap_or_else(|| development.clone())
+                    },
+                ]),
+                publish_remote: Some(project_remote.clone()),
+                base_remote: Some(project_remote.clone()),
+                version_tagging: Some("required".into()),
+                version_tag_identity: Some("integrated-result".into()),
+                release_marker: Some("none".into()),
+                active_release: (!release)
+                    .then(|| active_release.clone().unwrap_or_else(|| "none".into())),
+                finish_mode: Some("integrate".into()),
+                finish_update: Some("none".into()),
+                finish_history_edit: Some("none".into()),
+                finish_integration: Some("merge".into()),
+                finish_cleanup: Some("both".into()),
+                finish_checkout: Some("target".into()),
+                finish_rewrite: Some("deny".into()),
+                finish_message: Some("auto".into()),
+                ..WorkstreamConfig::default()
+            },
+        );
+    }
+}
+
+fn ordinary_work_bundle(settings: &mut Settings, mode: FinishMode) {
+    settings.finish_mode = mode;
+    settings.finish_integration = FinishIntegration::Merge;
+    settings.finish_message = FinishMessage::Auto;
+    settings.finish_checkout = if mode == FinishMode::Review {
+        FinishCheckout::Work
+    } else {
+        FinishCheckout::Target
+    };
+    settings.finish_cleanup = if mode == FinishMode::Review {
+        FinishCleanup::Keep
+    } else {
+        FinishCleanup::Both
+    };
+    settings.finish_update = FinishUpdate::Merge;
+    settings.history_edit = HistoryEdit::None;
+    settings.finish_rewrite = FinishRewrite::Deny;
+    settings.workstream = None;
+    settings.workstreams.clear();
+    settings.workstreams.insert(
+        WorkstreamKind::Ordinary,
+        WorkstreamConfig {
+            // Omission preserves ordinary start's fresh remote-base creation.
+            preparation_source: Some(settings.base.clone()),
+            integration_target: Some(settings.base.clone()),
+            version_tagging: Some("disabled".into()),
+            release_marker: Some("none".into()),
+            finish_mode: Some(mode.as_str().into()),
+            finish_update: Some("merge".into()),
+            finish_history_edit: Some("none".into()),
+            finish_integration: Some("merge".into()),
+            finish_cleanup: Some(settings.finish_cleanup.as_str().into()),
+            finish_checkout: Some(settings.finish_checkout.as_str().into()),
+            finish_rewrite: Some("deny".into()),
+            finish_message: Some("auto".into()),
+            ..WorkstreamConfig::default()
+        },
+    );
+}
+
 /// Explicit editable OneFlow data; selecting this bundle never changes Git refs.
 pub fn oneflow_bundle(settings: &mut Settings, marker: Option<String>) {
     let development = settings.base.clone();

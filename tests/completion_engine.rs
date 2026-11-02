@@ -75,6 +75,13 @@ fn grammar_and_values_work_without_repository_or_git() {
                         "--yes",
                         "--oneflow",
                         "--oneflow-hosted",
+                        "--bundle",
+                        "--delivery",
+                        "--base",
+                        "--publish-remote",
+                        "--base-remote",
+                        "--production",
+                        "--active-release",
                         "--marker",
                         "--format",
                         "--help",
@@ -107,6 +114,19 @@ fn grammar_and_values_work_without_repository_or_git() {
                 ("finish", "--update", vec!["merge", "none", "rebase"]),
                 ("finish", "--history-edit", vec!["interactive", "none"]),
                 ("config", "--format", vec!["json", "toml", "yaml"]),
+                (
+                    "config",
+                    "--bundle",
+                    vec![
+                        "gitflow",
+                        "github-flow",
+                        "oneflow",
+                        "oneflow-hosted",
+                        "trunk",
+                    ],
+                ),
+                ("config", "--delivery", vec!["direct", "review"]),
+                ("config", "--active-release", vec!["none"]),
             ] {
                 assert_eq!(complete(root, &["tgi", command, option, ""]), values);
             }

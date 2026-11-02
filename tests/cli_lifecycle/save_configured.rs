@@ -49,6 +49,8 @@ fn configured_mixed_save_recovers_native_work_before_plain_finish() {
 
             // Configure the routine once through the same guided setup offered to users.
             let mut setup = terminal::Terminal::start(EXE, local.path(), &["config"]);
+            setup.until("Settings bundle:");
+            setup.send(b"\n");
             setup.until("Remote receiving work");
             setup.send(format!("\n\n\nedit\ncommit:staged,stash:unstaged\n{MESSAGE}\n{STASH_LABEL}\nedit\nreview\nnone\ndeny\nkeep\nkeep\n").as_bytes());
             setup.until("Create this file?");

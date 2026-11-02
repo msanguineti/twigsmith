@@ -701,11 +701,14 @@ Hotfix routing requires declared active-release context: a specific release
 branch or explicit `none`. The developer supplies and maintains that declaration.
 Finish does not infer an active release from prefixes, branch enumeration, tag
 dates, or version ordering. With an active release, the hotfix integrates there;
-otherwise its default destination is development. An explicit destination list
-with an active release starts with that release branch. Any additional destinations
-are declared explicitly. Completing the release later carries the fix into
-development under the default single-destination route. Invalid or changed declared
-context stops routing.
+otherwise its default destination is development. With a singular route, the
+declared active release supplies the destination. An explicit destination list
+must include the declared active release; its position is independent of version identity.
+For example, GitFlow uses production first, then the active release, so the version
+tag identifies production's integration result. Additional destinations are always
+declared explicitly. Completing the release later carries the fix into development
+under the single active-release route or the generated GitFlow route. Invalid or
+changed declared context stops routing.
 
 An enabled release marker is a distinct branch pointing at the released tag's
 commit, even when the integration result includes newer development. Finish
@@ -854,6 +857,7 @@ observation. Its text is intended for people.
 tgi config show
 tgi config [--format <toml|yaml|json>]
 tgi config --yes [--format <toml|yaml|json>]
+tgi config --bundle <oneflow|oneflow-hosted|github-flow|gitflow|trunk> [--delivery <direct|review>] [--yes] [OPTIONS]
 tgi config --oneflow [--yes] [--marker <branch>] [--format <toml|yaml|json>]
 tgi config --oneflow-hosted [--yes] [--marker <branch>] [--format <toml|yaml|json>]
 ```
@@ -864,9 +868,14 @@ source, discovered files, and searched directories. Check commands are displayed
 as argument lists without execution or executable availability checks. Inspection
 is local, read-only, and intended for people.
 
-`config` groups setup into repository, saving work, finishing work, and review.
-Enter retains the displayed text default or the selected group preferences. Choose
-`edit` to adjust a group; review lets you return to an earlier group before creation.
+`config` first offers a settings bundle, defaulting to no bundle. OneFlow and trunk
+also offer direct or review delivery. An explicit bundle skips the bundle menu;
+`--delivery` or a OneFlow alias also resolves its delivery choice. Setup then groups
+repository roles, saving work, finishing work, workstream policies, and review.
+GitFlow additionally asks for production and the active release branch or `none`.
+Bundles are applied after branch and remote roles are chosen and before preference
+editing. Enter retains the displayed text default or selected group preferences.
+Choose `edit` to adjust a group; review lets you return to an earlier group before creation.
 Review delivery omits direct integration questions; fast-forward-only omits commit
 message preferences. Advanced history editing and finish checks remain available.
 
@@ -890,10 +899,11 @@ it; the creation menu initially selects `no`. Cancellation or end-of-input creat
 no file. Invalid answers remain correctable. Changed review context stops creation;
 inspect it and rerun setup.
 
-`--yes` (also `-y`) creates built-in shared defaults without prompts. It writes
-`publish-remote = origin`, omits `base-remote` to keep the derived relationship,
-retains unresolved `ask` policies, and writes an empty check list. It reports
-private file locations without copying their contents. Generation validates both
+Without a bundle or role options, `--yes` (also `-y`) creates built-in shared defaults
+without prompts. It writes `publish-remote = origin`, omits `base-remote` to keep
+the derived relationship, retains unresolved `ask` policies, and writes an empty
+check list. A selected bundle and supplied roles replace the corresponding
+defaults. It reports private file locations without copying their contents. Generation validates both
 the proposed shared contents and the effective private overrides before writing.
 Invalid fields or policy relationships require correction; missing future remotes
 or branches remain valid offline settings. Use `config show` to inspect effective
@@ -916,6 +926,181 @@ extension, an invalid or empty file, a directory, or a dangling symlink. Inspect
 edit the existing file and keep one recognized file per layer. Guided setup
 validates private files before review; repair invalid private files before retrying.
 Generation requires a working tree; bare repositories support inspection only.
+
+### Settings bundles
+
+A bundle writes ordinary settings and workstream templates in TOML, YAML, or JSON.
+Execution uses those values; the generated file stores no bundle or strategy
+identifier. Edit the file or use guided policy editing to customize its behavior.
+Policy-specific finish fields override top-level finish preferences. Guided
+finishing edits also update the ordinary policy; tagged release/hotfix preferences
+remain separately editable. Review shows the effective routes. Private overrides retain their normal precedence and are
+never copied into the shared file.
+
+| Bundle | Supported delivery; default | Base default | Policies supplied |
+| --- | --- | --- | --- |
+| `oneflow` | `direct` or `review`; direct | `main` | ordinary, release, hotfix |
+| `oneflow-hosted` | review | `main` | Alias for OneFlow review |
+| `github-flow` | review | `main` | ordinary |
+| `gitflow` | direct | `develop` | ordinary, release, hotfix |
+| `trunk` | `direct` or `review`; direct | `main` | ordinary |
+
+GitHub Flow has only review delivery. GitFlow review is deferred: its production
+and development destinations require direct integration with the current bundle.
+Unsupported delivery selections fail before setup or file creation. The trunk
+bundle supports short work branches; integration frequency, feature flags,
+deployment, and team review practices remain project decisions.
+
+| Setup option | Role and default |
+| --- | --- |
+| `--bundle <name>` | Select one bundle from the table |
+| `--delivery <direct\|review>` | Select a supported route; requires a bundle |
+| `--base <branch>` | Development/project base; defaults shown above |
+| `--publish-remote <name>` | Remote receiving ordinary work; default `origin` |
+| `--base-remote <name>` | Project source and direct-delivery remote; follows publication when omitted |
+| `--production <branch>` | GitFlow production; default `main` |
+| `--active-release <branch\|none>` | GitFlow hotfix backmerge context; default `none` |
+| `--marker <branch>` | Optional OneFlow release marker; disabled when omitted |
+| `--format <toml\|yaml\|json>` | Output format; default TOML |
+| `--yes`, `-y` | Generate without prompts, retaining unresolved choices |
+
+Branch and remote names are literal roles and may name future refs or remotes.
+GitFlow production must differ from development; an active release must differ
+from both. `--production` and `--active-release` require GitFlow; `--marker`
+requires OneFlow. Duplicate options and conflicting bundle selectors are rejected.
+`--oneflow` means OneFlow direct, and `--oneflow-hosted` means OneFlow review;
+conflicting `--delivery` choices are rejected. To select review explicitly with
+the general syntax, use `--bundle oneflow --delivery review`.
+
+```sh
+# Review contributions to an upstream project; publish work in a fork.
+tgi config --yes --bundle github-flow --base trunk --publish-remote fork --base-remote upstream
+
+# Separate production and development, with a declared release in progress.
+tgi config --yes --bundle gitflow --base next --production stable --active-release release/2
+
+# Short branches with direct fast-forward delivery, or manual review.
+tgi config --yes --bundle trunk --delivery direct
+tgi config --yes --bundle trunk --delivery review --format yaml
+
+# OneFlow review with a release marker.
+tgi config --yes --bundle oneflow --delivery review --marker stable
+```
+
+Each command creates a new shared file; choose one for a repository. Existing
+recognized configuration is preserved. Setup contacts no remote, changes no Git
+refs, index, or existing work, and runs no checks. Commit the generated shared file
+before starting work so it follows the project's branch history.
+
+#### Generated bundle defaults
+
+All bundles start with publication remote `origin`, a project remote following
+publication, commit message `Save work`, stash label `Saved work`, and no finish
+checks. Save asks how to preserve uncommitted work except trunk, which commits
+staged changes and leaves unstaged work local. Guided customization can change
+saving, labels, checks, and individual policy fields before creation.
+
+The table describes effective workstream settings. Development means `--base`,
+production means `--production`, and project means `--base-remote`. Ordinary work
+publishes through `--publish-remote`; generated release and hotfix work publishes
+through the project remote.
+
+| Bundle/policy | Creation source | Preparation source/update | Integration/review destination | Version identity |
+| --- | --- | --- | --- | --- |
+| OneFlow ordinary | Local development branch | development / merge | development | tagging disabled |
+| OneFlow direct release | Local development branch or explicit `--from` | development / none | development | required, work-source |
+| OneFlow direct hotfix | Explicit released tag | development / none | development, or a declared active release | required, work-source |
+| OneFlow review release/hotfix | Same sources as direct | development / merge | development, or a declared active release for hotfix | required, work-source; separate hosted merge-back review |
+| GitHub Flow ordinary | Fresh project base | base / merge | base for review | tagging disabled |
+| GitFlow ordinary | Fresh project development | development / merge | development | tagging disabled |
+| GitFlow release | Local development branch or explicit `--from` | development / none | production, then development | required, integrated result on production |
+| GitFlow hotfix | Explicit released tag | production / none | production, then active release if declared, otherwise development | required, integrated result on production |
+| Trunk ordinary | Fresh project base | base / merge | base | tagging disabled |
+
+OneFlow ordinary policy inherits the top-level history-edit and rewrite
+preferences (built-in `none` and `ask`); tagged OneFlow policies use no history
+editing and deny rewriting. GitHub Flow, GitFlow, and trunk explicitly use no
+history editing and deny rewriting. New ordinary GitHub Flow, GitFlow, and trunk
+work fetches the project base before creation; their `creation-source` is omitted
+to retain that behavior. OneFlow retains its explicit local creation source;
+[explicit source selection](#direct-releases-and-hotfixes) explains freshness.
+
+Direct policies use `finish-mode = "integrate"`, automatic messages, checkout of
+the target, and deletion of local and published work branches after confirmed
+delivery. Integration uses a merge commit except trunk's `ff-only`.
+Review policies use `finish-mode = "review"`, merge preparation, work checkout,
+and retained work branches. Trunk review also records `ff-only` as its inactive
+direct-integration preference. Generated tagged policies use merge integration.
+
+OneFlow's optional marker is disabled by default; its tagged version identity is
+`work-source`. Hosted OneFlow publishes tagged work to the project remote and its
+separate merge-back branch to the selected work remote; the merge-back branch name
+is supplied at finish or customized in the template. GitFlow disables markers and
+uses `integrated-result`, with production first in its ordered destinations.
+Only hotfix templates declare `active-release`; the default is `none`. GitHub Flow
+and trunk supply no release or hotfix templates. The complete editable field
+reference is [workstream policy and routes](#workstream-policy-and-routes).
+
+#### GitHub Flow and trunk journeys
+
+After generating and committing GitHub Flow settings:
+
+```sh
+tgi start feature/search
+# Edit and stage the intended changes.
+tgi save --commit staged --message "Add search"
+tgi finish
+```
+
+Start uses the current project base. Save publishes to the work remote; finish
+prepares, checks, and publishes the work branch for manual review. The project
+base remains unchanged, and the work branch stays checked out and retained.
+Open the pull request, review it, and merge it with your hosting tools. Twigsmith
+creates no pull request and performs no hosting merge or deployment.
+
+With trunk settings, stage the intended changes and use `tgi save`; the generated
+plan commits staged changes before publication. Preserve or commit remaining
+unstaged work before finish. Direct finish updates work by merging the project
+base, validates it, fast-forwards the project target when eligible, then checks
+out the target and removes work branches. Direct publication requires a
+fast-forward; a refusal retains the reported state for inspection and retry.
+Trunk review instead publishes prepared work for manual review, retaining the
+work checkout and branches.
+
+#### GitFlow journeys
+
+Generate settings for your production, development, and current release roles,
+then commit the file. Ordinary `start`, `save`, and `finish` integrate features
+into development. For a release cutoff or an explicitly released hotfix source:
+
+```sh
+tgi start release/2 --policy release --from develop
+# Stabilize and commit the selected release.
+tgi save --commit all --message "Prepare version 2"
+tgi finish --tag v2 --tag-message "Version 2"
+
+tgi start hotfix/2-fix --policy hotfix --from-tag v2
+# Commit the fix to the released version.
+tgi save --commit all --message "Fix version 2"
+tgi finish --tag v2-fix
+```
+
+These examples use the default `main` production and `develop` development names;
+substitute the configured roles. `--from` resolves local knowledge: fetch the
+intended development cutoff first when freshness matters. Hotfix creation always
+requires the exact released tag; no latest version is inferred.
+
+Release finish merges the fixed work source independently into production and
+development, tagging production's integration result. Hotfix finish first merges
+and tags production, then independently merges the same work source into the
+explicit active release, or development when `active-release = "none"`. With an
+active release, development receives the fix when that release is completed.
+Keep the declaration current before establishing new hotfix work; changing an
+established route during retained completion stops reuse. Successful direct finish
+checks out production and cleans up work branches. Conflicts, checks, partial
+publication, and retry use the existing [tagged delivery](#direct-releases-and-hotfixes)
+and [recovery](#recover-direct-integration) contracts. GitFlow review is not
+supplied by this bundle.
 
 ## Repository settings
 

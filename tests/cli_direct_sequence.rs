@@ -1,4 +1,6 @@
 //! Ordered tagged integration and one-time preparation through fresh CLI processes.
+#[path = "cli_direct_sequence/bundles.rs"]
+mod bundles;
 #[path = "cli_direct_sequence/completed_guards.rs"]
 mod completed_guards;
 #[path = "support/native.rs"]

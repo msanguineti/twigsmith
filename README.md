@@ -55,15 +55,23 @@ request and performs no deployment. `status` summarizes the current checkout.
 | `status` | | Inspect repository state |
 | `config` / `config show` / `config --yes` | | Set up or inspect shared settings |
 
-Run `tgi config` to choose a publication remote and a base source for a single
-repository or a fork. Use `tgi config show` to inspect effective roles and sources.
+Run `tgi config` to choose an editable settings bundle, publication remote, and
+base source for a single repository or a fork. Bundles cover OneFlow direct or
+hosted review, GitHub Flow review, GitFlow direct, and lightweight trunk direct or
+review. They generate ordinary settings that you can customize; no workflow mode
+is stored. For unattended setup, use, for example,
+`tgi config --yes --bundle github-flow --publish-remote fork --base-remote upstream`.
+See [settings bundles](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#settings-bundles)
+for routes and defaults. Use `tgi config show` to inspect effective roles and sources.
 See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#remote-roles-and-fork-workflows) for both
 workflows and tracking styles.
 
 For releases and hotfixes, select explicit policy with an editable
 [direct OneFlow](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#direct-releases-and-hotfixes)
 or [hosted OneFlow](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#hosted-releases-and-hotfixes)
-setup. Branch prefixes alone select no policy. The user guide also covers
+setup, or choose [GitFlow](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#gitflow-journeys)
+for separate production and development lines. Branch prefixes alone select no
+policy. The user guide also covers
 [interactive history editing](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#edit-ordinary-work-history).
 
 Terminal menus support arrow keys and Enter; slow Git operations show activity.
