@@ -21,6 +21,31 @@ import qualify_public_release as public
 from test_release_set import platform_fixture
 
 
+class VersionProbeTests(unittest.TestCase):
+    def test_correct_stdout_accepts_stderr_notices_and_retains_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / 'version.log'
+            result = public.version_probe([sys.executable, '-c',
+                "import sys; print('twigsmith 1.0.0-rc.1'); print('npm notice run npx', file=sys.stderr)"],
+                '1.0.0-rc.1', log, os.environ.copy(), root)
+            self.assertEqual(result, {'passed': True, 'exit': 0, 'version': '1.0.0-rc.1'})
+            self.assertIn('twigsmith 1.0.0-rc.1', log.read_text())
+            self.assertIn('npm notice run npx', log.read_text())
+
+    def test_wrong_stdout_or_failed_command_cannot_pass_from_stderr_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for stdout, exit_code in [('twigsmith 0.1.0', 0), ('', 0), ('twigsmith 1.0.0-rc.1', 1)]:
+                script = (f"import sys; print({stdout!r}); "
+                          "print('twigsmith 1.0.0-rc.1', file=sys.stderr); "
+                          f"sys.exit({exit_code})")
+                with self.subTest(stdout=stdout, exit=exit_code), self.assertRaisesRegex(
+                        ValueError, 'did not execute the approved version'):
+                    public.version_probe([sys.executable, '-c', script], '1.0.0-rc.1',
+                                         root / 'version.log', os.environ.copy(), root)
+
+
 class PublicConsumptionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

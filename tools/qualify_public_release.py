@@ -215,7 +215,20 @@ def check_record(kind, approval, target, report, aliases):
 
 
 def version_probe(command, version, log, env, cwd):
-    output = qualify_platform.fixture_output(command, log, env, cwd)
+    # npm can emit its own notices on stderr even when the selected command
+    # succeeds. Only the command's stdout establishes its version identity.
+    try:
+        output = subprocess.run(command, env=env, cwd=cwd, capture_output=True,
+                                text=True, encoding='utf-8', errors='replace', timeout=300)
+    except subprocess.TimeoutExpired as error:
+        log.write_text('stdout:\n' + qualify_installation.output_text(error.stdout)
+                       + '\nstderr:\n' + qualify_installation.output_text(error.stderr)
+                       + '\nversion probe timed out after 300 seconds\n', encoding='utf-8')
+        raise RuntimeError('public version probe timed out; see ' + str(log)) from error
+    except OSError as error:
+        log.write_text(f'version probe could not start: {error}\n', encoding='utf-8')
+        raise
+    log.write_text('stdout:\n' + output.stdout + '\nstderr:\n' + output.stderr, encoding='utf-8')
     if output.returncode or output.stdout.strip() != 'twigsmith ' + version:
         raise ValueError('public alias did not execute the approved version')
     return {'passed': True, 'exit': output.returncode, 'version': version}
