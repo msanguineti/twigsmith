@@ -521,10 +521,9 @@ from `site/current-requirements.json`; the four-target envelope is not embedded
 in a native manifest. Each manifest retains only its own frozen native/npm
 requirements. Changes to current policy never update old packages or descriptors.
 Historical 0.1.0 descriptors retain their
-original requirements and rendering. The existing publisher and published site
-consumers refuse the integrated schema before publication or promotion. Full-set
-publication/recovery must verify payload packages before the common package and
-channel, then verify public consumption before channel/site promotion.
+original requirements and rendering. The legacy publisher and stable published-site consumers refuse the integrated
+schema. The separate full-set RC operation below verifies every payload package
+before the common package, then requires public consumption before `next` promotion.
 
 ### Candidate installation observations
 
@@ -683,6 +682,87 @@ and site tests; it requires Node/npm, a C compiler and local loopback sockets.
 These boundary tests use the canonical Git history for the migration-baseline
 eligibility check; use a full clone. The ordinary source suite's native archive
 checks do not require Node/npm.
+
+### Full-set release candidates
+
+For read-only inspection from a full checkout, with an already reviewed request
+and locally staged bundle:
+
+```sh
+python3 tools/release_platform_dispatch.py plan REQUEST.json --bundle BUNDLE
+```
+
+This checks source/artifact eligibility and reports the next pending operation.
+It cannot publish or promote. Live effects use only the protected hosted path.
+
+The **Publish approved prerelease** workflow accepts `operation=publish-platforms`
+for integrated `1.0.0-rc.x` sets. Its request contains exactly `publisher_revision`
+(current protected main SHA) and `approval` (the independently reviewed schema-2
+identity from integrated preparation). Add the `publication` object to that approval:
+
+```json
+{
+  "source": "EXACT_NATIVE_SOURCE_SHA",
+  "release_id": 123456,
+  "prerelease": true,
+  "channel": "next",
+  "staging_channel": "candidate-v1-rc-1"
+}
+```
+
+The source and release ID are placeholders for the approved real identities. The
+release and tag must already exist, with that tag resolving to the exact native
+source. The workflow does not create either. Native source, packaging source and
+publisher revision each require protected-main eligibility; all four native sources
+must match. The approval binds every original Actions run/attempt/artifact and ZIP
+hash, archive/manifest/payload hash, npm tarball and frozen requirements snapshot.
+Prepare and independently review new versioned bytes; never relabel an older probe.
+
+Preflight acquires the exact five original artifacts read-only and checks the full
+bundle. It retains this attempt's initial `latest`/`next` observations for all five
+packages and the stable Pages index hash with the immutable workflow input. Both
+later stages refuse changed protected channels; only promotion may change common
+`next` to the approved RC. The Pages index is reobserved at each stage boundary;
+this checks the index, not every site asset. The first `release` job uploads only absent matching-approved native assets
+and publishes only absent exact npm versions under the explicit staging tag. It
+observes all five packages before effects, publishes the four payloads before the
+common launcher, and halts on unknown or conflicting provider state. Matching
+published bytes are retained after timeouts or lost responses. An already-visible
+common version with a missing payload may be reconciled, but promotion waits for a
+fresh complete observation and public qualification.
+
+Read-only Windows Server 2025, macOS 15 ARM64/Intel and Ubuntu 22.04 jobs then fetch
+public release assets and exact npm versions anonymously. They verify installed
+payloads, both aliases, representative Git workflows, global shims and separate
+cold-cache exact-version npx commands. Windows and Mac rows repeat direct browser
+acquisition, security metadata, OS extraction and unsigned launch observations.
+Missing or failed required checks stop promotion; inspect individual child results
+and host/security limits. The final `release` job authenticates all four successful
+jobs and fresh reports from this exact workflow attempt, reobserves immutable
+provider bytes and channels, and moves only common `twigsmith@next`. It never
+updates stable Pages or `latest`. Full-set stable publication is not enabled.
+
+Retry the identical reviewed request after observing remote state; do not repack
+published versions or replace assets. A changed current main requires a reviewed
+publisher revision and a new complete attempt. The entire public matrix reruns on
+a new attempt; previous-attempt artifacts and success flags cannot authorize
+promotion. Reports older than one hour are refused. Source artifact expiry requires
+retaining/recovering approved inputs through a separately reviewed path, rather
+than substituting current artifacts. Concurrent provider changes cannot be excluded
+atomically; a refusal preserves completed publication for explicit reconciliation.
+
+All five npm names must exist under an authorized account with the exact
+`publish.yml` / `release` trusted-publisher identity and direct-publish permission;
+the common package also requires independent dist-tag permission. Inspect actual
+settings before dispatch. Public 404 does not prove a name can be claimed. npm's
+separate staged-publishing mechanism can create a public new-name placeholder;
+that bootstrap and subsequent account/trust changes require explicit owner
+approval and authenticated maintainer action. Publishing under a staging **tag**
+immediately exposes the version; it is neither private staging nor rollback.
+See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) and
+[staged publishing](https://docs.npmjs.com/staged-publishing/) for current account
+requirements. Never put account credentials or signed download URLs into requests
+or uploaded evidence.
 
 ## Site artifacts and Pages
 
