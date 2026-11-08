@@ -266,6 +266,8 @@ The platform publisher owns release observations and effects. Unknown or conflic
 observations stop recovery, and every attempted effect is followed by reobservation,
 including ambiguous timeouts. Only missing approved assets and versions may be
 published. No tag is created or moved, and matching public bytes survive retries.
+The native archive verifier validates checksum records; the publisher snapshots and
+hashes original sidecar bytes, including their host line endings, without rewriting.
 Native/npm publication remains nontransactional. Separate workflow concurrency
 serializes publication; the source and provider observations cannot make independent
 services atomic.

@@ -60,13 +60,8 @@ def approved_inputs(native_dir, npm_dir, approval):
     if len(files) != len(before):
         raise PublicationError('release input filenames collide')
     expected = {path.name: release_set.digest(before[path]) for path in native_paths}
-    # verify_platform_set validates checksum semantics via native_package.verify.
-    for item in record['native']:
-        stem = native_package.archive_stem(Path(item['archive']))
-        checksum = (f"{item['sha256']}  {item['archive']}\n"
-                    f"{item['manifest_sha256']}  {stem}.manifest.json\n").encode()
-        if files[stem + '.sha256'] != checksum:
-            raise PublicationError('checksum sidecar differs from approved archive/manifest')
+    # The native verifier owns checksum-record validation. Preserve and hash the
+    # original sidecar bytes, including the producing host's line endings.
     record['publication'] = publication
     return record, files, expected
 

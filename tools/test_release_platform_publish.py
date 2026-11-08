@@ -134,6 +134,31 @@ class Fixture:
         self.thread.join()
 
 
+class ChecksumSnapshotTests(unittest.TestCase):
+    def test_windows_checksum_keeps_exact_bytes_and_rejects_corrupt_records(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / 'candidate'
+            approval, _ = platform_fixture(root, version='1.0.0-rc.1')
+            approval['publication'] = {'source': approval['native'][0]['source']['revision'],
+                'release_id': 1, 'channel': 'next', 'prerelease': True,
+                'staging_channel': 'candidate-fixture'}
+            windows = next(item for item in approval['native'] if item['target'] == 'x86_64-pc-windows-msvc')
+            path = root / 'native' / (native_package.archive_stem(windows['archive']) + '.sha256')
+            lf = path.read_bytes().replace(b'\r\n', b'\n')
+            crlf = lf.replace(b'\n', b'\r\n')
+            path.write_bytes(crlf)
+            _, files, expected = publish.approved_inputs(root / 'native', root / 'npm', approval)
+            self.assertEqual(path.read_bytes(), crlf)
+            self.assertEqual(files[path.name], crlf)
+            self.assertEqual(expected[path.name], release_set.digest(crlf))
+            self.assertNotEqual(expected[path.name], release_set.digest(lf))
+            corrupt = bytes([ord('1') if crlf[0] == ord('0') else ord('0')]) + crlf[1:]
+            for data in (corrupt, crlf + crlf, crlf[:-2]):
+                path.write_bytes(data)
+                with self.subTest(data=data), self.assertRaisesRegex(ValueError, 'checksums disagree'):
+                    publish.approved_inputs(root / 'native', root / 'npm', approval)
+
+
 class PlatformPublicationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
