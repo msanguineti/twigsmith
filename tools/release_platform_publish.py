@@ -263,9 +263,13 @@ def validate_snapshot(record, files, expected):
         stem = native_package.archive_stem(Path(item['archive']))
         hashes[item['archive']] = item['sha256']
         hashes[stem + '.manifest.json'] = item['manifest_sha256']
-        checksum = (f"{item['sha256']}  {item['archive']}\n"
-                    f"{item['manifest_sha256']}  {stem}.manifest.json\n").encode()
-        hashes[stem + '.sha256'] = release_set.digest(checksum)
+        checksum_name = stem + '.sha256'
+        checksum = files.get(checksum_name)
+        if not isinstance(checksum, bytes):
+            raise PublicationError('release snapshot differs from approved bytes')
+        native_package.verify_checksum_records(checksum, item['archive'],
+                                               item['sha256'], item['manifest_sha256'])
+        hashes[checksum_name] = release_set.digest(checksum)
     if expected != hashes:
         raise PublicationError('native snapshot differs from approved identity')
     hashes['manifest.json'] = record['npm']['manifest_sha256']
