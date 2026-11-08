@@ -9,8 +9,7 @@ import tarfile
 import tempfile
 
 import native_package
-from npm_package import sha256, package_filename
-from npm_platform_package import base_metadata, npm_environment, npm_command
+from npm_common import sha256, package_filename, base_metadata, npm_environment, npm_command
 
 TARGETS = ('x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc',
            'aarch64-apple-darwin', 'x86_64-apple-darwin')
@@ -79,8 +78,8 @@ def make_package_set(repo, inputs, output, *, partial=False):
         raise ValueError('native package inputs must be a nonempty list')
     source = native_package.identity(repo)
     source_files = ['tools/npm_single_package.py', 'tools/npm_single_launcher.cjs',
-                    'tools/npm_installer.cjs', 'tools/npm_platform_package.py',
-                    'tools/npm_package.py', 'tools/native_package.py', 'tools/native_formats.py',
+                    'tools/npm_installer.cjs', 'tools/npm_common.py',
+                    'tools/native_package.py', 'tools/native_formats.py',
                     'README.md', 'LICENSE']
     source_hashes = {name: sha256(repo / name) for name in source_files}
     output.parent.mkdir(parents=True, exist_ok=True)

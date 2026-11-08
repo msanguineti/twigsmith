@@ -19,12 +19,121 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 import npm_single_package as package
-from test_npm_platform_package import candidate, contents
+import native_package
+from test_native_package import pe_fixture, macho_fixture
 
 REPO = Path(__file__).resolve().parents[1]
-NPM12 = REPO / '.dev/tmp/rc-publication-phase5/npm12-repro/node_modules/.bin/npm'
 TARGET = 'x86_64-unknown-linux-gnu'
 VERSION = '0.1.0-fixture.1'
+
+
+def candidate(root, target, payload=None, version='0.1.0-beta.1', revision='1' * 40, license_bytes=None):
+    platform = native_package.target_metadata(target)
+    if payload is None:
+        if platform['os'] == 'windows':
+            payload = pe_fixture()
+        elif platform['os'] == 'macos':
+            payload = macho_fixture(platform['arch'])
+        else:
+            data = bytearray(64)
+            data[:6] = b'\x7fELF\x02\x01'
+            data[16:20] = b'\x03\x00\x3e\x00'
+            payload = bytes(data)
+    provenance = {'kind': 'development-probe',
+                  'source': {'revision': revision, 'tree': '2' * 40, 'dirty': False},
+                  'build': {'target': target, 'profile': 'release', 'locked': True, 'compiler': 'fixture'},
+                  'toolchain': {'pin': 'fixture', 'rustc': 'fixture\nhost: ' + target, 'cargo': 'fixture'},
+                  'environment': {'system': 'fixture, not product qualification', 'machine': platform['arch']}}
+    directory = root / target
+    directory.mkdir(parents=True)
+    archive = native_package.write_bundle(directory, version,
+        {name: payload for name in platform['executables']}
+        | {'LICENSE': (REPO / 'LICENSE').read_bytes() if license_bytes is None else license_bytes},
+        provenance, 1, target=target)
+    return {'archive': str(archive), 'archive_sha256': package.sha256(archive),
+            'payload_sha256': native_package.digest(payload)}
+
+
+def contents(tarball):
+    with tarfile.open(tarball) as tar:
+        return {entry.name: tar.extractfile(entry).read() for entry in tar.getmembers()}
+
+
+class BuilderTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_pack_report_client_shapes_and_rejections(self):
+        entry = {'filename': 'twigsmith-0.1.0-beta.1.tgz'}
+        for report in ([entry], {'twigsmith': entry}):
+            self.assertEqual(package.package_filename(report, 'twigsmith', '0.1.0-beta.1'), entry['filename'])
+        for report in ({'other': entry}, [entry, entry], {}, [], 'invalid',
+                       {'twigsmith': {'filename': '../outside.tgz'}}, {'twigsmith': None}):
+            with self.subTest(report=report), self.assertRaises(ValueError):
+                package.package_filename(report, 'twigsmith', '0.1.0-beta.1')
+
+    def test_every_current_packaging_input_is_hashed_and_rechecked(self):
+        expected = {'tools/npm_single_package.py', 'tools/npm_common.py',
+                    'tools/npm_single_launcher.cjs', 'tools/npm_installer.cjs',
+                    'tools/native_package.py', 'tools/native_formats.py', 'README.md', 'LICENSE'}
+        repo = self.root / 'source'
+        for name in expected:
+            destination = repo / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / name, destination)
+        item = candidate(self.root / 'native', TARGET)
+        original_pack = package.pack
+        source = {'revision': '3' * 40, 'tree': '4' * 40, 'dirty': False}
+        with patch.object(native_package, 'identity', return_value=source):
+            complete = self.root / 'probe'
+            manifest = json.loads(package.make_package_set(repo, [item], complete, partial=True).read_text())
+            self.assertEqual(set(manifest['packaging']['inputs_sha256']), expected)
+            self.assertEqual(manifest['packaging']['inputs_sha256'],
+                             {name: package.sha256(repo / name) for name in expected})
+            for index, name in enumerate(sorted(expected)):
+                path = repo / name
+                original = path.read_bytes()
+                def mutate(*args, **kwargs):
+                    result = original_pack(*args, **kwargs)
+                    path.write_bytes(original + b'changed')
+                    return result
+                output = self.root / f'changed-{index}'
+                with self.subTest(input=name), patch.object(package, 'pack', side_effect=mutate):
+                    with self.assertRaisesRegex(ValueError, 'packaging inputs changed'):
+                        package.make_package_set(repo, [item], output, partial=True)
+                self.assertFalse(output.exists())
+                path.write_bytes(original)
+
+    def test_native_license_normalization_and_distinct_license_refusal(self):
+        canonical = (REPO / 'LICENSE').read_bytes()
+        lf = canonical.replace(b'\r\n', b'\n')
+        item = candidate(self.root / 'native', 'x86_64-pc-windows-msvc',
+                         license_bytes=lf.replace(b'\n', b'\r\n'))
+        output = self.root / 'probe'
+        manifest = json.loads(package.make_package_set(REPO, [item], output, partial=True).read_text())
+        self.assertEqual(contents(output / manifest['packages'][0]['filename'])['package/LICENSE'], canonical)
+        other = candidate(self.root / 'other', TARGET, license_bytes=canonical + b'additional condition')
+        with self.assertRaisesRegex(ValueError, 'licenses disagree'):
+            package.make_package_set(REPO, [other], self.root / 'bad', partial=True)
+        self.assertFalse((self.root / 'bad').exists())
+
+    def test_bad_native_hash_and_failed_pack_are_atomic(self):
+        item = candidate(self.root / 'native', TARGET)
+        bad = dict(item, archive_sha256='0' * 64)
+        with self.assertRaisesRegex(ValueError, 'archive does not match'):
+            package.make_package_set(REPO, [bad], self.root / 'bad', partial=True)
+        original = package.subprocess.run
+        def fail_pack(args, **kwargs):
+            if 'pack' in args:
+                raise subprocess.CalledProcessError(1, args)
+            return original(args, **kwargs)
+        with patch.object(package.subprocess, 'run', side_effect=fail_pack):
+            with self.assertRaises(subprocess.CalledProcessError):
+                package.make_package_set(REPO, [item], self.root / 'failed', partial=True)
+        self.assertFalse((self.root / 'bad').exists())
+        self.assertFalse((self.root / 'failed').exists())
 
 
 class SinglePackageTests(unittest.TestCase):
@@ -65,7 +174,9 @@ class SinglePackageTests(unittest.TestCase):
                         npm_config_fund='false')
         self.env['npm_config_userconfig'] = str(self.root / 'empty-npmrc')
         self.env['npm_config_globalconfig'] = str(self.root / 'empty-global-npmrc')
-        self.npm = str(NPM12) if NPM12.is_file() else shutil.which('npm')
+        self.npm = package.npm_command()
+        self.npm_major = int(subprocess.check_output(
+            [*self.npm, '--version'], env=self.env, text=True).split('.')[0])
 
     def run_command(self, args, **kwargs):
         return subprocess.run(args, env=self.env, text=True, stdout=subprocess.PIPE,
@@ -116,7 +227,7 @@ class SinglePackageTests(unittest.TestCase):
         consumer.mkdir()
         (consumer / 'package.json').write_text(json.dumps({'name': 'consumer', 'version': '1.0.0',
             'allowScripts': {str(tarball): True}}))
-        result = self.run_command([self.npm, 'install', '--offline', '--foreground-scripts', *flags, str(tarball)], cwd=consumer)
+        result = self.run_command([*self.npm, 'install', '--offline', '--foreground-scripts', *flags, str(tarball)], cwd=consumer)
         return consumer, result
 
     @unittest.skipUnless(platform.system() == 'Linux' and platform.machine() == 'x86_64', 'representative Linux executable fixture')
@@ -217,17 +328,20 @@ class SinglePackageTests(unittest.TestCase):
         self.assertNotEqual(run.returncode,0)
         self.assertIn('twigsmith-install',run.stderr)
         self.assertEqual(self.requests,[])
-        run = self.run_command([self.npm,'exec','--offline','--ignore-scripts','--','twigsmith-install','--target',TARGET],cwd=consumer)
+        run = self.run_command([*self.npm,'exec','--offline','--ignore-scripts','--','twigsmith-install','--target',TARGET],cwd=consumer)
         self.assertEqual(run.returncode,0,run.stderr)
         self.assertEqual(len(self.requests),1)
         # npm 12 default is a denied lifecycle, even though install exits zero.
         consumer2=self.root/'default';consumer2.mkdir()
         (consumer2/'package.json').write_text('{"name":"default-consumer","version":"1.0.0"}')
-        result=self.run_command([self.npm,'install','--offline',str(tarball)],cwd=consumer2)
+        result=self.run_command([*self.npm,'install','--offline',str(tarball)],cwd=consumer2)
         self.assertEqual(result.returncode,0,result.stderr)
-        if Path(self.npm)==NPM12:
+        if self.npm_major >= 12:
             self.assertFalse((consumer2/'node_modules/twigsmith/.native').exists())
             self.assertEqual(len(self.requests),1)
+        else:
+            self.assertTrue((consumer2/'node_modules/twigsmith/.native/installed.json').is_file())
+            self.assertEqual(len(self.requests),2)
 
     @unittest.skipUnless(platform.system() == 'Linux' and platform.machine() == 'x86_64', 'representative Linux executable fixture')
     def test_download_origin_http_errors_tamper_redirect_and_retry(self):
@@ -384,7 +498,7 @@ class SinglePackageTests(unittest.TestCase):
         denied=self.root/'denied';denied.mkdir()
         (denied/'package.json').write_text(json.dumps({'name':'denied','version':'1.0.0',
             'allowScripts':{str(tarball):False}}))
-        run=self.run_command([self.npm,'install','--offline',str(tarball)],cwd=denied)
+        run=self.run_command([*self.npm,'install','--offline',str(tarball)],cwd=denied)
         self.assertEqual(run.returncode,0,run.stderr)
         self.assertFalse((denied/'node_modules/twigsmith/.native').exists())
 

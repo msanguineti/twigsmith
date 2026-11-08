@@ -20,7 +20,17 @@ import time
 from urllib.parse import unquote
 
 import native_package
-from qualify_native import UTILITIES, digest, write_json
+
+
+UTILITIES = "sh cat cp mv rm mkdir touch sleep sed grep awk head tail sort tr cut dirname basename chmod ln env true false printf test wc find xargs readlink expr uname".split()
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def write_json(path, value):
+    Path(path).write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 # These fixtures launch real CLI processes and independently observe Git state.

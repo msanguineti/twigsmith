@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 from urllib.request import Request, urlopen
 
 import build
@@ -56,16 +57,12 @@ def observe():
         if hashlib.sha256(manifest_bytes).hexdigest() != asset['sha256']:
             raise ValueError('downloaded manifest differs from release asset')
         manifest = json.loads(manifest_bytes)
-        if manifest.get('schema') == 2:
-            # This released artifact predates frozen requirements. Its exact
-            # bytes and reviewed descriptor bootstrap the historical release.
-            if (version != '0.1.0' or asset['sha256'] !=
-                    'd688fc0452ceb93b123e8261a4573c1ac7a7106013e6b72d3787d5bd5ccfa972'):
-                raise ValueError('unknown historical requirements')
-        elif (manifest.get('schema') != 3
-              or manifest.get('requirements', {}).get('native', {}).get('platform') != platform['platform']
-              or not native_package.requirements_match_descriptor(manifest, model)):
-            raise ValueError('release requirements differ from native manifest')
+        target = platform['target']
+        expected_schema = 3 if target == native_package.TARGET else 4
+        if (manifest.get('schema') != expected_schema or manifest.get('version') != version
+                or manifest.get('target') != target
+                or manifest.get('requirements') != model['identity']['requirements'][target]):
+            raise ValueError('release requirements differ from approved native manifest')
     expected_names = {asset['name'] for platform in model['native'] for asset in platform['assets'].values()}
     assets = sorted([a['name'], a['id'], a['digest'], a['browser_download_url'], a['size'], a['state']]
                     for a in github['assets'] if a['name'] in expected_names)
@@ -131,7 +128,7 @@ def main():
             prepare(args.output, args.snapshot, args.expected_version)
         else:
             recheck(args.snapshot)
-    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as error:
+    except (ValueError, KeyError, TypeError, OSError, tarfile.TarError, subprocess.SubprocessError) as error:
         parser.exit(1, f'error: {error}\n')
 
 

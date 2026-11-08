@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Select a protected-main integration with an associated successful PR run."""
+"""Validate protected-main integrations and their successful source PR runs."""
 import json
 import os
-from pathlib import Path
 import subprocess
-import sys
 
 BASELINE = '82ee0a7ad240a0fdd595b4258b35e2f702aac0a8'
 
@@ -69,32 +67,3 @@ def validate_source(sha, command=None, api=None, repo=None):
         print('Protected-main integration supplies the validation enforcement; this run may predate the merge.')
         evidence = {'source': sha, 'pull_request': found[0], 'run_url': found[1]}
     return evidence
-
-
-def select():
-    event = os.environ['EVENT_NAME']
-    if event == 'workflow_dispatch':
-        if os.environ['EVENT_REF'] != 'refs/heads/main':
-            raise ValueError('Manual qualification must be dispatched on main')
-        sha = os.environ['GITHUB_SHA']
-    elif event == 'release':
-        tag = os.environ.get('RELEASE_TAG', '')
-        if not tag:
-            raise ValueError('Release event has no tag')
-        sha = command('git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}')
-        if sha != os.environ['GITHUB_SHA']:
-            raise ValueError('Release tag does not match the event source commit')
-    else:
-        raise ValueError('Unsupported event')
-    validate_source(sha)
-    Path(os.environ['RUNNER_TEMP'], 'candidate-sha').write_text(sha + '\n')
-    with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-        output.write(f'sha={sha}\n')
-
-
-if __name__ == '__main__':
-    try:
-        select()
-    except (ValueError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as error:
-        print(f'::error::Release source is not eligible: {error}', file=sys.stderr)
-        sys.exit(1)

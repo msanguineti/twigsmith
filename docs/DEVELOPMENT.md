@@ -350,27 +350,27 @@ against the proposed integration. Superseded runs for the same pull request are
 cancelled. Merging an unchanged, validated pull request does not repeat the source
 suite or start artifact qualification.
 
-The release workflow's default `linux-release` preparation mode prepares candidates on manual dispatch from `main` or on a
-GitHub `release: published` event, including prereleases. Manual dispatch selects
-the `main` commit at dispatch; a release event selects the commit named by its tag. The
-selected commit must be the recorded migration baseline or a later first-parent
-`main` integration associated with a merged pull request and a successful
-foundation pull-request run for its head. Missing eligibility fails the run rather
-than repeating source validation. This relies on the repository's protected-main
-rules requiring current, passing checks before integration.
+The **Release qualification** workflow prepares the complete four-platform set on
+explicit dispatch with `qualification=platform-packages` (the default). It builds
+one archive per target and consumes the same Linux bytes on Ubuntu 22.04, 24.04
+and 26.04. The additional Linux rows select Git 2.45.4 and 2.56.0 respectively,
+retaining the feature-floor and reference checks without rebuilding the product.
+It never publishes or attaches assets to a release. Creating a tag or publishing
+a GitHub release starts no qualification or publication job.
 
-The workflow builds one Linux x86_64 GNU archive on Ubuntu 22.04 and qualifies the
-same bytes on Ubuntu 22.04, 24.04 and 26.04. It does not publish artifacts or attach
-them to a release. A published release is already visible before its event triggers
-qualification. Manual dispatch requires the workflow to be available on the default
-branch. Fixture preparation compiles only the harnesses needed for packaged-binary
-checks; qualification executes selected workflows against the extracted executables.
+Publishable native and packaging sources must be the recorded migration baseline
+or later first-parent main integrations associated with merged pull requests and
+successful foundation pull-request runs for their heads. Acquisition and publication
+verify that eligibility against protected main; branch preparation does not establish
+publication eligibility. Source validation is reused rather than repeated during
+artifact qualification. Fixture preparation compiles harnesses, and qualification
+executes the extracted binaries rather than compiling the consumer's application.
 
 For a local development probe, use a fresh output and extraction directory:
 
 ```sh
 ./dev package-native .dev/tmp/native-probe --allow-dirty
-./dev verify-native .dev/tmp/native-probe/twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith probe"
+./dev verify-native .dev/tmp/native-probe/twigsmith-1.0.0-rc.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith probe"
 ./dev test-packaging
 ```
 
@@ -401,7 +401,7 @@ New platform candidates explicitly leave product OS support floors unqualified;
 compiler deployment metadata and native hosted tests alone do not select a floor.
 Runtime requirements are separate from build provenance.
 
-`./dev native-qualify --help` describes extracted-artifact runtime checks. The
+`./dev platform-qualify --help` describes extracted-artifact runtime checks. The
 fixture harnesses use real Git and select the extracted executables through an
 isolated PATH without Rust or Node/npm. CI checks executable architecture, loader,
 dependencies and runtime search paths, then performs actual startup and workflow
@@ -414,38 +414,7 @@ separate from Ubuntu's maintenance lifecycle.
 
 ## npm candidate packaging
 
-`./dev package-npm` supports the existing Linux publication contract. It wraps an existing verified native candidate; it does not
-rebuild the executable. Python 3.10+ and npm are required. Supply the expected
-SHA-256 values from independently retained acceptance evidence and use a new
-output directory:
-
-```sh
-./dev package-npm /path/to/twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz /tmp/twigsmith-npm-candidate --archive-sha256 ARCHIVE_SHA256 --payload-sha256 PAYLOAD_SHA256
-./dev test-packaging
-```
-
-The native archive must have its adjacent manifest and checksum file. The tool
-checks both expected hashes and native package integrity, runs `npm pack` offline
-with isolated configuration, and validates the exact output files and modes before
-publishing the output directory. It includes only the selected native executable,
-license, README and package metadata. Both npm bin names point to that executable;
-there are no package scripts or runtime dependencies. The output manifest records
-the native provenance and packaging source, tool, README, Node/npm versions and
-tarball hash separately. A dirty packaging source is labelled as such. Hashes bind the
-inputs and output but do not authenticate their publisher. The npm regression
-checks invoke the npm available on PATH; the regular source suite's native package
-checks do not require npm.
-
-The package metadata identifies the canonical public repository for npm provenance.
-`tools/release_set.py --help` checks a native archive and npm candidate against
-independently supplied archive, payload, tarball and both manifest hashes and a
-matching version tag. Its identity record preserves native build and npm packaging
-sources separately. This offline check does not authenticate a publisher or prove
-source eligibility/publication.
-
-### Platform-selected npm candidates
-
-`./dev package-npm-platforms SPEC OUTPUT` assembles one `twigsmith` installer
+`./dev package-npm SPEC OUTPUT` assembles one `twigsmith` installer
 package from four verified native archives. `SPEC` is a JSON list with each
 `archive`, independently expected `archive_sha256` and `payload_sha256`. Relative
 paths are resolved beside the specification. All four targets must share a version
@@ -477,7 +446,7 @@ switch that relaxes the installed production package's download-origin rules.
 Fixtures establish the changed installer path and native execution, not a published
 package's public availability.
 
-For explicit hosted preparation, dispatch `Native release qualification` with
+For explicit hosted preparation, dispatch `Release qualification` with
 `qualification=platform-packages`. It builds once on each native host and qualifies
 the installer on Linux x64, Windows Server 2025 x64 and macOS 15 ARM64/Intel. Runtime
 pairs are pinned in `platform-packages.yml`: Node 22.23.4/npm 11.20.0,
@@ -538,7 +507,7 @@ Superseded schema-2 five-package approvals are rejected rather than reinterprete
 ### Candidate installation observations
 
 `./dev installation-qualify --help` describes the browser and Windows runtime
-probes. Explicit `Native release qualification` dispatch with
+probes. Explicit `Release qualification` dispatch with
 `qualification=platform-installation` consumes `platform_approval`, the complete
 reviewed identity JSON, and `runtime_sha256`, the independently reviewed official
 x64 v14 Redistributable installer hash. It uses existing Windows Server 2025,
@@ -580,120 +549,34 @@ These probes do not publish native assets, npm packages or the website.
 
 ## Release preparation and publication
 
-`publish.yml` prepares candidates on `main` and continues a published GitHub
-release after successful release qualification; neither pushes nor merges publish
-anything. Its `prepare` operation uses read-only GitHub permissions to
-retrieve a successful canonical native qualification artifact, verify its approved
-identity, and pack a new npm candidate at the current publisher revision. The
-`release-candidate` Actions artifact contains only native archive/manifest/checksums,
-npm tarball/manifest and `identity.json`. It excludes harnesses and provisioning
-archives. Review and retain this exact output before authorizing publication.
-Preparation is not npm staging: it creates no package, placeholder, tag or release.
+The release process has three explicit operations: prepare the complete candidate,
+publish its exact approved bytes under a staging tag, then separately promote the
+publicly verified candidate to `next`. `release.yml` provides read-only preparation
+and installation qualification; `publish.yml` provides only `publish-platforms` and
+`promote-platforms`. Pushes, merges, tags and release events publish nothing.
+There is no release-body request convention or automatic continuation.
 
-For a stable release, download the exact prepared `release-candidate` artifact and
-create its site descriptor from the verified local bytes:
+Prepare the versioned source through a reviewed pull request and authorized
+integration, then dispatch `Release qualification` on main with
+`qualification=platform-packages`. Review the exact native and npm original Actions
+artifacts, source/tree, run/attempt, hashes and host qualification before authorizing
+any tag, release or package publication. Do not rebuild or relabel a candidate to
+match an approval. The release tag and non-draft GitHub prerelease must be created
+separately at the approved source; the publisher neither creates nor moves them.
 
-```sh
-python3 site/candidate.py RELEASE_CANDIDATE_DIRECTORY > site/releases/VERSION.json
-```
+A workflow-wide `twigsmith-release` concurrency group serializes publisher runs;
+local execution takes the same repository lock. GitHub can replace an older pending
+run: inspect actual state and retry the identical reviewed candidate when appropriate.
+Pages deployment has its own independent `twigsmith-pages` group.
 
-Replace `VERSION` with the candidate's stable version. Review the generated release
-identity, asset names, hashes, installation commands and frozen requirements, then
-merge the descriptor to main before publishing the GitHub release. The preparation
-candidate remains unchanged; use the current main revision as publisher revision for
-a manual continuation. Stable publication preflight checks the reviewed descriptor
-against the same approved candidate before it obtains product-write permissions.
-Missing or different data stops the continuation. Prereleases do not require a site
-descriptor. The generated file describes local candidate bytes; it does not assert
-that GitHub or npm has published them. The existing 0.1.0 descriptor is bound to its
-exact historical manifest because that release predates requirements snapshots.
-
-Dispatch input `request` is JSON, passed as data rather than shell source:
-
-| Operation | Required request fields |
-| --- | --- |
-| `prepare` | `publisher_revision` (exact current main SHA), `artifact_id` (native artifact ID), `native` (the reviewed identity record's native object, including source/tree, run/attempt and independently approved hashes) |
-| `publish` | `publisher_revision` (exact current main SHA), `candidate_run` and `artifact_id` (the successful preparation run and its exact release-candidate artifact), `approval` (the complete reviewed identity plus publication choices) |
-
-To initiate publication, include exactly one comment in the GitHub release body:
-
-```text
-<!-- twigsmith-release-request
-{"candidate_run": PREPARATION_RUN_ID, "artifact_id": ARTIFACT_ID, "approval": APPROVAL_OBJECT}
--->
-```
-
-Replace the placeholders with valid JSON values from the reviewed candidate. The
-approval contains its complete identity and a `publication` object with `source`,
-`prerelease`, `channel` and `staging_channel`. The advertised channel is `next`
-for a prerelease and `latest` for a stable release; the staging channel is distinct
-from both. Omit `release_id` from this comment: the continuation binds the original
-published release ID. The successful preparation run and its exact artifact must
-exist before release publication. The continuation checks the event, current release,
-tag, source and candidate before it obtains publication permissions. All version,
-tag, native/npm hashes and packaging provenance must match the candidate.
-
-For a manual retry, use the `publish` request in the table with the same approval,
-adding the original numeric `release_id` to `approval.publication` and setting
-`publisher_revision` to current eligible main. Never regenerate hashes or repack a
-candidate for a retry. An expired or foreign artifact, failed run, changed identity
-or conflicting bytes stops publication.
-
-Both native source and publisher revision must satisfy the existing protected-main
-eligibility rule. Native source, npm packaging source and publisher revision can
-be different. The release tag is `v` followed by the exact native version and must
-already exist at the native build revision before publication; this workflow never
-creates or moves tags. Retain original provenance when a task was squash merged.
-Some historical-source release API requests can require workflow-write authority;
-a rejected existing-tag operation must be investigated rather than adding a token
-or retargeting the tag automatically.
-
-A published release triggers qualification and then a read-only preflight on main.
-The `publish` job in the `release` environment rechecks the candidate and resumes
-that exact visible release. It uploads only missing approved native assets, publishes
-the exact npm tarball to its staging channel, verifies anonymous download and
-execution, and advances the advertised channel. There is no cross-service
-transaction: native or npm publication can remain visible after a later failure.
-Every attempted effect, including one whose response was lost, is followed by a
-fresh provider observation. Identical remote bytes allow continuation; unknown
-state, conflicting bytes or a missing/changed release or tag stops. Existing
-published bytes are never replaced.
-An npm failure reports its exit/error code, observed HTTP status and authentication
-stage when available. Raw npm/provider output stays private; diagnostics use fixed
-labels so tokens, request URLs and server-supplied messages do not enter CI logs.
-
-A workflow-wide `twigsmith-release` concurrency group serializes publication;
-local command invocations also take a shared repository lock. Pages deployments
-use a separate `twigsmith-pages` concurrency group. GitHub can replace an older pending run in a concurrency group;
-inspect its status and retry a displaced continuation with the same candidate.
-The reviewed hosted runtime is Node 24.22.2 with npm 12.2.1. npm trust must identify
-repository `msanguineti/twigsmith`, workflow filename `publish.yml`, environment
-`release`; direct publish and dist-tag permissions are separate. Actual account
-rights, two-factor authentication, environment/Pages settings and successful OIDC
-publication require explicit setup and live verification. Saving a trust entry or
-running `npm whoami` does not prove these operations work. If the unscoped package
-is absent, owner-authenticated first publication of the approved bytes is needed
-before ordinary trusted publishing can be established. npm staging also creates
-public state and is not a safe bootstrap dry run.
-
-For read-only observation from a checkout, supply a reviewed approval file:
-
-```sh
-python3 tools/release_publish.py ARCHIVE NPM_DIRECTORY --approval APPROVAL.json
-```
-
-This verifies local bytes and source eligibility and reports observed state and the
-next operation without applying it. Live effects additionally require `--execute`,
-scoped credentials and the canonical hosted workflow. Fixture endpoints are explicitly
-restricted to loopback and cannot receive live credentials. The fixture test suite
-uses real npm clients and disposable HTTP services, never the public registry.
-`./dev test-packaging` runs the native/npm integrity, provider, artifact-acquisition
-and site tests; it requires Node/npm, a C compiler and local loopback sockets.
-These boundary tests use the canonical Git history for the migration-baseline
-eligibility check; use a full clone. The ordinary source suite's native archive
-checks do not require Node/npm.
-
-### Full-set release candidates
+The hosted publication runtime is Node 24.22.2 with npm 12.2.1. These are verified
+reference clients, not patch-level restrictions on users. npm failures report fixed
+exit/status/authentication labels while raw provider output stays private. Provider
+fixtures use disposable loopback services and real npm, never public publication;
+credentials are forbidden with fixture endpoints. `./dev test-packaging` requires
+Node/npm, a C compiler, loopback sockets and full canonical Git history for source
+eligibility checks. It covers archive and npm integrity, acquisition, recovery,
+public-consumption gates and site generation.
 
 For read-only inspection from a full checkout, with an already reviewed request
 and locally staged bundle:
@@ -705,7 +588,7 @@ python3 tools/release_platform_dispatch.py plan REQUEST.json --bundle BUNDLE
 This checks source/artifact eligibility and reports the next pending operation.
 It cannot publish or promote. Live effects use only the protected hosted path.
 
-The **Publish approved prerelease** workflow accepts `operation=publish-platforms`
+The **Publish approved release candidate** workflow accepts `operation=publish-platforms`
 for integrated `1.0.0-rc.x` sets. Its request contains exactly `publisher_revision`
 (current protected main SHA) and `approval` (the independently reviewed schema-3
 single-installer identity from integrated preparation). Add the `publication` object to that approval:
@@ -778,47 +661,40 @@ requests or uploaded evidence.
 
 ## Site artifacts and Pages
 
-`site/build.py --help` builds an unpublished preview from verified candidate inputs.
-The publisher's release build still requires its fresh, identity-bound consumption
-receipt, covering native and npm downloads and execution. Receipts expire after 15
-minutes; do not fabricate one or treat it as authorization to deploy.
+Create an unpublished four-platform installer preview from the verified bundle:
 
-The independently dispatched **Publish website** workflow uses reviewed main and
-only repository-read and Pages deployment permissions. It resolves GitHub's latest
-published, non-draft, non-prerelease release and npm's `latest`; GitHub orders its
-latest endpoint by the release commit's creation time, not semantic tag order or
-publication time. The versions must agree and the reviewed release descriptor in
-`site/releases/` must match the available native assets, npm metadata and tarball.
-Missing or conflicting data stops deployment. The current website's version is not
-a constraint: a newer agreed release can be selected. Each descriptor keeps exact
-asset names, hashes, installation commands and platform-specific requirements for
-that release; create and review one for each future stable release using its approved
-candidate and published asset identities. New native manifests freeze the supported
-requirements from `site/current-requirements.json`; the site verifies the descriptor
-against the downloaded manifest. Build-environment provenance remains separate.
-The reviewed 0.1.0 descriptor is a bootstrap for its older manifest. Preserve it and
-the published artifacts.
+```sh
+python3 site/candidate.py BUNDLE > CANDIDATE.json
+python3 site/build.py --bundle BUNDLE PREVIEW_DIRECTORY
+```
 
-A successful stable package publication invokes the same Pages workflow after
-consumption checks and channel promotion; prereleases do not. A failed site deployment
-can be retried by dispatching **Publish website** on main without republishing the
-package or retaining a candidate artifact. Pages must already be configured for
-GitHub Actions, and the `github-pages` environment must allow the deployment.
+The descriptor binds all four native archive, manifest, checksum and payload
+identities, the single npm installer, exact commands and frozen requirements.
+Preview labels distinguish locally verified bytes from public availability.
 
-Pages jobs share a separate concurrency group. Once admitted, each checks that its
-checkout is current main, captures release observations, stages the ordinary-file
-artifact, and rechecks source, provider identities and artifact immediately before
-deployment. An old queued run therefore fails if it reaches the boundary after a
-change. Provider or main changes can still occur between that final observation and
-the external deployment; the check and Pages effect are not an atomic transaction.
-A later dispatch reconciles the site if that race occurs. The public artifact contains
-neither the provider snapshot nor a consumption receipt.
+The independent **Publish website** workflow is manually dispatched on main and has
+only repository-read and Pages deployment permissions. It accepts the current
+single-installer descriptor format, resolves the public stable GitHub release and
+npm `latest`, and verifies their exact identities, native manifests and npm tarball.
+Prereleases and obsolete descriptor formats are refused. The already deployed site
+and published 0.1.0 assets remain external history; preparing new Pages source does
+not deploy it or change `latest`. New stable-site deployment requires a reviewed
+current-format descriptor and separately authorized public release and deployment.
+The RC publication and promotion workflows never invoke Pages.
+
+Pages jobs serialize independently. They require current main, capture source and
+provider observations, stage an ordinary-file artifact, and recheck source, provider
+identities and artifact immediately before deployment. Missing or conflicting data
+stops the operation. Changes between reobservation and deployment cannot be excluded
+atomically; a later authorized dispatch reconciles that race. Pages must already be
+configured for GitHub Actions and the github-pages environment must permit deployment.
+The public artifact excludes provider snapshots and private qualification evidence.
 
 Local site builds stage output before directory replacement. A failed build preserves
 the previous artifact; a failed replacement attempts restoration and retains/names
 the backup if restoration also fails. The two renames briefly remove the output path;
 this is not a process-crash transaction or an atomic reader-visible directory swap.
-Preview/release assets use relative paths for the repository Pages base path.
+Assets use relative paths for the repository Pages base path.
 
 ## Troubleshooting
 

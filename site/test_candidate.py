@@ -11,57 +11,8 @@ from unittest import mock
 
 import candidate
 import build as site_build
+import release_model
 from test_release_set import platform_fixture
-
-
-class CandidateTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.path = Path(self.temp.name) / 'descriptor.json'
-        self.version = '0.2.0'
-        requirements = candidate.native_package.load_requirements(Path(__file__).resolve().parents[1])
-        manifest = json.dumps({'schema': 3, 'version': self.version, 'requirements': requirements}).encode()
-        self.files = {'twigsmith-0.2.0-x86_64-unknown-linux-gnu.tar.gz': b'archive',
-                      'twigsmith-0.2.0-x86_64-unknown-linux-gnu.manifest.json': manifest,
-                      'twigsmith-0.2.0-x86_64-unknown-linux-gnu.sha256': b'checksum',
-                      'twigsmith-0.2.0.tgz': b'npm tarball'}
-        sha = lambda b: hashlib.sha256(b).hexdigest()
-        self.files['twigsmith-0.2.0-x86_64-unknown-linux-gnu.sha256'] = (
-            f"{sha(b'archive')}  twigsmith-0.2.0-x86_64-unknown-linux-gnu.tar.gz\n"
-            f"{sha(manifest)}  twigsmith-0.2.0-x86_64-unknown-linux-gnu.manifest.json\n").encode()
-        self.record = {'version': self.version, 'tag': 'v' + self.version,
-                       'native': {'archive': 'twigsmith-0.2.0-x86_64-unknown-linux-gnu.tar.gz',
-                                  'sha256': sha(b'archive'), 'manifest_sha256': sha(manifest)},
-                       'npm': {'package': 'twigsmith-0.2.0.tgz', 'sha256': sha(b'npm tarball')}}
-
-    def test_reviewed_descriptor_binds_candidate_and_requirements(self):
-        descriptor = candidate.descriptor_for(self.record, self.files)
-        self.path.write_text(json.dumps(descriptor))
-        candidate.verify_descriptor(self.record, self.files, self.path)
-        for mutate in (lambda d: d['native'][0]['requirements'].update(system='different'),
-                       lambda d: d['npm'].update(sha256='0' * 64),
-                       lambda d: d['native'][0]['assets']['checksums'].update(name='other.sha256'),
-                       lambda d: d['npm']['commands'].update(install=['echo twigsmith@0.2.0'])):
-            changed = deepcopy(descriptor)
-            mutate(changed)
-            self.path.write_text(json.dumps(changed))
-            with self.subTest(mutate=mutate), self.assertRaisesRegex(ValueError, 'differs'):
-                candidate.verify_descriptor(self.record, self.files, self.path)
-        self.path.unlink()
-        with self.assertRaises(FileNotFoundError):
-            candidate.verify_descriptor(self.record, self.files, self.path)
-
-    def test_changed_candidate_or_unknown_historical_manifest_is_rejected(self):
-        self.files['twigsmith-0.2.0.tgz'] = b'other'
-        with self.assertRaisesRegex(ValueError, 'bytes differ'):
-            candidate.descriptor_for(self.record, self.files)
-        self.files['twigsmith-0.2.0.tgz'] = b'npm tarball'
-        name = 'twigsmith-0.2.0-x86_64-unknown-linux-gnu.manifest.json'
-        self.files[name] = json.dumps({'schema': 2, 'version': self.version}).encode()
-        self.record['native']['manifest_sha256'] = hashlib.sha256(self.files[name]).hexdigest()
-        with self.assertRaisesRegex(ValueError, 'historical'):
-            candidate.descriptor_for(self.record, self.files)
 
 
 class PlatformCandidateTests(unittest.TestCase):
@@ -121,12 +72,6 @@ class PlatformCandidateTests(unittest.TestCase):
             changed[filename] += b'tampered'
             with self.subTest(filename=filename), self.assertRaises(ValueError):
                 candidate.descriptor_for(self.approval, changed)
-        path = self.root / 'reviewed.json'
-        descriptor = candidate.from_bundle(self.bundle)
-        descriptor['npm']['packages'][0]['integrity'] = 'sha512-changed'
-        path.write_text(json.dumps(descriptor))
-        with self.assertRaisesRegex(ValueError, 'differs'):
-            candidate.verify_descriptor(self.approval, self.files, path)
         extra = self.bundle / 'unexpected.txt'
         extra.write_text('extra input')
         with self.assertRaisesRegex(ValueError, 'exactly'):
@@ -140,6 +85,16 @@ class PlatformCandidateTests(unittest.TestCase):
         self.assertIn('not published yet', page)
         self.assertIn('one npm installer package', page)
         self.assertIn('twigsmith-install', page)
+        self.assertIn('npm exec --offline --ignore-scripts -- twigsmith-install', page)
+        self.assertIn('npm 12.2.1', page)
+        self.assertIn('successful npm install', page)
+        self.assertIn('does not make a foreign executable compatible', page)
+        self.assertIn('HTTPS_PROXY', page)
+        self.assertIn('NODE_EXTRA_CA_CERTS', page)
+        self.assertIn('id="installer-recovery"', page)
+        for target in candidate.npm_single_package.TARGETS:
+            self.assertIn('twigsmith-install --target ' + target, page)
+        self.assertIn('No Rust or Node.js is needed to run the extracted commands', page)
         self.assertNotIn('optional platform package', page)
         self.assertIn('PowerShell', page)
         self.assertIn('python tools/native_package.py verify', page)
@@ -163,11 +118,9 @@ class PlatformCandidateTests(unittest.TestCase):
         output.mkdir()
         (output / 'index.html').write_text('previous')
         descriptor = candidate.from_bundle(self.bundle)
-        for operation in [lambda: site_build.build(output, self.approval),
-                          lambda: site_build.build(output, self.approval, receipt={}),
-                          lambda: site_build.build_resolved(output, descriptor),
-                          lambda: candidate.release_model.resolve(descriptor, {}, {}, b'')]:
-            with self.subTest(operation=operation), self.assertRaisesRegex(ValueError, 'full-set publication is unavailable'):
+        for operation in [lambda: site_build.build_resolved(output, descriptor),
+                          lambda: release_model.resolve(descriptor, {}, {}, b'')]:
+            with self.subTest(operation=operation), self.assertRaises(ValueError):
                 operation()
             self.assertEqual((output / 'index.html').read_text(), 'previous')
 

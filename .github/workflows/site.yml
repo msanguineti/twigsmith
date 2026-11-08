@@ -2,12 +2,6 @@ name: Publish website
 
 on:
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      expected_version:
-        description: Stable version just published by the calling workflow
-        type: string
-        required: true
 
 permissions:
   contents: read
@@ -34,13 +28,8 @@ jobs:
       - name: Resolve public release and build the website
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
-          args=()
-          if [ -n "$EXPECTED_VERSION" ]; then
-            args+=(--expected-version "$EXPECTED_VERSION")
-          fi
-          python3 site/publish.py prepare --output "$RUNNER_TEMP/pages" --snapshot "$RUNNER_TEMP/site-snapshot.json" "${args[@]}"
+          python3 site/publish.py prepare --output "$RUNNER_TEMP/pages" --snapshot "$RUNNER_TEMP/site-snapshot.json"
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: ${{ runner.temp }}/pages

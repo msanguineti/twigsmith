@@ -46,14 +46,14 @@ class SiteWorkflowTests(unittest.TestCase):
         cls.site = (WORKFLOWS / 'site.yml').read_text()
         cls.publication = (WORKFLOWS / 'publish.yml').read_text()
         cls.site_job = block(block(cls.site, 'jobs'), 'deploy', 2)
-        cls.preflight = block(block(cls.publication, 'jobs'), 'preflight', 2)
-        cls.publish_job = block(block(cls.publication, 'jobs'), 'publish', 2)
-        cls.deploy_job = block(block(cls.publication, 'jobs'), 'deploy-pages', 2)
+        cls.preflight = block(block(cls.publication, 'jobs'), 'platform-preflight', 2)
+        cls.publish_job = block(block(cls.publication, 'jobs'), 'platform-stage', 2)
+        cls.promote_job = block(block(cls.publication, 'jobs'), 'platform-promote', 2)
 
     def test_manual_workflow_has_only_website_authority(self):
         triggers = block(self.site, 'on')
         self.assertIn('  workflow_dispatch:\n', triggers)
-        self.assertIn('  workflow_call:\n', triggers)
+        self.assertNotIn('  workflow_call:\n', triggers)
         self.assertEqual(permissions(self.site, 0), {'contents': 'read'})
         self.assertEqual(permissions(self.site_job, 4),
                          {'contents': 'read', 'pages': 'write', 'id-token': 'write'})
@@ -76,31 +76,58 @@ class SiteWorkflowTests(unittest.TestCase):
         self.assertEqual(len(set(offsets)), len(offsets))
         self.assertNotIn('continue-on-error:', self.site_job)
 
-    def test_automatic_path_requires_successful_stable_publication(self):
-        self.assertIn('    needs: [preflight, publish]\n', self.deploy_job)
-        self.assertIn("    if: needs.preflight.outputs.deploy == 'true'\n", self.deploy_job)
-        self.assertNotIn('always()', self.deploy_job)
-        self.assertIn("stable = request['approval']['publication']['prerelease'] is False", self.preflight)
-        self.assertIn("out.write('deploy=' + str(stable).lower()", self.preflight)
-        self.assertIn("out.write('version=' + version", self.preflight)
-        self.assertIn('tools/release_publish.py', self.publish_job)
-        self.assertIn('subprocess.run(command, check=True)', self.publish_job)
-        self.assertIn('uses: ./.github/workflows/site.yml', self.deploy_job)
-        self.assertIn('expected_version: ${{ needs.preflight.outputs.version }}', self.deploy_job)
-        self.assertIn('      expected_version:\n', block(self.site, 'on'))
-        self.assertIn('        required: true\n', block(self.site, 'on'))
-        self.assertIn('args+=(--expected-version "$EXPECTED_VERSION")', self.site_job)
-        self.assertEqual(permissions(self.deploy_job, 4),
-                         {'contents': 'read', 'pages': 'write', 'id-token': 'write'})
+    def test_release_creation_cannot_trigger_preparation_or_publication(self):
+        release = (WORKFLOWS / 'release.yml').read_text()
+        for workflow in (release, self.publication):
+            triggers = block(workflow, 'on')
+            self.assertIn('  workflow_dispatch:\n', triggers)
+            self.assertNotIn('  workflow_run:', triggers)
+            self.assertNotIn('  release:', triggers)
+        self.assertIn('default: platform-packages', release)
+        self.assertNotIn('linux-release', release)
+        self.assertNotIn('qualify-candidate.sh', release)
+        self.assertNotIn('twigsmith-release-request', self.publication)
+        self.assertIn('options: [publish-platforms, promote-platforms]', self.publication)
+        for removed in ('prepare', 'preflight', 'publish', 'deploy-pages'):
+            self.assertNotIn('  ' + removed + ':\n', block(self.publication, 'jobs'))
+        self.assertNotIn('uses: ./.github/workflows/site.yml', self.publication)
+        self.assertNotIn('pages: write', self.publication)
+
+    def test_publication_authority_is_separate_from_four_host_promotion_gate(self):
+        self.assertIn("github.ref == 'refs/heads/main'", self.preflight)
+        self.assertEqual(permissions(self.preflight, 4),
+                         {'contents': 'read', 'actions': 'read', 'pull-requests': 'read'})
+        self.assertIn('release_platform_dispatch.py acquire', self.preflight)
+        self.assertIn('    needs: platform-preflight\n', self.publish_job)
+        self.assertIn("    if: inputs.operation == 'publish-platforms'\n", self.publish_job)
+        self.assertIn('    environment: release\n', self.publish_job)
+        self.assertEqual(permissions(self.publish_job, 4),
+                         {'contents': 'write', 'actions': 'read',
+                          'pull-requests': 'read', 'id-token': 'write'})
+        self.assertIn('release_platform_dispatch.py stage', self.publish_job)
+        self.assertIn('    needs: [platform-preflight, platform-consume]\n', self.promote_job)
+        self.assertIn("inputs.operation == 'promote-platforms'", self.promote_job)
+        self.assertIn("needs.platform-consume.result == 'success'", self.promote_job)
+        self.assertIn('    environment: release\n', self.promote_job)
+        self.assertEqual(permissions(self.promote_job, 4),
+                         {'contents': 'read', 'actions': 'read',
+                          'pull-requests': 'read', 'id-token': 'write'})
+        self.assertIn('release_platform_dispatch.py promote', self.promote_job)
+        consume = block(block(self.publication, 'jobs'), 'platform-consume', 2)
+        self.assertEqual(permissions(consume, 4), {'contents': 'read', 'actions': 'read'})
+        for host in ('ubuntu-22.04', 'windows-2025', 'macos-15', 'macos-15-intel'):
+            self.assertIn('os: ' + host + '\n', consume)
+        self.assertIn("needs.platform-stage.result == 'success'", consume)
+        self.assertIn("needs.platform-stage.result == 'skipped'", consume)
 
     def test_installation_dispatch_is_read_only_and_separate_from_release_preparation(self):
         release = (WORKFLOWS / 'release.yml').read_text()
         installation = (WORKFLOWS / 'platform-installation.yml').read_text()
         jobs = block(release, 'jobs')
         caller = block(jobs, 'platform-installation', 2)
-        candidate = block(jobs, 'candidate', 2)
+        packages = block(jobs, 'platform-packages', 2)
         self.assertIn("inputs.qualification == 'platform-installation'", caller)
-        self.assertIn("inputs.qualification != 'platform-installation'", candidate)
+        self.assertIn("inputs.qualification == 'platform-packages'", packages)
         self.assertEqual(permissions(caller, 4), {'contents': 'read', 'actions': 'read'})
         self.assertEqual(permissions(installation, 0), {'contents': 'read', 'actions': 'read'})
         self.assertNotRegex(installation, r'(?m)^\s*[a-z-]+: write\s*$')

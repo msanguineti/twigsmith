@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import native_package
 import release_platform_publish as publish
-import release_publish as legacy
+import release_providers as shared
 import release_set
 from test_release_set import platform_fixture
 
@@ -149,7 +149,7 @@ class PlatformPublicationTests(unittest.TestCase):
         self.record, self.files, self.expected = deepcopy(self.base)
         self.fixture = Fixture(self.record)
         self.addCleanup(self.fixture.close)
-        self.providers = publish.Providers(legacy.HTTP(fixture=self.fixture.origin, timeout=2))
+        self.providers = publish.Providers(shared.HTTP(fixture=self.fixture.origin, timeout=2))
 
     def run_release(self, **kwargs):
         return publish.resume(self.record, self.files, self.expected, self.providers, **kwargs)
@@ -350,7 +350,7 @@ class PlatformPublicationTests(unittest.TestCase):
         self.assertEqual(self.fixture.effects, ['promote channel', 'promote channel'])
 
     def test_live_execution_cannot_use_fixture_receipt_or_naked_effect(self):
-        provider = publish.Providers(legacy.HTTP())
+        provider = publish.Providers(shared.HTTP())
         with self.assertRaisesRegex(publish.PublicationError, 'hosted revalidation'):
             publish.resume(self.record, self.files, self.expected, provider, execute=True, qualify=self.qualification)
         with self.assertRaisesRegex(publish.PublicationError, 'hosted revalidation'):
