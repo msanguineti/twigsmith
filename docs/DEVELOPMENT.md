@@ -629,6 +629,10 @@ public release assets and exact npm versions anonymously. They verify installed
 payloads, both aliases, representative Git workflows, local/global installs and separate
 cold-cache exact-version npx commands. Windows and Mac rows repeat direct browser
 acquisition, security metadata, OS extraction and unsigned launch observations.
+Public Mac browser probes retain only native `HOME`, `USER`, `LOGNAME` and `TMPDIR`
+alongside the anonymous allowlist, with a fresh browser profile and isolated npm/Git
+configuration. Native and npm/npx probes keep fresh isolated homes; credentials,
+proxies and startup configuration are excluded from every public probe.
 Browser download targets navigate directly after download behavior is configured;
 matching browser completion events, filename and hash establish success. Evidence
 records setup and progress operations so a timeout identifies the stalled step.

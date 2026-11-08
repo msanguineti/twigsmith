@@ -76,6 +76,16 @@ def anonymous_environment(root):
     return env
 
 
+def anonymous_browser_environment(root):
+    # macOS browser processes require the native login/home/temp mechanics as a
+    # group. Keep every other public-consumer credential/configuration exclusion.
+    native = {name: os.environ[name] for name in ('HOME', 'USER', 'LOGNAME', 'TMPDIR')
+              if name in os.environ} if sys.platform == 'darwin' else {}
+    env = anonymous_environment(root)
+    env.update(native)
+    return env
+
+
 @contextlib.contextmanager
 def isolated_environment(env):
     previous = dict(os.environ)
@@ -609,8 +619,8 @@ def run(args):
                 for kind in ('npm_local', 'npm_global', 'npx_twigsmith', 'npx_tgi'):
                     report['checks'][kind] = npm_check(kind, approval, item, harness, prepared, evidence,
                                                       temporary, env, packages)
-                if not args.target.endswith('linux-gnu'):
-                    report['checks']['browser'] = browser_check(args.approval.resolve(), approval, item, harness, evidence)
+            if not args.target.endswith('linux-gnu'):
+                report['checks']['browser'] = browser_check(args.approval.resolve(), approval, item, harness, evidence)
         report['passed'] = True
         validate_report(report, approval, args.target)
         return 0

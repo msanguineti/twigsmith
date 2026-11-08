@@ -435,6 +435,91 @@ process.stdout.write(JSON.stringify(captured));
         self.assertEqual(set(summary), {'schema', 'approval_sha256', 'target', 'observed_at', 'producer', 'checks', 'passed'})
         self.assertIn('actual child failed', (args.evidence_dir / 'failure.json').read_text())
 
+    def test_public_run_browser_keeps_only_native_mac_mechanics_across_nested_isolation(self):
+        native = {name: 'native-' + name for name in ('HOME', 'USER', 'LOGNAME', 'TMPDIR')}
+        secrets = {name: 'private-' + name for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'NPM_TOKEN',
+            'NODE_AUTH_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL',
+            'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RUNTIME_URL', 'GIT_CONFIG_COUNT', 'NODE_OPTIONS',
+            'PYTHONPATH', 'DYLD_INSERT_LIBRARIES', 'HTTPS_PROXY', 'HTTP_PROXY',
+            'npm_config_userconfig', 'npm_config_registry')}
+        for system, target in (('darwin', 'aarch64-apple-darwin'),
+                               ('darwin', 'x86_64-apple-darwin'),
+                               ('win32', 'x86_64-pc-windows-msvc')):
+            for failed in (False, True):
+                with self.subTest(system=system, failed=failed, target=target):
+                    case = self.root / (target + ('-failed' if failed else '-passed'))
+                    case.mkdir()
+                    approval = case / 'approval.json'
+                    approval.write_text(json.dumps(self.record))
+                    item = next(row for row in self.record['native'] if row['target'] == target)
+                    args = SimpleNamespace(approval=approval, target=target, harness_dir=case,
+                                           evidence_dir=case / 'evidence')
+                    checks = self.passing_report(target)['checks']
+                    observed = []
+
+                    def assert_anonymous(env):
+                        for name, value in secrets.items():
+                            self.assertNotEqual(env.get(name), value)
+                        self.assertEqual(Path(env['npm_config_userconfig']).read_text(), '')
+                        self.assertEqual(Path(env['npm_config_globalconfig']).read_text(), '')
+                        self.assertEqual(env['GIT_CONFIG_GLOBAL'], os.devnull)
+
+                    def isolated_route(kind):
+                        assert_anonymous(os.environ)
+                        self.assertNotEqual(os.environ['HOME'], native['HOME'])
+                        self.assertNotIn('USER', os.environ)
+                        self.assertNotIn('LOGNAME', os.environ)
+                        self.assertNotIn('TMPDIR', os.environ)
+                        observed.append(kind)
+                        return checks[kind]
+
+                    def browser_probe(browser_args, core, browser_item, report):
+                        assert_anonymous(os.environ)
+                        for name, value in native.items():
+                            if system == 'darwin':
+                                self.assertEqual(os.environ[name], value)
+                            else:
+                                self.assertNotEqual(os.environ.get(name), value)
+                        # Inspect an actual child at the nested installation boundary.
+                        child = json.loads(subprocess.check_output([sys.executable, '-c',
+                            'import os,json; print(json.dumps(dict(os.environ)))'], text=True))
+                        assert_anonymous(child)
+                        if system == 'darwin':
+                            self.assertEqual({name: child[name] for name in native}, native)
+                        observed.append('browser')
+                        if failed:
+                            raise ValueError('browser fixture failed')
+                        for name in public.qualify_installation.BROWSER_ROWS:
+                            public.qualify_installation.row(report, name, 'passed', {})
+                        for alias in ('twigsmith', 'tgi'):
+                            report['checks']['first_launch_' + alias]['observation'] = {
+                                'exit': 0, 'stdout': 'twigsmith ' + self.record['version'], 'stderr': ''}
+                        report['checks']['ordinary_git_journey']['observation'] = {
+                            'tests': checks['browser']['cases']}
+
+                    parent = dict(native, **secrets, PATH=os.environ.get('PATH', ''),
+                                  PROGRAMFILES='native-edge-root')
+                    with patch.dict(os.environ, parent, clear=True), \
+                         patch.object(sys, 'platform', system), \
+                         patch.object(qualify_platform, 'host_target', return_value=target), \
+                         patch.object(qualify_platform, 'harness_manifest', return_value={'source': item['source']}), \
+                         patch.object(qualify_platform, 'environment', return_value={}), \
+                         patch.object(public, 'native_check', side_effect=lambda *a: isolated_route('native')), \
+                         patch.object(public, 'public_packages', return_value={}), \
+                         patch.object(public, 'npm_check', side_effect=lambda kind, *a: isolated_route(kind)), \
+                         patch.object(public.qualify_installation, 'browser_probe', side_effect=browser_probe), \
+                         patch.object(public.qualify_installation, 'powershell_host', return_value={}), \
+                         patch.object(public.qualify_installation.platform, 'platform', return_value='fixture'), \
+                         patch.object(public.qualify_installation.platform, 'machine', return_value='fixture'):
+                        self.assertEqual(public.run(args), 1 if failed else 0)
+                        self.assertEqual(dict(os.environ), parent)
+                    self.assertEqual(observed, ['native', 'npm_local', 'npm_global',
+                                                'npx_twigsmith', 'npx_tgi', 'browser'])
+                    summary = json.loads((args.evidence_dir / 'public-consumption.json').read_text())
+                    self.assertEqual(summary['passed'], not failed)
+                    installation = json.loads((args.evidence_dir / 'browser/installation.json').read_text())
+                    self.assertEqual(installation['passed'], not failed)
+
     def test_npx_acquisition_never_launches_product_before_cache_byte_verification(self):
         evidence = self.root / 'evidence'
         evidence.mkdir()
