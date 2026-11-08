@@ -304,6 +304,20 @@ def browser_download(url, directory, profile, expected_hash, observation=None):
     client = None
     observation = {} if observation is None else observation
     observation['lifecycle'] = [download_snapshot(directory, 'before_browser_navigation')]
+    observation['operations'] = []
+
+    def operation(name, perform):
+        # Fixed names identify a stall without recording URLs or protocol input.
+        state = {'name': name, 'status': 'pending'}
+        observation['operations'].append(state)
+        try:
+            result = perform()
+        except (OSError, ValueError, RuntimeError, TimeoutError):
+            state['status'] = 'failed'
+            raise
+        state['status'] = 'completed'
+        return result
+
     try:
         active = profile / 'DevToolsActivePort'
         deadline = time.monotonic() + 40
@@ -312,27 +326,31 @@ def browser_download(url, directory, profile, expected_hash, observation=None):
                 raise RuntimeError('headed browser or local UI session could not start')
             time.sleep(.2)
         lines = active.read_text().splitlines()
-        client = CDP('ws://127.0.0.1:' + str(int(lines[0])) + lines[1])
-        version = client.call('Browser.getVersion')
+        client = operation('browser_websocket', lambda: CDP('ws://127.0.0.1:' + str(int(lines[0])) + lines[1]))
+        version = operation('Browser.getVersion', lambda: client.call('Browser.getVersion'))
         observation.update(binary=str(binary), flags=flags, version=version, headed=True,
                            download_events=client.events)
-        client.call('Browser.setDownloadBehavior', {'behavior': 'allow', 'downloadPath': str(directory),
-                                                     'eventsEnabled': True})
-        target = client.call('Target.createTarget', {'url': 'about:blank'})
+        operation('Browser.setDownloadBehavior', lambda: client.call('Browser.setDownloadBehavior',
+                  {'behavior': 'allow', 'downloadPath': str(directory), 'eventsEnabled': True}))
+        target = operation('Target.createTarget', lambda: client.call('Target.createTarget', {'url': 'about:blank'}))
         connection = http.client.HTTPConnection('127.0.0.1', int(lines[0]), timeout=10)
-        connection.request('GET', '/json/list')
-        targets = json.loads(connection.getresponse().read())
-        connection.close()
-        page = next(item for item in targets if item.get('id') == target['targetId'])
-        page_client = CDP(page['webSocketDebuggerUrl'])
         try:
-            page_client.call('Page.navigate', {'url': url})
+            operation('page_list_request', lambda: connection.request('GET', '/json/list'))
+            targets = operation('page_list_response', lambda: json.loads(connection.getresponse().read()))
+        finally:
+            connection.close()
+        page = next(item for item in targets if item.get('id') == target['targetId'])
+        page_client = operation('page_websocket', lambda: CDP(page['webSocketDebuggerUrl']))
+        try:
+            navigation = operation('Page.navigate', lambda: page_client.call('Page.navigate', {'url': url}))
+            observation['navigation'] = clean({key: navigation[key] for key in ('errorText', 'isDownload')
+                                               if key in navigation})
         finally:
             page_client.close()
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline:
             # Drain browser-level progress messages without persisting their signed URL.
-            client.call('Browser.getVersion')
+            operation('download_progress_poll', lambda: client.call('Browser.getVersion'))
             progress = selected_download_progress(client.events)
             completed = progress['state'] == 'completed'
             if progress['state'] == 'canceled':
