@@ -48,7 +48,7 @@ def site_fingerprint():
 
 
 def advertised_channels(state):
-    return {name: {tag: channels.get(tag) for tag in ('latest', 'next')}
+    return {name: {**{'latest': None, 'next': None}, **channels}
             for name, channels in state['tags'].items()}
 
 
@@ -66,15 +66,21 @@ def validate_baseline(baseline, request, state, operation, environment=os.enviro
     current = advertised_channels(state)
     if set(current) != names:
         raise ValueError('incomplete advertised channel observation')
+    publication = request['approval']['publication']
     for name, channels in baseline['channels'].items():
-        if (not isinstance(channels, dict) or set(channels) != {'latest', 'next'}
-                or any(value is not None and not isinstance(value, str) for value in channels.values())):
+        if (not isinstance(channels, dict) or not {'latest', 'next'}.issubset(channels)
+                or any(not isinstance(tag, str) or not tag
+                       or (value is not None and not isinstance(value, str))
+                       for tag, value in channels.items())):
             raise ValueError('invalid baseline advertised channels')
-        for tag, version in channels.items():
-            allowed = (version,)
-            if operation == 'promote' and name == 'twigsmith' and tag == 'next':
+        for tag in set(channels) | set(current[name]):
+            allowed = (channels.get(tag),)
+            # The preflight precedes staging; both later jobs can observe that
+            # exact staging effect. Only promotion may change the public channel.
+            if (tag == publication['staging_channel'] and operation in ('stage', 'promote')
+                    or tag == publication['channel'] and operation == 'promote'):
                 allowed += (request['approval']['version'],)
-            if current[name][tag] not in allowed:
+            if current[name].get(tag) not in allowed:
                 raise ValueError('advertised npm channel changed since this publication attempt began')
 
 
@@ -88,9 +94,9 @@ def inspect_request(request, fetch=release_stage.api):
     release_set.validate_platform_approval({key: value for key, value in approval.items() if key != 'publication'})
     from release_platform_publish import validate_publication
     validate_publication(approval)
-    if (approval['publication']['prerelease'] is not True
-            or not re.fullmatch(r'1\.0\.0-rc\.[1-9][0-9]*', approval['version'])):
-        raise ValueError('full-set publication is limited to the approved 1.0.0-rc.x phase')
+    if (approval['publication']['prerelease']
+            and not re.fullmatch(r'1\.0\.0-rc\.[1-9][0-9]*', approval['version'])):
+        raise ValueError('prerelease publication is limited to the approved 1.0.0-rc.x sequence')
     main = fetch(f'repos/{REPO}/branches/main')
     if main['commit']['sha'] != request['publisher_revision'] or main.get('protected') is not True:
         raise ValueError('approved publisher is no longer protected current main')
@@ -101,7 +107,7 @@ def inspect_request(request, fetch=release_stage.api):
 def workflow_context(request, environment=os.environ):
     required = {'GITHUB_ACTIONS': 'true', 'GITHUB_REPOSITORY': REPO,
                 'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': request['publisher_revision'],
-                'GITHUB_WORKFLOW': 'Publish approved release candidate', 'GITHUB_EVENT_NAME': 'workflow_dispatch'}
+                'GITHUB_WORKFLOW': 'Publish approved release', 'GITHUB_EVENT_NAME': 'workflow_dispatch'}
     if any(environment.get(key) != value for key, value in required.items()):
         raise ValueError('full-set effects require the reviewed canonical main publication workflow')
     for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
@@ -234,6 +240,8 @@ def main():
         def revalidate(record, state):
             workflow_context(request)
             validate_baseline(baseline, request, state, args.operation)
+            if site_fingerprint() != baseline['site_sha256']:
+                raise ValueError('stable Pages index changed since preflight')
             main = release_stage.api(f'repos/{REPO}/branches/main')
             if main['commit']['sha'] != request['publisher_revision'] or main.get('protected') is not True:
                 raise ValueError('approved publisher is no longer protected current main')

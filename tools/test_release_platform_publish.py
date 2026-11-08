@@ -35,7 +35,7 @@ class Fixture:
         self.duplicate_asset = False
         self.public_missing = self.public_conflict = False
         self.tag_source = record['publication']['source']
-        self.release = {'id': 1, 'tag_name': record['tag'], 'draft': False, 'prerelease': True}
+        self.release = {'id': 1, 'tag_name': record['tag'], 'draft': False, 'prerelease': record['publication']['prerelease']}
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -185,19 +185,26 @@ class ChecksumSnapshotTests(unittest.TestCase):
 
 
 class PlatformPublicationTests(unittest.TestCase):
+    VERSION = '1.0.0-rc.1'
+    CHANNEL = 'next'
+    PROTECTED = 'latest'
+    PRERELEASE = True
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.tmp.cleanup)
         cls.root = Path(cls.tmp.name)
-        cls.approval, _ = platform_fixture(cls.root)
+        cls.approval, _ = platform_fixture(cls.root, version=cls.VERSION)
         cls.approval['publication'] = {'source': cls.approval['native'][0]['source']['revision'],
-            'release_id': 1, 'channel': 'next', 'prerelease': True, 'staging_channel': 'candidate-fixture'}
+            'release_id': 1, 'channel': cls.CHANNEL, 'prerelease': cls.PRERELEASE, 'staging_channel': 'candidate-fixture'}
         cls.base = publish.approved_inputs(cls.root / 'native', cls.root / 'npm', cls.approval)
 
     def setUp(self):
         self.record, self.files, self.expected = deepcopy(self.base)
         self.fixture = Fixture(self.record)
+        self.original_channel = self.fixture.tags['twigsmith'][self.CHANNEL]
+        self.original_protected = self.fixture.tags['twigsmith'][self.PROTECTED]
         self.addCleanup(self.fixture.close)
         self.providers = publish.Providers(shared.HTTP(fixture=self.fixture.origin, timeout=2))
 
@@ -240,12 +247,12 @@ class PlatformPublicationTests(unittest.TestCase):
         self.assertEqual(self.fixture.effects[12], 'publish npm twigsmith')
         public_reads = [path for path in self.fixture.reads if '/releases/download/' in path]
         self.assertEqual({path.rsplit('/', 1)[1] for path in public_reads}, set(self.expected))
-        self.assertEqual(self.fixture.tags['twigsmith']['next'], '0.0.1')
+        self.assertEqual(self.fixture.tags['twigsmith'][self.CHANNEL], self.original_channel)
         self.assertEqual(self.fixture.tags['twigsmith']['candidate-fixture'], self.record['version'])
         result = self.run_release(execute=True, qualify=self.qualification)
         self.assertEqual(result['next'], 'complete')
-        self.assertEqual(self.fixture.tags['twigsmith']['next'], self.record['version'])
-        self.assertEqual(self.fixture.tags['twigsmith']['latest'], '0.0.0')
+        self.assertEqual(self.fixture.tags['twigsmith'][self.CHANNEL], self.record['version'])
+        self.assertEqual(self.fixture.tags['twigsmith'][self.PROTECTED], self.original_protected)
 
     def test_existing_conflicting_package_blocks_missing_assets(self):
         self.ready_packages()
@@ -301,18 +308,18 @@ class PlatformPublicationTests(unittest.TestCase):
             self.run_release(execute=True)
         self.assertEqual(self.fixture.effects, [self.fixture.fail])
 
-    def test_latest_protected_during_native_and_npm_effects(self):
-        self.fixture.mutate_after = ('twigsmith', 'latest', '99.0.0')
+    def test_other_channel_protected_during_native_and_npm_effects(self):
+        self.fixture.mutate_after = ('twigsmith', self.PROTECTED, '99.0.0')
         with self.assertRaisesRegex(publish.PublicationError, 'protected advertised'):
             self.run_release(execute=True)
-        self.fixture.tags['twigsmith']['latest'] = '0.0.0'
+        self.fixture.tags['twigsmith'][self.PROTECTED] = self.original_protected
         self.ready_native()
-        self.fixture.mutate_after = ('twigsmith', 'latest', '99.0.0')
+        self.fixture.mutate_after = ('twigsmith', self.PROTECTED, '99.0.0')
         with self.assertRaisesRegex(publish.PublicationError, 'protected advertised'):
             self.run_release(execute=True)
 
     def test_newer_channel_blocks_before_any_effect(self):
-        self.fixture.tags['twigsmith']['next'] = '99.0.0'
+        self.fixture.tags['twigsmith'][self.CHANNEL] = '99.0.0'
         with self.assertRaisesRegex(publish.PublicationError, 'newer or equal'):
             self.run_release(execute=True)
         self.assertEqual(self.fixture.effects, [])
@@ -358,7 +365,7 @@ class PlatformPublicationTests(unittest.TestCase):
         self.assertEqual(self.fixture.effects, [])
 
     def test_approval_refuses_bad_source_class_channels_and_incomplete_set(self):
-        for field, value in [('source', '0' * 40), ('release_id', True), ('prerelease', False), ('channel', 'latest'), ('staging_channel', 'next')]:
+        for field, value in [('source', '0' * 40), ('release_id', True), ('prerelease', not self.PRERELEASE), ('channel', self.PROTECTED), ('staging_channel', 'next')]:
             approval = deepcopy(self.approval)
             approval['publication'][field] = value
             with self.subTest(field=field), self.assertRaises(publish.PublicationError):
@@ -381,7 +388,7 @@ class PlatformPublicationTests(unittest.TestCase):
         self.ready_packages()
         def concurrent(record, expected, state):
             receipt = self.qualification(record, expected, state)
-            self.fixture.tags['twigsmith']['next'] = '0.0.2'
+            self.fixture.tags['twigsmith'][self.CHANNEL] = '0.0.2'
             return receipt
         with self.assertRaisesRegex(publish.PublicationError, 'outside approved promotion'):
             self.run_release(execute=True, qualify=concurrent)
@@ -393,7 +400,7 @@ class PlatformPublicationTests(unittest.TestCase):
         self.fixture.fail = 'promote channel'
         with self.assertRaisesRegex(publish.PublicationError, 'still pending'):
             self.run_release(execute=True, qualify=self.qualification)
-        self.assertEqual(self.fixture.tags['twigsmith']['next'], '0.0.1')
+        self.assertEqual(self.fixture.tags['twigsmith'][self.CHANNEL], self.original_channel)
         self.fixture.fail = None
         self.assertEqual(self.run_release(execute=True)['next'], 'verify public consumption')
         self.assertEqual(self.run_release(execute=True, qualify=self.qualification)['next'], 'complete')
@@ -410,15 +417,68 @@ class PlatformPublicationTests(unittest.TestCase):
             publish.public_qualification(self.record, receipt)
 
 
+class StablePublicationTests(PlatformPublicationTests):
+    VERSION = '1.0.0'
+    CHANNEL = 'latest'
+    PROTECTED = 'next'
+    PRERELEASE = False
+
+    def test_unrelated_tag_creation_change_and_removal_stop_before_next_effect(self):
+        for value in ('0.0.2', None):
+            self.fixture.tags['twigsmith']['legacy'] = '0.0.1'
+            observe = self.providers.observe
+            calls = 0
+            def concurrent(record, expected):
+                nonlocal calls
+                state = observe(record, expected)
+                calls += 1
+                if calls == 1:
+                    if value is None:
+                        self.fixture.tags['twigsmith'].pop('legacy')
+                    else:
+                        self.fixture.tags['twigsmith']['legacy'] = value
+                return state
+            with patch.object(self.providers, 'observe', side_effect=concurrent):
+                with self.subTest(value=value), self.assertRaisesRegex(publish.PublicationError, 'protected advertised'):
+                    self.run_release(execute=True)
+            self.fixture.assets.clear()
+        self.fixture.mutate_after = ('twigsmith', 'new-tag', '0.0.1')
+        with self.assertRaisesRegex(publish.PublicationError, 'protected advertised'):
+            self.run_release(execute=True)
+
+    def test_staging_tag_can_change_only_after_approved_package_publication(self):
+        staging = self.record['publication']['staging_channel']
+        self.fixture.mutate_after = ('twigsmith', staging, self.VERSION)
+        with self.assertRaisesRegex(publish.PublicationError, 'staging npm channel changed'):
+            self.run_release(execute=True)
+
+    def test_lost_latest_response_requalifies_without_republishing_or_repromoting(self):
+        self.ready_native()
+        self.ready_packages()
+        self.fixture.lost = 'promote channel'
+        self.assertEqual(self.run_release(execute=True, qualify=self.qualification)['next'], 'complete')
+        self.assertEqual(self.fixture.effects, ['promote channel'])
+        self.assertEqual(self.fixture.tags['twigsmith']['next'], self.original_protected)
+        self.assertEqual(self.run_release(execute=True)['next'], 'verify public consumption')
+        with patch.object(self, 'qualification', wraps=self.qualification) as qualify:
+            self.assertEqual(self.run_release(execute=True, qualify=qualify)['next'], 'complete')
+            qualify.assert_called_once()
+        self.assertEqual(self.fixture.effects, ['promote channel'])
+
+
 class PublicGateTests(unittest.TestCase):
     """Structural receipt checks do not authenticate report origins by themselves."""
+    VERSION = '1.0.0-rc.1'
+    CHANNEL = 'next'
+    PRERELEASE = True
+
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temporary.cleanup)
-        cls.approved, _ = platform_fixture(Path(cls.temporary.name))
+        cls.approved, _ = platform_fixture(Path(cls.temporary.name), version=cls.VERSION)
         cls.approved['publication'] = {'source': cls.approved['native'][0]['source']['revision'],
-            'release_id': 1, 'channel': 'next', 'prerelease': True, 'staging_channel': 'candidate-fixture'}
+            'release_id': 1, 'channel': cls.CHANNEL, 'prerelease': cls.PRERELEASE, 'staging_channel': 'candidate-fixture'}
 
     def setUp(self):
         from qualify_public_release import expected_cases, expected_identity
@@ -469,6 +529,12 @@ class PublicGateTests(unittest.TestCase):
                 del row['checks']['npx_tgi']
             with self.subTest(mutation=mutation), self.assertRaises(publish.PublicationError):
                 self.check(receipt)
+
+
+class StablePublicGateTests(PublicGateTests):
+    VERSION = '1.0.0'
+    CHANNEL = 'latest'
+    PRERELEASE = False
 
 
 if __name__ == '__main__':

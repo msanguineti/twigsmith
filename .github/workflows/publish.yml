@@ -1,4 +1,4 @@
-name: Publish approved release candidate
+name: Publish approved release
 
 on:
   workflow_dispatch:
@@ -85,7 +85,7 @@ jobs:
           name: platform-publication-input-${{ github.run_attempt }}
           path: ${{ runner.temp }}/platform-publication
           digest-mismatch: error
-      - name: Recover exact assets and packages without advertising the RC
+      - name: Recover exact assets and package without advertising the release
         env:
           REQUEST_BASE64: ${{ needs.platform-preflight.outputs.request }}
           GH_TOKEN: ${{ github.token }}
@@ -227,7 +227,7 @@ jobs:
           pattern: public-consumption-*-${{ github.run_attempt }}
           path: ${{ runner.temp }}/public-evidence
           digest-mismatch: error
-      - name: Authenticate every consumer row and promote only the verified RC
+      - name: Authenticate every consumer row and promote only the verified release
         env:
           REQUEST_BASE64: ${{ needs.platform-preflight.outputs.request }}
           GH_TOKEN: ${{ github.token }}

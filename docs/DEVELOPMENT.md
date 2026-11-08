@@ -551,7 +551,8 @@ These probes do not publish native assets, npm packages or the website.
 
 The release process has three explicit operations: prepare the complete candidate,
 publish its exact approved bytes under a staging tag, then separately promote the
-publicly verified candidate to `next`. `release.yml` provides read-only preparation
+publicly verified release to `next` for a prerelease or `latest` for a stable
+version. `release.yml` provides read-only preparation
 and installation qualification; `publish.yml` provides only `publish-platforms` and
 `promote-platforms`. Pushes, merges, tags and release events publish nothing.
 There is no release-body request convention or automatic continuation.
@@ -561,7 +562,8 @@ integration, then dispatch `Release qualification` on main with
 `qualification=platform-packages`. Review the exact native and npm original Actions
 artifacts, source/tree, run/attempt, hashes and host qualification before authorizing
 any tag, release or package publication. Do not rebuild or relabel a candidate to
-match an approval. The release tag and non-draft GitHub prerelease must be created
+match an approval. The release tag and non-draft GitHub release with the matching
+prerelease/stable class must be created
 separately at the approved source; the publisher neither creates nor moves them.
 
 A workflow-wide `twigsmith-release` concurrency group serializes publisher runs;
@@ -588,8 +590,9 @@ python3 tools/release_platform_dispatch.py plan REQUEST.json --bundle BUNDLE
 This checks source/artifact eligibility and reports the next pending operation.
 It cannot publish or promote. Live effects use only the protected hosted path.
 
-The **Publish approved release candidate** workflow accepts `operation=publish-platforms`
-for integrated `1.0.0-rc.x` sets. Its request contains exactly `publisher_revision`
+The **Publish approved release** workflow accepts `operation=publish-platforms`
+for integrated stable versions and `1.0.0-rc.x` prereleases. Its request contains
+exactly `publisher_revision`
 (current protected main SHA) and `approval` (the independently reviewed schema-3
 single-installer identity from integrated preparation). Add the `publication` object to that approval:
 
@@ -603,6 +606,10 @@ single-installer identity from integrated preparation). Add the `publication` ob
 }
 ```
 
+For a stable release, use its exact stable version and tag, set `prerelease` to
+`false`, select `"channel": "latest"` and an explicit staging tag distinct from
+`latest` and `next`. Every publication object must match its approved release class.
+
 The source and release ID are placeholders for the approved real identities. The
 release and tag must already exist, with that tag resolving to the exact native
 source. The workflow does not create either. Native source, packaging source and
@@ -612,17 +619,18 @@ hash, archive/manifest/payload hash, npm tarball and frozen requirements snapsho
 Prepare and independently review new versioned bytes; never relabel an older probe.
 
 Preflight acquires the exact five original artifacts read-only and checks the full
-bundle. It retains this attempt's initial `twigsmith` `latest`/`next` observations
+bundle. It retains this attempt's initial `twigsmith` channel observations
 and the stable Pages index hash with the immutable workflow input. Both
-later stages refuse changed protected channels; only promotion may change common
-`next` to the approved RC. The Pages index is reobserved at each stage boundary;
+later stages refuse changes to unrelated channels; only staging may update its
+approved staging tag and only promotion may update the selected advertised channel.
+The Pages index is reobserved at each stage boundary;
 this checks the index, not every site asset. The `release` job uploads only absent
 matching-approved native assets. All twelve must then be anonymously downloadable
 at their exact public release URLs with approved hashes before it publishes the
 single npm version under the explicit staging tag. Unknown or conflicting provider
 state halts recovery; matching published bytes survive timeouts or lost responses.
 `publish-platforms` runs the public installation matrix and stops without moving
-`next`.
+the advertised channel.
 
 Read-only Windows Server 2025, macOS 15 ARM64/Intel and Ubuntu 22.04 jobs then fetch
 public release assets and exact npm versions anonymously. They verify installed
@@ -639,13 +647,14 @@ records setup and progress operations so a timeout identifies the stalled step.
 Missing or failed required checks block readiness; inspect individual child results,
 script-policy behavior and host/security limits. npm 12's default denied lifecycle
 is observed separately from approved automatic installation and explicit repair.
-After reviewing this evidence, obtain separate owner authority for `next` promotion
-and dispatch `operation=promote-platforms` with the same exact approval and current
+After reviewing this evidence, obtain separate owner authority for the selected
+`next` or `latest` promotion and dispatch `operation=promote-platforms` with the same exact approval and current
 reviewed publisher. This operation cannot upload assets or publish a missing npm
 version. It repeats the read-only four-platform public matrix in its own attempt;
 the final `release` job authenticates those four successful jobs and fresh reports,
-reobserves immutable provider bytes and channels, and moves only `twigsmith@next`.
-It never updates stable Pages or `latest`. Full-set stable publication is not enabled.
+reobserves immutable provider bytes and channels, and moves only the approved
+`twigsmith` channel. Prereleases promote `next` while preserving `latest`; stable
+versions promote `latest` while preserving `next`. Neither operation deploys Pages.
 
 Retry the identical reviewed request after observing remote state; do not repack
 published versions or replace assets. A changed current main requires a reviewed
@@ -682,12 +691,23 @@ Preview labels distinguish locally verified bytes from public availability.
 The independent **Publish website** workflow is manually dispatched on main and has
 only repository-read and Pages deployment permissions. It accepts the current
 single-installer descriptor format, resolves the public stable GitHub release and
-npm `latest`, and verifies their exact identities, native manifests and npm tarball.
+npm `latest`, and verifies their exact identities, native manifests, original
+checksum sidecar bytes and records, and npm tarball.
 Prereleases and obsolete descriptor formats are refused. The already deployed site
 and published 0.1.0 assets remain external history; preparing new Pages source does
 not deploy it or change `latest`. New stable-site deployment requires a reviewed
 current-format descriptor and separately authorized public release and deployment.
-The RC publication and promotion workflows never invoke Pages.
+Publication and channel-promotion workflows never invoke Pages.
+
+For a stable release, prepare the versioned implementation on reviewed eligible
+source, then build and independently qualify the exact candidate set. Derive its
+site descriptor from that verified bundle and review it through a separate source
+change before deployment. The native/packaging source stays bound to the already
+approved bytes even when the descriptor integration advances the publisher/site
+revision. Do not rebuild or replace approved bytes merely to make those revisions
+equal. The independently authorized Pages dispatch follows successful public
+consumption, stable `latest` promotion and GitHub/npm version agreement. A failed
+site deployment can be retried through **Publish website** without package effects.
 
 Pages jobs serialize independently. They require current main, capture source and
 provider observations, stage an ordinary-file artifact, and recheck source, provider

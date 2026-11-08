@@ -114,11 +114,14 @@ def resolve(descriptor, github_latest, npm_latest, npm_tarball):
                     or descriptor['npm']['requirements'][target] != snapshot['npm']):
                 raise ValueError('site platform requirements differ from approved identity')
             stem = native_package.archive_stem(identity['archive'])
-            checksum = (f"{identity['sha256']}  {identity['archive']}\n"
-                        f"{identity['manifest_sha256']}  {stem}.manifest.json\n").encode()
+            # The reviewed descriptor binds the verified candidate's raw sidecar.
+            # Native Windows production uses CRLF; reconstructing records here
+            # would replace that immutable byte identity with a different hash.
+            checksum_digest = native['assets']['checksums']['sha256']
+            release_set.expected_hash(checksum_digest)
             expected = {'archive': (identity['archive'], identity['sha256']),
                         'manifest': (stem + '.manifest.json', identity['manifest_sha256']),
-                        'checksums': (stem + '.sha256', hashlib.sha256(checksum).hexdigest())}
+                        'checksums': (stem + '.sha256', checksum_digest)}
             if set(native['assets']) != set(expected):
                 raise ValueError('missing native release asset')
             for kind, (name, digest) in expected.items():

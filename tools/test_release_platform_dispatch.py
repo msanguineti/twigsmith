@@ -16,19 +16,23 @@ from test_release_set import platform_fixture
 
 
 class DispatchTests(unittest.TestCase):
+    VERSION = '1.0.0-rc.1'
+    PRERELEASE = True
+    CHANNEL = 'next'
+
     @classmethod
     def setUpClass(cls):
         cls.base = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.base.cleanup)
-        cls.approval, _ = platform_fixture(Path(cls.base.name) / 'set', version='1.0.0-rc.1')
+        cls.approval, _ = platform_fixture(Path(cls.base.name) / 'set', version=cls.VERSION)
         cls.approval['publication'] = {'source': '1' * 40, 'release_id': 1,
-            'prerelease': True, 'channel': 'next', 'staging_channel': 'candidate-v1-rc-1'}
+            'prerelease': cls.PRERELEASE, 'channel': cls.CHANNEL, 'staging_channel': 'candidate-v1-rc-1'}
 
     def setUp(self):
         self.request = {'publisher_revision': 'a' * 40, 'approval': deepcopy(self.approval)}
         self.env = {'GITHUB_ACTIONS': 'true', 'GITHUB_REPOSITORY': dispatch.REPO,
                     'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': 'a' * 40,
-                    'GITHUB_WORKFLOW': 'Publish approved release candidate',
+                    'GITHUB_WORKFLOW': 'Publish approved release',
                     'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_RUN_ID': '27', 'GITHUB_RUN_ATTEMPT': '2'}
         self.run = {'id': 27, 'run_attempt': 2, 'repository': {'full_name': dispatch.REPO},
                     'head_repository': {'full_name': dispatch.REPO}, 'head_sha': 'a' * 40,
@@ -97,7 +101,7 @@ class DispatchTests(unittest.TestCase):
             with self.subTest(main=main), self.assertRaisesRegex(ValueError, 'protected current main'):
                 dispatch.inspect_request(self.request, lambda _: main)
         changed = deepcopy(self.request)
-        changed['approval']['publication']['prerelease'] = False
+        changed['approval']['publication']['prerelease'] = not self.PRERELEASE
         with self.assertRaises(ValueError):
             dispatch.inspect_request(changed, lambda _: self.fail('read before rejection'))
         changed = deepcopy(self.request)
@@ -121,7 +125,7 @@ class DispatchTests(unittest.TestCase):
                     'producer': dispatch.producer(self.env), 'channels': dispatch.advertised_channels(state),
                     'site_sha256': '1' * 64}
         dispatch.validate_baseline(baseline, self.request, state, 'stage', self.env)
-        state['tags']['twigsmith']['next'] = self.request['approval']['version']
+        state['tags']['twigsmith'][self.CHANNEL] = self.request['approval']['version']
         with self.assertRaisesRegex(ValueError, 'changed since'):
             dispatch.validate_baseline(baseline, self.request, state, 'stage', self.env)
         dispatch.validate_baseline(baseline, self.request, state, 'promote', self.env)
@@ -213,6 +217,43 @@ class DispatchTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 self.evidence()
         path.write_text(json.dumps(original))
+
+
+class StableDispatchTests(DispatchTests):
+    VERSION = '1.0.0'
+    PRERELEASE = False
+    CHANNEL = 'latest'
+
+    def test_normal_stable_semver_uses_same_approved_source_path(self):
+        with tempfile.TemporaryDirectory() as temp:
+            approval, _ = platform_fixture(Path(temp) / 'stable', version='1.2.3')
+        approval['publication'] = {'source': '1' * 40, 'release_id': 2,
+            'prerelease': False, 'channel': 'latest', 'staging_channel': 'candidate-stable'}
+        request = {'publisher_revision': self.request['publisher_revision'], 'approval': approval}
+        with patch.object(dispatch.release_stage, 'inspect_platform_request', return_value=['inspected']) as inspect:
+            self.assertEqual(dispatch.inspect_request(request, lambda _: {
+                'commit': {'sha': request['publisher_revision']}, 'protected': True}), ['inspected'])
+            inspect.assert_called_once()
+            self.assertNotIn('publication', inspect.call_args.args[0])
+
+    def test_baseline_preserves_unrelated_tags_and_accepts_only_approved_staging(self):
+        state = {'tags': {'twigsmith': {'latest': '0.1.0', 'next': '1.0.0-rc.1', 'legacy': '0.0.1'}}}
+        baseline = {'schema': 1, 'approval_sha256': dispatch.approval_digest(self.request['approval']),
+                    'producer': dispatch.producer(self.env), 'channels': dispatch.advertised_channels(state),
+                    'site_sha256': '1' * 64}
+        staging = self.request['approval']['publication']['staging_channel']
+        state['tags']['twigsmith'][staging] = self.VERSION
+        dispatch.validate_baseline(baseline, self.request, state, 'stage', self.env)
+        dispatch.validate_baseline(baseline, self.request, state, 'promote', self.env)
+        for tag, value in [('legacy', '0.0.2'), ('new-tag', '0.0.1'), (staging, '9.0.0')]:
+            original = deepcopy(state)
+            state['tags']['twigsmith'][tag] = value
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, 'changed since'):
+                dispatch.validate_baseline(baseline, self.request, state, 'promote', self.env)
+            state = original
+        del state['tags']['twigsmith']['legacy']
+        with self.assertRaisesRegex(ValueError, 'changed since'):
+            dispatch.validate_baseline(baseline, self.request, state, 'stage', self.env)
 
 
 if __name__ == '__main__':
