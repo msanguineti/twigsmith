@@ -933,7 +933,7 @@ def npm_run(args, evidence, report):
                 env['npm_config_cache'] = str(cache)
                 observation = temporary / ('npx-' + alias + '.json')
                 command = npm_invocation(args, npx=True) + ['--yes', *script_policy(npm_version, 'twigsmith'),
-                    f'--package=twigsmith@{version}', '--', str(node), '-e', public.NPX_OBSERVER, alias, str(observation)]
+                    f'--package=twigsmith@{version}', '--', *public.npx_observer_command(node, evidence, alias, observation)]
                 output = fixture_output(command, evidence / ('npx-' + alias + '-acquire.log'), env, temporary)
                 if output.returncode:
                     raise RuntimeError('exact-version npx acquisition failed')

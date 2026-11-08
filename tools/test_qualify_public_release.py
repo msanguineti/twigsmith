@@ -323,6 +323,55 @@ class PublicConsumptionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 public.npx_common(cache, observation, 'tgi')
 
+    def test_file_observer_runs_under_real_node_without_launching_selected_alias(self):
+        directory = self.root / 'private observer with spaces'
+        directory.mkdir()
+        bins = self.root / 'selected shims with spaces'
+        bins.mkdir()
+        node = qualify_platform.selected_npm_node(os.environ)
+        env = dict(os.environ, PATH=str(bins) + os.pathsep + os.environ['PATH'])
+        for alias in ('twigsmith', 'tgi'):
+            shim = bins / (alias + ('.cmd' if os.name == 'nt' else ''))
+            # A nonexecutable file can be observed; acquisition must never try to
+            # invoke it. The existing real npm test exercises later execution.
+            shim.write_text('not executable application code')
+            observation = directory / (alias + ' observed shim.json')
+            command = public.npx_observer_command(node, directory, alias, observation)
+            self.assertEqual(len(command), 4)
+            self.assertNotIn('-e', command)
+            self.assertTrue(all('\n' not in arg and '\r' not in arg for arg in command))
+            self.assertEqual(Path(command[1]).read_bytes(), public.NPX_OBSERVER.encode())
+            output = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(output.returncode, 0, output.stderr)
+            self.assertEqual(output.stdout + output.stderr, '')
+            self.assertEqual(json.loads(observation.read_text()), {'shim': str(shim.resolve())})
+            refused = subprocess.run(command + ['execute', str(shim.with_name('other-shim'))],
+                                     env=env, capture_output=True, text=True)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn('another shim after verification', refused.stderr)
+        Path(command[1]).write_text('substituted observer')
+        with self.assertRaisesRegex(ValueError, 'observer file changed'):
+            public.npx_observer_command(node, directory, 'tgi', observation)
+
+    def test_blocked_npx_acquisition_also_passes_actual_observer_filename(self):
+        evidence = self.root / 'evidence'
+        evidence.mkdir()
+        def acquire(command, log, env, cwd):
+            self.assertNotIn('-e', command)
+            self.assertNotIn(public.NPX_OBSERVER, command)
+            self.assertNotIn('execute', command)
+            script = Path(command[command.index('--') + 2])
+            self.assertTrue(script.is_absolute())
+            self.assertEqual(script.read_text(), public.NPX_OBSERVER)
+            raise RuntimeError('stopped before fixture package verification')
+        with patch.object(public, 'npm_install', side_effect=acquire):
+            with self.assertRaisesRegex(RuntimeError, 'stopped before fixture package verification'):
+                public.npx_blocked_repair(SimpleNamespace(npm=None), self.record['version'], {}, self.target,
+                    self.item['payload_sha256'], qualify_platform.selected_npm_node(os.environ),
+                    evidence, self.root, os.environ)
+        with self.assertRaisesRegex(ValueError, 'observer did not write'):
+            public.npx_common(self.root / 'cache', self.root / 'absent-observation.json', 'tgi')
+
     def test_windows_npx_observer_quotes_cmd_path_with_spaces_without_implicit_shell(self):
         # Execute the actual observer JavaScript in a VM with Windows path/process
         # mechanics. This proves argument construction; real cmd.exe is a hosted row.
@@ -330,7 +379,7 @@ class PublicConsumptionTests(unittest.TestCase):
 const vm = require('node:vm'), path = require('node:path').win32;
 const shim = process.argv[2], captured = {};
 const stop = {};
-const fake = {platform:'win32', argv:['observer','tgi','observation','execute',shim],
+const fake = {platform:'win32', argv:['node','observer.cjs','tgi','observation','execute',shim],
   env:{PATH:path.dirname(shim),ComSpec:'C:\\Windows\\System32\\cmd.exe'},
   stdout:{write:s=>{captured.stdout=s;}},stderr:{write:s=>{captured.stderr=s;}},
   exit:code=>{captured.exit=code;throw stop;}};
@@ -390,9 +439,13 @@ process.stdout.write(JSON.stringify(captured));
         evidence = self.root / 'evidence'
         evidence.mkdir()
         def acquire(command, log, env, cwd):
-            self.assertIn(public.NPX_OBSERVER, command)
+            self.assertNotIn('-e', command)
+            self.assertNotIn(public.NPX_OBSERVER, command)
             self.assertNotIn('execute', command)
-            self.assertIn("if (process.argv[3] !== 'execute') process.exit(0)", public.NPX_OBSERVER)
+            script = Path(command[command.index('--') + 2])
+            self.assertTrue(script.is_absolute())
+            self.assertEqual(script.read_text(), public.NPX_OBSERVER)
+            self.assertIn("if (process.argv[4] !== 'execute') process.exit(0)", script.read_text())
             shim = Path(env['npm_config_cache']) / '_npx/hash/node_modules/.bin/tgi'
             (cwd / 'selected-shim.json').write_text(json.dumps({'shim': str(shim)}))
         with patch.object(public, 'npm_install', side_effect=acquire) as acquired, \
@@ -484,8 +537,8 @@ process.stdout.write(JSON.stringify(captured));
                         observation = root / ('approved-' + alias + '.json')
                         npx = qualify_platform.npm_invocation(args, npx=True)
                         acquire = npx + ['--yes', *qualify_platform.script_policy(version, 'twigsmith'),
-                            '--package=twigsmith@' + fixtures.VERSION, '--', str(node), '-e', public.NPX_OBSERVER,
-                            alias, str(observation)]
+                            '--package=twigsmith@' + fixtures.VERSION, '--',
+                            *public.npx_observer_command(node, root, alias, observation)]
                         public.npm_install(acquire, root / (alias + '-acquire.log'), npx_env, root)
                         cached, _ = public.npx_common(Path(npx_env['npm_config_cache']), observation, alias)
                         qualify_platform.installed_payload(cached, files, fixtures.TARGET,

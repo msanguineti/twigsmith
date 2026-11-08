@@ -270,7 +270,7 @@ jobs:
           $asset = "PowerShell-$version-win-x64.zip"
           $base = "https://github.com/PowerShell/PowerShell/releases/download/v$version"
           $archive = Join-Path $env:RUNNER_TEMP $asset
-          Invoke-WebRequest "$base/$asset" -OutFile $archive
+          Invoke-WebRequest "$base/$asset" -OutFile $archive -MaximumRetryCount 2 -RetryIntervalSec 5 -ConnectionTimeoutSeconds 30 -OperationTimeoutSeconds 120
           # Publisher-listed archive identity at the v7.3.12 release page.
           $expected = 'C515C7C1B5BF1E3B5AA991274E89EA0DAA8E8BD5CA08AD554ADBC514E90005F4'
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ine $expected) { throw 'Historical archive hash mismatch' }

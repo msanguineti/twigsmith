@@ -396,14 +396,14 @@ def blocked_repair(approval, item, packages, node, npm_args, directory, work, en
 # Only the fixed --version argument enters cmd; no user command text is accepted.
 NPX_OBSERVER = r"""
 const fs = require('node:fs'), path = require('node:path'), cp = require('node:child_process');
-const alias = process.argv[1], out = process.argv[2];
+const alias = process.argv[2], out = process.argv[3];
 if (!['twigsmith','tgi'].includes(alias)) throw new Error('unexpected npx alias');
 const suffix = process.platform === 'win32' ? '.cmd' : '';
 const shim = process.env.PATH.split(path.delimiter).map(p => path.join(p,alias+suffix)).find(p => fs.existsSync(p));
 if (!shim) throw new Error('npx did not provide its alias');
 fs.writeFileSync(out, JSON.stringify({shim:path.resolve(shim)}));
-if (process.argv[3] !== 'execute') process.exit(0);
-if (path.resolve(shim) !== process.argv[4]) throw new Error('npx selected another shim after verification');
+if (process.argv[4] !== 'execute') process.exit(0);
+if (path.resolve(shim) !== process.argv[5]) throw new Error('npx selected another shim after verification');
 let result;
 if (process.platform === 'win32') {
   if (/["%!\r\n]/.test(shim)) throw new Error('npx shim path contains cmd expansion characters');
@@ -420,6 +420,26 @@ process.exit(result.status===null?1:result.status);
 """
 
 
+def npx_observer_command(node, directory, alias, observation):
+    """Pass only a private script filename through npm's platform shell.
+
+    npm exec reconstructs a shell command on Windows; literal multiline `-e`
+    source cannot be carried safely through that command's newline boundary.
+    The fixed observer file uses Node script argument positions on every host.
+    """
+    if alias not in ('twigsmith', 'tgi'):
+        raise ValueError('unexpected npx observer alias')
+    script = directory.resolve(strict=True) / 'npx-observer.cjs'
+    data = NPX_OBSERVER.encode('utf-8')
+    if script.exists() or script.is_symlink():
+        if script.is_symlink() or not script.is_file() or script.read_bytes() != data:
+            raise ValueError('private npx observer file changed')
+    else:
+        with script.open('xb') as output:
+            output.write(data)
+    return [str(node), str(script), alias, str(observation.absolute())]
+
+
 def npx_blocked_repair(npm_args, version, packages, target, payload_hash, node, directory, work, env):
     """Qualify the documented exact-version npx repair in one independent cache."""
     env = dict(env, npm_config_cache=str(work / 'npx-blocked-cache'), npm_config_offline='false')
@@ -429,7 +449,7 @@ def npx_blocked_repair(npm_args, version, packages, target, payload_hash, node, 
     observation = work / 'npx-blocked-shim.json'
     npx = qualify_platform.npm_invocation(npm_args, npx=True)
     acquire = npx + ['--yes', '--ignore-scripts', '--package=twigsmith@' + version,
-                     '--', str(node), '-e', NPX_OBSERVER, 'twigsmith', str(observation)]
+                     '--', *npx_observer_command(node, directory, 'twigsmith', observation)]
     npm_install(acquire, directory / 'npx-blocked-acquire.log', env, work)
     common, _ = npx_common(cache, observation, 'twigsmith')
     verify_installed_package(common, packages['twigsmith'])
@@ -451,6 +471,8 @@ def npx_blocked_repair(npm_args, version, packages, target, payload_hash, node, 
 
 
 def npx_common(cache, observation, alias):
+    if observation.is_symlink() or not observation.is_file():
+        raise ValueError('npx observer did not write its selected-shim observation')
     row = json.loads(observation.read_text(encoding='utf-8'))
     if not isinstance(row, dict) or set(row) != {'shim'}:
         raise ValueError('npx selected-shim observation is invalid')
@@ -503,7 +525,7 @@ def npm_check(kind, approval, item, harness, prepared, evidence, temporary, base
         observation = work / 'selected-shim.json'
         command = qualify_platform.npm_invocation(npm_args, npx=True) + [
             '--yes', *qualify_platform.script_policy(report['npm'], 'twigsmith'), '--registry', REGISTRY, '--package=twigsmith@' + approval['version'],
-            '--', str(node), '-e', NPX_OBSERVER, npx_alias, str(observation)]
+            '--', *npx_observer_command(node, directory, npx_alias, observation)]
         npm_install(command, directory / 'npx-acquire.log', env, work)
         common, shim_dir = npx_common(cache, observation, npx_alias)
         report.update(cold_cache=True, invoked_alias=npx_alias, selected_shim=json.loads(observation.read_text()))
