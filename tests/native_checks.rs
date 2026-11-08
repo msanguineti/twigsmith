@@ -33,11 +33,24 @@ impl Tree {
         Self::pids_at(&self.root)
     }
     fn pids_at(root: &Path) -> Vec<u32> {
-        ["leader", "ordinary", "stubborn-pipe-holder"]
+        let mut pids: Vec<_> = ["leader", "ordinary", "stubborn-pipe-holder"]
             .into_iter()
             .filter_map(|name| fs::read_to_string(root.join(format!("{name}.pid"))).ok())
             .map(|pid| pid.parse().unwrap())
-            .collect()
+            .collect();
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with("member-")
+                    && name.ends_with(".pid")
+                    && let Ok(pid) = fs::read_to_string(entry.path())
+                {
+                    pids.push(pid.parse().unwrap());
+                }
+            }
+        }
+        pids
     }
     fn observe(&self) -> Vec<ObservedProcess> {
         Self::observe_at(&self.root)
@@ -183,14 +196,18 @@ impl Drop for ObservedProcess {
 #[cfg(unix)]
 fn running(pid: u32) -> bool {
     // Orphaned killed children may remain zombies until the host reaper runs.
-    // ps independently observes execution state rather than treating zombies as
-    // live just because kill(pid, 0) still finds a process-table entry.
+    // ps independently observes execution state rather than treating dead or
+    // zombie entries as live just because kill(pid, 0) still finds them.
     let output = Command::new("ps")
         .args(["-p", &pid.to_string(), "-o", "stat="])
         .output()
         .unwrap();
     let state = String::from_utf8_lossy(&output.stdout);
-    !state.trim().is_empty() && !state.trim().starts_with('Z')
+    #[cfg(target_os = "linux")]
+    let terminal = matches!(state.trim().as_bytes().first(), Some(b'Z' | b'X' | b'x'));
+    #[cfg(not(target_os = "linux"))]
+    let terminal = state.trim().starts_with('Z');
+    !state.trim().is_empty() && !terminal
 }
 #[cfg(windows)]
 fn running(pid: u32) -> bool {
@@ -458,6 +475,53 @@ fn native_missing_executable_nonzero_and_leader_exit_cleanup() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn native_large_process_group_stops_before_leader_collection() {
+    isolated(
+        "native_large_process_group_stops_before_leader_collection",
+        true,
+        |root| {
+            let _deadline = Deadline::new(root);
+            let _tree = Tree {
+                root: root.to_owned(),
+            };
+            let observer_root = root.to_owned();
+            let observer = thread::spawn(move || {
+                wait_until("large process group ready", || {
+                    observer_root.join("leader.ready").exists()
+                });
+                let pids = Tree::pids_at(&observer_root);
+                assert_eq!(
+                    pids.len(),
+                    49,
+                    "leader and all 48 children must be observed"
+                );
+                let processes: Vec<_> = pids.into_iter().map(ObservedProcess::new).collect();
+                fs::write(
+                    observer_root.join("leader-may-exit"),
+                    b"observed every member",
+                )
+                .unwrap();
+                processes
+            });
+            let cancellation = Cancellation::new().unwrap();
+            let status = check_process::run(
+                root,
+                &native::command("tree", &[root.to_str().unwrap(), "many-exit"]),
+                &cancellation,
+                |_, _| {},
+            )
+            .unwrap();
+            assert!(status.success());
+            for process in observer.join().unwrap() {
+                process.assert_stopped();
+            }
+            cancellation.complete().unwrap();
+        },
+    );
+}
+
 #[test]
 fn native_cli_interrupt_contains_tree_and_preserves_retry() {
     isolated(
@@ -640,6 +704,54 @@ fn native_signal_registration_resets_between_stages() {
                     .success()
             );
             second.complete().unwrap();
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn native_cleanup_failure_does_not_report_stopped_interruption() {
+    isolated(
+        "native_cleanup_failure_does_not_report_stopped_interruption",
+        true,
+        |root| {
+            let _deadline = Deadline::new(root);
+            let _tree = Tree {
+                root: root.to_owned(),
+            };
+            let observer_root = root.to_owned();
+            let signal = thread::spawn(move || {
+                wait_until("escaped fixture ready", || {
+                    observer_root.join("leader.ready").exists()
+                });
+                rustix::process::kill_process(
+                    rustix::process::getpid(),
+                    rustix::process::Signal::TERM,
+                )
+                .unwrap();
+            });
+            let cancellation = Cancellation::new().unwrap();
+            let start = Instant::now();
+            let result = check_process::run(
+                root,
+                &native::command("leave-group", &[root.to_str().unwrap()]),
+                &cancellation,
+                |_, _| {},
+            );
+            signal.join().unwrap();
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "cleanup error blocked return"
+            );
+            let error = result.unwrap_err();
+            assert!(matches!(error, Error::Io(_)), "{error:?}");
+            let message = error.to_string();
+            assert!(message.contains("cleanup failed"), "{message}");
+            assert!(
+                !message.contains("managed check processes stopped"),
+                "{message}"
+            );
+            assert!(cancellation.complete().is_err());
         },
     );
 }

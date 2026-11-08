@@ -203,10 +203,9 @@ four-platform npm candidate set: a common `twigsmith` Node launcher and exact-ve
 optional platform dependencies. The launcher selects the installed native payload,
 preserves invocation/terminal behavior and refuses missing or incompatible packages;
 it performs no runtime download or consumer build. Both command names share the
-launcher. The set manifest binds package and native identities. The current
-Linux-only publisher remains separate until it can recover publication of the
-complete package set. Integrated offline verification uses a distinct schema and
-the publisher refuses that schema before provider effects.
+launcher. The set manifest binds package and native identities. Integrated offline verification uses a distinct schema. The legacy Linux-only
+publisher remains separate; the full-set RC adapter verifies and recovers all five
+package versions before public installation and channel promotion.
 
 [`qualify_platform.py`](../tools/qualify_platform.py) runs selected existing real-Git
 fixtures against extracted archives and installed npm commands, recording actual
@@ -248,9 +247,9 @@ a temporary directory and exposes the completed set only after verification.
 
 Integrated candidate descriptors and previews retain every platform and npm payload
 identity. They describe local bytes and frozen candidate requirements. Legacy
-published descriptors retain their original interpretation; public resolution and
-write-capable consumers refuse the integrated format until full-set publication
-and recovery are implemented. These checks add no application Git observations.
+published descriptors retain their original interpretation. Stable public resolution
+and the legacy publisher refuse the integrated format; full-set RC publication
+uses its separate verified adapter without changing stable Pages. These checks add no application Git observations.
 
 `tools/release_publish.py` snapshots verified local bytes, observes downloaded provider
 bytes and applies one `release_recovery` decision at a time. Unknown/conflicting
@@ -261,6 +260,39 @@ is created or moved. Workflow concurrency and the local repository lock own excl
 the pure recovery function does not supply it. Native/npm publication is intentionally
 nontransactional. Stable and prerelease channels are latest and next respectively;
 only a verified stable release promotes the site after consumption checks.
+
+Full-set RC publication uses [`release_platform_publish.py`](../tools/release_platform_publish.py)
+for twelve native assets and five npm tarballs. It observes every package before
+choosing effects, refuses conflicts anywhere, publishes missing platform packages
+before the common launcher, and preserves matching bytes after interrupted effects.
+A failed response is followed by observation; unknown state stops. Every npm publish
+uses the approved staging tag. An existing common version with missing payloads
+allows prerequisite reconciliation but requires a fresh invocation for qualification.
+
+[`release_platform_dispatch.py`](../tools/release_platform_dispatch.py) binds the
+whole approval to protected current server main, eligible native/packaging/publisher
+sources and exact successful Actions artifacts. The `publish-platforms` workflow
+operation stages bytes, runs a read-only four-host public consumption matrix, then
+promotes only after authenticating every successful current-attempt job and its
+identity-bound evidence. Both write stages use the existing `publish.yml`/`release`
+OIDC identity and release concurrency group. The promotion job has repository-read
+permissions and cannot repair missing release assets. Each effect rechecks server
+main and release/tag/package observations. A transient same-attempt preflight
+snapshot preserves protected npm channels across jobs; stable Pages index hashes
+are compared at each stage boundary. This is an index observation, not an atomic
+attestation of every site asset. GitHub and npm cannot make these separate
+effects atomic; concurrent external changes between observation and effect remain
+possible and require reconciliation rather than rollback.
+
+[`qualify_public_release.py`](../tools/qualify_public_release.py) downloads native
+assets from their public release URLs and installs exact public npm versions with
+isolated anonymous configuration. It checks both aliases, native/Git child cases,
+selected payload hashes and separate cold-cache npx invocations. Windows and both
+Mac rows also observe direct browser acquisition, OS extraction and unsigned launch
+through the installation probe. Missing, skipped, zero-child, stale or mixed reports
+block promotion. This path is limited to `1.0.0-rc.x`; schema-2 stable publication and
+site resolution remain unavailable. Executing the adapter does not supply owner
+publication authority or establish package ownership/trust settings.
 
 ### Release data and website publication
 
@@ -984,7 +1016,19 @@ catchable cancellation signals across the stage. The
 unreaped leader pins its process-group identity through cleanup. On macOS, a
 group containing only that zombie leader can reject signalling; this is accepted
 only after a complete native group-membership snapshot proves that sole member.
-Other signal failures remain errors. The
+Other signal failures remain errors. Explicit cleanup runs after normal leader
+exit, cancellation and collection errors. It sends the group kill and observes
+member termination before reaping the retained leader. Linux reads `/proc` process
+state and thread counts, so a zombie main thread with live workers still blocks
+completion. macOS uses complete native membership lists and BSD start identities;
+a final list must contain only identities already observed terminal, covering
+forks during earlier enumeration. A one-second deadline bounds retries and scan
+work; native calls and scheduling are not preemptible, and observations completing
+after the deadline are refused. Unavailable observation, a signal error or remaining
+live members returns a cleanup error rather than claiming a stopped interruption. Unwinding retains best-effort
+containment without an unbounded leader wait after a cleanup failure. The
+[Unix observer](../src/check_process/unix_group.rs) supports Linux and macOS;
+other Unix hosts refuse managed checks before launching them. The
 [Windows backend](../src/check_process/windows.rs) starts each executable suspended,
 assigns it to a non-inheritable Job Object before resuming it, and prevents ordinary
 descendant breakaway. It handles console Ctrl-C and Ctrl-Break during the check
@@ -996,7 +1040,8 @@ that same retained process handle to signal. Only observed termination resolves
 the error; a still-live or unobservable process keeps cleanup unsuccessful.
 Job accounting alone cannot establish process-handle completion; job-wide
 termination remains an error/unwinding fallback.
-Both backends stop ordinary descendants and reap the leader before returning.
+Successful completion and managed interruption require ordinary descendants
+stopped and the leader reaped; a cleanup failure remains an execution error.
 Bounded pipe drains keep continuous output from starving cancellation. Concurrent
 library check stages serialize ownership of the process-wide cancellation facility.
 Windows batch files require an explicit shell executable, such as `cmd.exe`, rather

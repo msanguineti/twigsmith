@@ -8,7 +8,6 @@ not a cross-provider transaction: every attempted effect is followed by observat
 import argparse
 from contextlib import contextmanager, redirect_stdout
 from datetime import datetime, timezone
-import fcntl
 from http.client import HTTPException
 import importlib.util
 import json
@@ -370,6 +369,9 @@ def approved_inputs(archive, npm_dir, approval):
 
 @contextmanager
 def exclusive(repo):
+    # Effects execute on Linux; pure approval validation is also imported by
+    # read-only Windows/macOS consumers.
+    import fcntl
     git_dir = subprocess.check_output(['git', '-C', str(repo), 'rev-parse', '--git-common-dir'], text=True).strip()
     lock = Path(repo, git_dir, 'twigsmith-publication.lock')
     with lock.open('a') as handle:

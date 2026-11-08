@@ -447,6 +447,56 @@ class InstallationBoundaryTests(unittest.TestCase):
             self.assertEqual(report['checks']['original_retained_after_browser_close']['status'], 'unmet')
             self.assertFalse(probe.passed(report, probe.BROWSER_ROWS))
 
+    def test_public_browser_uses_direct_native_url_hash_without_actions_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            item = {'archive': 'twigsmith-1.0.0-rc.1-aarch64-apple-darwin.tar.gz',
+                    'sha256': native_package.digest(b'public-original'),
+                    'artifact': {'artifact_id': '17', 'sha256': '0' * 64}}
+            report = {'checks': {}}
+            @contextlib.contextmanager
+            def download(url, directory, profile, expected_hash, observation):
+                self.assertEqual(url, 'https://github.com/msanguineti/twigsmith/releases/download/v1.0.0-rc.1/' + item['archive'])
+                self.assertEqual(expected_hash, item['sha256'])
+                original = directory / item['archive']
+                original.write_bytes(b'public-original')
+                observation['lifecycle'] = []
+                yield original, observation
+            args = SimpleNamespace(evidence_dir=root, public_release=True)
+            with patch.object(probe.sys, 'platform', 'darwin'), \
+                 patch.object(probe.release_stage, 'inspect_platform_request') as actions, \
+                 patch.object(probe, 'signed_redirect') as redirect, \
+                 patch.object(probe, 'browser_download', side_effect=download), \
+                 patch.object(probe, 'inspect_browser_download'), \
+                 patch.object(probe, 'security_metadata', return_value={'present': True}):
+                probe.browser_probe(args, {'tag': 'v1.0.0-rc.1'}, item, report)
+            actions.assert_not_called()
+            redirect.assert_not_called()
+            self.assertEqual(report['checks']['original_retained_after_browser_close']['status'], 'passed')
+
+    def test_public_original_archive_is_verified_before_os_extraction_and_no_outer_zip(self):
+        import qualify_public_release
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / 'twigsmith-1.0.0-rc.1-aarch64-apple-darwin.tar.gz'
+            original.write_bytes(b'original-security-metadata-preserved')
+            item = {'archive': original.name, 'manifest_sha256': '1' * 64}
+            args = SimpleNamespace(evidence_dir=root, public_release=True)
+            report = {'checks': {}}
+            with patch.object(probe, 'security_metadata', return_value={'present': True}), \
+                 patch.object(qualify_public_release, 'public_download') as download, \
+                 patch.object(probe, 'verify_candidate', side_effect=ValueError('public manifest mismatch')) as verify, \
+                 patch.object(probe.release_stage, 'extract_artifact') as wrapper, \
+                 patch.object(probe, 'os_extract') as extractor:
+                with self.assertRaisesRegex(ValueError, 'manifest mismatch'):
+                    probe.inspect_browser_download(args, {'tag': 'v1.0.0-rc.1'}, item, report,
+                                                   original, {'lifecycle': []})
+            self.assertEqual(download.call_count, 2)
+            self.assertEqual(verify.call_args.args[0], original)
+            wrapper.assert_not_called()
+            extractor.assert_not_called()
+            self.assertEqual(original.read_bytes(), b'original-security-metadata-preserved')
+
     def test_no_runtime_daemon_captures_read_only_host_state_and_stays_unmet(self):
         report = {'checks': {}}
         args = SimpleNamespace(archive=Path('approved-candidate.zip'), redist_sha256='1' * 64)

@@ -26,6 +26,10 @@ impl From<io::Error> for Error {
 }
 
 #[cfg(unix)]
+#[path = "check_process/unix_group.rs"]
+mod unix_group;
+
+#[cfg(unix)]
 mod platform {
     use super::*;
     use rustix::{
@@ -45,7 +49,7 @@ mod platform {
             atomic::{AtomicBool, Ordering},
         },
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     struct Signals {
@@ -111,20 +115,69 @@ mod platform {
     struct ManagedChild {
         child: Child,
         group: Option<Pid>,
+        cleanup_attempted: bool,
+    }
+    impl ManagedChild {
+        fn exited(&self) -> io::Result<bool> {
+            rustix::process::waitid(
+                rustix::process::WaitId::Pid(
+                    Pid::from_raw(self.child.id() as i32).expect("child PID"),
+                ),
+                rustix::process::WaitIdOptions::EXITED
+                    | rustix::process::WaitIdOptions::NOHANG
+                    | rustix::process::WaitIdOptions::NOWAIT,
+            )
+            .map(|status| status.is_some())
+            .map_err(|error| io::Error::other(format!("observe check leader: {error}")))
+        }
+
+        fn stop_and_wait(&mut self) -> io::Result<ExitStatus> {
+            self.cleanup_attempted = true;
+            let group = self.group.expect("unreaped managed group");
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                // Keep the leader unreaped until all members have stopped. A
+                // successful signal request alone does not establish completion.
+                stop_group(group, self.exited()?)?;
+                if !unix_group::has_live_members(group, deadline)? && self.exited()? {
+                    let status = self.child.wait()?;
+                    self.group = None;
+                    return Ok(status);
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("check process group {group} did not stop within one second"),
+                    ));
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
     impl Drop for ManagedChild {
         fn drop(&mut self) {
+            if self.group.is_some() && !self.cleanup_attempted {
+                // Unwinding still attempts containment, but ordinary errors use
+                // the explicit cleanup path so its failure can be reported.
+                let _ = self.stop_and_wait();
+            }
             if let Some(group) = self.group.take() {
                 let _ = kill_process_group(group, Signal::KILL);
+                // A failed bounded cleanup must not hide an unbounded wait in
+                // Drop or claim that a still-running child has stopped.
+                let _ = self.child.try_wait();
             }
-            let _ = self.child.wait();
         }
     }
-    fn stop_exited_group(group: Pid) -> io::Result<()> {
+    fn stop_group(group: Pid, _leader_exited: bool) -> io::Result<()> {
         match kill_process_group(group, Signal::KILL) {
             Ok(()) => Ok(()),
             #[cfg(target_os = "macos")]
-            Err(rustix::io::Errno::PERM) if exited_leader_is_sole_member(group)? => Ok(()),
+            Err(rustix::io::Errno::PERM)
+                if _leader_exited && exited_leader_is_sole_member(group)? =>
+            {
+                Ok(())
+            }
             Err(error) => Err(io::Error::other(format!(
                 "stop check process group {group} with SIGKILL: {error}"
             ))),
@@ -192,6 +245,7 @@ mod platform {
         mut output: impl FnMut(Stream, &[u8]),
     ) -> Result<ExitStatus, Error> {
         cancellation.check()?;
+        unix_group::ensure_supported()?;
         let child = Command::new(&command[0])
             .args(&command[1..])
             .current_dir(directory)
@@ -203,46 +257,50 @@ mod platform {
         let mut child = ManagedChild {
             group: Pid::from_raw(child.id() as i32),
             child,
+            cleanup_attempted: false,
         };
         let mut stdout = child.child.stdout.take().expect("piped stdout");
         let mut stderr = child.child.stderr.take().expect("piped stderr");
-        nonblocking(&stdout)?;
-        nonblocking(&stderr)?;
-        loop {
-            cancellation.check()?;
-            drain(&mut stdout, Stream::Stdout, &mut output)?;
-            drain(&mut stderr, Stream::Stderr, &mut output)?;
-            // WNOWAIT preserves the leader PID until group cleanup in Drop.
-            let exited = rustix::process::waitid(
-                rustix::process::WaitId::Pid(
-                    Pid::from_raw(child.child.id() as i32).expect("child PID"),
-                ),
-                rustix::process::WaitIdOptions::EXITED
-                    | rustix::process::WaitIdOptions::NOHANG
-                    | rustix::process::WaitIdOptions::NOWAIT,
-            )
-            .map_err(|error| {
-                io::Error::other(format!(
-                    "observe check leader with waitid(WNOWAIT): {error}"
-                ))
-            })?;
-            if exited.is_some() {
-                let group = Pid::from_raw(child.child.id() as i32).expect("child PID");
-                stop_exited_group(group)?;
-                child.group = None;
-                // Collect all available buffered output, including enlarged pipes,
-                // without waiting on descriptors held by escaped descendants.
-                while drain(&mut stdout, Stream::Stdout, &mut output)? {
-                    cancellation.check()?;
-                }
-                while drain(&mut stderr, Stream::Stderr, &mut output)? {
-                    cancellation.check()?;
-                }
+        let execution = (|| -> Result<(), Error> {
+            nonblocking(&stdout)?;
+            nonblocking(&stderr)?;
+            loop {
                 cancellation.check()?;
-                return Ok(child.child.wait()?);
+                drain(&mut stdout, Stream::Stdout, &mut output)?;
+                drain(&mut stderr, Stream::Stderr, &mut output)?;
+                if child.exited()? {
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(10));
             }
-            thread::sleep(Duration::from_millis(10));
+        })();
+        // Cancellation does not interrupt cleanup. Report Interrupted only after
+        // termination was established; cleanup errors take precedence instead.
+        let status = child.stop_and_wait().map_err(|error| {
+            let original = match &execution {
+                Err(Error::Interrupted) => " after interruption".to_owned(),
+                Err(Error::Io(error)) => format!(" after execution error ({error})"),
+                Ok(()) => String::new(),
+            };
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "check process cleanup failed for group {}{original}: {error}",
+                    child.child.id(),
+                ),
+            )
+        })?;
+        execution?;
+        // All managed writers are stopped. Drain buffered output without waiting
+        // for descriptors deliberately held outside the managed group.
+        while drain(&mut stdout, Stream::Stdout, &mut output)? {
+            cancellation.check()?;
         }
+        while drain(&mut stderr, Stream::Stderr, &mut output)? {
+            cancellation.check()?;
+        }
+        cancellation.check()?;
+        Ok(status)
     }
 
     #[cfg(test)]

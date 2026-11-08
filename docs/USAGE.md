@@ -1724,6 +1724,9 @@ evidence require resolving that context before proceeding. Finish retains effect
 and reports failures without automatic rollback.
 
 For failed or interrupted checks, prepared history and check effects stay local.
+A process-cleanup error means termination could not be confirmed; inspect the
+reported process group before retrying. Linux managed checks require readable
+`/proc` process information; macOS uses its native process-information APIs.
 Fix the reported check or executable problem, commit or preserve changed files,
 and rerun finish. Review reruns every configured check; ordinary direct integration
 reruns checks when target delivery remains pending. Tagged completion can reuse

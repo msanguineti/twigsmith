@@ -145,8 +145,12 @@ def signed_redirect(artifact_id):
     return location
 
 
-def approved(approval, target):
-    approval = release_set.validate_platform_approval(approval)
+def approved(approval, target, *, public=False):
+    if public:
+        import qualify_public_release
+        approval, _ = qualify_public_release.approved(approval, target)
+    else:
+        approval = release_set.validate_platform_approval(approval)
     item = next((item for item in approval['native'] if item['target'] == target), None)
     if item is None or target != qualify_platform.host_target() or target.endswith('linux-gnu'):
         raise ValueError('installation probe requires the approved native Windows/macOS host')
@@ -541,7 +545,15 @@ def os_extract(archive, destination, expected_files=None):
 
 def browser_probe(args, approval, item, report):
     evidence = args.evidence_dir
-    release_stage.inspect_platform_request(approval, api_json)
+    public = getattr(args, 'public_release', False)
+    if public:
+        import qualify_public_release
+        url = qualify_public_release.release_url(approval, item['archive'])
+        expected_hash = item['sha256']
+    else:
+        release_stage.inspect_platform_request(approval, api_json)
+        url = signed_redirect(item['artifact']['artifact_id'])
+        expected_hash = item['artifact']['sha256']
     download = evidence / 'browser-download'
     download.mkdir()
     if sys.platform == 'win32':
@@ -553,15 +565,14 @@ def browser_probe(args, approval, item, report):
     observation, outer = {}, None
     try:
         with tempfile.TemporaryDirectory(prefix='twigsmith-browser-profile-') as profile:
-            with browser_download(signed_redirect(item['artifact']['artifact_id']), download,
-                                  Path(profile), item['artifact']['sha256'], observation) as (outer, observation):
+            with browser_download(url, download, Path(profile), expected_hash, observation) as (outer, observation):
                 inspect_browser_download(args, approval, item, report, outer, observation)
     finally:
         observation.setdefault('lifecycle', []).append(download_snapshot(download, 'after_profile_cleanup'))
         report['browser_lifecycle'] = clean(observation)
         if outer is not None:
             retained = outer.is_file() and not outer.is_symlink()
-            retained = retained and native_package.digest(outer.read_bytes()) == item['artifact']['sha256']
+            retained = retained and native_package.digest(outer.read_bytes()) == expected_hash
             metadata = security_metadata(outer)
             row(report, 'original_retained_after_browser_close',
                 'passed' if retained and browser_origin_observed(metadata) else 'unmet',
@@ -576,15 +587,28 @@ def inspect_browser_download(args, approval, item, report, outer, observation):
     row(report, 'browser_download', 'passed', observation)
     marks = {'outer': security_metadata(outer)}
     row(report, 'outer_security_metadata', 'passed' if browser_origin_observed(marks['outer']) else 'unmet', marks['outer'])
-    # Existing exact ZIP verifier supplies safe allowlists BEFORE invoking the OS.
     stem = native_package.archive_stem(item['archive'])
-    names = [item['archive'], stem + '.manifest.json', stem + '.sha256']
-    with tempfile.TemporaryDirectory(prefix='twigsmith-zip-inspection-') as temporary:
-        release_stage.extract_artifact(outer.read_bytes(), item['artifact'], Path(temporary) / 'checked', names)
-    extracted = evidence / 'os-outer-extraction'
-    outer_result = os_extract(outer, extracted)
-    observation['lifecycle'].append(download_snapshot(outer.parent, 'after_outer_extraction'))
-    archive = extracted / item['archive']
+    if getattr(args, 'public_release', False):
+        import qualify_public_release
+        if outer.name != item['archive']:
+            raise ValueError('browser original name differs from approved public archive')
+        # Sidecars are anonymously fetched; the browser-original native archive
+        # remains untouched, including its real security metadata.
+        for filename, expected in ((stem + '.manifest.json', item['manifest_sha256']),
+                                   (stem + '.sha256', None)):
+            qualify_public_release.public_download(qualify_public_release.release_url(approval, filename),
+                                                  outer.parent / filename, expected)
+        archive = outer
+        outer_result = {'route': 'direct-public-native-archive'}
+    else:
+        # Existing exact ZIP verifier supplies safe allowlists BEFORE invoking the OS.
+        names = [item['archive'], stem + '.manifest.json', stem + '.sha256']
+        with tempfile.TemporaryDirectory(prefix='twigsmith-zip-inspection-') as temporary:
+            release_stage.extract_artifact(outer.read_bytes(), item['artifact'], Path(temporary) / 'checked', names)
+        extracted = evidence / 'os-outer-extraction'
+        outer_result = os_extract(outer, extracted)
+        observation['lifecycle'].append(download_snapshot(outer.parent, 'after_outer_extraction'))
+        archive = extracted / item['archive']
     manifest = verify_candidate(archive, approval, item)
     marks['archive'] = security_metadata(archive)
     row(report, 'archive_identity', 'passed', {'manifest': manifest, 'archive_sha256': item['sha256']})
@@ -653,7 +677,8 @@ def inspect_browser_download(args, approval, item, report, outer, observation):
     fixture_ok = qualify_platform.run_fixtures(artifact, harness, evidence, fixture_report,
         env=runtime_env, selected_cases=selected)
     row(report, 'ordinary_git_journey', 'passed' if fixture_ok and fixture_report['tests'] else 'failed', fixture_report)
-    release_stage.inspect_platform_request(approval, api_json)
+    if not getattr(args, 'public_release', False):
+        release_stage.inspect_platform_request(approval, api_json)
 
 
 class MicrosoftRedirect(urllib.request.HTTPRedirectHandler):
@@ -896,15 +921,28 @@ def run(args):
     for name in required:
         row(report, name, 'unmet', 'not observed')
     try:
-        approval, item = approved(json.loads(args.approval.read_text()), args.target)
-        if sys.platform == 'win32':
-            report['host']['powershell'] = powershell_host()
-        report.update(target=args.target, approved_native=item,
-                      approval_sha256=native_package.digest(args.approval.read_bytes()))
-        if args.operation == 'browser':
-            browser_probe(args, approval, item, report)
-        else:
-            runtime_probe(args, approval, item, report)
+        with contextlib.ExitStack() as stack:
+            public = getattr(args, 'public_release', False)
+            if public:
+                import qualify_public_release
+                if args.operation != 'browser' or args.harness_dir is None:
+                    raise ValueError('direct public browser mode requires native child fixtures')
+                temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='twigsmith-public-browser-')))
+                stack.enter_context(qualify_public_release.isolated_environment(
+                    qualify_public_release.anonymous_environment(temporary)))
+                report['limits'][1] = 'Direct public release browser route; actual unsigned security behavior is host-specific.'
+                approval, item = approved(json.loads(args.approval.read_text()), args.target, public=True)
+            else:
+                approval, item = approved(json.loads(args.approval.read_text()), args.target)
+            if sys.platform == 'win32':
+                report['host']['powershell'] = powershell_host()
+            report.update(target=args.target, approved_native=item,
+                          approval_sha256=native_package.digest(args.approval.read_bytes()),
+                          download_route='public-release' if public else 'actions-artifact')
+            if args.operation == 'browser':
+                browser_probe(args, approval, item, report)
+            else:
+                runtime_probe(args, approval, item, report)
     except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.SubprocessError, KeyError) as error:
         report['error'] = clean(str(error))
     finally:
@@ -928,6 +966,8 @@ def main():
         command_parser.add_argument('--evidence-dir', required=True, type=Path)
         if operation == 'browser':
             command_parser.add_argument('--harness-dir', type=Path)
+            command_parser.add_argument('--public-release', action='store_true',
+                                        help='observe exact native archive from the public release anonymously')
         else:
             command_parser.add_argument('--archive', required=True, type=Path)
             command_parser.add_argument('--redist-sha256', required=True)
