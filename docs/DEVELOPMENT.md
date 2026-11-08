@@ -629,6 +629,9 @@ public release assets and exact npm versions anonymously. They verify installed
 payloads, both aliases, representative Git workflows, local/global installs and separate
 cold-cache exact-version npx commands. Windows and Mac rows repeat direct browser
 acquisition, security metadata, OS extraction and unsigned launch observations.
+Browser evidence records completed and failed setup, navigation and progress
+operations, plus sanitized navigation results. Inspect these markers before
+retrying a browser timeout; browser startup alone does not establish a download.
 Missing or failed required checks block readiness; inspect individual child results,
 script-policy behavior and host/security limits. npm 12's default denied lifecycle
 is observed separately from approved automatic installation and explicit repair.

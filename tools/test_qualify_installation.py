@@ -422,6 +422,73 @@ class InstallationBoundaryTests(unittest.TestCase):
                 self.assertEqual(observation['lifecycle'][-1]['files'], [])
                 self.assertNotIn('signed.invalid', json.dumps(observation))
 
+    def test_browser_timeout_identifies_operation_after_cleanup_without_protocol_input(self):
+        stages = ('browser_websocket', 'Browser.getVersion', 'Browser.setDownloadBehavior',
+                  'Target.createTarget', 'page_list_request', 'page_list_response',
+                  'page_websocket', 'Page.navigate', 'download_progress_poll')
+        for stage in stages:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                directory, profile = root / 'download', root / 'profile'
+                directory.mkdir(); profile.mkdir()
+                (profile / 'DevToolsActivePort').write_text('12345\n/devtools/browser/probe\n')
+                closed = []
+
+                def fail(name):
+                    if name == stage:
+                        raise TimeoutError('timed out https://signed.invalid/?sig=secret')
+
+                class Browser:
+                    def __init__(self, url):
+                        fail('page_websocket' if '/page/' in url else 'browser_websocket')
+                        self.events = []
+                        self.version_calls = 0
+                    def call(self, method, params=None):
+                        if method == 'Browser.getVersion':
+                            self.version_calls += 1
+                            fail('Browser.getVersion' if self.version_calls == 1 else 'download_progress_poll')
+                        else:
+                            fail(method)
+                        if method == 'Browser.close':
+                            closed.append('browser')
+                        if method == 'Target.createTarget':
+                            return {'targetId': 'page'}
+                        if method == 'Page.navigate':
+                            return {'errorText': 'https://signed.invalid/?sig=secret', 'isDownload': True,
+                                    'unrecorded': 'private protocol response'}
+                        return {'product': 'native-browser-fixture'}
+                    def close(self):
+                        closed.append('websocket')
+
+                class Connection:
+                    def request(self, *args):
+                        fail('page_list_request')
+                    def getresponse(self):
+                        fail('page_list_response')
+                        return io.BytesIO(json.dumps([{'id': 'page', 'webSocketDebuggerUrl': 'ws://127.0.0.1/page/1'}]).encode())
+                    def close(self):
+                        closed.append('http')
+
+                observation = {}
+                process = SimpleNamespace(poll=lambda: None, wait=lambda timeout: 0)
+                with patch.object(probe, 'browser_binary', return_value=Path('native-browser-fixture')), \
+                     patch.object(probe, 'CDP', Browser), \
+                     patch.object(probe.http.client, 'HTTPConnection', return_value=Connection()), \
+                     patch.object(probe.subprocess, 'Popen', return_value=process):
+                    with self.assertRaises(TimeoutError) as error:
+                        with probe.browser_download('https://signed.invalid/?sig=secret', directory,
+                                                    profile, '0' * 64, observation):
+                            self.fail('timeout must not qualify a download')
+                self.assertEqual(observation['operations'][-1], {'name': stage, 'status': 'failed'})
+                self.assertTrue(all(item['status'] == 'completed' for item in observation['operations'][:-1]))
+                self.assertEqual(observation['lifecycle'][-1]['stage'], 'after_browser_close')
+                saved = json.dumps(probe.clean({'error': str(error.exception), 'browser_lifecycle': observation}))
+                self.assertNotIn('signed.invalid', saved)
+                self.assertNotIn('secret', saved)
+                self.assertNotIn('private protocol response', saved)
+                if stage == 'download_progress_poll':
+                    self.assertEqual(observation['navigation'], {'errorText': '[URL REDACTED]', 'isDownload': True})
+
     def test_browser_original_removed_after_close_is_explicitly_unmet(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
