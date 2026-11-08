@@ -9,7 +9,6 @@ import base64
 import contextlib
 import functools
 import hashlib
-import http.client
 import json
 import os
 from pathlib import Path
@@ -332,21 +331,9 @@ def browser_download(url, directory, profile, expected_hash, observation=None):
                            download_events=client.events)
         operation('Browser.setDownloadBehavior', lambda: client.call('Browser.setDownloadBehavior',
                   {'behavior': 'allow', 'downloadPath': str(directory), 'eventsEnabled': True}))
-        target = operation('Target.createTarget', lambda: client.call('Target.createTarget', {'url': 'about:blank'}))
-        connection = http.client.HTTPConnection('127.0.0.1', int(lines[0]), timeout=10)
-        try:
-            operation('page_list_request', lambda: connection.request('GET', '/json/list'))
-            targets = operation('page_list_response', lambda: json.loads(connection.getresponse().read()))
-        finally:
-            connection.close()
-        page = next(item for item in targets if item.get('id') == target['targetId'])
-        page_client = operation('page_websocket', lambda: CDP(page['webSocketDebuggerUrl']))
-        try:
-            navigation = operation('Page.navigate', lambda: page_client.call('Page.navigate', {'url': url}))
-            observation['navigation'] = clean({key: navigation[key] for key in ('errorText', 'isDownload')
-                                               if key in navigation})
-        finally:
-            page_client.close()
+        # Creating the target starts navigation without waiting for response headers
+        # on a page socket. Browser download events remain the completion authority.
+        operation('Target.createTarget', lambda: client.call('Target.createTarget', {'url': url}))
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline:
             # Drain browser-level progress messages without persisting their signed URL.

@@ -351,81 +351,86 @@ class InstallationBoundaryTests(unittest.TestCase):
                                          'suggestedFilename': 'original.zip'}])
         self.assertNotIn('sig=', json.dumps(client.events))
 
-    def test_browser_retains_lifetime_until_matching_completion_and_consumer_returns(self):
-        for terminal in ('completed', 'canceled'):
-            with self.subTest(terminal=terminal), tempfile.TemporaryDirectory() as temporary:
+    def test_browser_waits_for_delayed_headers_and_requires_matching_completed_download(self):
+        for outcome in ('completed', 'canceled', 'wrong-hash', 'missing-completion'):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 directory, profile = root / 'download', root / 'profile'
                 directory.mkdir(); profile.mkdir()
                 original = directory / 'original.zip'
                 payload = b'fully-readable-but-still-in-progress'
-                active = profile / 'DevToolsActivePort'
-                active.write_text('12345\n/devtools/browser/probe\n')
-                state = {'closed': False, 'sleeps': 0, 'browser': None}
+                (profile / 'DevToolsActivePort').write_text('12345\n/devtools/browser/probe\n')
+                state = {'closed': False, 'now': 0, 'requested': False, 'begun': False, 'calls': []}
+                url = 'https://signed.invalid/private?sig=secret'
+
                 class Browser:
-                    def __init__(self, url):
+                    def __init__(self, endpoint):
                         self.events = []
-                        self.page = '/page/' in url
-                        if not self.page:
-                            state['browser'] = self
                     def call(self, method, params=None):
+                        state['calls'].append(method)
                         if method == 'Browser.setDownloadBehavior':
-                            self_events_enabled = params['eventsEnabled']
-                            assert self_events_enabled
-                        if method == 'Target.createTarget':
+                            assert params['eventsEnabled']
+                        elif method == 'Target.createTarget':
+                            assert params == {'url': url}
+                            state['requested'] = True
                             return {'targetId': 'page'}
-                        if method == 'Page.navigate':
-                            original.write_bytes(payload)
-                            state['browser'].events.extend([
-                                {'event': 'Browser.downloadWillBegin', 'guid': 'selected', 'suggestedFilename': original.name},
-                                {'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': 'inProgress'}])
-                        if method == 'Browser.close':
+                        elif method == 'Browser.getVersion':
+                            if state['requested'] and state['now'] >= 12 and not state['begun']:
+                                # Headers arrive after the former page socket's 10s
+                                # timeout; target creation itself has already returned.
+                                original.write_bytes(payload)
+                                self.events.extend([
+                                    {'event': 'Browser.downloadWillBegin', 'guid': 'selected', 'suggestedFilename': original.name},
+                                    {'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': 'inProgress'}])
+                                state['begun'] = True
+                            if state['begun'] and state['now'] >= 13 and outcome != 'missing-completion':
+                                terminal = 'canceled' if outcome == 'canceled' else 'completed'
+                                self.events.append({'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': terminal})
+                        elif method == 'Browser.close':
                             state['closed'] = True
                             original.unlink(missing_ok=True)
+                        else:
+                            raise AssertionError('unexpected page operation: ' + method)
                         return {'product': 'native-browser-fixture'}
                     def close(self):
                         pass
-                class Connection:
-                    def request(self, *args):
-                        pass
-                    def getresponse(self):
-                        return io.BytesIO(json.dumps([{'id': 'page', 'webSocketDebuggerUrl': 'ws://127.0.0.1/page/1'}]).encode())
-                    def close(self):
-                        pass
+
                 def sleep(_):
-                    state['sleeps'] += 1
-                    self.assertTrue(original.is_file())
-                    self.assertEqual(probe.native_package.digest(original.read_bytes()), hashlib.sha256(payload).hexdigest())
-                    state['browser'].events.append({'event': 'Browser.downloadProgress', 'guid': 'selected', 'state': terminal})
+                    if state['now'] < 12:
+                        self.assertFalse(original.exists())
+                    state['now'] += 1
+
                 process = SimpleNamespace(poll=lambda: None, wait=lambda timeout: 0)
                 observation = {}
+                expected = '0' * 64 if outcome == 'wrong-hash' else hashlib.sha256(payload).hexdigest()
                 with patch.object(probe, 'browser_binary', return_value=Path('native-browser-fixture')), \
                      patch.object(probe, 'CDP', Browser), \
-                     patch.object(probe.http.client, 'HTTPConnection', return_value=Connection()), \
                      patch.object(probe.subprocess, 'Popen', return_value=process), \
+                     patch.object(probe.time, 'monotonic', side_effect=lambda: state['now']), \
                      patch.object(probe.time, 'sleep', side_effect=sleep):
-                    if terminal == 'canceled':
-                        with self.assertRaisesRegex(RuntimeError, 'canceled'):
-                            with probe.browser_download('https://signed.invalid/private', directory, profile,
-                                                        hashlib.sha256(payload).hexdigest(), observation):
-                                self.fail('a canceled download must not yield a candidate')
-                    else:
-                        with probe.browser_download('https://signed.invalid/private', directory, profile,
-                                                    hashlib.sha256(payload).hexdigest(), observation) as (path, observed):
-                            self.assertEqual(state['sleeps'], 1)
+                    if outcome == 'completed':
+                        with probe.browser_download(url, directory, profile, expected, observation) as (path, observed):
+                            self.assertEqual(state['now'], 13)
                             self.assertFalse(state['closed'])
                             self.assertTrue(path.is_file())
                             self.assertEqual(observed['download_events'][-1]['state'], 'completed')
+                    else:
+                        failure, message = (ValueError, 'hash mismatch') if outcome == 'wrong-hash' else (
+                            RuntimeError, 'canceled' if outcome == 'canceled' else 'did not complete')
+                        with self.assertRaisesRegex(failure, message):
+                            with probe.browser_download(url, directory, profile, expected, observation):
+                                self.fail('unverified download must not yield a candidate')
                 self.assertTrue(state['closed'])
                 self.assertFalse(original.exists())
                 self.assertTrue(observation['lifecycle'][-2]['files'])
                 self.assertEqual(observation['lifecycle'][-1]['files'], [])
+                self.assertNotIn('Page.navigate', state['calls'])
                 self.assertNotIn('signed.invalid', json.dumps(observation))
+                self.assertNotIn('secret', json.dumps(observation))
 
     def test_browser_timeout_identifies_operation_after_cleanup_without_protocol_input(self):
         stages = ('browser_websocket', 'Browser.getVersion', 'Browser.setDownloadBehavior',
-                  'Target.createTarget', 'page_list_request', 'page_list_response',
-                  'page_websocket', 'Page.navigate', 'download_progress_poll')
+                  'Target.createTarget', 'download_progress_poll')
         for stage in stages:
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -440,7 +445,7 @@ class InstallationBoundaryTests(unittest.TestCase):
 
                 class Browser:
                     def __init__(self, url):
-                        fail('page_websocket' if '/page/' in url else 'browser_websocket')
+                        fail('browser_websocket')
                         self.events = []
                         self.version_calls = 0
                     def call(self, method, params=None):
@@ -453,27 +458,14 @@ class InstallationBoundaryTests(unittest.TestCase):
                             closed.append('browser')
                         if method == 'Target.createTarget':
                             return {'targetId': 'page'}
-                        if method == 'Page.navigate':
-                            return {'errorText': 'https://signed.invalid/?sig=secret', 'isDownload': True,
-                                    'unrecorded': 'private protocol response'}
                         return {'product': 'native-browser-fixture'}
                     def close(self):
                         closed.append('websocket')
-
-                class Connection:
-                    def request(self, *args):
-                        fail('page_list_request')
-                    def getresponse(self):
-                        fail('page_list_response')
-                        return io.BytesIO(json.dumps([{'id': 'page', 'webSocketDebuggerUrl': 'ws://127.0.0.1/page/1'}]).encode())
-                    def close(self):
-                        closed.append('http')
 
                 observation = {}
                 process = SimpleNamespace(poll=lambda: None, wait=lambda timeout: 0)
                 with patch.object(probe, 'browser_binary', return_value=Path('native-browser-fixture')), \
                      patch.object(probe, 'CDP', Browser), \
-                     patch.object(probe.http.client, 'HTTPConnection', return_value=Connection()), \
                      patch.object(probe.subprocess, 'Popen', return_value=process):
                     with self.assertRaises(TimeoutError) as error:
                         with probe.browser_download('https://signed.invalid/?sig=secret', directory,
@@ -486,8 +478,6 @@ class InstallationBoundaryTests(unittest.TestCase):
                 self.assertNotIn('signed.invalid', saved)
                 self.assertNotIn('secret', saved)
                 self.assertNotIn('private protocol response', saved)
-                if stage == 'download_progress_poll':
-                    self.assertEqual(observation['navigation'], {'errorText': '[URL REDACTED]', 'isDownload': True})
 
     def test_browser_original_removed_after_close_is_explicitly_unmet(self):
         with tempfile.TemporaryDirectory() as temporary:
