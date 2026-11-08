@@ -934,7 +934,7 @@ def run(args):
                     raise ValueError('direct public browser mode requires native child fixtures')
                 temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='twigsmith-public-browser-')))
                 stack.enter_context(qualify_public_release.isolated_environment(
-                    qualify_public_release.anonymous_environment(temporary)))
+                    qualify_public_release.anonymous_browser_environment(temporary)))
                 report['limits'][1] = 'Direct public release browser route; actual unsigned security behavior is host-specific.'
                 approval, item = approved(json.loads(args.approval.read_text()), args.target, public=True)
             else:
