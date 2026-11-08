@@ -320,7 +320,19 @@ jobs:
         with:
           node-version: 24.22.2
           package-manager-cache: false
-      - run: npm install --global npm@12.2.1 --ignore-scripts
+      - name: Select the public-consumer npm client
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:RUNNER_TEMP 'public-consumer-npm'
+          npm install --global --prefix $prefix npm@12.2.1 --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bin = if ($env:RUNNER_OS -eq 'Windows') { $prefix } else { Join-Path $prefix 'bin' }
+          $relativeCli = if ($env:RUNNER_OS -eq 'Windows') { 'node_modules/npm/bin/npm-cli.js' } else { 'lib/node_modules/npm/bin/npm-cli.js' }
+          $actual = & node (Join-Path $prefix $relativeCli) --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual.Trim() -ne '12.2.1') { throw 'Selected public-consumer npm version differs' }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
       - name: Select maintained macOS Git
         if: runner.os == 'macOS'
         run: |
@@ -355,6 +367,17 @@ jobs:
         env:
           PUBLIC_TARGET: ${{ matrix.target }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          if ((node --version).Trim() -ne 'v24.22.2') { throw 'Unexpected public-consumer Node runtime' }
+          $actual = @'
+          import subprocess, sys
+          from types import SimpleNamespace
+          sys.path.insert(0, 'tools')
+          import qualify_platform
+          print(subprocess.check_output(qualify_platform.npm_invocation(SimpleNamespace(npm=None)) + ['--version'], text=True).strip())
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual.Trim() -ne '12.2.1') { throw 'The public qualifier npm invocation differs from its selected client' }
           python tools/qualify_public_release.py --approval (Join-Path $env:RUNNER_TEMP 'public-approval.json') --target $env:PUBLIC_TARGET --harness-dir (Join-Path $env:RUNNER_TEMP 'public-harness') --evidence-dir (Join-Path $env:RUNNER_TEMP 'public-consumption')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

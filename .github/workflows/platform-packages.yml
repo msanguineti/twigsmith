@@ -227,8 +227,16 @@ jobs:
         env:
           NPM_VERSION: ${{ matrix.runtime.npm }}
         run: |
-          npm install --global "npm@$env:NPM_VERSION" --ignore-scripts
+          $ErrorActionPreference = 'Stop'
+          $prefix = Join-Path $env:RUNNER_TEMP 'qualification-npm'
+          npm install --global --prefix $prefix "npm@$env:NPM_VERSION" --ignore-scripts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bin = if ($env:RUNNER_OS -eq 'Windows') { $prefix } else { Join-Path $prefix 'bin' }
+          $relativeCli = if ($env:RUNNER_OS -eq 'Windows') { 'node_modules/npm/bin/npm-cli.js' } else { 'lib/node_modules/npm/bin/npm-cli.js' }
+          $actual = & node (Join-Path $prefix $relativeCli) --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual.Trim() -ne $env:NPM_VERSION) { throw 'Selected npm client version differs from the qualification input' }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: platform-npm-set
@@ -249,8 +257,20 @@ jobs:
         shell: pwsh
         env:
           QUALIFICATION_PROFILE: ${{ matrix.runtime.profile }}
+          EXPECTED_NODE: ${{ matrix.runtime.node }}
+          EXPECTED_NPM: ${{ matrix.runtime.npm }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ((node --version).Trim() -ne "v$env:EXPECTED_NODE") { throw 'Unexpected Node qualification runtime' }
+          $actual = @'
+          import subprocess, sys
+          from types import SimpleNamespace
+          sys.path.insert(0, 'tools')
+          import qualify_platform
+          print(subprocess.check_output(qualify_platform.npm_invocation(SimpleNamespace(npm=None)) + ['--version'], text=True).strip())
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($actual.Trim() -ne $env:EXPECTED_NPM) { throw 'The qualifier npm invocation differs from its selected client' }
           # The reference runtime covers all Git journeys. Other maintained
           # Node lines cover launcher, installation and terminal boundaries.
           python tools/qualify_platform.py npm --profile $env:QUALIFICATION_PROFILE --package-set-dir (Join-Path $env:RUNNER_TEMP 'platform-npm') --native-dir (Join-Path $env:RUNNER_TEMP 'platform-native-fixture') --harness-dir (Join-Path $env:RUNNER_TEMP 'platform-harness') --evidence-dir (Join-Path $env:RUNNER_TEMP 'npm-evidence')
