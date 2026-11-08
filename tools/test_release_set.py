@@ -11,111 +11,20 @@ from unittest.mock import patch
 import zipfile
 
 import native_package
-import npm_package
+import npm_common
 import release_set
 
 
-class ReleaseSetTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        self.repo = Path(__file__).resolve().parents[1]
-        native = self.root / 'native'
-        native.mkdir()
-        payload = bytearray(64)
-        payload[:6] = b'\x7fELF\x02\x01'
-        payload[16:20] = b'\x03\x00\x3e\x00'
-        self.payload_hash = native_package.digest(payload)
-        provenance = {'kind': 'ci-candidate',
-                      'source': {'revision': '1' * 40, 'tree': '2' * 40, 'dirty': False},
-                      'build': {'target': native_package.TARGET, 'profile': 'release'},
-                      'toolchain': {'rustc': 'fixture', 'cargo': 'fixture'},
-                      'environment': {'system': 'fixture', 'ci': {'GITHUB_REPOSITORY': 'msanguineti/twigsmith', 'GITHUB_SHA': '1' * 40, 'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1'}}}
-        self.archive = native_package.write_bundle(native, '0.1.0-beta.1',
-            {'twigsmith': bytes(payload), 'tgi': bytes(payload), 'LICENSE': (self.repo / 'LICENSE').read_bytes()}, provenance, 1)
-        self.archive_hash = npm_package.sha256(self.archive)
-        self.npm = self.root / 'npm'
-        package = npm_package.make_package(self.repo, self.archive, self.npm, self.archive_hash, self.payload_hash)
-        self.package_hash = npm_package.sha256(package)
-        self.native_manifest = self.archive.with_name(self.archive.name[:-7] + '.manifest.json')
-        self.native_manifest_hash = npm_package.sha256(self.native_manifest)
-        self.npm_manifest_hash = npm_package.sha256(self.npm / 'manifest.json')
-
-    def check(self, **overrides):
-        args = dict(archive=self.archive, npm_dir=self.npm, archive_hash=self.archive_hash,
-                    payload_hash=self.payload_hash, package_hash=self.package_hash, tag='v0.1.0-beta.1',
-                    native_manifest_hash=self.native_manifest_hash, npm_manifest_hash=self.npm_manifest_hash)
-        args.update(overrides)
-        return release_set.verify(**args)
-
-    def test_identity_and_mismatch_rejection(self):
-        result = self.check()
-        self.assertEqual(result['repository'], 'msanguineti/twigsmith')
-        self.assertEqual(result['native']['sha256'], self.archive_hash)
-        self.assertEqual(result['npm']['sha256'], self.package_hash)
-        for override in ({'tag': 'v0.1.0-beta.2'}, {'archive_hash': '0' * 64},
-                         {'package_hash': '0' * 64}, {'payload_hash': '0' * 64}):
-            with self.subTest(override=override), self.assertRaises(ValueError):
-                self.check(**override)
-
-    def test_rebound_package_with_wrong_repository_is_rejected(self):
-        package = self.npm / 'twigsmith-0.1.0-beta.1.tgz'
-        with tarfile.open(package, 'r:gz') as tar:
-            entries = [(entry, tar.extractfile(entry).read()) for entry in tar.getmembers()]
-        with tarfile.open(package, 'w:gz') as tar:
-            for entry, data in entries:
-                if entry.name == 'package/package.json':
-                    metadata = json.loads(data)
-                    metadata['repository']['url'] = 'https://example.com/other.git'
-                    data = json.dumps(metadata).encode()
-                    entry.size = len(data)
-                tar.addfile(entry, io.BytesIO(data))
-        changed_hash = npm_package.sha256(package)
-        record_path = self.npm / 'manifest.json'
-        record = json.loads(record_path.read_text())
-        record['package']['sha256'] = changed_hash
-        record_path.write_text(json.dumps(record))
-        with self.assertRaisesRegex(ValueError, 'metadata'):
-            self.check(package_hash=changed_hash, npm_manifest_hash=npm_package.sha256(record_path))
-
-    def test_coordinated_sidecar_substitution_is_rejected(self):
-        native = json.loads(self.native_manifest.read_text())
-        native['provenance']['environment']['ci']['GITHUB_RUN_ID'] = '999'
-        self.native_manifest.write_text(json.dumps(native, indent=2) + '\n')
-        checksum = self.archive.with_name(self.archive.name[:-7] + '.sha256')
-        checksum.write_text(f'{self.archive_hash}  {self.archive.name}\n'
-                            f'{npm_package.sha256(self.native_manifest)}  {self.native_manifest.name}\n')
-        record_path = self.npm / 'manifest.json'
-        record = json.loads(record_path.read_text())
-        record['native']['manifest_sha256'] = npm_package.sha256(self.native_manifest)
-        record['native']['provenance'] = native['provenance']
-        record_path.write_text(json.dumps(record))
-        with self.assertRaisesRegex(ValueError, 'native manifest differs'):
-            self.check()
-        with self.assertRaisesRegex(ValueError, 'npm manifest differs'):
-            self.check(native_manifest_hash=npm_package.sha256(self.native_manifest))
-
-    def test_changed_package_and_record_rejected(self):
-        record_path = self.npm / 'manifest.json'
-        record = json.loads(record_path.read_text())
-        record['native']['provenance']['source']['revision'] = '3' * 40
-        record_path.write_text(json.dumps(record))
-        with self.assertRaisesRegex(ValueError, 'npm manifest differs'):
-            self.check()
-
-
-
-def platform_fixture(root):
+def platform_fixture(root, version='0.1.0-beta.1'):
     """Real offline npm packing and synthetic native formats, never host qualification."""
     import npm_single_package
-    from test_npm_platform_package import candidate
+    from test_npm_single_package import candidate
     root = Path(root)
     native = root / 'native'
     native.mkdir(parents=True)
     approvals, inputs, requirements = [], [], {}
     for index, target in enumerate(npm_single_package.TARGETS):
-        item = candidate(root / 'build', target)
+        item = candidate(root / 'build', target, version=version)
         archive = Path(item['archive'])
         stem = native_package.archive_stem(archive)
         manifest_path = archive.with_name(stem + '.manifest.json')
@@ -127,14 +36,14 @@ def platform_fixture(root):
         manifest_path.write_text(json.dumps(manifest) + '\n')
         checksum = archive.with_name(stem + '.sha256')
         checksum.write_text(f"{item['archive_sha256']}  {archive.name}\n"
-                            f"{npm_package.sha256(manifest_path)}  {manifest_path.name}\n")
+                            f"{npm_common.sha256(manifest_path)}  {manifest_path.name}\n")
         for path in (archive, manifest_path, checksum):
             shutil.copyfile(path, native / path.name)
         item['archive'] = str(native / archive.name)
         inputs.append(item)
         requirements[target] = manifest['requirements']
         approvals.append({'target': target, 'archive': archive.name, 'sha256': item['archive_sha256'],
-                          'manifest_sha256': npm_package.sha256(manifest_path),
+                          'manifest_sha256': npm_common.sha256(manifest_path),
                           'payload_sha256': item['payload_sha256'], 'source': manifest['provenance']['source'],
                           'ci': ci, 'artifact': {'run_id': '10', 'run_attempt': '1',
                            'artifact_id': str(100 + index), 'name': 'platform-archive-' + target,
@@ -146,7 +55,7 @@ def platform_fixture(root):
     npm = json.loads((npm_dir / 'manifest.json').read_text())
     approval = {'schema': 3, 'topology': release_set.TOPOLOGY, 'repository': release_set.REPOSITORY,
                 'tag': 'v' + npm['version'], 'version': npm['version'], 'requirements': requirements,
-                'native': approvals, 'npm': {'manifest_sha256': npm_package.sha256(npm_dir / 'manifest.json'),
+                'native': approvals, 'npm': {'manifest_sha256': npm_common.sha256(npm_dir / 'manifest.json'),
                 'packaging': npm['packaging'], 'packages': [{key: record[key] for key in
                     ('name', 'version', 'filename', 'sha256')} for record in npm['packages']],
                 'artifact': {'run_id': '20', 'run_attempt': '1', 'artifact_id': '200',
@@ -193,12 +102,12 @@ class PlatformSetTests(unittest.TestCase):
                 data = transform(entry, data)
                 entry.size = len(data)
                 tar.addfile(entry, io.BytesIO(data))
-        item['sha256'] = npm_package.sha256(path)
+        item['sha256'] = npm_common.sha256(path)
         manifest_path = self.root / 'npm/manifest.json'
         record = json.loads(manifest_path.read_text())
         next(record for record in record['packages'] if record['name'] == name)['sha256'] = item['sha256']
         manifest_path.write_text(json.dumps(record))
-        self.approval['npm']['manifest_sha256'] = npm_package.sha256(manifest_path)
+        self.approval['npm']['manifest_sha256'] = npm_common.sha256(manifest_path)
 
     def test_complete_roundtrip_preserves_approved_native_and_distinct_packaging_identity(self):
         self.assertEqual(self.check(), self.approval)
@@ -233,6 +142,26 @@ class PlatformSetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid integrated release approval'):
             self.check()
 
+    def test_exact_current_packaging_inputs_reject_missing_extra_and_substituted_hashes(self):
+        expected = {'tools/npm_single_package.py', 'tools/npm_common.py',
+                    'tools/npm_single_launcher.cjs', 'tools/npm_installer.cjs',
+                    'tools/native_package.py', 'tools/native_formats.py', 'README.md', 'LICENSE'}
+        self.assertEqual(set(self.approval['npm']['packaging']['inputs_sha256']), expected)
+        original = deepcopy(self.approval)
+        for name in expected:
+            self.approval = deepcopy(original)
+            self.approval['npm']['packaging']['inputs_sha256'].pop(name)
+            with self.subTest(missing=name), self.assertRaisesRegex(ValueError, 'packaging inputs'):
+                self.check()
+            self.approval = deepcopy(original)
+            self.approval['npm']['packaging']['inputs_sha256'][name] = '0' * 64
+            with self.subTest(substituted=name), self.assertRaisesRegex(ValueError, 'manifest differs'):
+                self.check()
+        self.approval = deepcopy(original)
+        self.approval['npm']['packaging']['inputs_sha256']['tools/npm_package.py'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'packaging inputs'):
+            self.check()
+
     def test_native_table_is_reconstructed_from_approved_archives(self):
         mutations = [lambda table: table['targets'].pop(next(iter(table['targets']))),
                      lambda table: table.update(version='9.9.9'),
@@ -262,7 +191,7 @@ class PlatformSetTests(unittest.TestCase):
         manifest = json.loads(path.read_text())
         manifest['native'][0]['members'] = {}
         path.write_text(json.dumps(manifest))
-        self.approval['npm']['manifest_sha256'] = npm_package.sha256(path)
+        self.approval['npm']['manifest_sha256'] = npm_common.sha256(path)
         with self.assertRaisesRegex(ValueError, 'native records'):
             self.check()
 

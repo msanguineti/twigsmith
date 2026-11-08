@@ -17,7 +17,7 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
-import release_publish
+import release_providers
 import release_set
 import release_stage
 
@@ -40,7 +40,7 @@ def site_fingerprint():
     # Fixed public Pages origin; no authentication, redirects or caller-selected URL.
     url = 'https://msanguineti.github.io/twigsmith/'
     try:
-        with build_opener(release_publish.NoRedirect).open(
+        with build_opener(release_providers.NoRedirect).open(
                 Request(url, headers={'User-Agent': 'twigsmith-release', 'Cache-Control': 'no-cache'}), timeout=30) as response:
             return release_set.digest(response.read())
     except (HTTPError, URLError, TimeoutError, OSError):
@@ -101,7 +101,7 @@ def inspect_request(request, fetch=release_stage.api):
 def workflow_context(request, environment=os.environ):
     required = {'GITHUB_ACTIONS': 'true', 'GITHUB_REPOSITORY': REPO,
                 'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': request['publisher_revision'],
-                'GITHUB_WORKFLOW': 'Publish approved prerelease', 'GITHUB_EVENT_NAME': 'workflow_dispatch'}
+                'GITHUB_WORKFLOW': 'Publish approved release candidate', 'GITHUB_EVENT_NAME': 'workflow_dispatch'}
     if any(environment.get(key) != value for key, value in required.items()):
         raise ValueError('full-set effects require the reviewed canonical main publication workflow')
     for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
@@ -197,7 +197,7 @@ def main():
             release_stage.acquire_platform_set(base, args.bundle)
             import release_platform_publish as platform_publish
             record, _, expected = platform_publish.approved_inputs(args.bundle / 'native', args.bundle / 'npm', request['approval'])
-            providers = platform_publish.Providers(release_publish.HTTP(token=os.environ.get('GH_TOKEN')))
+            providers = platform_publish.Providers(release_providers.HTTP(token=os.environ.get('GH_TOKEN')))
             state = providers.observe(record, expected)
             baseline = {'schema': 1, 'approval_sha256': approval_digest(record), 'producer': producer(),
                         'channels': advertised_channels(state), 'site_sha256': site_fingerprint()}
@@ -208,7 +208,7 @@ def main():
             raise ValueError('publication requires --bundle')
         import release_platform_publish as platform_publish
         record, files, expected = platform_publish.approved_inputs(args.bundle / 'native', args.bundle / 'npm', request['approval'])
-        http = release_publish.HTTP(token=os.environ.get('GH_TOKEN'))
+        http = release_providers.HTTP(token=os.environ.get('GH_TOKEN'))
         if args.operation != 'plan' and not http.token:
             raise ValueError('publication requires scoped GitHub credentials')
         class Providers(platform_publish.Providers):
@@ -237,8 +237,8 @@ def main():
             main = release_stage.api(f'repos/{REPO}/branches/main')
             if main['commit']['sha'] != request['publisher_revision'] or main.get('protected') is not True:
                 raise ValueError('approved publisher is no longer protected current main')
-        with release_publish.exclusive(ROOT):
-            release_publish.source_eligible(ROOT, record, providers, args.operation != 'plan')
+        with release_providers.exclusive(ROOT):
+            release_providers.source_eligible(ROOT, record, providers, args.operation != 'plan')
             if args.operation == 'plan':
                 providers._exclusive = True
                 print(json.dumps(platform_publish.resume(record, files, expected, providers), indent=2))

@@ -52,13 +52,9 @@ Usage: ./dev COMMAND [ARGS]
                   Build an isolated optimized native archive and provenance files
   verify-native ARCHIVE [--extract-to DIR]
                   Verify native archive integrity and optionally extract it
-  package-npm ARCHIVE OUTPUT --archive-sha256 HASH --payload-sha256 HASH
-                  Package a verified Linux candidate for the legacy publisher
-  package-npm-platforms SPEC OUTPUT
+  package-npm SPEC OUTPUT
                   Assemble one npm installer from four verified native targets
   test-packaging  Run native and npm packaging format and failure regression checks
-  native-qualify [ARGS]
-                  Run extracted-artifact workflow/runtime qualification
   platform-qualify [ARGS]
                   Prepare/run native archive and npm qualification on this host
   installation-qualify [ARGS]
@@ -306,26 +302,21 @@ case "$command" in
         ;;
     package-native) exec python3 "$repo_dir/tools/native_package.py" build "$@" ;;
     verify-native) exec python3 "$repo_dir/tools/native_package.py" verify "$@" ;;
-    package-npm) exec python3 "$repo_dir/tools/npm_package.py" "$@" ;;
-    package-npm-platforms) exec python3 "$repo_dir/tools/npm_single_package.py" "$@" ;;
+    package-npm) exec python3 "$repo_dir/tools/npm_single_package.py" "$@" ;;
     test-packaging)
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_package.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_platform_package.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_single_package.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_installer_tls.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_platform.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_installation.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_docker_service.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_set.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_recovery.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_stage.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_publish.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_providers.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_platform_*.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_public_release.py' "$@"
         exec python3 -m unittest discover -s "$repo_dir/site" -p 'test_*.py' "$@"
         ;;
-    native-qualify) exec python3 "$repo_dir/tools/qualify_native.py" "$@" ;;
     platform-qualify) exec python3 "$repo_dir/tools/qualify_platform.py" "$@" ;;
     installation-qualify) exec python3 "$repo_dir/tools/qualify_installation.py" "$@" ;;
     bootstrap|build|test|fmt|lint|check|cargo|rustc) ;;

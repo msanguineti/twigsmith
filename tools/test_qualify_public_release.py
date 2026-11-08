@@ -461,7 +461,7 @@ process.stdout.write(JSON.stringify(captured));
         bridge.assert_not_called()
 
     @unittest.skipIf(os.name == 'nt', 'synthetic shell payload is Unix only; Windows requires hosted native row')
-    def test_real_npm12_and_npm11_global_policy_and_cold_npx_blocked_repair(self):
+    def test_real_npm_global_policy_and_cold_npx_blocked_repair(self):
         import test_npm_single_package as fixtures
         # Explicit synthetic shell fixture: transport, policy and repair behavior
         # only; these processes do not establish product/native real-Git acceptance.
@@ -475,8 +475,6 @@ process.stdout.write(JSON.stringify(captured));
         item = {'name': 'twigsmith', 'version': fixtures.VERSION, 'filename': tarball.name,
                 'sha256': qualify_platform.digest(tarball)}
         available = [Path(shutil.which('npm'))]
-        if fixtures.NPM12.is_file():
-            available.append(fixtures.NPM12)
         packages = {'twigsmith': (item, metadata, tarball)}
         with qualify_platform.local_registry(packages) as (registry, requests):
             for index, npm in enumerate(available):

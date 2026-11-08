@@ -13,7 +13,6 @@ from unittest.mock import patch
 import release_platform_dispatch as dispatch
 import qualify_public_release as consumer
 from test_release_set import platform_fixture
-from test_npm_platform_package import candidate
 
 
 class DispatchTests(unittest.TestCase):
@@ -21,8 +20,7 @@ class DispatchTests(unittest.TestCase):
     def setUpClass(cls):
         cls.base = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.base.cleanup)
-        with patch('test_npm_platform_package.candidate', side_effect=lambda *args: candidate(*args, version='1.0.0-rc.1')):
-            cls.approval, _ = platform_fixture(Path(cls.base.name) / 'set')
+        cls.approval, _ = platform_fixture(Path(cls.base.name) / 'set', version='1.0.0-rc.1')
         cls.approval['publication'] = {'source': '1' * 40, 'release_id': 1,
             'prerelease': True, 'channel': 'next', 'staging_channel': 'candidate-v1-rc-1'}
 
@@ -30,7 +28,7 @@ class DispatchTests(unittest.TestCase):
         self.request = {'publisher_revision': 'a' * 40, 'approval': deepcopy(self.approval)}
         self.env = {'GITHUB_ACTIONS': 'true', 'GITHUB_REPOSITORY': dispatch.REPO,
                     'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': 'a' * 40,
-                    'GITHUB_WORKFLOW': 'Publish approved prerelease',
+                    'GITHUB_WORKFLOW': 'Publish approved release candidate',
                     'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_RUN_ID': '27', 'GITHUB_RUN_ATTEMPT': '2'}
         self.run = {'id': 27, 'run_attempt': 2, 'repository': {'full_name': dispatch.REPO},
                     'head_repository': {'full_name': dispatch.REPO}, 'head_sha': 'a' * 40,

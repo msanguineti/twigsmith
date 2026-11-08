@@ -20,7 +20,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import npm_single_package as package
-from test_npm_platform_package import candidate
+from test_npm_single_package import candidate
 
 REPO = Path(__file__).resolve().parents[1]
 TARGET = 'x86_64-unknown-linux-gnu'

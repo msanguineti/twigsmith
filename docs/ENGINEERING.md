@@ -31,8 +31,7 @@ fixtures cover filesystem and linked-worktree guards. The four-platform
 pull-request matrix is separate from completion coverage and distribution
 qualification; only actual successful native jobs establish that slice on an OS.
 
-The repository includes independent manual website publishing and automatic
-website publishing after successful stable package publication. Release-bound
+The repository includes independent manual website publishing. Release-bound
 metadata supplies versions, links, commands and requirements independently of page
 layout. Hosted deployment is a separate operation from implementing this workflow;
 source and local fixture validation do not establish its live execution.
@@ -182,14 +181,6 @@ The verifier checks archive and member hashes, exact names, platform modes and E
 architecture, and rejects traversal, links, duplicate or nonregular members before
 extraction. Hash consistency does not independently authenticate a publisher. The
 manifest identifies the `twigsmith` payload for npm packaging.
-[`tools/npm_package.py`](../tools/npm_package.py) verifies the native archive and
-caller-supplied archive and payload hashes before running offline `npm pack`. It
-checks the resulting allowlist, bytes and modes before making the output directory
-visible. Both npm bin names point to that same native executable; package metadata
-selects Linux, x64 and glibc without enforcing a glibc minimum. The npm manifest
-separately records native provenance and packaging inputs. Neither hash consistency
-nor a recorded source identity authenticates a publisher.
-
 Native Windows candidates use ZIP and `.exe` names; macOS candidates have separate
 tar.gz archives for ARM64 and Intel. Schema 4 manifests freeze executable-format
 inspection and candidate requirements for these targets, while Linux retains its
@@ -238,24 +229,21 @@ These fixture tarballs are not production packages or public qualification. It d
 
 Pull-request CI checks the proposed integration for source and completion behavior.
 Explicit release preparation reuses eligible source validation without repeating
-the source suite. It builds on Ubuntu 22.04 and qualifies the same archive on
-Ubuntu 22.04/24.04/26.04.
-Qualification checks loader, dependencies and runtime search paths and executes
-representative real-Git workflows using extracted binaries and an isolated PATH.
-Its results bind source, run and payload hashes; compatibility is limited to the
-observed environments and kernels. Git 2.45 remains a separate prerequisite.
-The [development guide](DEVELOPMENT.md#native-candidate-packaging) owns packaging
-and qualification commands; the [user guide](USAGE.md#native-archives-and-npm-installation)
-owns extraction and runtime prerequisites.
+source tests. It builds the Linux candidate on Ubuntu 22.04 and consumes those
+same bytes on Ubuntu 22.04/24.04/26.04. The latter two rows select Git 2.45.4 and
+2.56.0 respectively and retain build-source evidence. Qualification checks loaders,
+dependencies, runtime search paths and selected real-Git workflows with extracted
+binaries and an isolated PATH. Results bind source, run, payload and observed host;
+Git 2.45 remains a separate runtime prerequisite.
 
-`tools/release_set.py` binds approved native archive/payload and both manifest hashes
-with the npm tarball identity. `tools/release_stage.py` restricts hosted candidate
-acquisition to exact successful canonical runs/artifacts and prepares a new npm
-candidate without publishing. Native build, packaging and publisher source identities
-remain distinct. The `publish.yml` continuation binds a published release event to an earlier
-successful prepared candidate and validates native and publisher sources with the
-same protected-main eligibility rule as qualification. It runs on main to retain
-the release environment and npm trusted publisher identity.
+`tools/release_stage.py` acquires only exact successful canonical Actions
+run/attempt/artifact identities and original ZIP hashes, verifies a complete
+four-native/one-installer bundle, and snapshots it atomically without generating
+new package bytes. Source eligibility requires protected-main integration and its
+successful source validation. Native, npm packaging and publisher identities
+remain separately bound. The workflow is explicit: `release.yml` prepares or
+qualifies candidates; `publish.yml` stages or promotes an independently approved
+candidate. No tag, release or workflow-completion event initiates publication.
 
 The integrated offline schema-3 set binds exactly four native archives and one npm tarball
 to externally reviewed hashes, source/tree identities, individual Actions
@@ -267,21 +255,20 @@ separately. Archive verification and npm member allowlists reject substituted
 payloads, metadata and incomplete sets at this preparation boundary. Staging uses
 a temporary directory and exposes the completed set only after verification.
 
-Integrated candidate descriptors and previews retain every native target and the npm
-installer identity. They describe local bytes and frozen candidate requirements. Legacy
-published descriptors retain their original interpretation. Stable public resolution
-and the legacy publisher refuse the integrated format; full-set RC publication
-uses its separate verified adapter without changing stable Pages. These checks add no application Git observations.
+Candidate descriptors and previews retain every native target, frozen requirements
+and the single installer identity. They describe verified local bytes separately
+from public availability. Only the current single-installer format is accepted for
+new descriptors and publication; obsolete publisher and generator paths are removed.
 
-`tools/release_publish.py` snapshots verified local bytes, observes downloaded provider
-bytes and applies one `release_recovery` decision at a time. Unknown/conflicting
-observations stop; every attempted effect is followed by fresh observation, including
-ambiguous timeouts. Only archive/manifest/checksums are release assets; missing approved files may be
-added to the exact published release, while conflicting files stop recovery. No tag
-is created or moved. Workflow concurrency and the local repository lock own exclusivity;
-the pure recovery function does not supply it. Native/npm publication is intentionally
-nontransactional. Stable and prerelease channels are latest and next respectively;
-only a verified stable release promotes the site after consumption checks.
+`tools/release_providers.py` owns bounded provider HTTP access, credential isolation,
+SemVer ordering, npm diagnostics, canonical source checks and the repository lock.
+The platform publisher owns release observations and effects. Unknown or conflicting
+observations stop recovery, and every attempted effect is followed by reobservation,
+including ambiguous timeouts. Only missing approved assets and versions may be
+published. No tag is created or moved, and matching public bytes survive retries.
+Native/npm publication remains nontransactional. Separate workflow concurrency
+serializes publication; the source and provider observations cannot make independent
+services atomic.
 
 Full-set RC publication uses [`release_platform_publish.py`](../tools/release_platform_publish.py)
 for twelve native assets and one npm tarball. It rejects the superseded five-package
@@ -314,8 +301,7 @@ isolated anonymous configuration. It checks both aliases, native/Git child cases
 selected payload hashes and separate cold-cache npx invocations. Windows and both
 Mac rows also observe direct browser acquisition, OS extraction and unsigned launch
 through the installation probe. Missing, skipped, zero-child, stale or mixed reports
-block promotion. This path is limited to `1.0.0-rc.x`; schema-3 stable publication and
-site resolution remain unavailable. Executing the adapter does not supply owner
+block promotion. This path is limited to `1.0.0-rc.x`; schema-3 stable package publication remains unavailable. Executing the adapter does not supply owner
 publication authority or establish package ownership/trust settings.
 
 ### Release data and website publication
@@ -329,36 +315,29 @@ with the official matching x64 v14 Redistributable, and Sequoia 15 on both Mac
 architectures, all with Git 2.45+. Qualification separately records observed hosts;
 Windows CI uses Server 2025. Package README text and npm
 metadata use the snapshot rather than the build machine's incidental environment.
-The verifier can still read schema 2 manifests; the website's historical 0.1.0
-bootstrap is bound to its exact published manifest.
+Hash and format verification do not authenticate the publisher or establish desktop
+security behavior.
 
-[Release descriptors](../site/releases/) bind each version to its exact native
-assets, checksums, installation commands, npm identity and release requirements.
-[`site/candidate.py`](../site/candidate.py) derives a descriptor from verified
-candidate bytes. Stable publication preflight requires the reviewed descriptor to
-match the candidate before the write-capable publisher runs. Changing requirements
-for future builds does not change the description of an older published binary.
+Release descriptors bind all four native asset sets and
+requirements to one exact npm installer. [`site/candidate.py`](../site/candidate.py)
+derives the current descriptor from a verified complete bundle. Changing future
+requirements does not change the frozen description of existing bytes.
 
-[`site/release_model.py`](../site/release_model.py) resolves that descriptor against
-GitHub's latest published stable release and npm's `latest` version. Version,
-destination, asset and package-byte disagreement prevents publication.
-[`site/build.py`](../site/build.py) renders release information and requirements
-where the template places them and checks the generated claims and destinations.
-It also retains the receipt-gated publisher build. Layout and typography can change
-without independently editing versions or download links.
+[`site/release_model.py`](../site/release_model.py) accepts the single-installer
+format and resolves a reviewed descriptor against GitHub's public stable release,
+npm `latest` and exact tarball bytes. Native manifests and the embedded installer
+table must match the four-target requirements, destinations and hashes.
+[`site/build.py`](../site/build.py) shares the current installation presentation
+between unpublished bundle previews and publicly resolved stable models. It verifies
+generated claims and destinations; rendering does not assert publication authority.
 
-[`site/publish.py`](../site/publish.py) prepares the site and captures main, provider,
-model and artifact observations for revalidation immediately before deployment.
-The manual and stable-publication paths share the separately serialized
-[Pages workflow](../.github/workflows/site.yml). Manual publication has no product write authority and does not depend on retained Actions candidate artifacts.
-The automatic path follows successful package publication, public consumption
-verification and stable-channel promotion. Prereleases do not update the stable site.
-
-A failed site run leaves product publication intact and can be retried independently.
-The final provider/source check and external deployment cannot be atomic; a change
-in that interval requires reconciliation by a later dispatch. See the
-[development guide](DEVELOPMENT.md#site-artifacts-and-pages) for commands, descriptor
-maintenance and deployment conditions.
+[`site/publish.py`](../site/publish.py) captures current main, provider, model and
+artifact observations and revalidates immediately before deployment. The independently
+manual [Pages workflow](../.github/workflows/site.yml) has no product-write authority
+and no release-event or publisher caller. Old source formats are refused. Existing
+public 0.1.0 assets and the live website remain untouched by this source migration;
+the new site requires an approved current-format public stable release and separately
+authorized deployment. RC publication and promotion never update stable Pages.
 
 ## Shell completion
 

@@ -1,9 +1,6 @@
 import importlib.util
-import os
 from pathlib import Path
-import tempfile
 import unittest
-from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('release_source', Path(__file__).with_name('select-release-source.py'))
 source = importlib.util.module_from_spec(spec)
@@ -29,45 +26,37 @@ class SelectionTests(unittest.TestCase):
             run = self.run | {'head_sha': missing}
             self.assertIsNone(source.eligible_pull([pr], [{'workflow_runs': [run]}], 'squash'))
 
-    def test_entry_points_and_main_ancestry(self):
-        with tempfile.TemporaryDirectory() as d:
-            output = Path(d, 'output')
-            env = {'EVENT_NAME': 'workflow_dispatch', 'EVENT_REF': 'refs/heads/main',
-                   'GITHUB_SHA': 'squash', 'RUNNER_TEMP': d, 'GITHUB_OUTPUT': str(output), 'GITHUB_REPOSITORY': 'o/r'}
-            def command(*args):
-                if args[:2] == ('git', 'rev-list'):
-                    return f'squash\n{source.BASELINE}'
-                return 'squash'
-            def api(path):
-                return [[self.pr]] if '/commits/' in path else [{'workflow_runs': [self.run]}]
-            with patch.dict(os.environ, env, clear=True), patch.object(source, 'command', side_effect=command), patch.object(source, 'api', side_effect=api):
-                source.select()
-                self.assertEqual(Path(d, 'candidate-sha').read_text().strip(), 'squash')
-                os.environ['EVENT_REF'] = 'refs/heads/feature'
-                with self.assertRaisesRegex(ValueError, 'main'):
-                    source.select()
-                os.environ.update(EVENT_NAME='release', RELEASE_TAG='v1')
-                source.select()
-                with patch.object(source, 'command', side_effect=lambda *args: 'unrelated' if args[:2] == ('git', 'rev-list') else 'squash'):
-                    with self.assertRaisesRegex(ValueError, 'first-parent'):
-                        source.select()
-                with patch.object(source, 'command', return_value='different'):
-                    with self.assertRaisesRegex(ValueError, 'tag does not match'):
-                        source.select()
+    def validate(self, sha='squash', *, history=None, pulls=None, runs=None):
+        def command(*args):
+            self.assertEqual(args, ('git', 'rev-list', '--first-parent', 'refs/remotes/origin/main'))
+            return history if history is not None else f'squash\n{source.BASELINE}\nolder'
+        def api(path):
+            if '/commits/' in path:
+                return [pulls if pulls is not None else [self.pr]]
+            self.assertIn('foundation.yml/runs?head_sha=head&event=pull_request&status=success', path)
+            return [{'workflow_runs': runs if runs is not None else [self.run]}]
+        return source.validate_source(sha, command=command, api=api, repo='o/r')
 
+    def test_explicit_integration_and_verified_baseline(self):
+        self.assertEqual(self.validate(), {'source': 'squash', 'pull_request': 7, 'run_url': 'run'})
+        def no_api(_):
+            self.fail('baseline must not need a pull request')
+        evidence = source.validate_source(source.BASELINE,
+            command=lambda *args: source.BASELINE, api=no_api)
+        self.assertEqual(evidence, {'source': source.BASELINE, 'baseline': True})
+
+    def test_main_ancestry_baseline_and_merged_main_identity_required(self):
+        for sha, history in [('other', None), ('older', None), ('squash', 'squash')]:
+            with self.subTest(sha=sha, history=history), self.assertRaisesRegex(ValueError, 'first-parent'):
+                self.validate(sha, history=history)
+        for changes in ({'merge_commit_sha': 'other'}, {'merged_at': None}, {'base': {'ref': 'other'}}):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'No merged main'):
+                self.validate(pulls=[self.pr | changes])
 
     def test_missing_success_fails_closed(self):
-        with tempfile.TemporaryDirectory() as d:
-            env = {'EVENT_NAME': 'workflow_dispatch', 'EVENT_REF': 'refs/heads/main',
-                   'GITHUB_SHA': 'squash', 'RUNNER_TEMP': d, 'GITHUB_OUTPUT': str(Path(d, 'output')), 'GITHUB_REPOSITORY': 'o/r'}
-            def command(*args):
-                return f'squash\n{source.BASELINE}' if args[:2] == ('git', 'rev-list') else 'squash'
-            def api(path):
-                return [[self.pr]] if '/commits/' in path else [{'workflow_runs': []}]
-            with patch.dict(os.environ, env, clear=True), patch.object(source, 'command', side_effect=command), patch.object(source, 'api', side_effect=api):
-                with self.assertRaisesRegex(ValueError, 'No successful'):
-                    source.select()
-                self.assertFalse(Path(d, 'candidate-sha').exists())
+        for runs in ([], [self.run | {'conclusion': 'failure'}], [self.run | {'event': 'push'}]):
+            with self.subTest(runs=runs), self.assertRaisesRegex(ValueError, 'No successful'):
+                self.validate(runs=runs)
 
 
 if __name__ == '__main__':

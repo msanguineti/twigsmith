@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -20,6 +21,19 @@ class DriverTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+
+    @unittest.skipIf(os.name == "nt", "Unix isolated runtime utility boundary")
+    def test_native_runtime_preserves_git_and_shell_without_build_or_npm_tools(self):
+        environment = driver.native_environment(self.root, dict(os.environ))
+        runtime = self.root / "runtime-bin"
+        self.assertEqual(environment["PATH"], str(runtime))
+        for name in ("git", "sh", "cat", "mkdir", "rm", "chmod"):
+            self.assertEqual(Path(shutil.which(name, path=environment["PATH"]) or "").parent, runtime)
+        for name in ("rustc", "cargo", "node", "npm", "npx"):
+            self.assertIsNone(shutil.which(name, path=environment["PATH"]))
+        observed = subprocess.run([str(runtime / "git"), "--version"], env=environment,
+                                  capture_output=True, text=True, check=True)
+        self.assertTrue(observed.stdout.startswith("git version "))
 
     def test_successful_outer_harness_requires_real_matching_isolated_child(self):
         for output in ["1 passed; 0 failed\n", "0 passed; 0 failed\n",

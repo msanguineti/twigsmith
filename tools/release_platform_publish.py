@@ -13,13 +13,13 @@ import os
 import re
 import subprocess
 import tempfile
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import native_package
-import release_publish as legacy
+import release_providers as shared
 import release_set
 
-PublicationError = legacy.PublicationError
+PublicationError = shared.PublicationError
 PACKAGE_NAMES = {'twigsmith'}
 
 
@@ -33,7 +33,7 @@ def validate_publication(approval):
             or publication['source'] != record['native'][0]['source']['revision']
             or type(publication['release_id']) is not int or publication['release_id'] < 1
             or type(publication['prerelease']) is not bool
-            or publication['prerelease'] != (legacy.semver_key(record['version'])[3] == 0)
+            or publication['prerelease'] != (shared.semver_key(record['version'])[3] == 0)
             or publication['channel'] != ('next' if publication['prerelease'] else 'latest')):
         raise PublicationError('approval must bind source, release ID and matching release class/channel')
     staging = publication['staging_channel']
@@ -104,12 +104,12 @@ def next_step(expected_assets, expected_packages, observed):
     return 'complete' if observed['channel'] == 'expected' else 'promote channel'
 
 
-class Providers(legacy.Providers):
+class Providers(shared.Providers):
     """Use existing origin restrictions, anonymous npm isolation and diagnostics."""
     def observe(self, record, expected):
         if self.tag_source(record['tag']) != record['publication']['source']:
             raise PublicationError('approved remote tag is absent or changed')
-        pages = self.pages('repos/' + legacy.REPO + '/releases?per_page=100')
+        pages = self.pages('repos/' + shared.REPO + '/releases?per_page=100')
         if any(not isinstance(page, list) for page in pages):
             raise PublicationError('release listing is not a complete provider observation')
         matches = [item for page in pages for item in page if item['tag_name'] == record['tag']]
@@ -140,7 +140,7 @@ class Providers(legacy.Providers):
         if set(assets) == set(expected):
             origin = self.http.fixture or 'https://github.com'
             for name in sorted(expected):
-                url = origin + '/' + legacy.REPO + '/releases/download/' + quote(record['tag'], safe='') + '/' + quote(name, safe='')
+                url = origin + '/' + shared.REPO + '/releases/download/' + quote(record['tag'], safe='') + '/' + quote(name, safe='')
                 public = self.http.request(url, binary=True)
                 if release_set.digest(public) != expected[name]:
                     raise PublicationError('public release asset differs from approved bytes')
@@ -181,10 +181,16 @@ class Providers(legacy.Providers):
                 self.npm_command(['publish', str(path), '--ignore-scripts', '--access=public',
                                   '--tag=' + record['publication']['staging_channel'],
                                   '--provenance=false' if self.http.fixture else '--provenance'])
-        elif step.startswith('upload ') or step == 'promote channel':
-            if step.startswith('upload ') and step[7:] not in files:
+        elif step.startswith('upload '):
+            name = step[7:]
+            if name not in files:
                 raise PublicationError('unapproved native asset effect')
-            super().effect(step, record, files)
+            origin = self.http.fixture or 'https://uploads.github.com'
+            self.http.request(origin + '/repos/' + shared.REPO + f'/releases/{self.release_id}/assets?'
+                              + urlencode({'name': name}), method='POST', authenticated=True,
+                              data=files[name])
+        elif step == 'promote channel':
+            self.npm_command(['dist-tag', 'add', 'twigsmith@' + record['version'], record['publication']['channel']])
         else:
             raise PublicationError('unsupported full-set effect')
 
@@ -316,7 +322,7 @@ def resume(record, files, expected, providers, *, execute=False, qualify=None,
                 raise PublicationError('advertised npm channel changed outside approved promotion')
         common_channel, channel_initialized = channel, True
         if (channel is not None and channel != record['version']
-                and legacy.semver_key(channel) >= legacy.semver_key(record['version'])):
+                and shared.semver_key(channel) >= shared.semver_key(record['version'])):
             raise PublicationError('advertised npm channel points to newer or equal-precedence version')
         return state, step
 
