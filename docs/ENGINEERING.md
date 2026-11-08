@@ -1016,7 +1016,19 @@ catchable cancellation signals across the stage. The
 unreaped leader pins its process-group identity through cleanup. On macOS, a
 group containing only that zombie leader can reject signalling; this is accepted
 only after a complete native group-membership snapshot proves that sole member.
-Other signal failures remain errors. The
+Other signal failures remain errors. Explicit cleanup runs after normal leader
+exit, cancellation and collection errors. It sends the group kill and observes
+member termination before reaping the retained leader. Linux reads `/proc` process
+state and thread counts, so a zombie main thread with live workers still blocks
+completion. macOS uses complete native membership lists and BSD start identities;
+a final list must contain only identities already observed terminal, covering
+forks during earlier enumeration. A one-second deadline bounds retries and scan
+work; native calls and scheduling are not preemptible, and observations completing
+after the deadline are refused. Unavailable observation, a signal error or remaining
+live members returns a cleanup error rather than claiming a stopped interruption. Unwinding retains best-effort
+containment without an unbounded leader wait after a cleanup failure. The
+[Unix observer](../src/check_process/unix_group.rs) supports Linux and macOS;
+other Unix hosts refuse managed checks before launching them. The
 [Windows backend](../src/check_process/windows.rs) starts each executable suspended,
 assigns it to a non-inheritable Job Object before resuming it, and prevents ordinary
 descendant breakaway. It handles console Ctrl-C and Ctrl-Break during the check
@@ -1028,7 +1040,8 @@ that same retained process handle to signal. Only observed termination resolves
 the error; a still-live or unobservable process keeps cleanup unsuccessful.
 Job accounting alone cannot establish process-handle completion; job-wide
 termination remains an error/unwinding fallback.
-Both backends stop ordinary descendants and reap the leader before returning.
+Successful completion and managed interruption require ordinary descendants
+stopped and the leader reaped; a cleanup failure remains an execution error.
 Bounded pipe drains keep continuous output from starving cancellation. Concurrent
 library check stages serialize ownership of the process-wide cancellation facility.
 Windows batch files require an explicit shell executable, such as `cmd.exe`, rather

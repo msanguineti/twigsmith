@@ -144,7 +144,13 @@ fn main() {
         }
         "tree" => {
             let root = Path::new(&args[1]);
-            for name in ["ordinary", "stubborn-pipe-holder"] {
+            let many = args.get(2).is_some_and(|mode| mode == "many-exit");
+            let names = if many {
+                (0..48).map(|index| format!("member-{index}")).collect()
+            } else {
+                vec!["ordinary".to_owned(), "stubborn-pipe-holder".to_owned()]
+            };
+            for name in names {
                 // Intentionally inherit both pipes. The managed executor must
                 // contain these descendants even after this leader exits.
                 // The enclosing native harness owns termination and independently
@@ -152,14 +158,14 @@ fn main() {
                 // leader-exits-first/pipe-holder condition.
                 #[allow(clippy::zombie_processes)]
                 let _descendant = Command::new(std::env::current_exe().unwrap())
-                    .args(["hold", &args[1], name])
+                    .args(["hold", &args[1], &name])
                     .stdin(Stdio::null())
                     .spawn()
                     .unwrap();
                 wait_for(&root.join(format!("{name}.ready")));
             }
             ready(root, "leader");
-            if args.get(2).is_some_and(|mode| mode == "exit") {
+            if many || args.get(2).is_some_and(|mode| mode == "exit") {
                 wait_for(&root.join("leader-may-exit"));
                 return;
             }
@@ -178,6 +184,18 @@ fn main() {
             loop {
                 fs::write(root.join(format!("{}.heartbeat", args[2])), b"alive").unwrap();
                 thread::sleep(Duration::from_millis(20));
+            }
+        }
+        #[cfg(unix)]
+        "leave-group" => {
+            // Deliberate group escape is outside containment. It supplies a
+            // controlled cleanup error; the enclosing fixture owns this PID.
+            let parent = rustix::process::getppid().unwrap();
+            let group = rustix::process::getpgid(Some(parent)).unwrap();
+            rustix::process::setpgid(None, Some(group)).unwrap();
+            ready(Path::new(&args[1]), "leader");
+            loop {
+                thread::sleep(Duration::from_secs(1));
             }
         }
         #[cfg(windows)]

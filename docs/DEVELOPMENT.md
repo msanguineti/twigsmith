@@ -34,8 +34,9 @@ and uses the same locally installed Git boundary as inspection. Direct
 integration's message editor launches the Git-selected command through a temporary
 Git shell alias, using Git's own executable and shell resolution. `-m/--message` or
 `finish-message = auto` bypasses that launcher. Native interactive rebase delegates
-editor launching to Git. Configured finish checks use Unix process groups or
-Windows Job Objects to manage child processes. Linux tests do not establish
+editor launching to Git. Configured finish checks use Linux/macOS process groups or
+Windows Job Objects to manage child processes. Linux completion observation needs
+readable `/proc`; macOS uses native process-information APIs. Linux tests do not establish
 portability of these paths; native tests supply the scoped runtime evidence below.
 
 ## Development
