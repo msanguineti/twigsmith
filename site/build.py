@@ -26,7 +26,7 @@ import release_set
 
 def validate_receipt(record, receipt, *, now=None):
     """Require recent native, npm install and npx observations of this exact tuple."""
-    if record.get('schema') == 2:
+    if record.get('schema') in (2, 3):
         raise ValueError('complete platform sets cannot use legacy publication receipts')
     try:
         if (receipt['identity'] != record
@@ -49,7 +49,7 @@ def validate_receipt(record, receipt, *, now=None):
 
 
 def _validate_identity(record, published):
-    if record.get('schema') == 2:
+    if record.get('schema') in (2, 3):
         raise ValueError('complete platform sets require a verified bundle preview; full-set publication is unavailable')
     if (record['repository'] != release_set.REPOSITORY
             or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', record['version'])
@@ -173,7 +173,7 @@ class _ReleaseFields(HTMLParser):
 
 def _render_resolved(model):
     """Render an already provider-validated, release-bound model."""
-    if model.get('schema') == 2:
+    if model.get('schema') in (2, 3):
         raise ValueError('complete platform sets support unpublished previews only; full-set publication is unavailable')
     escape = html.escape
     expected = {}
@@ -274,7 +274,7 @@ def _render_candidate(descriptor):
               '<p>This preview describes verified local files. Release downloads and npm registry '
               'installation are not published yet.</p></div>')
     details = '<div class="candidate"><h3>Candidate ' + escape(descriptor['version']) + '</h3>'
-    details += '<p>Four native archives and five npm packages.</p><details><summary>SHA-256 checksums</summary><dl>'
+    details += '<p>Four native archives and one npm installer package.</p><details><summary>SHA-256 checksums</summary><dl>'
     for native in descriptor['native']:
         for asset in native['assets'].values():
             details += '<dt>' + escape(asset['name']) + '</dt><dd><code>' + asset['sha256'] + '</code></dd>'
@@ -299,12 +299,18 @@ def _render_candidate(descriptor):
         instructions += '<h3>Local native candidate: ' + escape(target) + '</h3><p>' + shell + ':</p>'
         instructions += '<pre tabindex="0"><code>' + escape('\n'.join(native['commands'])) + '</code></pre>'
     requirements += '</dl><p>Frozen candidate metadata does not establish additional supported OS or shell versions.</p>'
-    instructions += ('<h3>Local npm package set</h3><p>The common launcher selects one exact-version '
-                     'optional platform package. Keep all five tarballs together for local qualification; '
-                     'registry installation instructions follow publication.</p><ul>')
+    instructions += ('<h3>npm installer candidate</h3><p>The single package contains installer code and '
+                     'approved native hashes. With lifecycle scripts approved, installation downloads '
+                     'only the selected target from its exact GitHub release. These native assets must '
+                     'be public before registry installation can work. Local qualification uses an '
+                     'explicitly marked loopback fixture; it does not establish public availability.</p>'
+                     '<p>When scripts are blocked, use the installed twigsmith-install command to repair '
+                     'installation. For deliberate target selection, pass --target and one of the '
+                     'triples below to that installer. Ordinary twigsmith and tgi commands never download '
+                     'a missing executable.</p><ul>')
     for coverage in descriptor['npm']['coverage']:
         label = ' / '.join(str(coverage[key]) for key in ('os', 'arch', 'libc') if coverage.get(key))
-        instructions += '<li>' + escape(label + ': ' + coverage['package']) + '</li>'
+        instructions += '<li>' + escape(label + ': ' + coverage['target']) + '</li>'
     instructions += '</ul><dl>'
     for package in descriptor['npm']['packages']:
         instructions += '<dt>' + escape(package['name'] + '@' + package['version']) + '</dt><dd>'
@@ -327,8 +333,8 @@ def build_candidate(output, bundle):
     if destination.is_relative_to(source) or source.is_relative_to(destination):
         raise ValueError('candidate preview output must be separate from its input bundle')
     descriptor = candidate.from_bundle(bundle)
-    if descriptor.get('schema') != 2:
-        raise ValueError('complete-set preview requires a schema 2 candidate bundle')
+    if descriptor.get('schema') != 3:
+        raise ValueError('complete-set preview requires a schema 3 installer candidate bundle')
     _build_source(output, _render_candidate(descriptor))
 
 

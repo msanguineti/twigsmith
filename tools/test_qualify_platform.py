@@ -148,15 +148,21 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(report["error"], "boundary failure")
 
     def package(self):
-        metadata = {"name": "twigsmith", "version": "1.0.0-rc.7"}
+        import npm_single_package
+        metadata = npm_single_package.top_metadata("1.0.0-rc.7")
         path = self.root / "twigsmith-1.0.0-rc.7.tgz"
         with tarfile.open(path, "w:gz") as archive:
             entry = tarfile.TarInfo("package/package.json")
             contents = json.dumps(metadata).encode()
             entry.size = len(contents)
             archive.addfile(entry, io.BytesIO(contents))
+            for name in ('native.json', 'installer.cjs', 'launcher.cjs', 'README.md', 'LICENSE'):
+                entry = tarfile.TarInfo('package/' + name)
+                contents = b'fixture'
+                entry.size = len(contents)
+                archive.addfile(entry, io.BytesIO(contents))
         item = dict(metadata, filename=path.name, sha256=driver.digest(path))
-        manifest = {"schema": 2, "topology": "optional-platform-packages", "version": metadata["version"],
+        manifest = {"schema": 3, "topology": "single-package-installer", "version": metadata["version"],
                     "packages": [item]}
         driver.write_json(self.root / "manifest.json", manifest)
         return manifest, metadata, path
@@ -176,6 +182,41 @@ class DriverTests(unittest.TestCase):
         driver.write_json(self.root / "manifest.json", manifest)
         with self.assertRaisesRegex(ValueError, "differs from package set"):
             driver.package_set(self.root)
+
+    def test_old_topology_multiple_packages_and_lifecycle_substitutions_refuse(self):
+        from copy import deepcopy
+        manifest, metadata, path = self.package()
+        for change in (lambda row: row.update(schema=2, topology='optional-platform-packages'),
+                       lambda row: row['packages'].append(deepcopy(row['packages'][0]))):
+            changed = deepcopy(manifest)
+            change(changed)
+            driver.write_json(self.root / 'manifest.json', changed)
+            with self.assertRaisesRegex(ValueError, 'single-package installer'):
+                driver.package_set(self.root)
+        for change in (lambda row: row.update(optionalDependencies={'twigsmith-linux-x64-gnu': metadata['version']}),
+                       lambda row: row.update(scripts={'postinstall': 'node malicious.cjs'}),
+                       lambda row: row['bin'].update(tgi='malicious.cjs')):
+            changed = deepcopy(metadata)
+            change(changed)
+            with tarfile.open(path, 'w:gz') as archive:
+                contents = json.dumps(changed).encode()
+                entry = tarfile.TarInfo('package/package.json')
+                entry.size = len(contents)
+                archive.addfile(entry, io.BytesIO(contents))
+            candidate = deepcopy(manifest)
+            candidate['packages'][0]['sha256'] = driver.digest(path)
+            driver.write_json(self.root / 'manifest.json', candidate)
+            with self.assertRaisesRegex(ValueError, 'dependencies, scripts or bins'):
+                driver.package_set(self.root)
+
+    def test_npm12_policy_uses_exact_file_identity_locally_and_explicit_one_off_globally(self):
+        tarball = str(self.root / 'twigsmith-1.0.0-rc.7.tgz')
+        self.assertEqual(driver.script_policy('11.16.0', tarball, self.root), [])
+        self.assertFalse((self.root / 'package.json').exists())
+        self.assertEqual(driver.script_policy('12.2.1', tarball, self.root), [])
+        self.assertEqual(json.loads((self.root / 'package.json').read_text())['allowScripts'], {tarball: True})
+        self.assertEqual(driver.script_policy('12.2.1', 'twigsmith'), ['--allow-scripts=twigsmith'])
+        self.assertEqual(driver.script_policy('12.2.1', tarball), ['--allow-scripts=' + tarball])
 
     def test_package_paths_cannot_escape(self):
         manifest, _, _ = self.package()

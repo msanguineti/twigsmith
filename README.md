@@ -30,6 +30,15 @@ For npm/npx, use Node.js LTS and npm. Native execution needs neither. Native arc
 See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates) for verification and
 runtime prerequisites, or build from source using the [development guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md).
 
+Cross-platform candidates use one npm installer package for Linux x64 GNU, Windows
+x64 and macOS ARM64/Intel. With installation scripts approved, it downloads only
+the matching executable from that version's GitHub release and verifies its hashes.
+Scripts blocked by npm policy require an explicit `twigsmith-install` repair;
+ordinary application commands never download a missing executable. These candidates
+are separate from the published Linux-only `0.1.0`. See
+[candidate installation](docs/USAGE.md#native-archives-and-npm-installation) for
+target selection, script policy and runtime requirements.
+
 ## Quick start
 
 Once a built executable is on PATH, run these commands from your Git checkout:

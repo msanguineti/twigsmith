@@ -55,7 +55,7 @@ Usage: ./dev COMMAND [ARGS]
   package-npm ARCHIVE OUTPUT --archive-sha256 HASH --payload-sha256 HASH
                   Package a verified Linux candidate for the legacy publisher
   package-npm-platforms SPEC OUTPUT
-                  Assemble the unpublished four-platform npm package set
+                  Assemble one npm installer from four verified native targets
   test-packaging  Run native and npm packaging format and failure regression checks
   native-qualify [ARGS]
                   Run extracted-artifact workflow/runtime qualification
@@ -307,11 +307,13 @@ case "$command" in
     package-native) exec python3 "$repo_dir/tools/native_package.py" build "$@" ;;
     verify-native) exec python3 "$repo_dir/tools/native_package.py" verify "$@" ;;
     package-npm) exec python3 "$repo_dir/tools/npm_package.py" "$@" ;;
-    package-npm-platforms) exec python3 "$repo_dir/tools/npm_platform_package.py" "$@" ;;
+    package-npm-platforms) exec python3 "$repo_dir/tools/npm_single_package.py" "$@" ;;
     test-packaging)
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_package.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_platform_package.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_single_package.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_installer_tls.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_platform.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_installation.py' "$@"
         python3 -m unittest discover -s "$repo_dir/tools" -p 'test_docker_service.py' "$@"

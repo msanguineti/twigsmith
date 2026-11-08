@@ -16,13 +16,11 @@ import tempfile
 from urllib.parse import quote
 
 import native_package
-import npm_platform_package
 import release_publish as legacy
 import release_set
 
 PublicationError = legacy.PublicationError
-PACKAGE_NAMES = {'twigsmith', *npm_platform_package.PACKAGES.values()}
-PAYLOAD_NAMES = sorted(PACKAGE_NAMES - {'twigsmith'})
+PACKAGE_NAMES = {'twigsmith'}
 
 
 def validate_publication(approval):
@@ -98,7 +96,7 @@ def next_step(expected_assets, expected_packages, observed):
     missing = sorted(set(expected_assets) - set(assets))
     if missing:
         return 'upload ' + missing[0]
-    for name in [*PAYLOAD_NAMES, 'twigsmith']:
+    for name in sorted(PACKAGE_NAMES):
         if packages[name] == 'absent':
             return 'publish npm ' + name
     if observed.get('consumption_verified') is not True:
@@ -137,6 +135,15 @@ class Providers(legacy.Providers):
                 break
         else:
             raise PublicationError('asset pagination exceeded bounded limit')
+        # The installer refers to anonymous release URLs. API visibility alone
+        # cannot establish that consumers can fetch these exact bytes.
+        if set(assets) == set(expected):
+            origin = self.http.fixture or 'https://github.com'
+            for name in sorted(expected):
+                url = origin + '/' + legacy.REPO + '/releases/download/' + quote(record['tag'], safe='') + '/' + quote(name, safe='')
+                public = self.http.request(url, binary=True)
+                if release_set.digest(public) != expected[name]:
+                    raise PublicationError('public release asset differs from approved bytes')
         packages, tags = {}, {}
         for item in sorted(record['npm']['packages'], key=lambda item: item['name']):
             name = item['name']
@@ -201,7 +208,7 @@ def fixture_qualification(record, expected, receipt, started):
     if not fresh:
         raise PublicationError('fresh qualification observation required')
     rows = receipt['targets']
-    if not isinstance(rows, dict) or set(rows) != set(npm_platform_package.PACKAGES):
+    if not isinstance(rows, dict) or set(rows) != release_set.TARGETS:
         raise PublicationError('all four qualification targets required')
     for item in record['native']:
         row = rows[item['target']]
@@ -221,7 +228,7 @@ def public_qualification(record, receipt):
     """
     if (not isinstance(receipt, dict) or set(receipt) != {'identity', 'targets'}
             or receipt['identity'] != record or not isinstance(receipt['targets'], dict)
-            or set(receipt['targets']) != set(npm_platform_package.PACKAGES)):
+            or set(receipt['targets']) != release_set.TARGETS):
         raise PublicationError('authenticated four-platform public qualification required')
     digest = release_set.digest(json.dumps(record, sort_keys=True, separators=(',', ':')).encode())
     producer = {'publisher_revision': os.environ.get('GITHUB_SHA'),
@@ -283,7 +290,6 @@ def resume(record, files, expected, providers, *, execute=False, qualify=None,
     expected_packages = {item['name']: item['sha256'] for item in record['npm']['packages']}
     receipt, attempted, protected = None, [], None
     started = datetime.now(timezone.utc)
-    reconcile_only = False
     common_channel = None
     channel_initialized = False
 
@@ -315,10 +321,8 @@ def resume(record, files, expected, providers, *, execute=False, qualify=None,
         return state, step
 
     state, step = observe()
-    reconcile_only = (state['packages']['twigsmith'] != 'absent'
-                      and any(state['packages'][name] == 'absent' for name in PAYLOAD_NAMES))
     for _ in range(40):
-        if not execute or step == 'complete' or (step == 'verify public consumption' and (stage_only or qualify is None or reconcile_only)):
+        if not execute or step == 'complete' or (step == 'verify public consumption' and (stage_only or qualify is None)):
             return {'next': step, 'observed': state, 'attempted': attempted, 'receipt': receipt}
         if step == 'verify public consumption':
             evidence = qualify(record, expected, deepcopy(state))

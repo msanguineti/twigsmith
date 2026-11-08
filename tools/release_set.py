@@ -16,7 +16,6 @@ import tarfile
 import tempfile
 
 import native_package
-import npm_platform_package
 
 REPOSITORY = 'msanguineti/twigsmith'
 MEMBERS = {'package/package.json', 'package/twigsmith', 'package/LICENSE', 'package/README.md'}
@@ -105,11 +104,14 @@ def verify(archive, npm_dir, archive_hash, payload_hash, package_hash, tag,
                         'manifest_sha256': npm_manifest_hash, 'packaging': record['packaging']}}
 
 
-PLATFORM_SCHEMA = 2
-TOPOLOGY = 'optional-platform-packages'
-PACKAGING_INPUTS = {'tools/npm_platform_package.py', 'tools/npm_package.py',
-                    'tools/native_package.py', 'tools/native_formats.py',
-                    'tools/npm_launcher.cjs', 'README.md', 'LICENSE'}
+PLATFORM_SCHEMA = 3
+TOPOLOGY = 'single-package-installer'
+TARGETS = {'x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc',
+           'aarch64-apple-darwin', 'x86_64-apple-darwin'}
+PACKAGING_INPUTS = {'tools/npm_single_package.py', 'tools/npm_single_launcher.cjs',
+                    'tools/npm_installer.cjs', 'tools/npm_platform_package.py',
+                    'tools/npm_package.py', 'tools/native_package.py',
+                    'tools/native_formats.py', 'README.md', 'LICENSE'}
 
 
 def expected_hash(value):
@@ -153,7 +155,7 @@ def validate_platform_approval(approval):
             or not native_package.VERSION.fullmatch(approval['version'])
             or approval['tag'] != 'v' + approval['version']):
         raise ValueError('invalid integrated release approval')
-    targets = set(npm_platform_package.PACKAGES)
+    targets = TARGETS
     if (not isinstance(approval['requirements'], dict) or set(approval['requirements']) != targets
             or not isinstance(approval['native'], list) or len(approval['native']) != len(targets)):
         raise ValueError('integrated approval requires exactly four native targets and requirements')
@@ -205,9 +207,9 @@ def validate_platform_approval(approval):
     clean_source(packaging['source'])
     for value in packaging['inputs_sha256'].values():
         expected_hash(value)
-    names = {'twigsmith', *npm_platform_package.PACKAGES.values()}
+    names = {'twigsmith'}
     if not isinstance(npm['packages'], list) or len(npm['packages']) != len(names):
-        raise ValueError('integrated approval requires exactly five npm packages')
+        raise ValueError('integrated approval requires exactly one npm installer package')
     seen = set()
     for item in npm['packages']:
         if (not isinstance(item, dict) or set(item) != {'name', 'version', 'filename', 'sha256'}
@@ -245,27 +247,37 @@ def read_exact_files(directory, files):
     return result
 
 
-def npm_contents(data, payload, windows=False):
-    members = {'package/package.json', 'package/LICENSE', 'package/README.md', 'package/' + payload}
+def npm_contents(data):
+    members = {'package/' + name for name in ('package.json', 'LICENSE', 'README.md',
+               'launcher.cjs', 'installer.cjs', 'native.json')}
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
         entries = tar.getmembers()
         if len(entries) != len(members) or {entry.name for entry in entries} != members:
             raise ValueError('npm package contains missing, duplicate or extra members')
         result = {}
         for entry in entries:
-            modes = {0o755} if entry.name == 'package/' + payload else {0o644}
-            if windows and entry.name == 'package/' + payload:
-                modes.add(0o644)
-            if not entry.isfile() or entry.linkname or entry.mode not in modes or entry.pax_headers:
+            mode = 0o755 if entry.name in ('package/launcher.cjs', 'package/installer.cjs') else 0o644
+            if not entry.isfile() or entry.linkname or entry.mode != mode or entry.pax_headers:
                 raise ValueError('invalid npm member type or mode')
             result[entry.name.removeprefix('package/')] = tar.extractfile(entry).read()
         return result
 
 
-def verify_platform_set(native_dir, npm_dir, approval):
-    """Verify exactly four native archives and five existing npm tarballs offline.
+def installer_metadata(version):
+    # Deliberately independent of the builder's metadata implementation.
+    return {'name': 'twigsmith', 'version': version, 'license': 'MIT',
+            'repository': {'type': 'git', 'url': 'https://github.com/msanguineti/twigsmith.git'},
+            'homepage': 'https://msanguineti.github.io/twigsmith/',
+            'bin': {'twigsmith': 'launcher.cjs', 'tgi': 'launcher.cjs',
+                    'twigsmith-install': 'installer.cjs'},
+            'engines': {'node': '^22.21.0 || >=24.5.0'},
+            'scripts': {'postinstall': 'node installer.cjs'}}
 
-    The returned schema-2 identity equals the supplied independent approval. It is
+
+def verify_platform_set(native_dir, npm_dir, approval):
+    """Verify four native archives and one npm installer tarball offline.
+
+    The returned schema-3 identity equals the supplied independent approval. It is
     not source eligibility, qualification, publication authority or provider state.
     Native and packaging sources are deliberately separate approved identities.
     """
@@ -278,11 +290,11 @@ def verify_platform_set(native_dir, npm_dir, approval):
         raise ValueError('npm manifest differs from approved hash')
     npm = json.loads(before[manifest_path])
     source = approval['native'][0]['source']
-    if (set(npm) != {'schema', 'topology', 'version', 'complete', 'source', 'packages', 'packaging'}
-            or type(npm['schema']) is not int or npm['schema'] != 2 or npm['topology'] != TOPOLOGY
+    if (set(npm) != {'schema', 'topology', 'version', 'complete', 'source', 'native', 'packages', 'packaging'}
+            or type(npm['schema']) is not int or npm['schema'] != PLATFORM_SCHEMA or npm['topology'] != TOPOLOGY
             or npm['complete'] is not True or npm['version'] != approval['version']
             or npm['source'] != source or npm['packaging'] != approval['npm']['packaging']
-            or not isinstance(npm['packages'], list) or len(npm['packages']) != 5):
+            or not isinstance(npm['packages'], list) or len(npm['packages']) != 1):
         raise ValueError('npm set manifest differs from complete approved set')
     records = {}
     for record in npm['packages']:
@@ -292,7 +304,7 @@ def verify_platform_set(native_dir, npm_dir, approval):
     if set(records) != {item['name'] for item in approval['npm']['packages']}:
         raise ValueError('npm set contains missing or extra package identities')
     with tempfile.TemporaryDirectory() as temp:
-        natives = {}
+        native_records, targets = [], {}
         for index, item in enumerate(approval['native']):
             archive = native_dir / item['archive']
             manifest_path = native_dir / (native_package.archive_stem(archive) + '.manifest.json')
@@ -307,50 +319,42 @@ def verify_platform_set(native_dir, npm_dir, approval):
                     or native.get('requirements') != approval['requirements'][item['target']]
                     or native['files'][native['npm_payload']]['sha256'] != item['payload_sha256']):
                 raise ValueError('native candidate differs from approved source/run/requirements/payload')
-            natives[item['target']] = (item, native, extracted / native_package.archive_stem(archive))
+            stem = native_package.archive_stem(archive)
+            members = {f'{stem}/{name}': {**details, 'mode': int(details['mode'], 8)}
+                       for name, details in native['files'].items()}
+            fields = {'archive': item['archive'], 'archive_sha256': item['sha256'],
+                      'payload': native['npm_payload'], 'payload_sha256': item['payload_sha256'],
+                      'members': members}
+            native_records.append({'target': item['target'], **fields,
+                                   'manifest_sha256': item['manifest_sha256'],
+                                   'provenance': native['provenance']})
+            targets[item['target']] = {**fields, 'url':
+                f"https://github.com/{REPOSITORY}/releases/download/{approval['tag']}/{item['archive']}"}
+        if npm['native'] != sorted(native_records, key=lambda item: item['target']):
+            raise ValueError('npm native records differ from approved verified native set')
+        expected_table = {'schema': 1, 'version': approval['version'], 'targets': targets}
         for item in approval['npm']['packages']:
             name = item['name']
             record = records[name]
             fields = {'name', 'version', 'filename', 'sha256'}
-            if set(record) != (fields if name == 'twigsmith' else fields | {'native'}):
+            if set(record) != fields:
                 raise ValueError('invalid npm package record fields')
             if {key: record[key] for key in fields} != item:
                 raise ValueError('npm package record differs from approved identity')
             data = before[npm_dir / item['filename']]
             if digest(data) != item['sha256']:
                 raise ValueError('npm package differs from approved hash')
-            if name == 'twigsmith':
-                contents = npm_contents(data, 'launcher.cjs')
-                expected = npm_platform_package.top_metadata(approval['version'])
-                for file, input_name in (('launcher.cjs', 'tools/npm_launcher.cjs'),
-                                          ('README.md', 'README.md'), ('LICENSE', 'LICENSE')):
-                    if digest(contents[file]) != npm['packaging']['inputs_sha256'][input_name]:
-                        raise ValueError('common npm package differs from approved packaging inputs')
-            else:
-                target = next(target for target, package in npm_platform_package.PACKAGES.items() if package == name)
-                native_item, native, extracted = natives[target]
-                payload = native['npm_payload']
-                expected_native = {'target': target, 'archive': native_item['archive'],
-                                   'archive_sha256': native_item['sha256'],
-                                   'manifest_sha256': native_item['manifest_sha256'],
-                                   'payload': payload, 'payload_sha256': native_item['payload_sha256'],
-                                   'provenance': native['provenance']}
-                if record['native'] != expected_native:
-                    raise ValueError('npm payload record differs from approved native candidate')
-                platform = native_package.target_metadata(target)
-                contents = npm_contents(data, payload, windows=platform['os'] == 'windows')
-                for file, native_file in ((payload, payload), ('README.md', 'README.txt'), ('LICENSE', 'LICENSE')):
-                    if contents[file] != (extracted / native_file).read_bytes():
-                        raise ValueError('npm package bytes differ from verified native candidate')
-                expected = npm_platform_package.base_metadata(name, approval['version'])
-                expected.update({'os': [{'linux': 'linux', 'windows': 'win32', 'macos': 'darwin'}[platform['os']]],
-                                 'cpu': [{'x86_64': 'x64', 'aarch64': 'arm64'}[platform['arch']]],
-                                 'twigsmithNative': {'target': target, 'file': payload,
-                                                     'sha256': native_item['payload_sha256']}})
-                if platform['libc'] is not None:
-                    expected['libc'] = [platform['libc']]
-            if json.loads(contents['package.json']) != expected:
-                raise ValueError('npm metadata does not match the complete platform contract')
+            contents = npm_contents(data)
+            for file, input_name in (('launcher.cjs', 'tools/npm_single_launcher.cjs'),
+                                      ('installer.cjs', 'tools/npm_installer.cjs'),
+                                      ('README.md', 'README.md'), ('LICENSE', 'LICENSE')):
+                if digest(contents[file]) != npm['packaging']['inputs_sha256'][input_name]:
+                    raise ValueError('npm installer differs from approved packaging inputs')
+            # Exact canonical bytes reject extra/duplicate fields and fixture URLs.
+            if contents['native.json'] != (json.dumps(expected_table, indent=2, sort_keys=True) + '\n').encode():
+                raise ValueError('npm native table differs from approved verified native archives')
+            if json.loads(contents['package.json']) != installer_metadata(approval['version']):
+                raise ValueError('npm metadata does not match the single-package installer contract')
     after = {**read_exact_files(native_dir, native_files), **read_exact_files(npm_dir, npm_files)}
     if after != before:
         raise ValueError('release inputs changed during verification')
@@ -361,7 +365,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive')
     parser.add_argument('npm_dir')
-    parser.add_argument('--approval', type=Path, help='independently reviewed schema-2 complete-set approval; archive argument is native directory')
+    parser.add_argument('--approval', type=Path, help='independently reviewed schema-3 complete-set approval; archive argument is native directory')
     parser.add_argument('--archive-sha256')
     parser.add_argument('--payload-sha256')
     parser.add_argument('--package-sha256')

@@ -88,11 +88,13 @@ class PlatformCandidateTests(unittest.TestCase):
     def test_complete_descriptor_preserves_identity_requirements_and_all_integrities(self):
         descriptor = candidate.from_bundle(self.bundle)
         self.assertEqual(descriptor, candidate.descriptor_for(self.approval, self.files))
-        self.assertEqual(descriptor['schema'], 2)
+        self.assertEqual(descriptor['schema'], 3)
         self.assertEqual(descriptor['identity'], self.approval)
         self.assertEqual(descriptor['availability'], 'unpublished')
         self.assertEqual(len(descriptor['native']), 4)
-        self.assertEqual(len(descriptor['npm']['packages']), 5)
+        self.assertEqual(len(descriptor['npm']['packages']), 1)
+        self.assertEqual(descriptor['npm']['topology'], 'single-package-installer')
+        self.assertNotIn('optionalDependencies', descriptor['npm'])
         self.assertEqual(len(descriptor['npm']['coverage']), 4)
         for native in descriptor['native']:
             snapshot = self.approval['requirements'][native['target']]
@@ -121,7 +123,7 @@ class PlatformCandidateTests(unittest.TestCase):
                 candidate.descriptor_for(self.approval, changed)
         path = self.root / 'reviewed.json'
         descriptor = candidate.from_bundle(self.bundle)
-        descriptor['npm']['packages'][1]['integrity'] = 'sha512-changed'
+        descriptor['npm']['packages'][0]['integrity'] = 'sha512-changed'
         path.write_text(json.dumps(descriptor))
         with self.assertRaisesRegex(ValueError, 'differs'):
             candidate.verify_descriptor(self.approval, self.files, path)
@@ -136,6 +138,9 @@ class PlatformCandidateTests(unittest.TestCase):
         page = (output / 'index.html').read_text()
         self.assertIn(self.approval['version'], page)  # The fixture is a prerelease.
         self.assertIn('not published yet', page)
+        self.assertIn('one npm installer package', page)
+        self.assertIn('twigsmith-install', page)
+        self.assertNotIn('optional platform package', page)
         self.assertIn('PowerShell', page)
         self.assertIn('python tools/native_package.py verify', page)
         self.assertIn('$env:PATH', page)

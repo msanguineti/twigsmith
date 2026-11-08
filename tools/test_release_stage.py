@@ -233,7 +233,7 @@ class PlatformStageTests(unittest.TestCase):
         self.assertEqual(json.loads((output / 'identity.json').read_text()), record)
         self.assertEqual({p.name for p in output.iterdir()}, {'native', 'npm', 'identity.json'})
         self.assertEqual(len(list((output / 'native').iterdir())), 12)
-        self.assertEqual(len(list((output / 'npm').iterdir())), 6)
+        self.assertEqual(len(list((output / 'npm').iterdir())), 2)
         self.assertEqual(before, {str(path.relative_to(self.base)): path.read_bytes()
                                 for path in self.base.rglob('*') if path.is_file()})
         with self.assertRaisesRegex(ValueError, 'must be new'):
@@ -309,10 +309,21 @@ class PlatformStageTests(unittest.TestCase):
 
     def test_legacy_write_boundaries_explicitly_refuse_complete_platform_set(self):
         request = {'approval': self.approval}
-        with self.assertRaisesRegex(ValueError, 'full-set publisher'):
+        with self.assertRaisesRegex(ValueError, 'legacy publisher'):
             release_stage.inspect_request('publish', request, lambda _: self.fail('provider read before refusal'))
-        with self.assertRaisesRegex(ValueError, 'full-set publisher'):
+        with self.assertRaisesRegex(ValueError, 'legacy publisher'):
             release_stage.validate_bundle(self.base, request)
+
+    def test_legacy_guards_refuse_stale_integrated_schema_two(self):
+        request = {'approval': {'schema': 2, 'topology': 'optional-platform-packages'}}
+        with self.assertRaisesRegex(ValueError, 'legacy publisher'):
+            release_stage.inspect_request('publish', request, lambda _: self.fail('provider read before refusal'))
+        with self.assertRaisesRegex(ValueError, 'legacy publisher'):
+            release_stage.validate_bundle(self.base, request)
+        stale = deepcopy(self.approval)
+        stale.update(schema=2, topology='optional-platform-packages')
+        with self.assertRaisesRegex(ValueError, 'invalid integrated'):
+            release_stage.inspect_platform_request(stale, lambda _: self.fail('provider read before refusal'))
 
     def test_archive_allowlist_blocks_traversal_duplicate_links_and_extras(self):
         import release_set

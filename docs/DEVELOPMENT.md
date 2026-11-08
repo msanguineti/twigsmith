@@ -445,52 +445,60 @@ source eligibility/publication.
 
 ### Platform-selected npm candidates
 
-`./dev package-npm-platforms SPEC OUTPUT` assembles the cross-platform candidate
-set from verified native archives. `SPEC` identifies each archive and its expected
-archive and native payload SHA-256 values. Full assembly requires all four targets
-at one version; the output contains four platform payload packages, the common
-`twigsmith` launcher package and an identity manifest. These candidates are separate
-from the existing Linux-only publisher and are not published by this command.
+`./dev package-npm-platforms SPEC OUTPUT` assembles one `twigsmith` installer
+package from four verified native archives. `SPEC` is a JSON list with each
+`archive`, independently expected `archive_sha256` and `payload_sha256`. Relative
+paths are resolved beside the specification. All four targets must share a version
+and native source. The output is one tarball and its schema-3 identity manifest;
+this command neither publishes nor configures providers.
 
-The common package pins platform packages to its exact version. npm filters the
-optional dependencies by platform; the Node launcher selects the matching installed
-payload and refuses missing, mismatched or unsupported payloads. Both command names
-use this route. Consumer installation runs no lifecycle scripts, compiler or fallback
-downloader. Native archives continue to run independently of Node/npm. Platform
-package names are candidate identifiers; assembling them does not reserve registry
-names or configure trusted publishers.
+The package contains installer/launcher code and a generated native table, with no
+executable or optional platform dependencies. The table binds exact version/target
+release URLs, archive and executable hashes, and member identities to the verified
+native inputs. `postinstall` selects and downloads one target when scripts are
+approved. `twigsmith-install` provides deliberate selection and repair; the two
+application aliases only launch verified installed bytes. See
+[installation and script policy](USAGE.md#native-archives-and-npm-installation).
+Native execution continues to need neither Node/npm nor Rust.
 
-`./dev platform-qualify --help` describes native archive and installed npm checks.
-The harnesses launch the extracted or installed product and record actual isolated
-child execution, case selection, environments and payload hashes. npm qualification
-uses the prepared package bytes without publishing them to the public registry.
-Inspect the resulting evidence for platform, Node/npm versions, failures and gaps.
+`./dev platform-qualify --help` describes native and installed npm checks. Prepare
+harnesses once, then run the npm boundary with both candidate directories:
+
+```sh
+./dev platform-qualify npm --package-set-dir NPM_DIRECTORY --native-dir NATIVE_DIRECTORY --harness-dir HARNESS_DIRECTORY --evidence-dir NEW_EVIDENCE_DIRECTORY
+```
+
+Unpublished production URLs cannot supply an online installer yet. Local
+qualification independently verifies the four native inputs against the production
+package table, then creates a distinctly marked fixture tarball with only its
+native URLs rebound to an isolated loopback server. Installer/launcher bytes remain
+identical. Production approval rejects fixture metadata; there is no environment
+switch that relaxes the installed production package's download-origin rules.
+Fixtures establish the changed installer path and native execution, not a published
+package's public availability.
 
 For explicit hosted preparation, dispatch `Native release qualification` with
-`qualification=platform-packages`. This read-only mode builds native candidates on
-the four matching hosts, assembles the package set, then exercises npm installation
-on those hosts with Node 22, 24 and 26.
-Node 24 runs the full workflow selection; Node 22 and 26 run the launcher-focused
-journey, editor and cancellation selection. Every runtime runs installation, npx
-and dependency-refusal probes. This avoids repeating Git graph scenarios for each
-Node version while retaining checks at the changed process boundary.
-The workflow checks the selected revision;
-it does not apply the protected-main eligibility contract used for public release
-preparation. Its artifacts are qualification inputs, not approved public releases.
-The default Linux release mode and published-release events retain their existing
-eligibility and publication boundaries. Neither mode publishes through a dispatch.
+`qualification=platform-packages`. It builds once on each native host and qualifies
+the installer on Linux x64, Windows Server 2025 x64 and macOS 15 ARM64/Intel. Runtime
+pairs are pinned in `platform-packages.yml`: Node 22.23.4/npm 11.20.0,
+Node 24.22.2/npm 12.2.1 and Node 26.13.0/npm 11.20.0. Node 24 runs the full real-Git
+selection; the other pairs retain launcher, editor and cancellation cases. Record
+actual versions, both aliases, local/global installs, separate cold npx caches,
+script-blocked refusal and explicit repair. No skipped or zero-child fixture is a
+pass. The Node release catalogue and npm client engine requirements must be checked
+when updating these pins.
 
-Windows and macOS downloads are unsigned. Native hosted transfer/execution does not
-model a browser download's security metadata or managed desktop policies. Record
-the actual download/extraction/launch experience before adopting desktop support
-claims; do not remove security protections to turn an unavailable route into a pass.
+This read-only preparation checks the selected revision; it does not itself confer
+protected-main eligibility or publication authority. Native hosted execution also
+does not model desktop browser security policy. Keep the actual host and unsigned
+Windows/macOS limits in the qualification evidence.
 
 ### Integrated offline candidate sets
 
 `tools/release_set.py NATIVE_DIRECTORY NPM_DIRECTORY --approval APPROVAL.json`
-verifies a complete schema-2 set without contacting providers. The flat native
+verifies a complete schema-3 installer set without contacting providers. The flat native
 directory contains exactly four archives and their manifest/checksum sidecars;
-the npm directory contains exactly five tarballs and its set manifest. The approval
+the npm directory contains exactly one installer tarball and its manifest. The approval
 binds the tag/version, each target's archive/manifest/payload hashes, native
 source/tree and CI identities, packaging source/input hashes, requirements snapshots
 and all package identities. Each artifact also has an exact run, attempt, artifact
@@ -515,7 +523,7 @@ and exact member allowlists, and stages the set. Both operations use read-only
 GitHub acquisition. They neither publish nor configure providers.
 
 The generated integrated descriptor and preview describe local candidate bytes,
-including every native target and npm payload. Frozen candidate requirements can
+including every native target and the npm installer. Frozen candidate requirements can
 still contain historical explicitly unqualified OS floors; format verification
 does not qualify a desktop. New packaging selects one approved target snapshot
 from `site/current-requirements.json`; the four-target envelope is not embedded
@@ -523,8 +531,9 @@ in a native manifest. Each manifest retains only its own frozen native/npm
 requirements. Changes to current policy never update old packages or descriptors.
 Historical 0.1.0 descriptors retain their
 original requirements and rendering. The legacy publisher and stable published-site consumers refuse the integrated
-schema. The separate full-set RC operation below verifies every payload package
-before the common package, then requires public consumption before `next` promotion.
+schema. The separate RC operation below verifies public native assets before the
+single npm version, then requires public consumption before `next` promotion.
+Superseded schema-2 five-package approvals are rejected rather than reinterpreted.
 
 ### Candidate installation observations
 
@@ -698,8 +707,8 @@ It cannot publish or promote. Live effects use only the protected hosted path.
 
 The **Publish approved prerelease** workflow accepts `operation=publish-platforms`
 for integrated `1.0.0-rc.x` sets. Its request contains exactly `publisher_revision`
-(current protected main SHA) and `approval` (the independently reviewed schema-2
-identity from integrated preparation). Add the `publication` object to that approval:
+(current protected main SHA) and `approval` (the independently reviewed schema-3
+single-installer identity from integrated preparation). Add the `publication` object to that approval:
 
 ```json
 {
@@ -720,28 +729,33 @@ hash, archive/manifest/payload hash, npm tarball and frozen requirements snapsho
 Prepare and independently review new versioned bytes; never relabel an older probe.
 
 Preflight acquires the exact five original artifacts read-only and checks the full
-bundle. It retains this attempt's initial `latest`/`next` observations for all five
-packages and the stable Pages index hash with the immutable workflow input. Both
+bundle. It retains this attempt's initial `twigsmith` `latest`/`next` observations
+and the stable Pages index hash with the immutable workflow input. Both
 later stages refuse changed protected channels; only promotion may change common
 `next` to the approved RC. The Pages index is reobserved at each stage boundary;
-this checks the index, not every site asset. The first `release` job uploads only absent matching-approved native assets
-and publishes only absent exact npm versions under the explicit staging tag. It
-observes all five packages before effects, publishes the four payloads before the
-common launcher, and halts on unknown or conflicting provider state. Matching
-published bytes are retained after timeouts or lost responses. An already-visible
-common version with a missing payload may be reconciled, but promotion waits for a
-fresh complete observation and public qualification.
+this checks the index, not every site asset. The `release` job uploads only absent
+matching-approved native assets. All twelve must then be anonymously downloadable
+at their exact public release URLs with approved hashes before it publishes the
+single npm version under the explicit staging tag. Unknown or conflicting provider
+state halts recovery; matching published bytes survive timeouts or lost responses.
+`publish-platforms` runs the public installation matrix and stops without moving
+`next`.
 
 Read-only Windows Server 2025, macOS 15 ARM64/Intel and Ubuntu 22.04 jobs then fetch
 public release assets and exact npm versions anonymously. They verify installed
-payloads, both aliases, representative Git workflows, global shims and separate
+payloads, both aliases, representative Git workflows, local/global installs and separate
 cold-cache exact-version npx commands. Windows and Mac rows repeat direct browser
 acquisition, security metadata, OS extraction and unsigned launch observations.
-Missing or failed required checks stop promotion; inspect individual child results
-and host/security limits. The final `release` job authenticates all four successful
-jobs and fresh reports from this exact workflow attempt, reobserves immutable
-provider bytes and channels, and moves only common `twigsmith@next`. It never
-updates stable Pages or `latest`. Full-set stable publication is not enabled.
+Missing or failed required checks block readiness; inspect individual child results,
+script-policy behavior and host/security limits. npm 12's default denied lifecycle
+is observed separately from approved automatic installation and explicit repair.
+After reviewing this evidence, obtain separate owner authority for `next` promotion
+and dispatch `operation=promote-platforms` with the same exact approval and current
+reviewed publisher. This operation cannot upload assets or publish a missing npm
+version. It repeats the read-only four-platform public matrix in its own attempt;
+the final `release` job authenticates those four successful jobs and fresh reports,
+reobserves immutable provider bytes and channels, and moves only `twigsmith@next`.
+It never updates stable Pages or `latest`. Full-set stable publication is not enabled.
 
 Retry the identical reviewed request after observing remote state; do not repack
 published versions or replace assets. A changed current main requires a reviewed
@@ -752,18 +766,15 @@ retaining/recovering approved inputs through a separately reviewed path, rather
 than substituting current artifacts. Concurrent provider changes cannot be excluded
 atomically; a refusal preserves completed publication for explicit reconciliation.
 
-All five npm names must exist under an authorized account with the exact
-`publish.yml` / `release` trusted-publisher identity and direct-publish permission;
-the common package also requires independent dist-tag permission. Inspect actual
-settings before dispatch. Public 404 does not prove a name can be claimed. npm's
-separate staged-publishing mechanism can create a public new-name placeholder;
-that bootstrap and subsequent account/trust changes require explicit owner
-approval and authenticated maintainer action. Publishing under a staging **tag**
-immediately exposes the version; it is neither private staging nor rollback.
-See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) and
-[staged publishing](https://docs.npmjs.com/staged-publishing/) for current account
-requirements. Never put account credentials or signed download URLs into requests
-or uploaded evidence.
+The existing `twigsmith` npm package requires the exact `publish.yml` / `release`
+trusted-publisher identity, direct-publish permission and independent dist-tag
+permission. Inspect actual settings read-only before dispatch; any necessary
+account/trust changes require separate owner authority. No new platform npm names
+are needed. Publishing under a staging **tag** immediately exposes the version;
+it is neither private staging nor rollback. See
+[npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) for current
+account requirements. Never put account credentials or signed download URLs into
+requests or uploaded evidence.
 
 ## Site artifacts and Pages
 
