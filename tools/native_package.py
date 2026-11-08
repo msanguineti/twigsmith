@@ -356,6 +356,16 @@ def write_bundle(output, version, payloads, provenance, epoch, requirements=None
     return archive
 
 
+def verify_checksum_records(data, archive_name, archive_sha256, manifest_sha256):
+    """Validate records with host newline semantics, without rewriting raw bytes."""
+    manifest_name = archive_stem(Path(archive_name)) + ".manifest.json"
+    expected = (f"{archive_sha256}  {archive_name}\n"
+                f"{manifest_sha256}  {manifest_name}\n")
+    with io.TextIOWrapper(io.BytesIO(data), encoding="utf-8") as text:
+        if text.read() != expected:
+            raise ValueError("archive/manifest checksums disagree")
+
+
 def verify(archive, extract_to=None):
     archive = Path(archive).absolute()
     stem = archive_stem(archive)
@@ -366,10 +376,8 @@ def verify(archive, extract_to=None):
             raise ValueError(f"missing regular package file: {path}")
     archive_data = archive.read_bytes()
     manifest_data = manifest_path.read_bytes()
-    expected = (f"{digest(archive_data)}  {archive.name}\n"
-                f"{digest(manifest_data)}  {manifest_path.name}\n")
-    if checksum_path.read_text(encoding="utf-8") != expected:
-        raise ValueError("archive/manifest checksums disagree")
+    verify_checksum_records(checksum_path.read_bytes(), archive.name,
+                            digest(archive_data), digest(manifest_data))
     manifest = json.loads(manifest_data)
     version = manifest["version"]
     target = manifest.get("target")

@@ -147,16 +147,41 @@ class ChecksumSnapshotTests(unittest.TestCase):
             lf = path.read_bytes().replace(b'\r\n', b'\n')
             crlf = lf.replace(b'\n', b'\r\n')
             path.write_bytes(crlf)
-            _, files, expected = publish.approved_inputs(root / 'native', root / 'npm', approval)
+            record, files, expected = publish.approved_inputs(root / 'native', root / 'npm', approval)
             self.assertEqual(path.read_bytes(), crlf)
             self.assertEqual(files[path.name], crlf)
             self.assertEqual(expected[path.name], release_set.digest(crlf))
             self.assertNotEqual(expected[path.name], release_set.digest(lf))
+            fixture = Fixture(record)
+            self.addCleanup(fixture.close)
+            providers = publish.Providers(shared.HTTP(fixture=fixture.origin, timeout=2))
+            result = publish.resume(record, files, expected, providers, execute=True, stage_only=True)
+            self.assertEqual(result['next'], 'verify public consumption')
+            self.assertEqual(fixture.assets[path.name], crlf)
+            self.assertEqual(len(fixture.effects), 13)
+            self.assertEqual(fixture.tags['twigsmith']['next'], '0.0.1')
+            # An equivalent-text rewrite during observation must still fail
+            # before the next attempted effect: raw approved bytes own identity.
+            fixture.assets.clear()
+            observe = providers.observe
+            def change_after_snapshot(record, expected):
+                state = observe(record, expected)
+                files[path.name] = lf
+                return state
+            with patch.object(providers, 'observe', side_effect=change_after_snapshot), \
+                 patch.object(providers, 'effect') as effect:
+                with self.assertRaisesRegex(publish.PublicationError, 'native snapshot'):
+                    publish.resume(record, files, expected, providers, execute=True, stage_only=True)
+                effect.assert_not_called()
+            files[path.name] = crlf
             corrupt = bytes([ord('1') if crlf[0] == ord('0') else ord('0')]) + crlf[1:]
             for data in (corrupt, crlf + crlf, crlf[:-2]):
                 path.write_bytes(data)
                 with self.subTest(data=data), self.assertRaisesRegex(ValueError, 'checksums disagree'):
                     publish.approved_inputs(root / 'native', root / 'npm', approval)
+                with self.subTest(snapshot=data), self.assertRaisesRegex(ValueError, 'checksums disagree'):
+                    publish.validate_snapshot(record, dict(files, **{path.name: data}),
+                                              dict(expected, **{path.name: release_set.digest(data)}))
 
 
 class PlatformPublicationTests(unittest.TestCase):
