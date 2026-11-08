@@ -33,6 +33,7 @@ class Fixture:
         self.fail = self.lost = self.unknown_after = self.mutate_after = None
         self.unknown = False
         self.duplicate_asset = False
+        self.public_missing = self.public_conflict = False
         self.tag_source = record['publication']['source']
         self.release = {'id': 1, 'tag_name': record['tag'], 'draft': False, 'prerelease': True}
         fixture = self
@@ -63,6 +64,11 @@ class Fixture:
                     if fixture.duplicate_asset and entries:
                         entries.append(entries[0])
                     return self.reply(entries)
+                if '/releases/download/' in path:
+                    if fixture.public_missing:
+                        return self.reply({}, 404)
+                    name = path.rsplit('/', 1)[1]
+                    return self.reply(b'wrong public bytes' if fixture.public_conflict else fixture.assets[name])
                 if '/releases/assets/' in path:
                     name = list(fixture.assets)[int(path.rsplit('/', 1)[1]) - 10]
                     return self.reply(fixture.assets[name])
@@ -176,39 +182,50 @@ class PlatformPublicationTests(unittest.TestCase):
         for name in publish.PACKAGE_NAMES:
             self.assertIn('/' + name + '/' + self.record['version'], self.fixture.reads)
 
-    def test_real_npm_stages_all_payloads_then_common_and_gate_then_promotes(self):
+    def test_real_npm_stages_single_package_after_twelve_public_assets_then_gate_promotes(self):
         result = self.run_release(execute=True, stage_only=True, qualify=self.qualification)
         self.assertEqual(result['next'], 'verify public consumption')
-        self.assertEqual(self.fixture.effects[-5:], ['publish npm ' + name for name in [*publish.PAYLOAD_NAMES, 'twigsmith']])
+        self.assertEqual(len(self.fixture.effects), 13)
+        self.assertTrue(all(step.startswith('upload ') for step in self.fixture.effects[:12]))
+        self.assertEqual(self.fixture.effects[12], 'publish npm twigsmith')
+        public_reads = [path for path in self.fixture.reads if '/releases/download/' in path]
+        self.assertEqual({path.rsplit('/', 1)[1] for path in public_reads}, set(self.expected))
         self.assertEqual(self.fixture.tags['twigsmith']['next'], '0.0.1')
-        self.assertTrue(all(tags['candidate-fixture'] == self.record['version'] for tags in self.fixture.tags.values()))
-        protected = {name: dict(tags) for name, tags in self.fixture.tags.items()}
+        self.assertEqual(self.fixture.tags['twigsmith']['candidate-fixture'], self.record['version'])
         result = self.run_release(execute=True, qualify=self.qualification)
         self.assertEqual(result['next'], 'complete')
         self.assertEqual(self.fixture.tags['twigsmith']['next'], self.record['version'])
-        for name in publish.PAYLOAD_NAMES:
-            self.assertEqual(self.fixture.tags[name], protected[name])
         self.assertEqual(self.fixture.tags['twigsmith']['latest'], '0.0.0')
 
-    def test_conflict_last_package_blocks_missing_first_package_and_assets(self):
-        self.ready_packages(omit=[publish.PAYLOAD_NAMES[0]])
-        self.fixture.tarballs[publish.PAYLOAD_NAMES[-1]] = b'conflicting immutable bytes'
+    def test_existing_conflicting_package_blocks_missing_assets(self):
+        self.ready_packages()
+        self.fixture.tarballs['twigsmith'] = b'conflicting immutable bytes'
         with self.assertRaisesRegex(publish.PublicationError, 'conflicting npm'):
             self.run_release(execute=True)
         self.assertEqual(self.fixture.effects, [])
 
-    def test_missing_payload_with_common_reconciles_without_promotion(self):
-        self.ready_native()
-        missing = publish.PAYLOAD_NAMES[0]
-        self.ready_packages(omit=[missing])
+    def test_existing_exact_package_repairs_only_missing_native_assets_then_qualifies(self):
+        self.ready_packages()
+        retained = sorted(self.expected)[0]
+        self.fixture.assets[retained] = self.files[retained]
         result = self.run_release(execute=True, qualify=self.qualification)
-        self.assertEqual(result['next'], 'verify public consumption')
-        self.assertEqual(self.fixture.effects, ['publish npm ' + missing])
-        self.assertEqual(self.fixture.tags['twigsmith']['next'], '0.0.1')
+        self.assertEqual(result['next'], 'complete')
+        self.assertNotIn('upload ' + retained, self.fixture.effects)
+        self.assertNotIn('publish npm twigsmith', self.fixture.effects)
+        self.assertEqual(self.fixture.effects[-1], 'promote channel')
+
+    def test_api_assets_without_exact_public_availability_block_npm_effect(self):
+        self.ready_native()
+        for attribute in ('public_missing', 'public_conflict'):
+            setattr(self.fixture, attribute, True)
+            with self.subTest(attribute=attribute), self.assertRaises(publish.PublicationError):
+                self.run_release(execute=True)
+            setattr(self.fixture, attribute, False)
+        self.assertEqual(self.fixture.effects, [])
 
     def test_lost_publish_response_observes_bytes_without_duplicate(self):
         self.ready_native()
-        label = 'publish npm ' + publish.PAYLOAD_NAMES[0]
+        label = 'publish npm twigsmith'
         self.fixture.lost = label
         self.assertEqual(self.run_release(execute=True)['next'], 'verify public consumption')
         self.assertEqual(self.fixture.effects.count(label), 1)
@@ -229,19 +246,20 @@ class PlatformPublicationTests(unittest.TestCase):
 
     def test_refused_publish_stops_without_blind_retry(self):
         self.ready_native()
-        self.fixture.fail = 'publish npm ' + publish.PAYLOAD_NAMES[0]
+        self.fixture.fail = 'publish npm twigsmith'
         with self.assertRaisesRegex(publish.PublicationError, 'still pending'):
             self.run_release(execute=True)
         self.assertEqual(self.fixture.effects, [self.fixture.fail])
 
-    def test_all_package_latest_next_channels_protected(self):
-        for name, tag in [(publish.PAYLOAD_NAMES[0], 'latest'), (publish.PAYLOAD_NAMES[-1], 'next'), ('twigsmith', 'latest')]:
-            with self.subTest(name=name, tag=tag):
-                self.fixture.assets = {}
-                self.fixture.mutate_after = (name, tag, '99.0.0')
-                with self.assertRaisesRegex(publish.PublicationError, 'protected advertised'):
-                    self.run_release(execute=True)
-                self.fixture.tags[name][tag] = '0.0.0' if tag == 'latest' else '0.0.1'
+    def test_latest_protected_during_native_and_npm_effects(self):
+        self.fixture.mutate_after = ('twigsmith', 'latest', '99.0.0')
+        with self.assertRaisesRegex(publish.PublicationError, 'protected advertised'):
+            self.run_release(execute=True)
+        self.fixture.tags['twigsmith']['latest'] = '0.0.0'
+        self.ready_native()
+        self.fixture.mutate_after = ('twigsmith', 'latest', '99.0.0')
+        with self.assertRaisesRegex(publish.PublicationError, 'protected advertised'):
+            self.run_release(execute=True)
 
     def test_newer_channel_blocks_before_any_effect(self):
         self.fixture.tags['twigsmith']['next'] = '99.0.0'
@@ -359,8 +377,8 @@ class PublicGateTests(unittest.TestCase):
         self.environment = {'GITHUB_SHA': 'a' * 40, 'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '2'}
         self.receipt = {'identity': self.record, 'targets': {}}
         digest = release_set.digest(json.dumps(self.record, sort_keys=True, separators=(',', ':')).encode())
-        for target in publish.npm_platform_package.PACKAGES:
-            kinds = ['native', 'npm_global', 'npx_twigsmith', 'npx_tgi']
+        for target in release_set.TARGETS:
+            kinds = ['native', 'npm_local', 'npm_global', 'npx_twigsmith', 'npx_tgi']
             if native_package.target_metadata(target)['os'] != 'linux':
                 kinds.append('browser')
             self.receipt['targets'][target] = {'schema': 1, 'approval_sha256': digest,

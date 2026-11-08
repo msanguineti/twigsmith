@@ -44,7 +44,7 @@ class DispatchTests(unittest.TestCase):
         for target in sorted(dispatch.TARGETS):
             path = self.directory / ('public-consumption-' + target + '-2') / 'public-consumption.json'
             path.parent.mkdir()
-            checks = {'native', 'npm_global', 'npx_twigsmith', 'npx_tgi'}
+            checks = {'native', 'npm_local', 'npm_global', 'npx_twigsmith', 'npx_tgi'}
             if target != 'x86_64-unknown-linux-gnu':
                 checks.add('browser')
             details = {}
@@ -117,8 +117,7 @@ class DispatchTests(unittest.TestCase):
             cwd=Path(__file__).resolve().parent, check=True, capture_output=True)
 
     def test_cross_job_baseline_preserves_all_advertised_channels(self):
-        names = {'twigsmith', 'twigsmith-linux-x64-gnu', 'twigsmith-win32-x64',
-                 'twigsmith-darwin-arm64', 'twigsmith-darwin-x64'}
+        names = {'twigsmith'}
         state = {'tags': {name: {'latest': '0.1.0', 'next': '0.0.1'} for name in names}}
         baseline = {'schema': 1, 'approval_sha256': dispatch.approval_digest(self.request['approval']),
                     'producer': dispatch.producer(self.env), 'channels': dispatch.advertised_channels(state),
@@ -138,6 +137,18 @@ class DispatchTests(unittest.TestCase):
         baseline['producer']['run_attempt'] = '1'
         with self.assertRaisesRegex(ValueError, 'exact approved workflow attempt'):
             dispatch.validate_baseline(baseline, self.request, state, 'promote', self.env)
+
+    def test_old_five_package_baseline_and_schema_two_request_refused(self):
+        state = {'tags': {'twigsmith': {'latest': '0.1.0', 'next': '0.0.1'}}}
+        baseline = {'schema': 1, 'approval_sha256': dispatch.approval_digest(self.request['approval']),
+                    'producer': dispatch.producer(self.env), 'channels': dispatch.advertised_channels(state),
+                    'site_sha256': '1' * 64}
+        baseline['channels']['twigsmith-linux-x64-gnu'] = {'latest': None, 'next': None}
+        with self.assertRaisesRegex(ValueError, 'exact approved workflow attempt'):
+            dispatch.validate_baseline(baseline, self.request, state, 'stage', self.env)
+        self.request['approval'].update(schema=2, topology='optional-platform-packages')
+        with self.assertRaisesRegex(ValueError, 'invalid integrated'):
+            dispatch.inspect_request(self.request, lambda _: self.fail('provider read before stale approval refusal'))
 
     def test_wrong_context_refuses(self):
         for key, value in [('GITHUB_REF', 'refs/heads/other'), ('GITHUB_REPOSITORY', 'fork/repo'),

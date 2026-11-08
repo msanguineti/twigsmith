@@ -482,10 +482,28 @@ def native_run(args, evidence, report):
     return 0 if passed else 1
 
 
+def package_contents(path):
+    """Read exact immutable package files without extracting untrusted members."""
+    result = {}
+    with tarfile.open(path, "r:gz") as archive:
+        for member in archive.getmembers():
+            parts = Path(member.name).parts
+            if (not member.isfile() or member.linkname or not parts or parts[0] != "package"
+                    or len(parts) < 2 or ".." in parts or "\\" in member.name
+                    or member.name in result):
+                raise ValueError("unsafe or duplicate npm package member")
+            result[member.name] = archive.extractfile(member).read()
+    if "package/package.json" not in result:
+        raise ValueError("npm package metadata is absent")
+    return result
+
+
 def package_set(directory):
+    import npm_single_package
     manifest = json.loads((directory / "manifest.json").read_text())
-    if manifest.get("schema") != 2 or manifest.get("topology") != "optional-platform-packages":
-        raise ValueError("expected an npm platform package-set manifest")
+    if (manifest.get("schema") != 3 or manifest.get("topology") != npm_single_package.TOPOLOGY
+            or not isinstance(manifest.get("packages"), list) or len(manifest["packages"]) != 1):
+        raise ValueError("expected a single-package installer manifest")
     packages = {}
     for item in manifest["packages"]:
         filename = item["filename"]
@@ -494,19 +512,145 @@ def package_set(directory):
         path = directory / filename
         if path.is_symlink() or not path.is_file() or digest(path) != item["sha256"]:
             raise ValueError(f"npm package hash mismatch: {filename}")
-        with tarfile.open(path, "r:gz") as archive:
-            entries = [entry for entry in archive.getmembers() if entry.name == "package/package.json"]
-            if len(entries) != 1 or not entries[0].isfile():
-                raise ValueError("missing or duplicate npm package metadata")
-            metadata = json.load(archive.extractfile(entries[0]))
-        if metadata["name"] != item["name"] or metadata["version"] != manifest["version"]:
+        files = package_contents(path)
+        metadata = json.loads(files["package/package.json"])
+        if (metadata.get("name") != "twigsmith" or item["name"] != "twigsmith"
+                or metadata.get("version") != manifest["version"] or item["version"] != manifest["version"]):
             raise ValueError("npm package metadata differs from package set")
-        if item["name"] in packages:
-            raise ValueError("duplicate npm package name")
-        packages[item["name"]] = (item, metadata, path)
-    if "twigsmith" not in packages:
-        raise ValueError("npm package set has no top-level launcher")
+        if (metadata.get("dependencies") or metadata.get("optionalDependencies")
+                or metadata.get("scripts") != {"postinstall": "node installer.cjs"}
+                or metadata.get("bin") != npm_single_package.top_metadata(manifest["version"])["bin"]):
+            raise ValueError("single installer package has invalid dependencies, scripts or bins")
+        if (metadata.get("private") or set(files) != {"package/" + name for name in
+                ("package.json", "native.json", "installer.cjs", "launcher.cjs", "README.md", "LICENSE")}):
+            raise ValueError("production installer package must contain exactly six reviewed files")
+        packages["twigsmith"] = (item, metadata, path)
     return manifest, packages
+
+
+def verify_installed_package(directory, expected):
+    """Bind immutable files separately from the strictly allowlisted generated state."""
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError("installed npm package is not a regular directory")
+    files = {}
+    for path in directory.rglob("*"):
+        relative = path.relative_to(directory)
+        if path.is_symlink():
+            raise ValueError("installed npm package contains an unapproved link")
+        if relative.parts[0] == ".native":
+            continue
+        if path.is_file():
+            files["package/" + relative.as_posix()] = path.read_bytes()
+        elif not path.is_dir():
+            raise ValueError("installed npm package contains a nonregular member")
+    if files != expected:
+        raise ValueError("installed npm package differs from approved tarball bytes")
+
+
+def installed_payload(common, expected, target, payload_sha256):
+    verify_installed_package(common, expected)
+    metadata = json.loads(expected["package/native.json"])
+    entry = metadata["targets"][target]
+    if entry["payload_sha256"] != payload_sha256:
+        raise ValueError("npm metadata payload differs from approved native bytes")
+    state_path = common / ".native/installed.json"
+    state = json.loads(state_path.read_text())
+    subdir = target + "-" + payload_sha256
+    if state != {"target": target, "directory": subdir}:
+        raise ValueError("installed native state differs from exact approved target/hash")
+    root = common / ".native"
+    payload = root / subdir / entry["payload"]
+    expected_tree = {"installed.json", subdir, subdir + "/" + entry["payload"]}
+    actual = set()
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("invalid generated native directory")
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        actual.add(relative)
+        if path.is_symlink() or (relative == subdir and not path.is_dir()) or (
+                relative != subdir and not path.is_file()):
+            raise ValueError("invalid generated native member")
+    if actual != expected_tree or digest(payload) != payload_sha256:
+        raise ValueError("generated native payload/tree differs from approved hash")
+    checked_file(payload.absolute())
+    return payload
+
+
+def verified_native_resources(manifest, packages, native_dir):
+    """Reobserve actual archives/manifests before permitting fixture URL variation."""
+    import npm_single_package
+    files = package_contents(packages["twigsmith"][2])
+    metadata = json.loads(files["package/native.json"])
+    if metadata != npm_single_package.metadata_for_native(manifest["version"], manifest["native"]):
+        raise ValueError("production npm native metadata differs from reviewed set")
+    if set(metadata["targets"]) != set(npm_single_package.TARGETS) or manifest.get("complete") is not True:
+        raise ValueError("qualification requires the complete four-target production package")
+    resources = {}
+    for record in manifest["native"]:
+        if Path(record["archive"]).name != record["archive"] or "\\" in record["archive"]:
+            raise ValueError("unsafe native fixture archive filename")
+        archive = native_dir / record["archive"]
+        if archive.is_symlink() or digest(archive) != record["archive_sha256"]:
+            raise ValueError("native fixture archive differs from reviewed package")
+        verified = native_package.verify(archive)
+        stem = native_package.archive_stem(archive)
+        members = {f"{stem}/{name}": {**details, "mode": int(details["mode"], 8)}
+                   for name, details in verified["files"].items()}
+        if (verified["target"] != record["target"] or verified["version"] != manifest["version"]
+                or verified["provenance"]["source"] != manifest["source"]
+                or members != record["members"] or verified["npm_payload"] != record["payload"]
+                or verified["files"][record["payload"]]["sha256"] != record["payload_sha256"]
+                or digest(archive.with_name(stem + ".manifest.json")) != record["manifest_sha256"]):
+            raise ValueError("native fixture manifest differs from reviewed package")
+        resources["native/" + archive.name] = archive
+    return resources
+
+
+def fixture_package(packages, registry, directory, env):
+    """Explicit nonpublishable fixture: only routing and the private bit may vary."""
+    import npm_single_package
+    production = package_contents(packages["twigsmith"][2])
+    files = dict(production)
+    metadata = json.loads(files["package/native.json"])
+    metadata.update(fixture="loopback-test-only", fixture_origin=registry.rstrip("/"))
+    for entry in metadata["targets"].values():
+        entry["url"] = registry + "native/" + entry["archive"]
+    files["package/native.json"] = (json.dumps(metadata, sort_keys=True) + "\n").encode()
+    pkg = json.loads(files.pop("package/package.json"))
+    pkg["private"] = True
+    directory.mkdir()
+    record = npm_single_package.pack(directory / "package", directory, pkg,
+        {name.removeprefix("package/"): data for name, data in files.items()}, env)
+    path = directory / record["filename"]
+    packed = package_contents(path)
+    # Independently assert no code, lifecycle, executable-map or integrity-table drift.
+    restored = json.loads(packed["package/native.json"])
+    restored.pop("fixture"); restored.pop("fixture_origin")
+    original = json.loads(production["package/native.json"])
+    for target, entry in restored["targets"].items():
+        if entry["url"] != registry + "native/" + entry["archive"]:
+            raise ValueError("fixture URL left its exact native asset route")
+        entry["url"] = original["targets"][target]["url"]
+    if restored != original:
+        raise ValueError("fixture changed approved native metadata")
+    actual_pkg = json.loads(packed["package/package.json"])
+    if actual_pkg.pop("private", None) is not True or actual_pkg != json.loads(production["package/package.json"]):
+        raise ValueError("fixture changed production package metadata")
+    if {k: v for k, v in packed.items() if k not in ("package/package.json", "package/native.json")} != {
+            k: v for k, v in production.items() if k not in ("package/package.json", "package/native.json")}:
+        raise ValueError("fixture changed reviewed installer/launcher files")
+    return record, pkg, path
+
+
+def script_policy(npm_version, identity, project=None):
+    """npm 12 requires explicit exact-package script approval; npm 11 runs normally."""
+    if int(npm_version.split(".")[0]) < 12:
+        return []
+    if project is not None:
+        write_json(project / "package.json", {"name": "qualification-consumer", "version": "1.0.0",
+                                              "private": True, "allowScripts": {identity: True}})
+        return []
+    return ["--allow-scripts=" + identity]
 
 
 def registry_response(path, packages, base):
@@ -523,7 +667,7 @@ def registry_response(path, packages, base):
 
 
 @contextlib.contextmanager
-def local_registry(packages):
+def local_registry(packages, native_resources=None):
     """Serve only exact verified local bytes; publication and public registry are unused."""
     requests = []
     class Registry(http.server.BaseHTTPRequestHandler):
@@ -534,8 +678,11 @@ def local_registry(packages):
             path = unquote(self.path.split("?", 1)[0]).lstrip("/")
             requests.append(path)
             try:
-                body, content_type = registry_response(path, packages,
-                    f"http://127.0.0.1:{self.server.server_port}/")
+                if native_resources and path in native_resources:
+                    body, content_type = native_resources[path].read_bytes(), "application/octet-stream"
+                else:
+                    body, content_type = registry_response(path, packages,
+                        f"http://127.0.0.1:{self.server.server_port}/")
             except ValueError:
                 self.send_error(404)
                 return
@@ -677,117 +824,159 @@ def selected_npm_node(env):
 
 
 def npm_run(args, evidence, report):
-    import npm_platform_package
+    import npm_single_package
+    import qualify_public_release as public
     directory = args.package_set_dir.resolve()
-    manifest, packages = package_set(directory)
+    manifest, production = package_set(directory)
     target = host_target()
-    expected = npm_platform_package.PACKAGES[target]
-    if expected not in packages or packages[expected][0].get("native", {}).get("target") != target:
-        raise ValueError("npm package set lacks the exact native host payload")
-    native = packages[expected][0]["native"]
-    version = manifest["version"]
-    profile = getattr(args, "profile", "full")
+    resources = verified_native_resources(manifest, production, args.native_dir.resolve())
+    native = next(row for row in manifest['native'] if row['target'] == target)
+    version = manifest['version']
+    profile = getattr(args, 'profile', 'full')
     selected = npm_cases(profile)
     harness = args.harness_dir.resolve()
     prepared = harness_manifest(harness, target)
-    if prepared["source"] != manifest["source"]:
-        raise ValueError("fixture harness and npm artifact source identities differ")
+    if prepared['source'] != manifest['source']:
+        raise ValueError('fixture harness and npm artifact source identities differ')
     node = selected_npm_node(os.environ)
-    report.update(kind="npm", profile=profile, package_set=manifest, node_executable=str(node),
-                  node=subprocess.check_output([str(node), "--version"], text=True).strip(),
-                  npm=subprocess.check_output(npm_invocation(args) + ["--version"], text=True).strip(),
-                  invocation="qualification bridge -> actual npm shim -> Node launcher -> exact native payload")
-    with tempfile.TemporaryDirectory(prefix="twigsmith-npm-qualification-") as temporary:
+    npm = npm_invocation(args)
+    npm_version = subprocess.check_output(npm + ['--version'], text=True).strip()
+    report.update(kind='npm', profile=profile, package_set=manifest, node_executable=str(node),
+                  node=subprocess.check_output([str(node), '--version'], text=True).strip(), npm=npm_version,
+                  invocation='qualification bridge -> actual npm shim -> reviewed launcher -> verified downloaded native payload',
+                  probes=[], routes={})
+    with tempfile.TemporaryDirectory(prefix='twigsmith-npm-qualification-') as temporary:
         temporary = Path(temporary)
-        env = npm_platform_package.npm_environment(temporary)
-        env["TWIGSMITH_NPM_NODE"] = str(node)
-        env["npm_config_offline"] = "false"
-        env["npm_config_audit"] = "false"
-        env["npm_config_fund"] = "false"
-        # User proxy settings/credentials are intentionally absent. The only
-        # registry serves the reviewed local tarballs on the loopback interface.
-        with local_registry(packages) as (registry, requests):
-            env["npm_config_registry"] = registry
-            prefix = temporary / "global"
-            command = npm_invocation(args) + ["install", "--global", "--ignore-scripts", "--prefix", str(prefix),
-                                             "--no-audit", "--no-fund", str(packages["twigsmith"][2])]
-            output = fixture_output(command, evidence / "npm-install.log", env, temporary)
+        env = npm_single_package.npm_environment(temporary)
+        env.update(TWIGSMITH_NPM_NODE=str(node), npm_config_offline='false', npm_config_ignore_scripts='false',
+                   npm_config_audit='false', npm_config_fund='false')
+        packages = {}
+        with local_registry(packages, resources) as (registry, requests):
+            packages['twigsmith'] = fixture_package(production, registry, temporary / 'fixture-package', env)
+            fixture_path = packages['twigsmith'][2]
+            expected = package_contents(fixture_path)
+            env['npm_config_registry'] = registry
+            env['npm_config_cache'] = str(temporary / 'install-cache')
+            report['fixture'] = {'nonpublishable': True, 'sha256': digest(fixture_path),
+                                 'production_sha256': production['twigsmith'][0]['sha256'],
+                                 'variation': 'private:true and explicit loopback native URLs only'}
+
+            def install_local(label, *, blocked=False, approve=True):
+                work = temporary / label
+                work.mkdir()
+                flags = script_policy(npm_version, str(fixture_path), work) if approve else []
+                command = npm + ['install', '--prefix', str(work), '--no-audit', '--no-fund',
+                                 *flags, *(['--ignore-scripts'] if blocked else []), str(fixture_path)]
+                output = fixture_output(command, evidence / (label + '-install.log'), env, work)
+                if output.returncode:
+                    raise RuntimeError(label + ' npm installation failed')
+                return work, work / 'node_modules/twigsmith'
+
+            # Observe default lifecycle behavior separately from the explicit approval route.
+            default_work, default_common = install_local('default-policy', approve=False)
+            default_ready = (default_common / '.native/installed.json').is_file()
+            should_run = int(npm_version.split('.')[0]) < 12
+            if default_ready != should_run:
+                raise ValueError('npm default lifecycle behavior differs from the qualified policy')
+            if default_ready:
+                installed_payload(default_common, expected, target, native['payload_sha256'])
+            else:
+                before = len(requests)
+                output = fixture_output([str(node), str(default_common / 'launcher.cjs'), '--version'],
+                                        evidence / 'default-policy-refusal.log', env, default_work)
+                if output.returncode == 0 or 'twigsmith-install' not in output.stdout or len(requests) != before:
+                    raise ValueError('npm denied scripts did not refuse without network')
+            report['script_policy'] = {'default_lifecycle_ran': default_ready,
+                                      'explicit_exact_package_approval': not should_run,
+                                      'default_install_exit': 0}
+
+            local_work, local_common = install_local('local')
+            installed_payload(local_common, expected, target, native['payload_sha256'])
+            prefix = temporary / 'global'
+            flags = script_policy(npm_version, str(fixture_path))
+            output = fixture_output(npm + ['install', '--global', '--prefix', str(prefix),
+                 '--no-audit', '--no-fund', *flags, str(fixture_path)], evidence / 'npm-install.log', env, temporary)
             if output.returncode:
-                raise RuntimeError("local npm global installation failed")
-            modules = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules")
-            resolved_metadata = Path(subprocess.check_output([
-                str(node), "-e",
-                "process.stdout.write(require.resolve(process.argv[1]+'/package.json',{paths:[process.argv[2]]}))",
-                expected, str(modules / "twigsmith")], env=env, text=True))
-            payload = resolved_metadata.parent / native["payload"]
-            if digest(payload) != native["payload_sha256"]:
-                raise ValueError("installed npm payload differs from native candidate")
-            for name in ("twigsmith", expected):
-                metadata_path = modules / "twigsmith/package.json" if name == "twigsmith" else resolved_metadata
-                installed = json.loads(metadata_path.read_text())
-                if installed["version"] != version:
-                    raise ValueError("installed npm package version differs from candidate")
-            shim_dir = prefix if os.name == "nt" else prefix / "bin"
-            bridge_dir = temporary / "fixture-bridge"
-            bridge_dir.mkdir()
-            bridge = harness / prepared["executables"]["native_npm_fixture"]["path"]
-            for name in ("twigsmith", "tgi"):
-                shutil.copy2(bridge, bridge_dir / (name + (".exe" if os.name == "nt" else "")))
-            env["TWIGSMITH_NPM_SHIM_DIR"] = str(shim_dir)
-            env["TWIGSMITH_NPM_SHIM_KIND"] = "cmd"
-            # Both commands go through the real installed npm shim even under
-            # native PTY/ConPTY fixtures; the fixture bridge adds no product logic.
-            for name in ("twigsmith", "tgi"):
-                command = [str(bridge_dir / (name + (".exe" if os.name == "nt" else ""))), "--version"]
-                output = fixture_output(command, evidence / f"npm-{name}--version.log", env, temporary)
-                if output.returncode or output.stdout.strip() != f"twigsmith {version}":
-                    raise ValueError(f"installed npm {name} shim failed")
-            passed = run_fixtures(bridge_dir, harness, evidence, report, kind="npm", env=env, selected_cases=selected)
-            report["probes"] = []
-            if os.name == "nt":
-                report["powershell"] = powershell_shim_probes(shim_dir, version, evidence, env)
-                report["probes"].extend(report["powershell"]["probes"])
-                report["powershell_terminal"] = powershell_terminal_fixtures(bridge_dir, harness, evidence, env)
-                passed = passed and report["powershell_terminal"]["passed"]
-            original_metadata = resolved_metadata.read_bytes()
-            try:
-                for label, field, value in [("wrong-version-refusal", "version", "0.0.0-invalid"),
-                                            ("wrong-platform-refusal", "os", ["invalid-host"])]:
-                    changed = json.loads(original_metadata)
-                    changed[field] = value
-                    write_json(resolved_metadata, changed)
-                    output = fixture_output([str(node), str(modules / "twigsmith/launcher.cjs"), "--version"],
-                                            evidence / f"npm-{label}.log", env, temporary)
-                    report["probes"].append({"name": label, "passed": output.returncode != 0
-                                            and f"invalid {expected}" in output.stdout})
-            finally:
-                resolved_metadata.write_bytes(original_metadata)
-            # npx is npm's own maintained npx entry point, using an empty cache.
-            # The explicit version also covers prerelease versions unchanged.
-            env["npm_config_cache"] = str(temporary / "npx-cache")
-            for name in ("twigsmith", "tgi"):
-                command = npm_invocation(args, npx=True) + ["--yes", "--ignore-scripts", f"--package=twigsmith@{version}",
-                                                          "--", name, "--version"]
-                output = fixture_output(command, evidence / f"npx-{name}.log", env, temporary)
-                success = output.returncode == 0 and output.stdout.strip() == f"twigsmith {version}"
-                report["probes"].append({"name": f"explicit-version-npx-{name}", "passed": success})
-            omitted = temporary / "omitted"
-            command = npm_invocation(args) + ["install", "--ignore-scripts", "--omit=optional", "--prefix", str(omitted),
-                                             "--no-audit", "--no-fund", str(packages["twigsmith"][2])]
-            output = fixture_output(command, evidence / "npm-omit-install.log", env, temporary)
+                raise RuntimeError('local npm global lifecycle installation failed')
+            common = prefix / ('node_modules' if os.name == 'nt' else 'lib/node_modules') / 'twigsmith'
+            payload = installed_payload(common, expected, target, native['payload_sha256'])
+            shim_dir = prefix if os.name == 'nt' else prefix / 'bin'
+            bridge_dir = public.bridge_for(harness, prepared, temporary)
+            env['TWIGSMITH_NPM_SHIM_KIND'] = 'cmd'
+            for label, shims in [('local', local_work / 'node_modules/.bin'), ('global', shim_dir)]:
+                route_dir = evidence / label
+                route_dir.mkdir()
+                env['TWIGSMITH_NPM_SHIM_DIR'] = str(shims)
+                for name in ('twigsmith', 'tgi'):
+                    public.version_probe([str(bridge_dir / (name + ('.exe' if os.name == 'nt' else ''))), '--version'],
+                                         version, route_dir / (name + '-version.log'), env, temporary)
+                route = {'profile': profile if label == 'global' else 'journey'}
+                run_fixtures(bridge_dir, harness, route_dir, route, kind='npm', env=env,
+                             selected_cases=selected if label == 'global' else public.JOURNEY)
+                write_json(route_dir / 'qualification.json', route)
+                report['routes'][label] = route
+                if label == 'global':
+                    report.update(tests=route['tests'], selected_cases=route['selected_cases'])
+            env['TWIGSMITH_NPM_SHIM_DIR'] = str(shim_dir)
+            passed = all(route['passed'] for route in report['routes'].values())
+            if os.name == 'nt':
+                report['powershell'] = powershell_shim_probes(shim_dir, version, evidence, env)
+                report['probes'].extend(report['powershell']['probes'])
+                report['powershell_terminal'] = powershell_terminal_fixtures(bridge_dir, harness, evidence, env)
+                passed = passed and report['powershell_terminal']['passed']
+            report['probes'].extend(public.npm_failures(common, node, target, version, evidence, env))
+
+            # Each alias acquires an independent cold exact-version cache, verifies
+            # package and generated bytes, then executes offline through that shim.
+            for alias in ('twigsmith', 'tgi'):
+                cache = temporary / ('npx-cache-' + alias)
+                env['npm_config_cache'] = str(cache)
+                observation = temporary / ('npx-' + alias + '.json')
+                command = npm_invocation(args, npx=True) + ['--yes', *script_policy(npm_version, 'twigsmith'),
+                    f'--package=twigsmith@{version}', '--', str(node), '-e', public.NPX_OBSERVER, alias, str(observation)]
+                output = fixture_output(command, evidence / ('npx-' + alias + '-acquire.log'), env, temporary)
+                if output.returncode:
+                    raise RuntimeError('exact-version npx acquisition failed')
+                cached_common, _ = public.npx_common(cache, observation, alias)
+                installed_payload(cached_common, expected, target, native['payload_sha256'])
+                shim = json.loads(observation.read_text())['shim']
+                before = len(requests)
+                offline_env = dict(env, npm_config_offline='true')
+                offline = command[:len(npm_invocation(args, npx=True))] + ['--offline'] + command[len(npm_invocation(args, npx=True)):]
+                public.version_probe(offline + ['execute', shim], version, evidence / ('npx-' + alias + '.log'), offline_env, temporary)
+                if len(requests) != before:
+                    raise ValueError('offline npx execution contacted fixture registry')
+                installed_payload(cached_common, expected, target, native['payload_sha256'])
+                report['probes'].append({'name': 'explicit-version-npx-' + alias, 'passed': True,
+                                         'cold_cache': True, 'verified_before_application_execution': True})
+
+            before = len(requests)
+            blocked_work, blocked_common = install_local('blocked', blocked=True)
+            if len(requests) != before or (blocked_common / '.native').exists():
+                raise ValueError('script-blocked installation unexpectedly downloaded native bytes')
+            for alias in ('twigsmith', 'tgi'):
+                output = fixture_output([str(node), str(blocked_common / 'launcher.cjs'), '--version'],
+                    evidence / ('blocked-' + alias + '.log'), env, blocked_work)
+                if output.returncode == 0 or 'twigsmith-install' not in output.stdout or len(requests) != before:
+                    raise ValueError('script-blocked launcher must refuse without network')
+            output = fixture_output(npm + ['exec', '--offline', '--ignore-scripts', '--', 'twigsmith-install', '--target', target],
+                evidence / 'blocked-explicit-repair.log', env, blocked_work)
             if output.returncode:
-                raise RuntimeError("omitted-optional npm installation failed")
-            launcher = omitted / "node_modules/twigsmith/launcher.cjs"
-            output = fixture_output([str(node), str(launcher), "--version"],
-                                    evidence / "npm-omit-launch.log", env, temporary)
-            report["probes"].append({"name": "omitted-optional-refusal", "passed": output.returncode != 0
-                                      and f"missing {expected}@{version}" in output.stdout})
-            report["registry_requests"] = list(requests)
-            if digest(payload) != native["payload_sha256"]:
-                raise ValueError("installed npm payload changed during qualification")
+                raise ValueError('explicit script-blocked repair failed')
+            installed_payload(blocked_common, expected, target, native['payload_sha256'])
+            public.version_probe([str(node), str(blocked_common / 'launcher.cjs'), '--version'], version,
+                                 evidence / 'blocked-repaired-version.log', env, blocked_work)
+            report['probes'].append({'name': 'script-blocked-refusal-and-explicit-repair', 'passed': True})
+            report['npx_blocked_repair'] = public.npx_blocked_repair(args, version, {'twigsmith': expected}, target,
+                native['payload_sha256'], node, evidence, temporary, env)
+            native_requests = [name for name in requests if name.startswith('native/')]
+            if not native_requests or set(native_requests) != {'native/' + native['archive']}:
+                raise ValueError('installation fetched an unexpected native target')
+            report['registry_requests'] = list(requests)
+            installed_payload(common, expected, target, native['payload_sha256'])
             package_set(directory)
-            report["passed"] = passed and all(probe["passed"] for probe in report["probes"])
-    return 0 if report["passed"] else 1
+            report['passed'] = passed and all(probe['passed'] for probe in report['probes'])
+    return 0 if report['passed'] else 1
 
 
 def run(args):
@@ -817,6 +1006,7 @@ def main():
                         help="require every approved host shell launch/completion route; missing shells fail")
     npm = commands.add_parser("npm", help="qualify unpublished exact packages with local npm install/npx")
     npm.add_argument("--package-set-dir", required=True, type=Path)
+    npm.add_argument("--native-dir", required=True, type=Path, help="verified native archives and manifests for the loopback fixture")
     npm.add_argument("--npm", type=Path)
     npm.add_argument("--profile", choices=["full", "launcher"], default="full",
                      help="full workflow coverage (default), or bounded launcher/terminal fixtures; all npm probes run")

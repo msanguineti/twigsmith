@@ -141,7 +141,7 @@ jobs:
           retention-days: 30
 
   npm-set:
-    name: Assemble the complete npm candidate set
+    name: Assemble the single npm installer candidate
     needs: native
     runs-on: ubuntu-24.04
     steps:
@@ -158,7 +158,7 @@ jobs:
           pattern: platform-archive-*
           path: ${{ runner.temp }}/native-input
           digest-mismatch: error
-      - name: Bind and assemble the exact four payloads
+      - name: Bind the four native archives into one installer
         env:
           PACKAGE_INPUT: ${{ runner.temp }}/native-input
           PACKAGE_OUTPUT: ${{ runner.temp }}/platform-npm
@@ -166,14 +166,14 @@ jobs:
           python - <<'PY'
           import json, os, pathlib, sys
           sys.path.insert(0, 'tools')
-          import native_package, npm_platform_package
+          import native_package, npm_single_package
           inputs = []
           for archive in pathlib.Path(os.environ['PACKAGE_INPUT']).rglob('*'):
               if archive.is_file() and archive.name.endswith(('.tar.gz', '.zip')):
                   manifest = native_package.verify(archive)
                   inputs.append({'archive': str(archive), 'archive_sha256': manifest['archive']['sha256'],
                                  'payload_sha256': manifest['files'][manifest['npm_payload']]['sha256']})
-          npm_platform_package.make_package_set(pathlib.Path.cwd(), inputs, os.environ['PACKAGE_OUTPUT'])
+          npm_single_package.make_package_set(pathlib.Path.cwd(), inputs, os.environ['PACKAGE_OUTPUT'])
           PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -184,12 +184,21 @@ jobs:
           compression-level: 0
 
   npm-runtime:
-    name: Installed npm (${{ matrix.platform.target }}, Node ${{ matrix.node }})
+    name: Installed npm (${{ matrix.platform.target }}, Node ${{ matrix.runtime.node }}, npm ${{ matrix.runtime.npm }})
     needs: npm-set
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24, 26]
+        runtime:
+          - node: 22.23.4
+            npm: 11.20.0
+            profile: launcher
+          - node: 24.22.2
+            npm: 12.2.1
+            profile: full
+          - node: 26.13.0
+            npm: 11.20.0
+            profile: launcher
         platform:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -211,8 +220,15 @@ jobs:
           echo "$(brew --prefix git)/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.runtime.node }}
           package-manager-cache: false
+      - name: Select the exact npm client
+        shell: pwsh
+        env:
+          NPM_VERSION: ${{ matrix.runtime.npm }}
+        run: |
+          npm install --global "npm@$env:NPM_VERSION" --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: platform-npm-set
@@ -220,24 +236,29 @@ jobs:
           digest-mismatch: error
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          pattern: platform-archive-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/platform-native-fixture
+          digest-mismatch: error
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
           name: platform-harness-${{ matrix.platform.target }}
           path: ${{ runner.temp }}/platform-harness
           digest-mismatch: error
-      - name: Qualify local npm installation and npx without install scripts
+      - name: Qualify installer lifecycle, explicit repair and native execution
         shell: pwsh
         env:
-          NODE_LINE: ${{ matrix.node }}
+          QUALIFICATION_PROFILE: ${{ matrix.runtime.profile }}
         run: |
           $ErrorActionPreference = 'Stop'
           # The reference runtime covers all Git journeys. Other maintained
           # Node lines cover launcher, installation and terminal boundaries.
-          $profile = if ($env:NODE_LINE -eq '24') { 'full' } else { 'launcher' }
-          python tools/qualify_platform.py npm --profile $profile --package-set-dir (Join-Path $env:RUNNER_TEMP 'platform-npm') --harness-dir (Join-Path $env:RUNNER_TEMP 'platform-harness') --evidence-dir (Join-Path $env:RUNNER_TEMP 'npm-evidence')
+          python tools/qualify_platform.py npm --profile $env:QUALIFICATION_PROFILE --package-set-dir (Join-Path $env:RUNNER_TEMP 'platform-npm') --native-dir (Join-Path $env:RUNNER_TEMP 'platform-native-fixture') --harness-dir (Join-Path $env:RUNNER_TEMP 'platform-harness') --evidence-dir (Join-Path $env:RUNNER_TEMP 'npm-evidence')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: platform-npm-evidence-${{ matrix.platform.target }}-node-${{ matrix.node }}
+          name: platform-npm-evidence-${{ matrix.platform.target }}-node-${{ matrix.runtime.node }}-npm-${{ matrix.runtime.npm }}
           path: ${{ runner.temp }}/npm-evidence/
           if-no-files-found: warn
           retention-days: 30

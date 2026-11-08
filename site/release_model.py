@@ -57,7 +57,7 @@ def resolve(descriptor, github_latest, npm_latest, npm_tarball):
     acquisition, snapshot freshness and any deployment authorization.
     """
     try:
-        if descriptor.get('schema') == 2:
+        if descriptor.get('schema') in (2, 3):
             raise ValueError('complete platform sets support unpublished previews only; full-set publication is unavailable')
         model = deepcopy(descriptor)
         version = model['version']

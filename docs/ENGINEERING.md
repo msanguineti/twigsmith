@@ -198,21 +198,43 @@ targets separately from recorded build and qualification environments. Historica
 unqualified snapshots retain their original interpretation. Native execution
 requires neither Rust nor Node/npm.
 
-[`npm_platform_package.py`](../tools/npm_platform_package.py) assembles a separate
-four-platform npm candidate set: a common `twigsmith` Node launcher and exact-version
-optional platform dependencies. The launcher selects the installed native payload,
-preserves invocation/terminal behavior and refuses missing or incompatible packages;
-it performs no runtime download or consumer build. Both command names share the
-launcher. The set manifest binds package and native identities. Integrated offline verification uses a distinct schema. The legacy Linux-only
-publisher remains separate; the full-set RC adapter verifies and recovers all five
-package versions before public installation and channel promotion.
+[`npm_single_package.py`](../tools/npm_single_package.py) assembles one npm
+installer package from four independently hash-bound native archives. The tarball
+contains only installer/launcher code, a version-bound native table, metadata and
+documentation. The table records exact release URLs, archive and executable hashes,
+and each archive member's name, size, mode and hash. There are no platform npm
+dependencies or bundled native executables. Both application aliases share a
+launcher; `twigsmith-install` explicitly selects or repairs installation.
+
+The approved npm lifecycle invokes [`npm_installer.cjs`](../tools/npm_installer.cjs).
+It detects the host or accepts explicit installer target flags, bounds HTTPS
+requests and redirects to approved GitHub origins, and verifies the archive before
+parsing the narrow tar.gz/ZIP formats. Member allowlists and size/hash/type checks
+precede writing the selected payload. It uses no system tar/unzip or consumer
+compiler. TLS verification remains enabled; the private Node agent honors standard
+proxy environment settings and Node's CA trust. Errors omit credentials and signed
+redirect URLs. These hashes bind consistency to the npm package; they are not
+independent publisher authentication.
+
+Downloaded files belong to the installed package's `.native/` directory. A unique
+temporary directory is renamed to an immutable target/hash directory, then an
+atomic `installed.json` replacement selects it. Concurrent identical installations
+converge; failed downloads preserve the previous verified selection. Explicit
+repair replaces a damaged payload only after verifying a fresh download;
+conflicting directory types and permission failures stop replacement. The launcher checks the selected host and executable
+hash before execution and never fetches missing files. npm script-policy denial,
+including npm 12's default unapproved-script behavior, can leave a successful npm
+installation without a native executable; explicit installer repair owns recovery.
+Foreign target selection verifies bytes, not execution compatibility. The
+[installation guide](USAGE.md#native-archives-and-npm-installation) owns user commands.
 
 [`qualify_platform.py`](../tools/qualify_platform.py) runs selected existing real-Git
 fixtures against extracted archives and installed npm commands, recording actual
 isolated child execution. Explicit `platform-packages` preparation in the release
 workflow invokes the read-only platform candidate workflow. It builds once per
-native target, assembles the npm set and consumes those bytes across selected
-Node LTS lines. It does not publish or establish desktop OS support floors.
+native target, assembles the npm installer and exercises the same installer code with explicitly
+marked loopback native-download metadata across exact selected Node/npm pairs.
+These fixture tarballs are not production packages or public qualification. It does not publish or establish desktop OS support floors.
 
 Pull-request CI checks the proposed integration for source and completion behavior.
 Explicit release preparation reuses eligible source validation without repeating
@@ -235,7 +257,7 @@ successful prepared candidate and validates native and publisher sources with th
 same protected-main eligibility rule as qualification. It runs on main to retain
 the release environment and npm trusted publisher identity.
 
-The integrated offline set binds exactly four native archives and five npm tarballs
+The integrated offline schema-3 set binds exactly four native archives and one npm tarball
 to externally reviewed hashes, source/tree identities, individual Actions
 run/attempt/artifact identities and per-target requirements snapshots. Requirements
 approval remains separate from format consistency: historical Windows/macOS
@@ -245,8 +267,8 @@ separately. Archive verification and npm member allowlists reject substituted
 payloads, metadata and incomplete sets at this preparation boundary. Staging uses
 a temporary directory and exposes the completed set only after verification.
 
-Integrated candidate descriptors and previews retain every platform and npm payload
-identity. They describe local bytes and frozen candidate requirements. Legacy
+Integrated candidate descriptors and previews retain every native target and the npm
+installer identity. They describe local bytes and frozen candidate requirements. Legacy
 published descriptors retain their original interpretation. Stable public resolution
 and the legacy publisher refuse the integrated format; full-set RC publication
 uses its separate verified adapter without changing stable Pages. These checks add no application Git observations.
@@ -262,19 +284,21 @@ nontransactional. Stable and prerelease channels are latest and next respectivel
 only a verified stable release promotes the site after consumption checks.
 
 Full-set RC publication uses [`release_platform_publish.py`](../tools/release_platform_publish.py)
-for twelve native assets and five npm tarballs. It observes every package before
-choosing effects, refuses conflicts anywhere, publishes missing platform packages
-before the common launcher, and preserves matching bytes after interrupted effects.
-A failed response is followed by observation; unknown state stops. Every npm publish
-uses the approved staging tag. An existing common version with missing payloads
-allows prerequisite reconciliation but requires a fresh invocation for qualification.
+for twelve native assets and one npm tarball. It rejects the superseded five-package
+schema before provider access. All native assets must be anonymously available at
+their exact public release URLs with approved bytes before publishing the npm
+version that refers to them. Recovery preserves existing matching assets and npm
+versions, publishes only missing approved bytes under an explicit staging tag and
+halts on unknown or conflicting state. Every uncertain effect is followed by fresh
+observation; a staging tag is public accessibility, not privacy or a transaction.
 
 [`release_platform_dispatch.py`](../tools/release_platform_dispatch.py) binds the
 whole approval to protected current server main, eligible native/packaging/publisher
 sources and exact successful Actions artifacts. The `publish-platforms` workflow
-operation stages bytes, runs a read-only four-host public consumption matrix, then
-promotes only after authenticating every successful current-attempt job and its
-identity-bound evidence. Both write stages use the existing `publish.yml`/`release`
+operation stages bytes and runs a read-only four-host public consumption matrix.
+A separately authorized `promote-platforms` dispatch repeats that complete matrix
+and promotes only after authenticating every successful current-attempt job and
+its identity-bound evidence. Both write stages use the existing `publish.yml`/`release`
 OIDC identity and release concurrency group. The promotion job has repository-read
 permissions and cannot repair missing release assets. Each effect rechecks server
 main and release/tag/package observations. A transient same-attempt preflight
@@ -290,7 +314,7 @@ isolated anonymous configuration. It checks both aliases, native/Git child cases
 selected payload hashes and separate cold-cache npx invocations. Windows and both
 Mac rows also observe direct browser acquisition, OS extraction and unsigned launch
 through the installation probe. Missing, skipped, zero-child, stale or mixed reports
-block promotion. This path is limited to `1.0.0-rc.x`; schema-2 stable publication and
+block promotion. This path is limited to `1.0.0-rc.x`; schema-3 stable publication and
 site resolution remain unavailable. Executing the adapter does not supply owner
 publication authority or establish package ownership/trust settings.
 

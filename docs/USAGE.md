@@ -64,14 +64,75 @@ If Git reports `unknown option: --no-lazy-fetch`, upgrade Git to 2.45 or newer.
 The [developer packaging guide](DEVELOPMENT.md#npm-candidate-packaging) covers
 candidate creation, provenance and qualification.
 
-Unpublished platform candidates use a common Node launcher and four optional
-payload packages for Linux x64 GNU, Windows x64 and macOS ARM64/Intel. Both command
-names select the installed payload for the current platform. This installation
-route uses no lifecycle scripts, compiler or fallback download. Keep the complete
-verified package set when testing locally; installing only the launcher tarball
-does not supply its platform dependencies. See the
+Cross-platform candidates use one npm package, `twigsmith`, containing installer
+and launcher code plus the exact archive and executable hashes for Linux x64 GNU,
+Windows x64 and macOS ARM64/Intel. It contains no native executable or platform npm
+dependencies. When npm permits the `postinstall` script, installation detects the
+host and downloads only its matching archive from that version's GitHub release.
+It checks the archive before extracting and checks the executable before making it
+ready. Both `twigsmith` and `tgi` then launch that executable without downloading.
+These candidates are separate from the published Linux-only `0.1.0`; use an exact
+candidate version only after its release assets and npm version are published.
+See the
 [platform candidate guide](DEVELOPMENT.md#platform-selected-npm-candidates) for
-offline preparation and qualification.
+local preparation and qualification.
+
+Use a maintained Node.js LTS patch release supported by your npm client. The
+installer requires Node 22.21+ on the 22 line, or Node 24.5+; the qualification
+matrix selects exact maintained Node/npm pairs. npm 12.2.1 blocks unapproved install
+scripts by default and may exit successfully without installing an executable.
+`--ignore-scripts` also skips installation. Review and approve the package's script
+using your npm client's script-policy command, or explicitly run the installer
+after installing the package:
+
+```sh
+# After a global install, including an install with scripts blocked:
+twigsmith-install
+# From a project with a local twigsmith installation:
+npm exec --offline --ignore-scripts -- twigsmith-install
+```
+
+For explicit target selection, pass an exact supported target to the installer:
+
+```sh
+twigsmith-install --target x86_64-unknown-linux-gnu
+twigsmith-install --target x86_64-pc-windows-msvc
+twigsmith-install --target aarch64-apple-darwin
+twigsmith-install --target x86_64-apple-darwin
+```
+
+The explicit selection takes precedence over detection. The installer also accepts
+`--os`, `--cpu` and, for Linux, `--libc`; npm's corresponding installation flags
+affect the whole npm operation. Installer flags belong to `twigsmith-install`, not
+to normal Twigsmith commands. Selecting another host's target verifies and installs
+its bytes; it does not make that executable compatible with the current host. Run
+`twigsmith-install` again without overrides to restore automatic host selection.
+
+The installed package owns its downloaded executable under `.native/` inside the
+package directory, including local, global and npx-cache installations. Failed or
+interrupted downloads retain the previous verified selection. Retry the installer
+after correcting network or file permissions. It replaces a damaged executable
+only with newly verified bytes; reinstall the exact npm package if its installer files
+have been altered. Removing the npm package or cache removes its downloaded files.
+When npx installation scripts are blocked, its launch reports the missing payload.
+For a published installer candidate, replace `VERSION` with the same exact version
+in each command. After the initial package acquisition, repair and run it from the
+same npx cache:
+
+```sh
+npx --yes --ignore-scripts --package=twigsmith@VERSION -- twigsmith-install
+npx --yes --offline --package=twigsmith@VERSION -- tgi --version
+```
+
+Installer downloads require HTTPS access to GitHub releases and GitHub's asset
+delivery hosts. Standard `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` environment
+settings apply; npm registry proxy settings alone do not configure this separate
+download. For an organization's CA, set Node's `NODE_EXTRA_CA_CERTS` before starting
+npm or the installer. TLS verification remains enabled. Restricted or offline
+networks can use a separately verified native archive; normal application launch
+does not repair an incomplete npm installation over the network. Embedded hashes
+bind the native download to the npm package, not to an independent publisher
+authentication system.
 
 New cross-platform candidates target maintained Windows 11 x64 releases and macOS
 Sequoia 15 on ARM64 and Intel, with Git 2.45 or newer. Windows candidates use the

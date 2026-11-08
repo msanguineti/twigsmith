@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_package
-import npm_platform_package
+import npm_single_package
 import release_set
 import release_model
 
@@ -33,7 +33,7 @@ LEGACY_REQUIREMENTS = {
 
 def descriptor_for(record, files):
     """Derive a descriptor from an already verified release identity and byte snapshot."""
-    if record.get('schema') == 2:
+    if record.get('schema') in (2, 3):
         return _platform_descriptor(record, files)
     version = record['version']
     if not release_model.STABLE.fullmatch(version) or record['tag'] != 'v' + version:
@@ -117,15 +117,15 @@ def _platform_descriptor(record, files):
             hashlib.sha512(files[package['filename']]).digest()).decode()
     npm['requirements'] = {target: deepcopy(snapshot['npm'])
                            for target, snapshot in verified['requirements'].items()}
-    npm['optionalDependencies'] = npm_platform_package.top_metadata(verified['version'])['optionalDependencies']
+    npm['topology'] = verified['topology']
     npm['coverage'] = []
-    for target, name in npm_platform_package.PACKAGES.items():
+    for target in npm_single_package.TARGETS:
         platform = native_package.target_metadata(target)
-        npm['coverage'].append({'target': target, 'package': name,
+        npm['coverage'].append({'target': target, 'package': 'twigsmith',
                                 'os': {'linux': 'linux', 'windows': 'win32', 'macos': 'darwin'}[platform['os']],
                                 'arch': {'x86_64': 'x64', 'aarch64': 'arm64'}[platform['arch']],
                                 'libc': platform['libc']})
-    return {'schema': 2, 'topology': verified['topology'], 'repository': verified['repository'],
+    return {'schema': 3, 'topology': verified['topology'], 'repository': verified['repository'],
             'version': verified['version'], 'tag': verified['tag'], 'availability': 'unpublished',
             'identity': deepcopy(verified), 'native': native_rows, 'npm': npm}
 
@@ -153,7 +153,7 @@ def from_bundle(bundle):
     if bundle.is_symlink() or (bundle / 'identity.json').is_symlink():
         raise ValueError('candidate bundle must contain ordinary files')
     identity = json.loads((bundle / 'identity.json').read_text())
-    if identity.get('schema') == 2:
+    if identity.get('schema') in (2, 3):
         if {path.name for path in bundle.iterdir()} != {'identity.json', 'native', 'npm'}:
             raise ValueError('candidate bundle must contain exactly identity.json, native and npm')
         verified = release_set.verify_platform_set(bundle / 'native', bundle / 'npm', identity)

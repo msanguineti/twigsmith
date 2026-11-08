@@ -9,7 +9,7 @@ on:
       operation:
         description: Prepare a candidate or publish an approved immutable candidate
         type: choice
-        options: [prepare, publish, publish-platforms]
+        options: [prepare, publish, publish-platforms, promote-platforms]
         default: prepare
         required: true
       request:
@@ -217,7 +217,7 @@ jobs:
       id-token: write
 
   platform-preflight:
-    if: inputs.operation == 'publish-platforms' && github.ref == 'refs/heads/main'
+    if: contains(fromJSON('["publish-platforms", "promote-platforms"]'), inputs.operation) && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -254,6 +254,7 @@ jobs:
           compression-level: 0
 
   platform-stage:
+    if: inputs.operation == 'publish-platforms'
     needs: platform-preflight
     runs-on: ubuntu-24.04
     environment: release
@@ -289,6 +290,10 @@ jobs:
   platform-consume:
     name: Public installation (${{ matrix.target }})
     needs: [platform-preflight, platform-stage]
+    if: >-
+      !cancelled() && needs.platform-preflight.result == 'success' &&
+      ((inputs.operation == 'publish-platforms' && needs.platform-stage.result == 'success') ||
+       (inputs.operation == 'promote-platforms' && needs.platform-stage.result == 'skipped'))
     strategy:
       fail-fast: false
       matrix:
@@ -361,7 +366,10 @@ jobs:
           retention-days: 30
 
   platform-promote:
-    needs: [platform-preflight, platform-stage, platform-consume]
+    needs: [platform-preflight, platform-consume]
+    if: >-
+      !cancelled() && inputs.operation == 'promote-platforms' &&
+      needs.platform-preflight.result == 'success' && needs.platform-consume.result == 'success'
     runs-on: ubuntu-24.04
     environment: release
     permissions:

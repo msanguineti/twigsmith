@@ -108,13 +108,13 @@ class ReleaseSetTests(unittest.TestCase):
 
 def platform_fixture(root):
     """Real offline npm packing and synthetic native formats, never host qualification."""
-    import npm_platform_package
+    import npm_single_package
     from test_npm_platform_package import candidate
     root = Path(root)
     native = root / 'native'
     native.mkdir(parents=True)
     approvals, inputs, requirements = [], [], {}
-    for index, target in enumerate(npm_platform_package.PACKAGES):
+    for index, target in enumerate(npm_single_package.TARGETS):
         item = candidate(root / 'build', target)
         archive = Path(item['archive'])
         stem = native_package.archive_stem(archive)
@@ -142,9 +142,9 @@ def platform_fixture(root):
     packaging_source = {'revision': '3' * 40, 'tree': '4' * 40, 'dirty': False}
     npm_dir = root / 'npm'
     with patch.object(native_package, 'identity', return_value=packaging_source):
-        npm_platform_package.make_package_set(Path(__file__).resolve().parents[1], inputs, npm_dir)
+        npm_single_package.make_package_set(Path(__file__).resolve().parents[1], inputs, npm_dir)
     npm = json.loads((npm_dir / 'manifest.json').read_text())
-    approval = {'schema': 2, 'topology': release_set.TOPOLOGY, 'repository': release_set.REPOSITORY,
+    approval = {'schema': 3, 'topology': release_set.TOPOLOGY, 'repository': release_set.REPOSITORY,
                 'tag': 'v' + npm['version'], 'version': npm['version'], 'requirements': requirements,
                 'native': approvals, 'npm': {'manifest_sha256': npm_package.sha256(npm_dir / 'manifest.json'),
                 'packaging': npm['packaging'], 'packages': [{key: record[key] for key in
@@ -204,13 +204,13 @@ class PlatformSetTests(unittest.TestCase):
         self.assertEqual(self.check(), self.approval)
         self.assertNotEqual(self.approval['native'][0]['source'], self.approval['npm']['packaging']['source'])
 
-    def test_exact_four_targets_five_packages_and_requirements(self):
+    def test_exact_four_targets_one_installer_and_requirements(self):
         original = deepcopy(self.approval)
         mutations = [lambda x: x['native'].pop(),
                      lambda x: x['native'].append(deepcopy(x['native'][0])),
                      lambda x: x['native'].__setitem__(1, deepcopy(x['native'][0])),
                      lambda x: x['npm']['packages'].pop(),
-                     lambda x: x['npm']['packages'].__setitem__(1, deepcopy(x['npm']['packages'][0])),
+                     lambda x: x['npm']['packages'].append(deepcopy(x['npm']['packages'][0])),
                      lambda x: x['requirements'].pop(next(iter(x['requirements']))),
                      lambda x: x.update(tag='v9.9.9'),
                      lambda x: x['native'][0]['source'].update(tree='f' * 40),
@@ -221,6 +221,50 @@ class PlatformSetTests(unittest.TestCase):
             mutate(self.approval)
             with self.subTest(mutation=mutate), self.assertRaises(ValueError):
                 self.check()
+
+    def test_schema_two_five_package_approvals_are_not_migrated(self):
+        self.approval['schema'] = 2
+        self.approval['topology'] = 'optional-platform-packages'
+        for name in ('twigsmith-linux-x64-gnu', 'twigsmith-win32-x64',
+                     'twigsmith-darwin-arm64', 'twigsmith-darwin-x64'):
+            self.approval['npm']['packages'].append({'name': name,
+                'version': self.approval['version'], 'filename': f"{name}-{self.approval['version']}.tgz",
+                'sha256': '0' * 64})
+        with self.assertRaisesRegex(ValueError, 'invalid integrated release approval'):
+            self.check()
+
+    def test_native_table_is_reconstructed_from_approved_archives(self):
+        mutations = [lambda table: table['targets'].pop(next(iter(table['targets']))),
+                     lambda table: table.update(version='9.9.9'),
+                     lambda table: table.update(fixture=True)]
+        for field, value in (('url', 'http://127.0.0.1:1/native'),
+                             ('archive', 'foreign.tar.gz'), ('archive_sha256', '0' * 64),
+                             ('payload', 'foreign'), ('payload_sha256', '0' * 64),
+                             ('members', {})):
+            mutations.append(lambda table, field=field, value=value:
+                next(iter(table['targets'].values())).__setitem__(field, value))
+        for mutation in mutations:
+            shutil.rmtree(self.root / 'npm')
+            shutil.copytree(self.base / 'npm', self.root / 'npm')
+            self.approval = deepcopy(self.approved)
+            def alter(entry, data):
+                if entry.name == 'package/native.json':
+                    table = json.loads(data)
+                    mutation(table)
+                    return (json.dumps(table, indent=2, sort_keys=True) + '\n').encode()
+                return data
+            self.rebind_package('twigsmith', alter)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'native table'):
+                self.check()
+
+    def test_rebound_manifest_native_records_cannot_authorize_a_changed_table(self):
+        path = self.root / 'npm/manifest.json'
+        manifest = json.loads(path.read_text())
+        manifest['native'][0]['members'] = {}
+        path.write_text(json.dumps(manifest))
+        self.approval['npm']['manifest_sha256'] = npm_package.sha256(path)
+        with self.assertRaisesRegex(ValueError, 'native records'):
+            self.check()
 
     def test_hash_tampering_stale_requirements_and_wrong_provenance_refused(self):
         original = deepcopy(self.approval)
@@ -262,7 +306,7 @@ class PlatformSetTests(unittest.TestCase):
     def test_rebound_common_metadata_cannot_omit_or_add_dependencies_or_scripts(self):
         for replacement in ({'optionalDependencies': {}}, {'scripts': {'install': 'curl elsewhere'}},
                             {'optionalDependencies': {'twigsmith-linux-x64-gnu': '9.9.9'}},
-                            {'bin': {'twigsmith': 'launcher.cjs'}}):
+                            {'bin': {'twigsmith': 'launcher.cjs'}}, {'engines': {'node': '>=18'}}):
             def alter(entry, data):
                 if entry.name == 'package/package.json':
                     metadata = json.loads(data)
@@ -275,9 +319,9 @@ class PlatformSetTests(unittest.TestCase):
 
     def test_rebound_payload_bytes_and_extra_tar_members_refused(self):
         def alter(entry, data):
-            return data + b'tampered' if entry.name == 'package/twigsmith.exe' else data
-        self.rebind_package('twigsmith-win32-x64', alter)
-        with self.assertRaisesRegex(ValueError, 'bytes differ'):
+            return data + b'tampered' if entry.name == 'package/installer.cjs' else data
+        self.rebind_package('twigsmith', alter)
+        with self.assertRaisesRegex(ValueError, 'packaging inputs'):
             self.check()
         self.approval = deepcopy(self.approved)
         shutil.rmtree(self.root / 'npm')
@@ -289,6 +333,21 @@ class PlatformSetTests(unittest.TestCase):
         self.rebind_package('twigsmith', rename)
         with self.assertRaisesRegex(ValueError, 'missing, duplicate or extra'):
             self.check()
+
+    def test_installer_tar_refuses_wrong_mode_and_duplicate_member(self):
+        for mutation in ('mode', 'duplicate'):
+            shutil.rmtree(self.root / 'npm')
+            shutil.copytree(self.base / 'npm', self.root / 'npm')
+            self.approval = deepcopy(self.approved)
+            def alter(entry, data):
+                if mutation == 'mode' and entry.name == 'package/installer.cjs':
+                    entry.mode = 0o644
+                elif mutation == 'duplicate' and entry.name == 'package/LICENSE':
+                    entry.name = 'package/README.md'
+                return data
+            self.rebind_package('twigsmith', alter)
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(ValueError, 'npm member|duplicate'):
+                self.check()
 
     def test_checksum_sidecars_are_derived_exactly_and_input_races_refused(self):
         archive = self.root / 'native' / self.approval['native'][0]['archive']

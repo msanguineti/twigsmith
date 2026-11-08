@@ -53,8 +53,7 @@ def advertised_channels(state):
 
 
 def validate_baseline(baseline, request, state, operation, environment=os.environ):
-    names = {'twigsmith', 'twigsmith-linux-x64-gnu', 'twigsmith-win32-x64',
-             'twigsmith-darwin-arm64', 'twigsmith-darwin-x64'}
+    names = {'twigsmith'}
     if (not isinstance(baseline, dict)
             or set(baseline) != {'schema', 'approval_sha256', 'producer', 'channels', 'site_sha256'}
             or type(baseline['schema']) is not int or baseline['schema'] != 1
@@ -158,7 +157,7 @@ def consumption_evidence(directory, request, fetch=release_stage.api, environmen
         if observed.tzinfo is None or not 0 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 3600:
             raise ValueError('public consumption report is stale or future dated')
         checks = report.get('checks', {})
-        required = {'native', 'npm_global', 'npx_twigsmith', 'npx_tgi'}
+        required = {'native', 'npm_local', 'npm_global', 'npx_twigsmith', 'npx_tgi'}
         if target != 'x86_64-unknown-linux-gnu':
             required.add('browser')
         if not required.issubset(checks) or any(checks[name].get('passed') is not True for name in required):

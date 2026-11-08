@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 import native_package
-import npm_platform_package
+import npm_single_package
 import qualify_platform
 import qualify_public_release as public
 from test_release_set import platform_fixture
@@ -69,7 +69,7 @@ class PublicConsumptionTests(unittest.TestCase):
 
     def passing_report(self, target=None):
         target = target or self.target
-        kinds = ['native', 'npm_global', 'npx_twigsmith', 'npx_tgi']
+        kinds = ['native', 'npm_local', 'npm_global', 'npx_twigsmith', 'npx_tgi']
         if not target.endswith('linux-gnu'):
             kinds.append('browser')
         result = {'schema': 1, 'approval_sha256': public.canonical_hash(self.record), 'target': target,
@@ -112,7 +112,7 @@ class PublicConsumptionTests(unittest.TestCase):
                 public.validate_report(candidate, self.record, self.target)
 
     def test_browser_required_on_each_actual_windows_mac_target(self):
-        for target in npm_platform_package.PACKAGES:
+        for target in npm_single_package.TARGETS:
             report = self.passing_report(target)
             public.validate_report(report, self.record, target)
             if target != self.target:
@@ -205,27 +205,102 @@ class PublicConsumptionTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 public.PublicRedirect({'github.com'}).redirect_request(None, None, 302, '', {}, url)
 
-    def test_actual_installed_tree_and_node_resolution_bind_common_host_and_native_hash(self):
+    def installed_fixture(self):
         manifest, packages = qualify_platform.package_set(self.fixture_root / 'npm')
-        expected = {name: public.package_contents(value[2]) for name, value in packages.items()}
+        expected = {'twigsmith': public.package_contents(packages['twigsmith'][2])}
         common = self.root / 'node_modules/twigsmith'
-        host = self.root / 'node_modules' / npm_platform_package.PACKAGES[self.target]
-        for directory, name in ((common, 'twigsmith'), (host, npm_platform_package.PACKAGES[self.target])):
-            directory.mkdir(parents=True)
-            for member, data in expected[name].items():
-                (directory / member.removeprefix('package/')).write_bytes(data)
+        common.mkdir(parents=True)
+        for member, data in expected['twigsmith'].items():
+            (common / member.removeprefix('package/')).write_bytes(data)
+        native = json.loads(expected['twigsmith']['package/native.json'])['targets'][self.target]
+        directory = self.target + '-' + self.item['payload_sha256']
+        payload = common / '.native' / directory / native['payload']
+        payload.parent.mkdir(parents=True)
+        # The shared fixture uses synthetic native archive bytes, never host qualification.
+        archive = self.fixture_root / 'native' / self.item['archive']
+        with tarfile.open(archive) as tar:
+            payload.write_bytes(tar.extractfile(next(m for m in tar.getmembers()
+                if m.name.endswith('/' + native['payload']))).read())
+        payload.chmod(0o755)
+        state = common / '.native/installed.json'
+        state.write_text(json.dumps({'target': self.target, 'directory': directory}))
+        return common, payload, expected
+
+    def test_actual_installed_tree_binds_immutable_package_state_target_and_native_hash(self):
+        common, payload, expected = self.installed_fixture()
         node = Path(shutil.which('node')).resolve()
-        payload = public.installed_identity(common, node, expected, self.record, self.item,
-                                            os.environ, self.root)
-        self.assertEqual(qualify_platform.digest(payload), self.item['payload_sha256'])
+        self.assertEqual(public.installed_identity(common, node, expected, self.record, self.item,
+                                                  os.environ, self.root), payload)
         original = payload.read_bytes()
         payload.write_bytes(original + b'changed')
-        with self.assertRaisesRegex(ValueError, 'tarball bytes'):
+        with self.assertRaisesRegex(ValueError, 'payload/tree'):
             public.installed_identity(common, node, expected, self.record, self.item, os.environ, self.root)
         payload.write_bytes(original)
         (common / 'injected.cjs').write_text('extra')
         with self.assertRaisesRegex(ValueError, 'tarball bytes'):
             public.installed_identity(common, node, expected, self.record, self.item, os.environ, self.root)
+
+    def test_generated_state_rejects_extra_payloads_wrong_target_stale_hash_and_links(self):
+        common, payload, expected = self.installed_fixture()
+        node = Path(shutil.which('node')).resolve()
+        state = common / '.native/installed.json'
+        original = state.read_bytes()
+        for changed in ({'target': self.target, 'directory': '../escape'},
+                        {'target': 'unsupported', 'directory': payload.parent.name},
+                        {'target': self.target, 'directory': payload.parent.name, 'extra': True}):
+            state.write_text(json.dumps(changed))
+            with self.subTest(state=changed), self.assertRaises(ValueError):
+                public.installed_identity(common, node, expected, self.record, self.item, os.environ, self.root)
+        state.write_bytes(original)
+        extra = payload.with_name('unexpected')
+        extra.write_bytes(b'extra')
+        with self.assertRaisesRegex(ValueError, 'payload/tree'):
+            public.installed_identity(common, node, expected, self.record, self.item, os.environ, self.root)
+        extra.unlink()
+        if os.name != 'nt':
+            saved = payload.read_bytes()
+            payload.unlink()
+            payload.symlink_to(state)
+            with self.assertRaisesRegex(ValueError, 'link|member'):
+                public.installed_identity(common, node, expected, self.record, self.item, os.environ, self.root)
+            payload.unlink()
+            payload.write_bytes(saved)
+
+    def test_refusal_probe_fails_any_network_attempt_even_when_launcher_refuses(self):
+        common, payload, expected = self.installed_fixture()
+        (common / 'launcher.cjs').write_text("try { require('node:https').request('https://github.com/'); } "
+            "catch(error) {} console.error('run twigsmith-install'); process.exit(1);\n")
+        node = Path(shutil.which('node')).resolve()
+        with self.assertRaisesRegex(ValueError, 'refusal probes failed'):
+            public.npm_failures(common, node, self.target, self.record['version'], self.root, os.environ)
+        for name in ('missing-state', 'corrupt-state', 'corrupt-payload'):
+            self.assertIn('TWIGSMITH_NETWORK_ATTEMPT', (self.root / (name + '.log')).read_text())
+
+    def test_loopback_repack_is_nonpublishable_and_preserves_reviewed_code_and_scripts(self):
+        manifest, production = qualify_platform.package_set(self.fixture_root / 'npm')
+        import npm_single_package
+        original = npm_single_package.pack
+        def corrupt(directory, staged, metadata, files, env):
+            changed = dict(files, **{'installer.cjs': b'unreviewed installer'})
+            return original(directory, staged, metadata, changed, env)
+        env = public.anonymous_environment(self.root / 'host')
+        with patch.object(npm_single_package, 'pack', side_effect=corrupt):
+            with self.assertRaisesRegex(ValueError, 'reviewed installer/launcher'):
+                qualify_platform.fixture_package(production, 'http://127.0.0.1:1234/', self.root / 'packed', env)
+        # Approval of a tarball alone does not permit fixture metadata or a changed
+        # target table to masquerade as the reviewed production table.
+        manifest['native'][0]['payload_sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'production npm native metadata'):
+            qualify_platform.verified_native_resources(manifest, production, self.fixture_root / 'native')
+
+    def test_native_fixture_reobserves_archive_bytes_before_transport(self):
+        manifest, production = qualify_platform.package_set(self.fixture_root / 'npm')
+        native = self.root / 'native'
+        shutil.copytree(self.fixture_root / 'native', native)
+        path = native / manifest['native'][0]['archive']
+        path.write_bytes(path.read_bytes() + b'changed')
+        with self.assertRaisesRegex(ValueError, 'native fixture archive'):
+            qualify_platform.verified_native_resources(manifest, production, native)
 
     def test_npx_rejects_global_alias_other_cache_and_wrong_alias(self):
         cache = self.root / 'cache'
@@ -332,60 +407,125 @@ process.stdout.write(JSON.stringify(captured));
         product.assert_not_called()
         bridge.assert_not_called()
 
-    @unittest.skipIf(os.name == 'nt', 'local synthetic Unix script payload; Windows uses hosted native evidence')
-    def test_real_npm_global_and_separate_npx_caches_select_exact_payload_and_run_aliases(self):
-        # Real npm/npx/Node transport with an explicitly synthetic shell payload.
-        # Child fixture execution is stubbed: this is packaging-boundary evidence,
-        # never product real-Git qualification or a public-registry observation.
-        manifest, packages = qualify_platform.package_set(self.fixture_root / 'npm')
-        packages = deepcopy(packages)
-        name = npm_platform_package.PACKAGES[self.target]
-        item, metadata, tarball = packages[name]
-        payload = f"#!/bin/sh\nprintf 'twigsmith {self.record['version']}\\n'\n".encode()
-        payload_hash = native_package.digest(payload)
-        self.item['payload_sha256'] = payload_hash
-        metadata['twigsmithNative']['sha256'] = payload_hash
-        contents = public.package_contents(tarball)
-        contents['package/twigsmith'] = payload
-        contents['package/package.json'] = json.dumps(metadata).encode()
-        replaced = self.root / tarball.name
-        with tarfile.open(replaced, 'w:gz') as archive:
-            for member, data in contents.items():
-                info = tarfile.TarInfo(member)
-                info.size = len(data)
-                info.mode = 0o755 if member == 'package/twigsmith' else 0o644
-                archive.addfile(info, io.BytesIO(data))
-        item['sha256'] = qualify_platform.digest(replaced)
-        packages[name] = (item, metadata, replaced)
-        next(row for row in self.record['npm']['packages'] if row['name'] == name)['sha256'] = item['sha256']
-        expected = {selected: public.package_contents(row[2]) for selected, row in packages.items()}
-        harness = self.root / 'harness'
-        harness.mkdir()
-        bridge = harness / 'bridge'
-        bridge.write_text('#!/bin/sh\nexec "$TWIGSMITH_NPM_SHIM_DIR/$(basename "$0")" "$@"\n')
-        bridge.chmod(0o755)
-        prepared = {'executables': {'native_npm_fixture': {'path': 'bridge'}}}
+    @unittest.skipIf(os.name == 'nt', 'synthetic shell payload is Unix only; Windows requires hosted native row')
+    def test_real_npm12_and_npm11_global_policy_and_cold_npx_blocked_repair(self):
+        import test_npm_single_package as fixtures
+        # Explicit synthetic shell fixture: transport, policy and repair behavior
+        # only; these processes do not establish product/native real-Git acceptance.
+        fixture = fixtures.SinglePackageTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        payload = ("#!/bin/sh\nprintf 'twigsmith " + fixtures.VERSION + "\\n'\n").encode()
+        tarball, native = fixture.fixture(payload=payload)
+        files = public.package_contents(tarball)
+        metadata = json.loads(files['package/package.json'])
+        item = {'name': 'twigsmith', 'version': fixtures.VERSION, 'filename': tarball.name,
+                'sha256': qualify_platform.digest(tarball)}
+        available = [Path(shutil.which('npm'))]
+        if fixtures.NPM12.is_file():
+            available.append(fixtures.NPM12)
+        packages = {'twigsmith': (item, metadata, tarball)}
+        with qualify_platform.local_registry(packages) as (registry, requests):
+            for index, npm in enumerate(available):
+                with self.subTest(npm=str(npm)):
+                    root = self.root / str(index)
+                    root.mkdir()
+                    env = public.anonymous_environment(root / 'host')
+                    env['npm_config_registry'] = registry
+                    node = qualify_platform.selected_npm_node(env)
+                    args = SimpleNamespace(npm=npm)
+                    command = qualify_platform.npm_invocation(args)
+                    version = subprocess.check_output(command + ['--version'], env=env, text=True).strip()
+                    default = root / 'default-policy'
+                    default.mkdir()
+                    before = len(fixture.requests)
+                    public.npm_install(command + ['install', '--prefix', str(default), '--no-audit', '--no-fund', str(tarball)],
+                                       root / 'default.log', env, default)
+                    default_common = default / 'node_modules/twigsmith'
+                    if int(version.split('.')[0]) >= 12:
+                        self.assertEqual(len(fixture.requests), before)
+                        self.assertFalse((default_common / '.native').exists())
+                        result = subprocess.run([str(node), str(default_common / 'launcher.cjs'), '--version'],
+                                                env=env, capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('twigsmith-install', result.stderr)
+                        self.assertEqual(len(fixture.requests), before)
+                    else:
+                        qualify_platform.installed_payload(default_common, files, fixtures.TARGET,
+                                                           native['targets'][fixtures.TARGET]['payload_sha256'])
+                    prefix = root / 'global'
+                    flags = qualify_platform.script_policy(version, str(tarball))
+                    public.npm_install(command + ['install', '--global', '--prefix', str(prefix), *flags,
+                                                 '--no-audit', '--no-fund', str(tarball)],
+                                       root / 'global.log', env, root)
+                    common = prefix / 'lib/node_modules/twigsmith'
+                    qualify_platform.installed_payload(common, files, fixtures.TARGET,
+                                                        native['targets'][fixtures.TARGET]['payload_sha256'])
+                    public.version_probe([str(prefix / 'bin/tgi'), '--version'], fixtures.VERSION,
+                                         root / 'version.log', env, root)
+                    result = public.npx_blocked_repair(args, fixtures.VERSION, {'twigsmith': files}, fixtures.TARGET,
+                        native['targets'][fixtures.TARGET]['payload_sha256'], node, root, root, env)
+                    self.assertTrue(result['passed'])
+                    self.assertTrue(result['cold_cache'])
+                    local = root / 'local'
+                    local.mkdir()
+                    local_flags = qualify_platform.script_policy(version, 'twigsmith', local)
+                    public.npm_install(command + ['install', '--prefix', str(local), *local_flags,
+                                                 '--no-audit', '--no-fund', 'twigsmith@' + fixtures.VERSION],
+                                       root / 'local.log', env, local)
+                    qualify_platform.installed_payload(local / 'node_modules/twigsmith', files, fixtures.TARGET,
+                                                        native['targets'][fixtures.TARGET]['payload_sha256'])
+                    with patch.object(public, 'REGISTRY', registry):
+                        self.assertTrue(public.blocked_repair({'version': fixtures.VERSION},
+                            {'target': fixtures.TARGET, 'payload_sha256': native['targets'][fixtures.TARGET]['payload_sha256']},
+                            {'twigsmith': files}, node, args, root, root, env)['passed'])
+                    for alias in ('twigsmith', 'tgi'):
+                        npx_env = dict(env, npm_config_cache=str(root / ('approved-cache-' + alias)))
+                        observation = root / ('approved-' + alias + '.json')
+                        npx = qualify_platform.npm_invocation(args, npx=True)
+                        acquire = npx + ['--yes', *qualify_platform.script_policy(version, 'twigsmith'),
+                            '--package=twigsmith@' + fixtures.VERSION, '--', str(node), '-e', public.NPX_OBSERVER,
+                            alias, str(observation)]
+                        public.npm_install(acquire, root / (alias + '-acquire.log'), npx_env, root)
+                        cached, _ = public.npx_common(Path(npx_env['npm_config_cache']), observation, alias)
+                        qualify_platform.installed_payload(cached, files, fixtures.TARGET,
+                                                           native['targets'][fixtures.TARGET]['payload_sha256'])
+                        shim = json.loads(observation.read_text())['shim']
+                        public.version_probe(npx + ['--offline', *acquire[len(npx):], 'execute', shim],
+                            fixtures.VERSION, root / (alias + '-offline-version.log'),
+                            dict(npx_env, npm_config_offline='true'), root)
+
+    @unittest.skipIf(os.name == 'nt', 'real Unix/npm transport; Windows uses hosted native evidence')
+    def test_real_npm_global_local_and_independent_npx_verify_before_execution(self):
+        # Real npm install/npx/installer acquisition with shared synthetic native
+        # archives. Execution boundary is deliberately stopped after byte checks:
+        # these are synthetic fixture bytes and must never count as real-Git proof.
+        manifest, production = qualify_platform.package_set(self.fixture_root / 'npm')
+        resources = qualify_platform.verified_native_resources(manifest, production, self.fixture_root / 'native')
+        packages = {}
         evidence = self.root / 'evidence'
         evidence.mkdir()
         work = self.root / 'work'
         work.mkdir()
-        def synthetic_children(artifact, harness, evidence, report, **kwargs):
-            report.update(passed=True, tests=[{'suite': suite, 'name': case, 'passed': True, 'exit': 0}
-                for suite, cases in kwargs['selected_cases'].items() for case in cases])
-            return True
-        with qualify_platform.local_registry(packages) as (registry, requests), \
-             patch.object(public, 'REGISTRY', registry), \
-             patch.object(qualify_platform, 'run_fixtures', side_effect=synthetic_children):
+        with qualify_platform.local_registry(packages, resources) as (registry, requests):
             env = public.anonymous_environment(self.root / 'host')
-            with public.isolated_environment(env):
-                reports = {kind: public.npm_check(kind, self.record, self.item, harness, prepared, evidence,
-                             work, env, expected) for kind in ('npm_global', 'npx_twigsmith', 'npx_tgi')}
-        self.assertTrue(all(report['passed'] for report in reports.values()))
-        self.assertEqual(requests.count('tarballs/' + tarball.name), 3)
-        for alias in ('twigsmith', 'tgi'):
-            detail = json.loads((evidence / ('npx_' + alias) / 'qualification.json').read_text())
-            self.assertIn('npx_' + alias, detail['selected_shim']['shim'])
-            self.assertEqual(detail['payload_sha256'], payload_hash)
+            packages['twigsmith'] = qualify_platform.fixture_package(production, registry, self.root / 'packed', env)
+            expected = {'twigsmith': public.package_contents(packages['twigsmith'][2])}
+            real_identity = public.installed_identity
+            def inspect(*args, **kwargs):
+                result = real_identity(*args, **kwargs)
+                self.assertEqual(qualify_platform.digest(result), self.item['payload_sha256'])
+                raise RuntimeError('verified synthetic bytes; execution intentionally stopped')
+            with patch.object(public, 'REGISTRY', registry), public.isolated_environment(env), \
+                 patch.object(public, 'installed_identity', side_effect=inspect), \
+                 patch.object(public, 'version_probe') as execution:
+                for kind in ('npm_local', 'npm_global', 'npx_twigsmith', 'npx_tgi'):
+                    with self.subTest(kind=kind), self.assertRaisesRegex(RuntimeError, 'verified synthetic bytes'):
+                        public.npm_check(kind, self.record, self.item, self.root, {}, evidence, work, env, expected)
+                execution.assert_not_called()
+            self.assertEqual(requests.count('native/' + self.item['archive']), 4)
+            self.assertEqual(requests.count('tarballs/' + packages['twigsmith'][2].name), 4)
+
 
 
 if __name__ == '__main__':

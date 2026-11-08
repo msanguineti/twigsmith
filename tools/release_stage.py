@@ -53,10 +53,10 @@ def native_identity(value):
 
 
 def inspect_request(mode, request, fetch=api, *, publisher=None):
-    if mode == 'publish' and (request.get('approval', {}).get('schema') == 2
+    if mode == 'publish' and (request.get('approval', {}).get('schema') in (2, 3)
             or request.get('approval', {}).get('topology') == release_set.TOPOLOGY
             or isinstance(request.get('approval', {}).get('native'), list)):
-        raise ValueError('full-set publisher is not implemented; integrated sets are offline-only')
+        raise ValueError('legacy publisher refuses integrated release sets')
     required = {'publisher_revision', 'artifact_id', 'native'} if mode == 'prepare' else {
         'publisher_revision', 'artifact_id', 'candidate_run', 'approval'}
     if set(request) != required or not re.fullmatch(r'[a-f0-9]{40}', request['publisher_revision']):
@@ -201,9 +201,9 @@ def validate_bundle(bundle, request):
     from release_publish import approved_inputs
     bundle = Path(bundle)
     approval = request['approval']
-    if (approval.get('schema') == 2 or approval.get('topology') == release_set.TOPOLOGY
+    if (approval.get('schema') in (2, 3) or approval.get('topology') == release_set.TOPOLOGY
             or isinstance(approval.get('native'), list)):
-        raise ValueError('full-set publisher is not implemented; integrated sets are offline-only')
+        raise ValueError('legacy publisher refuses integrated release sets')
     native_identity(approval['native'])
     if approval['npm']['packaging']['source']['dirty'] is not False:
         raise ValueError('published package must have clean packaging provenance')
