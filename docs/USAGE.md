@@ -281,8 +281,9 @@ or `tgi` on PATH. Restart the shell after upgrading the executable. Moving it
 works when PATH resolves its new location; a missing executable yields no
 completion. Run `tgi completion --help` for installed setup and recovery details.
 Native shell checks separately exercise session adapters, Tab insertion and
-command launch. Their results cover the observed shell/terminal versions; they
-do not extend the published Linux distribution baseline to Windows or macOS.
+command launch. Their results cover the observed shell/terminal versions. See
+[installation requirements](#native-archives-and-npm-installation) for the selected
+platforms and qualification limits.
 
 ## A working session
 
