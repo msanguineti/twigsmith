@@ -1,4 +1,4 @@
-name: Rust foundation
+name: CI
 
 on:
   pull_request:
