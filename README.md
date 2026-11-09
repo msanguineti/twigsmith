@@ -9,39 +9,43 @@ A Git workflow CLI for starting workstreams, saving progress, and delivering
 finished work, releases, and hotfixes. Invoke it as `twigsmith` or the equivalent
 shorthand `tgi`; both share settings and recovery state.
 
-Twigsmith targets Linux x86_64 with glibc 2.35 or newer and requires Git 2.45 or
-newer. It provides `start`, `save`, `finish`, `status`, `config`, and `completion`.
-Choose a published version from the [npm package page](https://www.npmjs.com/package/twigsmith),
-then replace `VERSION` with that version to install it:
+[![CI](https://github.com/msanguineti/twigsmith/actions/workflows/foundation.yml/badge.svg?event=pull_request)](https://github.com/msanguineti/twigsmith/actions/workflows/foundation.yml)
+[![npm version](https://img.shields.io/npm/v/twigsmith?label=npm)](https://www.npmjs.com/package/twigsmith)
+[![Stable release](https://img.shields.io/github/v/release/msanguineti/twigsmith?label=release)](https://github.com/msanguineti/twigsmith/releases/latest)
+[![MIT license](https://img.shields.io/github/license/msanguineti/twigsmith)](LICENSE)
+
+Twigsmith 1.0 supports Linux x86_64 GNU, Windows x64, and macOS ARM64 and Intel.
+Git 2.45 or newer must be on PATH. Install the stable npm package with Node.js LTS
+and npm:
 
 ```sh
-npm install --global twigsmith@VERSION
+npm install --global twigsmith@1.0.0
 tgi --version
 ```
 
 To run it without a global installation:
 
 ```sh
-npx --yes --package=twigsmith@VERSION tgi --help
+npx --yes --package=twigsmith@1.0.0 tgi --help
 ```
 
-For npm/npx, use Node.js LTS and npm. Native execution needs neither. Native archives and their checksums are available from
-[GitHub releases](https://github.com/msanguineti/twigsmith/releases).
-See the [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archive-candidates) for verification and
-runtime prerequisites, or build from source using the [development guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md).
+One npm installer detects your host, downloads its matching native executable from
+the same version's GitHub release, and verifies the archive and executable hashes.
+If npm blocks installation scripts, run `twigsmith-install` after installation.
+The installer also accepts explicit target selection; application commands use the
+installed executable without downloading. See [installation and repair](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archives-and-npm-installation).
 
-Cross-platform candidates use one npm installer package for Linux x64 GNU, Windows
-x64 and macOS ARM64/Intel. With installation scripts approved, it downloads only
-the matching executable from that version's GitHub release and verifies its hashes.
-Scripts blocked by npm policy require an explicit `twigsmith-install` repair;
-ordinary application commands never download a missing executable. These candidates
-are separate from the published Linux-only `0.1.0`. See
-[candidate installation](docs/USAGE.md#native-archives-and-npm-installation) for
-target selection, script policy and runtime requirements.
+[Native archives and checksums](https://github.com/msanguineti/twigsmith/releases/latest)
+need neither Node.js nor Rust. Linux needs glibc 2.35+; Windows needs the Microsoft
+x64 v14 Visual C++ Redistributable. Windows 11 and macOS Sequoia 15 are the selected
+support targets; Windows qualification uses Server 2025 CI. Windows/macOS archives
+are unsigned, and macOS archives are not notarized. The [user guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#native-archives-and-npm-installation)
+explains requirements, verification, shells and host-security limits.
+To build from source, use the [development guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md).
 
 ## Quick start
 
-Once a built executable is on PATH, run these commands from your Git checkout:
+Once either command is on PATH, run these commands from your Git checkout:
 
 ```sh
 tgi start add-user-avatars

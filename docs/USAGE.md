@@ -20,18 +20,29 @@ In this manual: [a working session](#a-working-session),
 <a id="native-archive-candidates"></a>
 ## Native archives and npm installation
 
-Twigsmith 0.1.0 is available from [GitHub releases](https://github.com/msanguineti/twigsmith/releases/tag/v0.1.0)
-and [npm](https://www.npmjs.com/package/twigsmith/v/0.1.0). The native archive contains
-`twigsmith`, `tgi`, the MIT license and extraction guidance. Both commands use the
-same settings and recovery state.
+Twigsmith 1.0.0 provides native archives for four targets:
 
-Download the archive, manifest and checksums from the same release into one directory.
-Verify the checksums before extracting, then add the extracted directory to PATH:
+| Target | Archive suffix | Runtime requirements |
+| --- | --- | --- |
+| Linux x86_64 GNU | `x86_64-unknown-linux-gnu.tar.gz` | glibc 2.35+ |
+| Windows x64 | `x86_64-pc-windows-msvc.zip` | Maintained Windows 11; Microsoft x64 v14 Visual C++ Redistributable |
+| macOS ARM64 | `aarch64-apple-darwin.tar.gz` | macOS Sequoia 15 |
+| macOS Intel | `x86_64-apple-darwin.tar.gz` | macOS Sequoia 15 |
+
+All targets need Git 2.45 or newer on PATH. Each archive contains `twigsmith` and
+`tgi` (with `.exe` on Windows), the MIT license and extraction guidance. Both
+commands use the same settings and recovery state. Native execution needs neither
+Rust nor Node.js.
+
+Download the archive, manifest and checksum sidecar from the
+[same release](https://github.com/msanguineti/twigsmith/releases/tag/v1.0.0).
+Verify the archive checksum before extracting, then add its directory to PATH.
+For Linux:
 
 ```sh
-sha256sum --check twigsmith-0.1.0-x86_64-unknown-linux-gnu.sha256
-tar -xzf twigsmith-0.1.0-x86_64-unknown-linux-gnu.tar.gz
-export PATH="$PWD/twigsmith-0.1.0-x86_64-unknown-linux-gnu:$PATH"
+sha256sum --check twigsmith-1.0.0-x86_64-unknown-linux-gnu.sha256
+tar -xzf twigsmith-1.0.0-x86_64-unknown-linux-gnu.tar.gz
+export PATH="$PWD/twigsmith-1.0.0-x86_64-unknown-linux-gnu:$PATH"
 twigsmith --version
 tgi --help
 ```
@@ -40,42 +51,27 @@ With a source checkout, `./dev verify-native ARCHIVE --extract-to DESTINATION`
 also verifies archive members and extracts into a new directory. Checksums detect
 mismatches; they do not independently authenticate the publisher.
 
-The supported distribution is Linux x86_64 GNU with glibc 2.35 or newer and Git 2.45
-or newer on PATH. Configured checks need the executables named in their command
-arrays, including POSIX `sh` when selected. Editors, signing/transport helpers and
-project-check tools are needed for the features
-that use them. Optional completion shells have their own requirements below. Native
-execution needs neither Rust nor Node.js.
-
 For npm installation or npx, use Node.js LTS and npm:
 
 ```sh
-npm install --global twigsmith@0.1.0
-npx --yes --package=twigsmith@0.1.0 twigsmith --version
-npx --yes --package=twigsmith@0.1.0 tgi --help
+npm install --global twigsmith@1.0.0
+npx --yes --package=twigsmith@1.0.0 twigsmith --version
+npx --yes --package=twigsmith@1.0.0 tgi --help
 ```
 
-The npm package has the same Linux and glibc requirements as the native archive.
-Its libc metadata identifies the family, not the minimum version. For a prerelease,
-supply its exact version; npm's default `latest` tag selects the advertised stable
-version. A local candidate can be installed with `npm install /path/to/twigsmith.tgz`
-or `npm install --global /path/to/twigsmith.tgz`.
+The single [npm package](https://www.npmjs.com/package/twigsmith) contains installer
+and launcher code plus exact archive and executable hashes for all four targets.
+It contains no native executable or platform npm dependencies. When npm permits
+its `postinstall` script, installation detects the host and downloads only its
+matching archive from that version's GitHub release. It checks the archive before
+extracting and the executable before making it ready. Both `twigsmith` and `tgi`
+then launch that executable without downloading.
+
+The native runtime requirements also apply to npm/npx. For a prerelease, supply
+its exact version; npm's default `latest` tag selects the stable version.
 If Git reports `unknown option: --no-lazy-fetch`, upgrade Git to 2.45 or newer.
 The [developer packaging guide](DEVELOPMENT.md#npm-candidate-packaging) covers
-candidate creation, provenance and qualification.
-
-Cross-platform candidates use one npm package, `twigsmith`, containing installer
-and launcher code plus the exact archive and executable hashes for Linux x64 GNU,
-Windows x64 and macOS ARM64/Intel. It contains no native executable or platform npm
-dependencies. When npm permits the `postinstall` script, installation detects the
-host and downloads only its matching archive from that version's GitHub release.
-It checks the archive before extracting and checks the executable before making it
-ready. Both `twigsmith` and `tgi` then launch that executable without downloading.
-These candidates are separate from the published Linux-only `0.1.0`; use an exact
-candidate version only after its release assets and npm version are published.
-See the
-[platform candidate guide](DEVELOPMENT.md#platform-selected-npm-candidates) for
-local preparation and qualification.
+local preparation of the single installer, provenance and qualification.
 
 Use a maintained Node.js LTS patch release supported by your npm client. The
 installer requires Node 22.21+ on the 22 line, or Node 24.5+; the qualification
@@ -115,13 +111,12 @@ after correcting network or file permissions. It replaces a damaged executable
 only with newly verified bytes; reinstall the exact npm package if its installer files
 have been altered. Removing the npm package or cache removes its downloaded files.
 When npx installation scripts are blocked, its launch reports the missing payload.
-For a published installer candidate, replace `VERSION` with the same exact version
-in each command. After the initial package acquisition, repair and run it from the
-same npx cache:
+Use the same exact version in each command. After the initial package acquisition,
+repair and run it from the same npx cache:
 
 ```sh
-npx --yes --ignore-scripts --package=twigsmith@VERSION -- twigsmith-install
-npx --yes --offline --package=twigsmith@VERSION -- tgi --version
+npx --yes --ignore-scripts --package=twigsmith@1.0.0 -- twigsmith-install
+npx --yes --offline --package=twigsmith@1.0.0 -- tgi --version
 ```
 
 Installer downloads require HTTPS access to GitHub releases and GitHub's asset
@@ -134,54 +129,50 @@ does not repair an incomplete npm installation over the network. Embedded hashes
 bind the native download to the npm package, not to an independent publisher
 authentication system.
 
-New cross-platform candidates target maintained Windows 11 x64 releases and macOS
-Sequoia 15 on ARM64 and Intel, with Git 2.45 or newer. Windows candidates use the
-dynamic MSVC runtime and require Microsoft's [official x64 v14 Visual C++
-Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)
-at least as recent as the candidate's build tools. Linux candidates retain the
-glibc 2.35 baseline. Windows qualification uses Server 2025 CI; this records a
-server test environment, not an observed Windows 11 desktop result.
+Windows uses the dynamic MSVC runtime and requires Microsoft's
+[official x64 v14 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/)
+at least as recent as the release build tools. Windows qualification uses Server
+2025 CI; it does not establish an observed Windows 11 desktop result.
 
 The selected shell routes are Bash, Zsh and Fish launch/completion on Linux/macOS;
 PowerShell 7.6 launch/completion on Windows; and cmd/Git Bash launch on Windows.
-Editors and checks need their configured executables. Native execution needs
-neither Node nor Rust; the npm route requires Node.js LTS and npm.
+Editors, signing/transport helpers and configured checks need the executables they
+invoke, including POSIX `sh` when selected. Optional completion shells have their
+own requirements below.
 
 Windows and macOS archives are unsigned, and macOS archives are not notarized.
-Download-security behavior depends on the download route and host policy. Consult
-the exact candidate's qualification evidence for observed runtime, quarantine and
-policy behavior. Build/deployment metadata alone establishes no such result. The
-published Linux requirements above continue to describe the existing release.
+Download-security behavior depends on the route and host policy. Hosted
+qualification records browser downloads, extraction and terminal launch on Server
+2025 and macOS 15; those observations do not guarantee SmartScreen, Defender or
+Gatekeeper approval on another desktop or a Mac with different SIP policy.
 
-For an unpublished native candidate, use its approved archive and checksum; replace
-`VERSION` below with that candidate's exact version. Install the Windows runtime
-prerequisite above first. In PowerShell 7.6, extract the downloaded native ZIP and
-add its directory to the current session:
+In PowerShell 7.6, compare the downloaded ZIP's hash with its release checksum
+sidecar, then extract and add its directory to the current session:
 
 ```powershell
-Expand-Archive -LiteralPath ./twigsmith-VERSION-x86_64-pc-windows-msvc.zip -DestinationPath .
-$env:PATH = (Join-Path $PWD 'twigsmith-VERSION-x86_64-pc-windows-msvc') + ';' + $env:PATH
+Get-FileHash -Algorithm SHA256 ./twigsmith-1.0.0-x86_64-pc-windows-msvc.zip
+Get-Content ./twigsmith-1.0.0-x86_64-pc-windows-msvc.sha256
+Expand-Archive -LiteralPath ./twigsmith-1.0.0-x86_64-pc-windows-msvc.zip -DestinationPath .
+$env:PATH = (Join-Path $PWD 'twigsmith-1.0.0-x86_64-pc-windows-msvc') + ';' + $env:PATH
 twigsmith --version
 tgi --version
 ```
 
-On macOS, open the downloaded native `.tar.gz` with Archive Utility. Choose the
-ARM64 archive (`aarch64-apple-darwin`) or Intel archive (`x86_64-apple-darwin`) for
-your Mac. In Bash or Zsh, add the extracted directory to the current session,
-using its actual location and architecture:
+On macOS, choose the ARM64 archive (`aarch64-apple-darwin`) or Intel archive
+(`x86_64-apple-darwin`) for your Mac. Verify its checksum, then open the `.tar.gz`
+with Archive Utility or extract it with `tar`. In Bash or Zsh, for ARM64:
 
 ```sh
-export PATH="$HOME/Downloads/twigsmith-VERSION-aarch64-apple-darwin:$PATH"
+cd "$HOME/Downloads"
+shasum -a 256 --check twigsmith-1.0.0-aarch64-apple-darwin.sha256
+tar -xzf twigsmith-1.0.0-aarch64-apple-darwin.tar.gz
+export PATH="$PWD/twigsmith-1.0.0-aarch64-apple-darwin:$PATH"
 twigsmith --version
 tgi --version
 ```
 
-These are terminal launch routes. Extraction can preserve or omit download-origin
-metadata depending on the tool and host; successful terminal launch does not
-establish an Explorer/SmartScreen approval or a warning-free macOS installation.
-If host policy blocks execution, follow your organization's approved procedure.
-The qualification route uses browser-downloaded Actions artifacts with an extra
-outer ZIP; direct published release downloads require their own checks.
+Extraction can preserve or omit download-origin metadata depending on the tool and
+host. If host policy blocks execution, follow your organization's approved procedure.
 
 ## Transition from the earlier Rust identity
 
