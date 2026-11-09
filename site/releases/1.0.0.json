@@ -1,0 +1,521 @@
+{
+  "schema": 3,
+  "topology": "single-package-installer",
+  "repository": "msanguineti/twigsmith",
+  "version": "1.0.0",
+  "tag": "v1.0.0",
+  "availability": "unpublished",
+  "identity": {
+    "schema": 3,
+    "topology": "single-package-installer",
+    "repository": "msanguineti/twigsmith",
+    "version": "1.0.0",
+    "tag": "v1.0.0",
+    "requirements": {
+      "aarch64-apple-darwin": {
+        "native": {
+          "platform": {
+            "arch": "aarch64",
+            "libc": null,
+            "os": "macos"
+          },
+          "requirements": {
+            "shell": "Bash, Zsh or Fish for launch and completion; Git-configured shell for editors and checks",
+            "system": "Selected support target: macOS Sequoia 15 on ARM64 with Git 2.45+"
+          }
+        },
+        "npm": {
+          "coverage": [
+            {
+              "arch": "arm64",
+              "libc": null,
+              "os": "darwin"
+            }
+          ],
+          "requirements": "Node.js LTS and npm; selected support target: macOS Sequoia 15 on ARM64 with Git 2.45+"
+        },
+        "schema": 1
+      },
+      "x86_64-apple-darwin": {
+        "native": {
+          "platform": {
+            "arch": "x86_64",
+            "libc": null,
+            "os": "macos"
+          },
+          "requirements": {
+            "shell": "Bash, Zsh or Fish for launch and completion; Git-configured shell for editors and checks",
+            "system": "Selected support target: macOS Sequoia 15 on Intel x64 with Git 2.45+"
+          }
+        },
+        "npm": {
+          "coverage": [
+            {
+              "arch": "x64",
+              "libc": null,
+              "os": "darwin"
+            }
+          ],
+          "requirements": "Node.js LTS and npm; selected support target: macOS Sequoia 15 on Intel x64 with Git 2.45+"
+        },
+        "schema": 1
+      },
+      "x86_64-pc-windows-msvc": {
+        "native": {
+          "platform": {
+            "arch": "x86_64",
+            "libc": null,
+            "os": "windows"
+          },
+          "requirements": {
+            "runtime": "Microsoft official x64 v14 Visual C++ Redistributable at least as recent as the build tools, for the dynamic MSVC runtime",
+            "shell": "PowerShell 7.6 for launch and completion; cmd and Git Bash for launch; Git-configured shell for editors and checks",
+            "system": "Selected support target: maintained Windows 11 x64 releases with Git 2.45+"
+          }
+        },
+        "npm": {
+          "coverage": [
+            {
+              "arch": "x64",
+              "libc": null,
+              "os": "win32"
+            }
+          ],
+          "requirements": "Node.js LTS and npm; selected support target: maintained Windows 11 x64 releases with Git 2.45+ and Microsoft official x64 v14 Visual C++ Redistributable at least as recent as the build tools"
+        },
+        "schema": 1
+      },
+      "x86_64-unknown-linux-gnu": {
+        "native": {
+          "platform": {
+            "arch": "x86_64",
+            "libc": "glibc",
+            "os": "linux"
+          },
+          "requirements": {
+            "shell": "Bash, Zsh or Fish for launch and completion; POSIX sh for editors and checks",
+            "system": "Linux x86_64 with glibc 2.35+ and Git 2.45+"
+          }
+        },
+        "npm": {
+          "coverage": [
+            {
+              "arch": "x64",
+              "libc": "glibc",
+              "os": "linux"
+            }
+          ],
+          "requirements": "Node.js LTS and npm; Linux x86_64 with glibc 2.35+ and Git 2.45+"
+        },
+        "schema": 1
+      }
+    },
+    "native": [
+      {
+        "target": "aarch64-apple-darwin",
+        "archive": "twigsmith-1.0.0-aarch64-apple-darwin.tar.gz",
+        "sha256": "aaf52a8e757f0390338e19699c47953338339a8e4e31aad464b79c2ecb0cf49a",
+        "manifest_sha256": "51270fb51a0ade244c6aaac47cca62099891cd5d4febc23923bfa5a99e8314cd",
+        "payload_sha256": "ea8b246af0626179f1b81385772b4493e773a2a4b39730345a40ec5165a607f3",
+        "source": {
+          "revision": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "tree": "4a3f605eaabec0bc0e0b7ab999960fa681767dad",
+          "dirty": false
+        },
+        "ci": {
+          "GITHUB_REPOSITORY": "msanguineti/twigsmith",
+          "GITHUB_RUN_ATTEMPT": "1",
+          "GITHUB_RUN_ID": "42677726677",
+          "GITHUB_SHA": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "ImageOS": "macos15",
+          "ImageVersion": "20261104.0514.1",
+          "RUNNER_ARCH": "ARM64",
+          "RUNNER_OS": "macOS"
+        },
+        "artifact": {
+          "run_id": "42677726677",
+          "run_attempt": "1",
+          "artifact_id": "13700584180",
+          "name": "platform-archive-aarch64-apple-darwin",
+          "workflow": ".github/workflows/release.yml",
+          "sha256": "18d804f6b6475d3bd9e553739cbad61717a97e17d722d74c00af16eae14e3bf9"
+        }
+      },
+      {
+        "target": "x86_64-apple-darwin",
+        "archive": "twigsmith-1.0.0-x86_64-apple-darwin.tar.gz",
+        "sha256": "77e86af4a554db3b5d910076e160b097d0856ed66ea7b77a6c76691aa8c29dd5",
+        "manifest_sha256": "5c17cddb477f6909183a56d8d1a0d31cfba0c1a4b5fbb07a537a3f50a7f0eac6",
+        "payload_sha256": "cabdd1c60d79b42efc3a0a3ad2099e50bf399ab992020c717688bb10b898fb49",
+        "source": {
+          "revision": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "tree": "4a3f605eaabec0bc0e0b7ab999960fa681767dad",
+          "dirty": false
+        },
+        "ci": {
+          "GITHUB_REPOSITORY": "msanguineti/twigsmith",
+          "GITHUB_RUN_ATTEMPT": "1",
+          "GITHUB_RUN_ID": "42677726677",
+          "GITHUB_SHA": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "ImageOS": "macos15",
+          "ImageVersion": "20260824.0482.1",
+          "RUNNER_ARCH": "X64",
+          "RUNNER_OS": "macOS"
+        },
+        "artifact": {
+          "run_id": "42677726677",
+          "run_attempt": "1",
+          "artifact_id": "13701244452",
+          "name": "platform-archive-x86_64-apple-darwin",
+          "workflow": ".github/workflows/release.yml",
+          "sha256": "f2d6770e422a8315f2f873b0fa0066859fd1c92864a3642af3a0a7efb78c1d94"
+        }
+      },
+      {
+        "target": "x86_64-pc-windows-msvc",
+        "archive": "twigsmith-1.0.0-x86_64-pc-windows-msvc.zip",
+        "sha256": "a161341d4a2fb1b163bbca8c5df076dfb5ccd297a70d7cbd0b4a6b839d580cd6",
+        "manifest_sha256": "f393d2da4b91a4e5559fc9f4c4c7f45f3dd6ad00ecb121340e0aed5eb1431612",
+        "payload_sha256": "bb9924743ad47d5737e807f8e82224dcee3e3251a812202f3d44a11921b96339",
+        "source": {
+          "revision": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "tree": "4a3f605eaabec0bc0e0b7ab999960fa681767dad",
+          "dirty": false
+        },
+        "ci": {
+          "GITHUB_REPOSITORY": "msanguineti/twigsmith",
+          "GITHUB_RUN_ATTEMPT": "1",
+          "GITHUB_RUN_ID": "42677726677",
+          "GITHUB_SHA": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "ImageOS": "win25-vs2026",
+          "ImageVersion": "20261103.298.1",
+          "RUNNER_ARCH": "X64",
+          "RUNNER_OS": "Windows"
+        },
+        "artifact": {
+          "run_id": "42677726677",
+          "run_attempt": "1",
+          "artifact_id": "13701488334",
+          "name": "platform-archive-x86_64-pc-windows-msvc",
+          "workflow": ".github/workflows/release.yml",
+          "sha256": "b382e95d9029a98db91436410525430c7d87f32de9092419878e47a4026390cb"
+        }
+      },
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "archive": "twigsmith-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "43a5b05676fac7c73cea8f73099d887fc5bc86da39f02cf84fec69fe1aeb60ae",
+        "manifest_sha256": "8303832b157577fc59e2e256604b0d4819788e35978e5cc36d4f5ed85e5a7306",
+        "payload_sha256": "288b68c2c065f748bca65e83554402c37ad57fde0468b763b862d2965bca2df9",
+        "source": {
+          "revision": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "tree": "4a3f605eaabec0bc0e0b7ab999960fa681767dad",
+          "dirty": false
+        },
+        "ci": {
+          "GITHUB_REPOSITORY": "msanguineti/twigsmith",
+          "GITHUB_RUN_ATTEMPT": "1",
+          "GITHUB_RUN_ID": "42677726677",
+          "GITHUB_SHA": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "ImageOS": "ubuntu22",
+          "ImageVersion": "20261101.347.1",
+          "RUNNER_ARCH": "X64",
+          "RUNNER_OS": "Linux"
+        },
+        "artifact": {
+          "run_id": "42677726677",
+          "run_attempt": "1",
+          "artifact_id": "13700433599",
+          "name": "platform-archive-x86_64-unknown-linux-gnu",
+          "workflow": ".github/workflows/release.yml",
+          "sha256": "7b3c282023603fa8ea41319ae65784a9cb078b13f4f8ed626025b14d58747019"
+        }
+      }
+    ],
+    "npm": {
+      "manifest_sha256": "a2df5ab079146c780cff6eba32ffdce97e24f345336861e60e72d15675ac65ea",
+      "packaging": {
+        "inputs_sha256": {
+          "LICENSE": "108d0fffa8cb38367a900214474fe500477047acca15e632fe0129dc2ad4ae44",
+          "README.md": "39957bf118234bb049567a969a7d46245153095ceb66e2dca98a9c02a93e80fd",
+          "tools/native_formats.py": "46005499afc860dacc3ae60a4c99cd21ee99c936d078405b8be882439472dc3b",
+          "tools/native_package.py": "49c85b070aecc70d32a6eff9f33f23e48f1c684e4f28426acafd579b7ddb7687",
+          "tools/npm_common.py": "668e4cc537551598ae73ef25b2b3e0eaecdb1297db8227536a8f2a26f8447fc4",
+          "tools/npm_installer.cjs": "ed829023fdadca8e092c354af60b9642c15198a4954a9ee61e4fc090653bee68",
+          "tools/npm_single_launcher.cjs": "3f0c869843d5522984ef6ca4f00f2fa3f642bff9d569335031c8930eb645ed77",
+          "tools/npm_single_package.py": "2364a290fb8e67853698674ab0a3244715e7e1352bc6b4e8b22d3cae790088a6"
+        },
+        "node": "v24.22.2",
+        "npm": "12.2.1",
+        "source": {
+          "dirty": false,
+          "revision": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+          "tree": "4a3f605eaabec0bc0e0b7ab999960fa681767dad"
+        }
+      },
+      "packages": [
+        {
+          "filename": "twigsmith-1.0.0.tgz",
+          "name": "twigsmith",
+          "sha256": "68bae88d51ccbbaec611828d1b64e28ef6020360ca1c4cf9eab4e86fdb121654",
+          "version": "1.0.0"
+        }
+      ],
+      "artifact": {
+        "run_id": "42677726677",
+        "run_attempt": "1",
+        "artifact_id": "13701419850",
+        "name": "platform-npm-set",
+        "workflow": ".github/workflows/release.yml",
+        "sha256": "4b4da79a17b266f16f9268e2c470bc309fe5ffb3bc89d7ce1aa627f04ef08249"
+      }
+    }
+  },
+  "native": [
+    {
+      "platform": {
+        "arch": "aarch64",
+        "libc": null,
+        "os": "macos"
+      },
+      "requirements": {
+        "shell": "Bash, Zsh or Fish for launch and completion; Git-configured shell for editors and checks",
+        "system": "Selected support target: macOS Sequoia 15 on ARM64 with Git 2.45+"
+      },
+      "target": "aarch64-apple-darwin",
+      "payload_sha256": "ea8b246af0626179f1b81385772b4493e773a2a4b39730345a40ec5165a607f3",
+      "assets": {
+        "archive": {
+          "name": "twigsmith-1.0.0-aarch64-apple-darwin.tar.gz",
+          "sha256": "aaf52a8e757f0390338e19699c47953338339a8e4e31aad464b79c2ecb0cf49a"
+        },
+        "manifest": {
+          "name": "twigsmith-1.0.0-aarch64-apple-darwin.manifest.json",
+          "sha256": "51270fb51a0ade244c6aaac47cca62099891cd5d4febc23923bfa5a99e8314cd"
+        },
+        "checksums": {
+          "name": "twigsmith-1.0.0-aarch64-apple-darwin.sha256",
+          "sha256": "ab77a13ba4ff773910fb6c5d8f7cfdf230f7a343577c36825cfef38ff58a1f6e"
+        }
+      },
+      "commands": [
+        "./dev verify-native \"BUNDLE/native/twigsmith-1.0.0-aarch64-apple-darwin.tar.gz\" --extract-to DESTINATION",
+        "export PATH=\"$PWD/DESTINATION/twigsmith-1.0.0-aarch64-apple-darwin:$PATH\"",
+        "twigsmith --version",
+        "tgi --help"
+      ]
+    },
+    {
+      "platform": {
+        "arch": "x86_64",
+        "libc": null,
+        "os": "macos"
+      },
+      "requirements": {
+        "shell": "Bash, Zsh or Fish for launch and completion; Git-configured shell for editors and checks",
+        "system": "Selected support target: macOS Sequoia 15 on Intel x64 with Git 2.45+"
+      },
+      "target": "x86_64-apple-darwin",
+      "payload_sha256": "cabdd1c60d79b42efc3a0a3ad2099e50bf399ab992020c717688bb10b898fb49",
+      "assets": {
+        "archive": {
+          "name": "twigsmith-1.0.0-x86_64-apple-darwin.tar.gz",
+          "sha256": "77e86af4a554db3b5d910076e160b097d0856ed66ea7b77a6c76691aa8c29dd5"
+        },
+        "manifest": {
+          "name": "twigsmith-1.0.0-x86_64-apple-darwin.manifest.json",
+          "sha256": "5c17cddb477f6909183a56d8d1a0d31cfba0c1a4b5fbb07a537a3f50a7f0eac6"
+        },
+        "checksums": {
+          "name": "twigsmith-1.0.0-x86_64-apple-darwin.sha256",
+          "sha256": "abf09fec3a7648e66ce8b139efe286d098059527dc0e1301188dd26f01869d0f"
+        }
+      },
+      "commands": [
+        "./dev verify-native \"BUNDLE/native/twigsmith-1.0.0-x86_64-apple-darwin.tar.gz\" --extract-to DESTINATION",
+        "export PATH=\"$PWD/DESTINATION/twigsmith-1.0.0-x86_64-apple-darwin:$PATH\"",
+        "twigsmith --version",
+        "tgi --help"
+      ]
+    },
+    {
+      "platform": {
+        "arch": "x86_64",
+        "libc": null,
+        "os": "windows"
+      },
+      "requirements": {
+        "runtime": "Microsoft official x64 v14 Visual C++ Redistributable at least as recent as the build tools, for the dynamic MSVC runtime",
+        "shell": "PowerShell 7.6 for launch and completion; cmd and Git Bash for launch; Git-configured shell for editors and checks",
+        "system": "Selected support target: maintained Windows 11 x64 releases with Git 2.45+"
+      },
+      "target": "x86_64-pc-windows-msvc",
+      "payload_sha256": "bb9924743ad47d5737e807f8e82224dcee3e3251a812202f3d44a11921b96339",
+      "assets": {
+        "archive": {
+          "name": "twigsmith-1.0.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "a161341d4a2fb1b163bbca8c5df076dfb5ccd297a70d7cbd0b4a6b839d580cd6"
+        },
+        "manifest": {
+          "name": "twigsmith-1.0.0-x86_64-pc-windows-msvc.manifest.json",
+          "sha256": "f393d2da4b91a4e5559fc9f4c4c7f45f3dd6ad00ecb121340e0aed5eb1431612"
+        },
+        "checksums": {
+          "name": "twigsmith-1.0.0-x86_64-pc-windows-msvc.sha256",
+          "sha256": "eac072fde894cfd0cd4af39062a02cd32574326ca767dd353904524e52819ec8"
+        }
+      },
+      "commands": [
+        "python tools/native_package.py verify \"BUNDLE\\native\\twigsmith-1.0.0-x86_64-pc-windows-msvc.zip\" --extract-to DESTINATION",
+        "$env:PATH = \"$PWD\\DESTINATION\\twigsmith-1.0.0-x86_64-pc-windows-msvc;\" + $env:PATH",
+        "twigsmith --version",
+        "tgi --help"
+      ]
+    },
+    {
+      "platform": {
+        "arch": "x86_64",
+        "libc": "glibc",
+        "os": "linux"
+      },
+      "requirements": {
+        "shell": "Bash, Zsh or Fish for launch and completion; POSIX sh for editors and checks",
+        "system": "Linux x86_64 with glibc 2.35+ and Git 2.45+"
+      },
+      "target": "x86_64-unknown-linux-gnu",
+      "payload_sha256": "288b68c2c065f748bca65e83554402c37ad57fde0468b763b862d2965bca2df9",
+      "assets": {
+        "archive": {
+          "name": "twigsmith-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "43a5b05676fac7c73cea8f73099d887fc5bc86da39f02cf84fec69fe1aeb60ae"
+        },
+        "manifest": {
+          "name": "twigsmith-1.0.0-x86_64-unknown-linux-gnu.manifest.json",
+          "sha256": "8303832b157577fc59e2e256604b0d4819788e35978e5cc36d4f5ed85e5a7306"
+        },
+        "checksums": {
+          "name": "twigsmith-1.0.0-x86_64-unknown-linux-gnu.sha256",
+          "sha256": "6dcf2d993e660e5e4c76f8622088e528d452ac8f33c2f5df72260e1ee5da60bc"
+        }
+      },
+      "commands": [
+        "./dev verify-native \"BUNDLE/native/twigsmith-1.0.0-x86_64-unknown-linux-gnu.tar.gz\" --extract-to DESTINATION",
+        "export PATH=\"$PWD/DESTINATION/twigsmith-1.0.0-x86_64-unknown-linux-gnu:$PATH\"",
+        "twigsmith --version",
+        "tgi --help"
+      ]
+    }
+  ],
+  "npm": {
+    "manifest_sha256": "a2df5ab079146c780cff6eba32ffdce97e24f345336861e60e72d15675ac65ea",
+    "packaging": {
+      "inputs_sha256": {
+        "LICENSE": "108d0fffa8cb38367a900214474fe500477047acca15e632fe0129dc2ad4ae44",
+        "README.md": "39957bf118234bb049567a969a7d46245153095ceb66e2dca98a9c02a93e80fd",
+        "tools/native_formats.py": "46005499afc860dacc3ae60a4c99cd21ee99c936d078405b8be882439472dc3b",
+        "tools/native_package.py": "49c85b070aecc70d32a6eff9f33f23e48f1c684e4f28426acafd579b7ddb7687",
+        "tools/npm_common.py": "668e4cc537551598ae73ef25b2b3e0eaecdb1297db8227536a8f2a26f8447fc4",
+        "tools/npm_installer.cjs": "ed829023fdadca8e092c354af60b9642c15198a4954a9ee61e4fc090653bee68",
+        "tools/npm_single_launcher.cjs": "3f0c869843d5522984ef6ca4f00f2fa3f642bff9d569335031c8930eb645ed77",
+        "tools/npm_single_package.py": "2364a290fb8e67853698674ab0a3244715e7e1352bc6b4e8b22d3cae790088a6"
+      },
+      "node": "v24.22.2",
+      "npm": "12.2.1",
+      "source": {
+        "dirty": false,
+        "revision": "45e77a08b33153a6e67a84d513c65bf14c623e15",
+        "tree": "4a3f605eaabec0bc0e0b7ab999960fa681767dad"
+      }
+    },
+    "packages": [
+      {
+        "filename": "twigsmith-1.0.0.tgz",
+        "name": "twigsmith",
+        "sha256": "68bae88d51ccbbaec611828d1b64e28ef6020360ca1c4cf9eab4e86fdb121654",
+        "version": "1.0.0",
+        "integrity": "sha512-0IhozMuAfOefxfQACE3bNqWtEOEDjK2QQbgRGyZ5cXggkNNlzEbn0eflrmf+MFwmXBzXXBlT3LCwzGJNuh/OxA=="
+      }
+    ],
+    "artifact": {
+      "run_id": "42677726677",
+      "run_attempt": "1",
+      "artifact_id": "13701419850",
+      "name": "platform-npm-set",
+      "workflow": ".github/workflows/release.yml",
+      "sha256": "4b4da79a17b266f16f9268e2c470bc309fe5ffb3bc89d7ce1aa627f04ef08249"
+    },
+    "requirements": {
+      "aarch64-apple-darwin": {
+        "coverage": [
+          {
+            "arch": "arm64",
+            "libc": null,
+            "os": "darwin"
+          }
+        ],
+        "requirements": "Node.js LTS and npm; selected support target: macOS Sequoia 15 on ARM64 with Git 2.45+"
+      },
+      "x86_64-apple-darwin": {
+        "coverage": [
+          {
+            "arch": "x64",
+            "libc": null,
+            "os": "darwin"
+          }
+        ],
+        "requirements": "Node.js LTS and npm; selected support target: macOS Sequoia 15 on Intel x64 with Git 2.45+"
+      },
+      "x86_64-pc-windows-msvc": {
+        "coverage": [
+          {
+            "arch": "x64",
+            "libc": null,
+            "os": "win32"
+          }
+        ],
+        "requirements": "Node.js LTS and npm; selected support target: maintained Windows 11 x64 releases with Git 2.45+ and Microsoft official x64 v14 Visual C++ Redistributable at least as recent as the build tools"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "coverage": [
+          {
+            "arch": "x64",
+            "libc": "glibc",
+            "os": "linux"
+          }
+        ],
+        "requirements": "Node.js LTS and npm; Linux x86_64 with glibc 2.35+ and Git 2.45+"
+      }
+    },
+    "topology": "single-package-installer",
+    "coverage": [
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "package": "twigsmith",
+        "os": "linux",
+        "arch": "x64",
+        "libc": "glibc"
+      },
+      {
+        "target": "x86_64-pc-windows-msvc",
+        "package": "twigsmith",
+        "os": "win32",
+        "arch": "x64",
+        "libc": null
+      },
+      {
+        "target": "aarch64-apple-darwin",
+        "package": "twigsmith",
+        "os": "darwin",
+        "arch": "arm64",
+        "libc": null
+      },
+      {
+        "target": "x86_64-apple-darwin",
+        "package": "twigsmith",
+        "os": "darwin",
+        "arch": "x64",
+        "libc": null
+      }
+    ]
+  }
+}
