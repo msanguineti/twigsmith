@@ -293,8 +293,10 @@ architecture, use the pinned native Rust toolchain and record source, image, OS,
 Git and compiler versions alongside test observations in their logs. Missing or
 failed jobs leave that environment unverified. Successful results cover the
 tested journeys only; they do not qualify Windows desktop versions,
-real shell Tab completion, packaging or installation. Published
-distribution remains Linux x86_64 GNU.
+real shell Tab completion, packaging or installation. Published native archives and
+the single npm installer support Linux x86_64 GNU, Windows x64, and macOS ARM64/Intel;
+[release qualification](#release-preparation-and-publication) verifies their exact
+artifacts and installation routes.
 The `native_editor` suite uses real Unix PTYs and Windows ConPTY with a foreground
 Rust editor fixture. Both command names exercise merge/squash acceptance, literal
 multiline messages, atomic save, cancellation after preparation and retry. Failure
@@ -370,7 +372,7 @@ For a local development probe, use a fresh output and extraction directory:
 
 ```sh
 ./dev package-native .dev/tmp/native-probe --allow-dirty
-./dev verify-native .dev/tmp/native-probe/twigsmith-1.0.0-rc.1-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith probe"
+./dev verify-native .dev/tmp/native-probe/twigsmith-1.0.0-x86_64-unknown-linux-gnu.tar.gz --extract-to "/tmp/twigsmith probe"
 ./dev test-packaging
 ```
 
@@ -397,8 +399,10 @@ architecture, and optionally extracts into a new directory. It runs without Rust
 The verifier supports native manifest schemas 2 and 3 for Linux and schema 4 for
 Windows/macOS candidates. Schema 4 binds executable inspection to the payload,
 including PE imports/subsystem or Mach-O dependencies/deployment information.
-New platform candidates explicitly leave product OS support floors unqualified;
-compiler deployment metadata and native hosted tests alone do not select a floor.
+Current snapshots describe the selected Windows/macOS support targets; historical
+explicitly unqualified snapshots retain their original interpretation. Compiler
+deployment metadata and hosted tests record build/runtime environments separately;
+they do not establish behavior on every desktop version or security policy.
 Runtime requirements are separate from build provenance.
 
 `./dev platform-qualify --help` describes extracted-artifact runtime checks. The
@@ -499,9 +503,11 @@ from `site/current-requirements.json`; the four-target envelope is not embedded
 in a native manifest. Each manifest retains only its own frozen native/npm
 requirements. Changes to current policy never update old packages or descriptors.
 Historical 0.1.0 descriptors retain their
-original requirements and rendering. The legacy publisher and stable published-site consumers refuse the integrated
-schema. The separate RC operation below verifies public native assets before the
-single npm version, then requires public consumption before `next` promotion.
+original requirements and rendering. The publication workflow accepts the current
+schema-3 single-installer identity. Stable site publication resolves its descriptor
+against the matching GitHub stable release and npm `latest`. The explicit operations
+below verify public native assets before the single npm version, then require fresh
+public consumption before `next` promotion for an RC or `latest` for a stable version.
 Superseded schema-2 five-package approvals are rejected rather than reinterpreted.
 
 ### Candidate installation observations
