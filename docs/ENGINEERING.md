@@ -13,11 +13,14 @@ release/hotfix workflows through the same two native command names, `twigsmith`
 and `tgi`. Git owns history editing, hooks, signing and transport; the application
 owns planning, effect boundaries, verification and recovery.
 
-The published distribution baseline is 0.1.0 for Linux x86_64 GNU with glibc 2.35+
-and Git 2.45+. Native archives and npm carry the same implementation. Shell
-completion has adapters for Bash, Zsh, Fish and PowerShell; adapter availability
-and completion CI do not establish whole-application support on other operating
-systems.
+The 1.0 distribution includes Linux x86_64 GNU, Windows x64 MSVC and macOS
+ARM64/Intel native archives, plus one npm installer that selects and verifies a
+matching archive. Linux requires glibc 2.35+; all targets require Git 2.45+.
+Selected support targets and observed qualification hosts remain distinct:
+Windows 11 is the target and Server 2025 is the CI host; macOS targets Sequoia 15.
+Windows/macOS archives are unsigned and macOS archives are not notarized. The
+[user installation guide](USAGE.md#native-archives-and-npm-installation) owns runtime,
+shell, installer-policy and host-security qualifications.
 
 The focused [native Git journey](DEVELOPMENT.md#native-git-journey) checks both
 command names, observational status and ordinary start against an advanced local
@@ -36,12 +39,11 @@ metadata supplies versions, links, commands and requirements independently of pa
 layout. Hosted deployment is a separate operation from implementing this workflow;
 source and local fixture validation do not establish its live execution.
 
-The next product direction is Windows and macOS distribution. The release model
-already separates native platform assets and requirements from npm coverage.
-Supporting each new platform requires its own runtime/editor/process behavior,
-package format and same-artifact qualification; adding a descriptor is not enough.
-Platform support should expand through those verified boundaries while preserving
-literal arguments, developer work, Git configuration and recovery semantics.
+Native assets, npm coverage and public consumption have separate verification
+boundaries. Each platform needs its own runtime/editor/process behavior, package
+format and same-artifact qualification; a descriptor alone supplies no execution
+proof. These boundaries preserve literal arguments, developer work, Git
+configuration and recovery semantics.
 
 Read the architecture and Git boundary first, then follow the relevant workflow:
 
@@ -181,9 +183,9 @@ The verifier checks archive and member hashes, exact names, platform modes and E
 architecture, and rejects traversal, links, duplicate or nonregular members before
 extraction. Hash consistency does not independently authenticate a publisher. The
 manifest identifies the `twigsmith` payload for npm packaging.
-Native Windows candidates use ZIP and `.exe` names; macOS candidates have separate
+Native Windows archives use ZIP and `.exe` names; macOS archives have separate
 tar.gz archives for ARM64 and Intel. Schema 4 manifests freeze executable-format
-inspection and candidate requirements for these targets, while Linux retains its
+inspection and runtime requirements for these targets, while Linux retains its
 schema 3 contract. New snapshots describe the selected Windows/macOS support
 targets separately from recorded build and qualification environments. Historical
 unqualified snapshots retain their original interpretation. Native execution
@@ -338,11 +340,11 @@ generated claims and destinations; rendering does not assert publication authori
 [`site/publish.py`](../site/publish.py) captures current main, provider, model and
 artifact observations and revalidates immediately before deployment. The independently
 manual [Pages workflow](../.github/workflows/site.yml) has no product-write authority
-and no release-event or publisher caller. Old source formats are refused. Existing
-public 0.1.0 assets and the live website remain untouched by this source migration;
-the new site requires an approved current-format public stable release and separately
-authorized deployment. Publication and promotion never deploy Pages; stable deployment remains a separate
-authorized manual operation after GitHub/npm stable agreement.
+and no release-event or publisher caller. Old source formats are refused. Historical
+public release bytes remain immutable.
+The site requires an approved current-format public stable release and separately
+authorized deployment. Publication and promotion never deploy Pages; stable deployment
+remains a separate authorized manual operation after GitHub/npm stable agreement.
 
 ## Shell completion
 
