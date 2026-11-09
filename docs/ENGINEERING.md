@@ -272,7 +272,7 @@ Native/npm publication remains nontransactional. Separate workflow concurrency
 serializes publication; the source and provider observations cannot make independent
 services atomic.
 
-Full-set RC publication uses [`release_platform_publish.py`](../tools/release_platform_publish.py)
+Full-set stable and RC publication uses [`release_platform_publish.py`](../tools/release_platform_publish.py)
 for twelve native assets and one npm tarball. It rejects the superseded five-package
 schema before provider access. All native assets must be anonymously available at
 their exact public release URLs with approved bytes before publishing the npm
@@ -303,7 +303,9 @@ isolated anonymous configuration. It checks both aliases, native/Git child cases
 selected payload hashes and separate cold-cache npx invocations. Windows and both
 Mac rows also observe direct browser acquisition, OS extraction and unsigned launch
 through the installation probe. Missing, skipped, zero-child, stale or mixed reports
-block promotion. This path is limited to `1.0.0-rc.x`; schema-3 stable package publication remains unavailable. Executing the adapter does not supply owner
+block promotion. The dispatch accepts stable semantic versions on `latest` and
+`1.0.0-rc.x` on `next`, with matching GitHub release class and explicit staging tags.
+Executing the adapter does not supply owner
 publication authority or establish package ownership/trust settings.
 
 ### Release data and website publication
@@ -339,7 +341,8 @@ manual [Pages workflow](../.github/workflows/site.yml) has no product-write auth
 and no release-event or publisher caller. Old source formats are refused. Existing
 public 0.1.0 assets and the live website remain untouched by this source migration;
 the new site requires an approved current-format public stable release and separately
-authorized deployment. RC publication and promotion never update stable Pages.
+authorized deployment. Publication and promotion never deploy Pages; stable deployment remains a separate
+authorized manual operation after GitHub/npm stable agreement.
 
 ## Shell completion
 

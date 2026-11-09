@@ -3,20 +3,27 @@
 Native fixture bytes are synthetic and do not qualify any host.
 """
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
 
 import candidate
+import native_package
 import release_model
 from test_release_set import platform_fixture
 
 
-def public_fixture(root):
+def public_fixture(root, windows_newline=b'\n'):
     """Construct a current-format stable probe, never an actual published release."""
     root = Path(root)
     approval, _ = platform_fixture(root, version='1.0.0')
+    for row in approval['native']:
+        if row['target'] == 'x86_64-pc-windows-msvc':
+            sidecar = root / 'native' / (native_package.archive_stem(row['archive']) + '.sha256')
+            records = sidecar.read_bytes().replace(b'\r\n', b'\n')
+            sidecar.write_bytes(records.replace(b'\n', windows_newline))
     (root / 'identity.json').write_text(json.dumps(approval))
     files = {path.name: path.read_bytes()
              for directory in ('native', 'npm') for path in (root / directory).iterdir()}
@@ -73,6 +80,17 @@ class ReleaseModelTests(unittest.TestCase):
             with self.subTest(schema=schema), self.assertRaisesRegex(ValueError, 'schema 3 single-package installer'):
                 release_model.resolve({'schema': schema}, None, None, None)
 
+    def test_windows_crlf_sidecar_keeps_exact_candidate_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            descriptor, github, npm, tarball = public_fixture(Path(temporary) / 'bundle', b'\r\n')
+            model = release_model.resolve(descriptor, github, npm, tarball)
+            windows, = [row for row in model['native'] if row['target'] == 'x86_64-pc-windows-msvc']
+            sidecar = windows['assets']['checksums']
+            raw = (Path(temporary) / 'bundle' / 'native' / sidecar['name']).read_bytes()
+            self.assertIn(b'\r\n', raw)
+            self.assertEqual(sidecar['sha256'], hashlib.sha256(raw).hexdigest())
+            self.assertNotEqual(sidecar['sha256'], hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest())
+
     def test_prerelease_is_refused_before_observing_providers(self):
         descriptor = deepcopy(self.descriptor)
         descriptor['identity']['version'] = '1.0.0-rc.1'
@@ -112,6 +130,8 @@ class ReleaseModelTests(unittest.TestCase):
                        lambda d: d['native'][0]['requirements'].update(system='different'),
                        lambda d: d['native'][0]['assets']['archive'].update(name='../archive'),
                        lambda d: d['native'][0]['assets']['archive'].update(sha256='0' * 64),
+                       lambda d: d['native'][0]['assets']['checksums'].update(sha256='0' * 64),
+                       lambda d: d['native'][0]['assets']['checksums'].update(sha256='not-a-digest'),
                        lambda d: d['npm']['packages'][0].update(sha256='0' * 64),
                        lambda d: d['npm']['requirements'][d['native'][0]['target']].update(requirements='different')):
             descriptor = deepcopy(self.descriptor)

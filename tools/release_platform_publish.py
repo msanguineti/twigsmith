@@ -297,16 +297,18 @@ def resume(record, files, expected, providers, *, execute=False, qualify=None,
     started = datetime.now(timezone.utc)
     common_channel = None
     channel_initialized = False
+    staging_channel = None
 
-    def observe(*, allow_promotion=False):
-        nonlocal protected, common_channel, channel_initialized
+    def observe(*, allow_promotion=False, allow_staging=False):
+        nonlocal protected, common_channel, channel_initialized, staging_channel
         state = providers.observe(record, expected)
         if production and revalidate is not None:
             revalidate(record, deepcopy(state))
             state['exclusive'] = True
-        current = {(name, tag): channels.get(tag) for name, channels in state['tags'].items()
-                   for tag in ('latest', 'next')
-                   if name != 'twigsmith' or tag != record['publication']['channel']}
+        current = {(name, tag): version for name, channels in state['tags'].items()
+                   for tag, version in channels.items()
+                   if name != 'twigsmith' or tag not in
+                   (record['publication']['channel'], record['publication']['staging_channel'])}
         if protected is None:
             protected = current
         elif protected != current:
@@ -319,6 +321,11 @@ def resume(record, files, expected, providers, *, execute=False, qualify=None,
         if channel_initialized and channel != common_channel:
             if not allow_promotion or channel != record['version']:
                 raise PublicationError('advertised npm channel changed outside approved promotion')
+        staging = state['tags']['twigsmith'].get(record['publication']['staging_channel'])
+        if channel_initialized and staging != staging_channel:
+            if not allow_staging or staging != record['version']:
+                raise PublicationError('staging npm channel changed outside approved package publication')
+        staging_channel = staging
         common_channel, channel_initialized = channel, True
         if (channel is not None and channel != record['version']
                 and shared.semver_key(channel) >= shared.semver_key(record['version'])):
@@ -347,7 +354,8 @@ def resume(record, files, expected, providers, *, execute=False, qualify=None,
         finally:
             providers._effect_guard = False
         attempted.append(step)
-        state, after_step = observe(allow_promotion=step == 'promote channel')
+        state, after_step = observe(allow_promotion=step == 'promote channel',
+                                    allow_staging=step == 'publish npm twigsmith')
         after_channel = state['tags']['twigsmith'].get(record['publication']['channel'])
         allowed = (before_channel, record['version']) if step == 'promote channel' else (before_channel,)
         if after_channel not in allowed:

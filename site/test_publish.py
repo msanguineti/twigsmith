@@ -20,7 +20,7 @@ class PublishTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.bundle = Path(cls.temporary.name) / 'bundle'
-        cls.fixture = public_fixture(cls.bundle)
+        cls.fixture = public_fixture(cls.bundle, b'\r\n')
 
     def test_fetch_scopes_media_type_and_credentials_to_github_api(self):
         cases = [
@@ -73,7 +73,8 @@ class PublishTests(unittest.TestCase):
         directory.mkdir(parents=True)
         descriptor_path = directory / '1.0.0.json'
         descriptor_path.write_text(json.dumps(descriptor))
-        manifests = {path.name: path.read_bytes() for path in (self.bundle / 'native').glob('*.manifest.json')}
+        manifests = {path.name: path.read_bytes() for path in (self.bundle / 'native').iterdir()
+                     if path.name.endswith(('.manifest.json', '.sha256'))}
         head = 'a' * 40
 
         def fetch(url, limit):
@@ -127,6 +128,7 @@ class PublishTests(unittest.TestCase):
             checksum = (f"{identity['sha256']}  {identity['archive']}\n"
                         f"{digest}  {name}\n").encode()
             row['assets']['checksums']['sha256'] = hashlib.sha256(checksum).hexdigest()
+            manifests[checksum_name] = checksum
             for asset in github['assets']:
                 for kind in ('manifest', 'checksums'):
                     if asset['name'] == row['assets'][kind]['name']:
@@ -134,6 +136,60 @@ class PublishTests(unittest.TestCase):
             path.write_text(json.dumps(descriptor))
             with self.assertRaisesRegex(ValueError, 'requirements differ'):
                 publish.observe()
+
+    def test_exact_sidecar_bytes_and_records_are_both_checked(self):
+        descriptor, github, npm, files, path, head, fetch = self.provider_fixture()
+        row, = [row for row in descriptor['native'] if row['target'] == 'x86_64-pc-windows-msvc']
+        name = row['assets']['checksums']['name']
+        original = files[name]
+        self.assertIn(b'\r\n', original)
+        with mock.patch.object(publish, 'ROOT', self.root), mock.patch.object(publish, 'fetch', side_effect=fetch), mock.patch.object(publish.subprocess, 'run', return_value=SimpleNamespace(stdout=head)):
+            for altered in (original.replace(b'\r\n', b'\n'), original + b'tampered'):
+                files[name] = altered
+                with self.subTest(altered=altered), self.assertRaisesRegex(ValueError, 'downloaded checksums differ'):
+                    publish.observe()
+            # A descriptor/provider digest match does not validate the records:
+            # they still have to name the approved archive and manifest hashes.
+            files[name] = original.replace(row['assets']['archive']['sha256'].encode(), b'0' * 64)
+            digest = hashlib.sha256(files[name]).hexdigest()
+            row['assets']['checksums']['sha256'] = digest
+            for asset in github['assets']:
+                if asset['name'] == name:
+                    asset['digest'] = 'sha256:' + digest
+            path.write_text(json.dumps(descriptor))
+            with self.assertRaisesRegex(ValueError, 'archive/manifest checksums disagree'):
+                publish.observe()
+
+    def test_sidecar_identity_changes_during_observation_are_refused(self):
+        descriptor, github, npm, files, path, head, fetch = self.provider_fixture()
+        name = descriptor['native'][0]['assets']['checksums']['name']
+        observations = []
+
+        def moving(url, limit):
+            if url.endswith('/releases/latest'):
+                observations.append(url)
+                if len(observations) == 2:
+                    changed = deepcopy(github)
+                    for asset in changed['assets']:
+                        if asset['name'] == name:
+                            asset['id'] += 100
+                    return json.dumps(changed).encode()
+            return fetch(url, limit)
+
+        with mock.patch.object(publish, 'ROOT', self.root), mock.patch.object(publish, 'fetch', side_effect=moving), mock.patch.object(publish.subprocess, 'run', return_value=SimpleNamespace(stdout=head)):
+            with self.assertRaisesRegex(ValueError, 'release changed during provider observation'):
+                publish.observe()
+
+    def test_sidecar_bytes_are_downloaded_again_at_deployment_recheck(self):
+        descriptor, github, npm, files, path, head, fetch = self.provider_fixture()
+        row, = [row for row in descriptor['native'] if row['target'] == 'x86_64-pc-windows-msvc']
+        name = row['assets']['checksums']['name']
+        with mock.patch.object(publish, 'ROOT', self.root), mock.patch.object(publish, 'fetch', side_effect=fetch), mock.patch.object(publish.subprocess, 'run', return_value=SimpleNamespace(stdout=head)), mock.patch.object(publish.build, 'build_resolved', side_effect=self.build):
+            publish.prepare(self.output, self.snapshot, '1.0.0')
+            publish.recheck(self.snapshot)
+            files[name] = files[name].replace(b'\r\n', b'\n')
+            with self.assertRaisesRegex(ValueError, 'downloaded checksums differ'):
+                publish.recheck(self.snapshot)
 
     def test_wrong_published_version_or_provider_error_preserves_output(self):
         self.output.mkdir()

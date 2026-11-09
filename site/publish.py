@@ -63,6 +63,13 @@ def observe():
                 or manifest.get('target') != target
                 or manifest.get('requirements') != model['identity']['requirements'][target]):
             raise ValueError('release requirements differ from approved native manifest')
+        checksums = platform['assets']['checksums']
+        checksum_bytes = fetch(checksums['url'], 2_000_000)
+        if hashlib.sha256(checksum_bytes).hexdigest() != checksums['sha256']:
+            raise ValueError('downloaded checksums differ from release asset')
+        native_package.verify_checksum_records(
+            checksum_bytes, platform['assets']['archive']['name'],
+            platform['assets']['archive']['sha256'], asset['sha256'])
     expected_names = {asset['name'] for platform in model['native'] for asset in platform['assets'].values()}
     assets = sorted([a['name'], a['id'], a['digest'], a['browser_download_url'], a['size'], a['state']]
                     for a in github['assets'] if a['name'] in expected_names)
