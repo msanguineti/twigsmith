@@ -174,70 +174,6 @@ tgi --version
 Extraction can preserve or omit download-origin metadata depending on the tool and
 host. If host policy blocks execution, follow your organization's approved procedure.
 
-## Moving from the Node.js git-oneflow package
-
-Twigsmith is the Rust successor to the
-[Node.js git-oneflow package](https://github.com/msanguineti/git-oneflow).
-git-oneflow remains in maintenance mode for fixes and supported runtimes.
-You can keep using it with its existing commands and configuration. Switching to
-Twigsmith is an explicit setup and workflow change, not a drop-in upgrade.
-
-Install the separate `twigsmith` npm package or a native archive, following
-[installation and platform requirements](#native-archives-and-npm-installation).
-Twigsmith provides `twigsmith` and `tgi`, not `git-oneflow` or `gof` aliases.
-Installing it does not require uninstalling the Node.js package.
-
-| Area | Node.js git-oneflow | Twigsmith |
-| --- | --- | --- |
-| Installation | `npm install -g git-oneflow`; Node.js runtime | `npm install -g twigsmith@1.0.0`, or native archives needing neither Node.js nor Rust; Git 2.45+ and target-specific requirements |
-| Configuration | `gof init`; `.git-oneflowrc` and cosmiconfig discovery | `tgi config`; shared root `twigsmith.config.toml`, YAML or JSON, plus private Git-common-directory overrides |
-| Start ordinary work | `gof start feature my-feature`; configured prefix applied | `tgi start feature/my-feature`; one literal branch name |
-| Finish work | `gof finish feature my-feature` | `tgi finish` operates on the current branch using configured review or integration policy |
-| Releases and hotfixes | `start release` / `start hotfix` and matching finish subcommands | Start with `--policy release` or `--policy hotfix`; configure policy routes first; a branch prefix selects no policy |
-
-Before switching a repository:
-
-1. Complete or recover any active Git operation using the original tool and
-   native Git as appropriate. Inspect `git status`, branches, tags and remote
-   updates before handing work to a different tool.
-2. Keep the existing configuration for git-oneflow. Twigsmith does not import
-   `.git-oneflowrc` or translate its options. Run `tgi config` to select a
-   [settings bundle](#settings-bundles), then use `tgi config show` to review
-   branch and remote roles, update/integration choices, checks and cleanup.
-   Choose the bundle and delivery route that fit your project; do not assume
-   the defaults reproduce your previous workflow.
-3. Update scripts and shell aliases against `tgi --help` and each command's
-   help. The examples above illustrate different grammar, not equivalent Git
-   effects. Review finish publishes work for manual review; it does not create
-   a pull request. Twigsmith finish has no dry-run option.
-4. Set up [Twigsmith shell completion](#shell-completion) separately.
-   Existing `git-oneflow`/`gof` registrations are preserved, including when
-   installing or uninstalling Twigsmith completion. If you stop using the old
-   command, manually remove its startup-file block or Fish registration and
-   restart the shell; retain it while still using that command.
-
-The next section concerns pre-release Rust builds formerly named git-oneflow.
-Its legacy configuration and recovery-record instructions are separate from
-migration of the Node.js package.
-
-## Transition from the earlier Rust identity
-
-Before switching to Twigsmith, finish or recover outstanding operations with the
-prior Rust revision. Preserve any recovery records and refs until recovery is
-complete. Twigsmith does not automatically rewrite legacy configuration, branch
-associations, Git refs, or shell profiles. Preserve and move the old configuration
-files aside, then re-establish settings with `twigsmith config`. After all pending
-operations have been resolved, follow the diagnostic for a legacy branch-policy
-association and establish the intended policy again with `twigsmith start`.
-Twigsmith detects legacy configuration and relevant unfinished state before
-continuing; retain the evidence while resolving it. The older JavaScript/npm tool
-is not a recovery tool for the Rust version.
-
-Unfinished review and direct-integration attempts using version 3 recovery records
-must be finished or recovered with the Twigsmith binary that created them. Preserve
-the records and retained refs until recovery is complete; current version 4 does not
-reinterpret those records.
-
 ## Shell completion
 
 The PowerShell adapter supports syntax from 7.3 onward; the selected maintained
@@ -1935,3 +1871,66 @@ can verify delivery and finish remaining work. Completed effects remain in place
 Literal `@` is a valid target name, but tested Git 2.47.3 refuses `git switch @`.
 Choose another name or resolve that checkout with Git. Other literal names retain
 their exact spelling. Spaces are invalid branch-name characters.
+
+## Moving from the Node.js git-oneflow package
+
+If you use the [Node.js git-oneflow package](https://github.com/msanguineti/git-oneflow),
+this section explains how to set up Twigsmith alongside it or move your repository
+to Twigsmith. The tools use separate commands and configuration; switching requires
+an explicit setup and workflow choice.
+
+Install the separate `twigsmith` npm package or a native archive, following
+[installation and platform requirements](#native-archives-and-npm-installation).
+Twigsmith provides `twigsmith` and `tgi`, not `git-oneflow` or `gof` aliases.
+Installing it does not require uninstalling the Node.js package.
+
+| Area | Node.js git-oneflow | Twigsmith |
+| --- | --- | --- |
+| Installation | `npm install -g git-oneflow`; Node.js runtime | `npm install -g twigsmith@1.0.0`, or native archives needing neither Node.js nor Rust; Git 2.45+ and target-specific requirements |
+| Configuration | `gof init`; `.git-oneflowrc` and cosmiconfig discovery | `tgi config`; shared root `twigsmith.config.toml`, YAML or JSON, plus private Git-common-directory overrides |
+| Start ordinary work | `gof start feature my-feature`; configured prefix applied | `tgi start feature/my-feature`; one literal branch name |
+| Finish work | `gof finish feature my-feature` | `tgi finish` operates on the current branch using configured review or integration policy |
+| Releases and hotfixes | `start release` / `start hotfix` and matching finish subcommands | Start with `--policy release` or `--policy hotfix`; configure policy routes first; a branch prefix selects no policy |
+
+Before switching a repository:
+
+1. Complete or recover any active Git operation using the original tool and
+   native Git as appropriate. Inspect `git status`, branches, tags and remote
+   updates before handing work to a different tool.
+2. Keep the existing configuration for git-oneflow. Twigsmith does not import
+   `.git-oneflowrc` or translate its options. Run `tgi config` to select a
+   [settings bundle](#settings-bundles), then use `tgi config show` to review
+   branch and remote roles, update/integration choices, checks and cleanup.
+   Choose the bundle and delivery route that fit your project; do not assume
+   the defaults reproduce your previous workflow.
+3. Update scripts and shell aliases against `tgi --help` and each command's
+   help. The examples above illustrate different grammar, not equivalent Git
+   effects. Review finish publishes work for manual review; it does not create
+   a pull request. Twigsmith finish has no dry-run option.
+4. Set up [Twigsmith shell completion](#shell-completion) separately.
+   Existing `git-oneflow`/`gof` registrations are preserved, including when
+   installing or uninstalling Twigsmith completion. If you stop using the old
+   command, manually remove its startup-file block or Fish registration and
+   restart the shell; retain it while still using that command.
+
+The next section concerns pre-release Rust builds formerly named git-oneflow.
+Its legacy configuration and recovery-record instructions are separate from
+migration of the Node.js package.
+
+## Transition from the earlier Rust identity
+
+Before switching to Twigsmith, finish or recover outstanding operations with the
+prior Rust revision. Preserve any recovery records and refs until recovery is
+complete. Twigsmith does not automatically rewrite legacy configuration, branch
+associations, Git refs, or shell profiles. Preserve and move the old configuration
+files aside, then re-establish settings with `twigsmith config`. After all pending
+operations have been resolved, follow the diagnostic for a legacy branch-policy
+association and establish the intended policy again with `twigsmith start`.
+Twigsmith detects legacy configuration and relevant unfinished state before
+continuing; retain the evidence while resolving it. The older JavaScript/npm tool
+is not a recovery tool for the Rust version.
+
+Unfinished review and direct-integration attempts using version 3 recovery records
+must be finished or recovered with the Twigsmith binary that created them. Preserve
+the records and retained refs until recovery is complete; current version 4 does not
+reinterpret those records.
