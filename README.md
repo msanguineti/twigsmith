@@ -43,6 +43,10 @@ are unsigned, and macOS archives are not notarized. The [user guide](https://git
 explains requirements, verification, shells and host-security limits.
 To build from source, use the [development guide](https://github.com/msanguineti/twigsmith/blob/main/docs/DEVELOPMENT.md).
 
+Coming from the Node.js git-oneflow package? Read the
+[migration guide](https://github.com/msanguineti/twigsmith/blob/main/docs/USAGE.md#moving-from-the-nodejs-git-oneflow-package)
+for command, configuration and shell-completion differences.
+
 ## Quick start
 
 Once either command is on PATH, run these commands from your Git checkout:
