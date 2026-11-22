@@ -54,7 +54,8 @@ Usage: ./dev COMMAND [ARGS]
                   Verify native archive integrity and optionally extract it
   package-npm SPEC OUTPUT
                   Assemble one npm installer from four verified native targets
-  test-packaging  Run native and npm packaging format and failure regression checks
+  test-packaging [ARGS]
+                  Run packaging, release, qualification, and site tests
   platform-qualify [ARGS]
                   Prepare/run native archive and npm qualification on this host
   installation-qualify [ARGS]
@@ -304,17 +305,7 @@ case "$command" in
     verify-native) exec python3 "$repo_dir/tools/native_package.py" verify "$@" ;;
     package-npm) exec python3 "$repo_dir/tools/npm_single_package.py" "$@" ;;
     test-packaging)
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*native*.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_single_package.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_npm_installer_tls.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_platform.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_installation.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_docker_service.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_set.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_stage.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_providers.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_release_platform_*.py' "$@"
-        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_qualify_public_release.py' "$@"
+        python3 -m unittest discover -s "$repo_dir/tools" -p 'test_*.py' "$@"
         exec python3 -m unittest discover -s "$repo_dir/site" -p 'test_*.py' "$@"
         ;;
     platform-qualify) exec python3 "$repo_dir/tools/qualify_platform.py" "$@" ;;

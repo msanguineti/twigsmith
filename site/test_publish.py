@@ -56,7 +56,7 @@ class PublishTests(unittest.TestCase):
 
     def test_preparation_and_recheck_fail_on_changes(self):
         with mock.patch.object(publish, 'observe', return_value=deepcopy(self.state)), mock.patch.object(publish.build, 'build_resolved', side_effect=self.build):
-            publish.prepare(self.output, self.snapshot, '0.1.0')
+            publish.prepare(self.output, self.snapshot)
             publish.recheck(self.snapshot)
         for key, value in [('source', 'b' * 40), ('model', {'version': '0.2.0'}), ('assets', [])]:
             changed = deepcopy(self.state)
@@ -185,17 +185,15 @@ class PublishTests(unittest.TestCase):
         row, = [row for row in descriptor['native'] if row['target'] == 'x86_64-pc-windows-msvc']
         name = row['assets']['checksums']['name']
         with mock.patch.object(publish, 'ROOT', self.root), mock.patch.object(publish, 'fetch', side_effect=fetch), mock.patch.object(publish.subprocess, 'run', return_value=SimpleNamespace(stdout=head)), mock.patch.object(publish.build, 'build_resolved', side_effect=self.build):
-            publish.prepare(self.output, self.snapshot, '1.0.0')
+            publish.prepare(self.output, self.snapshot)
             publish.recheck(self.snapshot)
             files[name] = files[name].replace(b'\r\n', b'\n')
             with self.assertRaisesRegex(ValueError, 'downloaded checksums differ'):
                 publish.recheck(self.snapshot)
 
-    def test_wrong_published_version_or_provider_error_preserves_output(self):
+    def test_provider_error_preserves_output(self):
         self.output.mkdir()
         (self.output / 'index.html').write_text('previous')
-        with mock.patch.object(publish, 'observe', return_value=deepcopy(self.state)), self.assertRaises(ValueError):
-            publish.prepare(self.output, self.snapshot, '0.2.0')
         with mock.patch.object(publish, 'observe', side_effect=OSError('unavailable')), self.assertRaises(OSError):
             publish.prepare(self.output, self.snapshot)
         self.assertEqual((self.output / 'index.html').read_text(), 'previous')

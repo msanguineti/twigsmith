@@ -213,13 +213,20 @@ jobs:
         run: |
           ./dev rustc -vV
           test "$(./dev rustc -vV | sed -n 's/^host: //p')" = '${{ matrix.target }}'
-          /bin/bash --version
           /bin/zsh --version
           "$TWIGSMITH_TEST_BASH" --version
           "$TWIGSMITH_TEST_FISH" --version
           ./dev test --test native_completion
-          TWIGSMITH_TEST_BASH=/bin/bash ./dev test-shells --require-all
           ./dev test-shells --require-all
+      - name: Test macOS system Bash completion
+        if: runner.os == 'macOS'
+        env:
+          TWIGSMITH_TEST_BASH: /bin/bash
+        run: |
+          "$TWIGSMITH_TEST_BASH" --version
+          ./dev test --test bash_completion -- --nocapture
+          ./dev test --test completion_shells bash -- --nocapture
+          ./dev test --test native_completion --test completion_shells bash -- --ignored --nocapture
       - name: Test Windows native completion and installation boundary
         if: runner.os == 'Windows'
         shell: pwsh

@@ -9,6 +9,10 @@
   implementation diagnosis. For implementation, read the architecture and Git
   boundary, then the sections relevant to the affected behavior.
 
+Use the Git-ignored `.dev/` directory for programmes, increment briefs,
+exploration, experiments and temporary notes. It also holds repository-local
+development tools and caches. Create `.dev/` when needed in a fresh checkout.
+
 Verify relevant claims against source, tests and Git history. Read only the context
 needed for the task. Keep public documentation usable without private notes.
 For owner-directed engineering work, also read the local coordination instructions
@@ -26,6 +30,24 @@ authoritative Git documentation and inspected practice in established projects o
 tools. Verify relevant Git behavior in source or isolated real-Git fixtures. Cite
 material evidence and its limits; one project's practice does not establish general
 adoption. Routine engineering choices need no research or approval ceremony.
+
+## Project state and direction
+
+- **Current state.** Twigsmith 1.0 is a Rust CLI with two names, `twigsmith` and
+  `tgi`. It starts workstreams, saves progress and delivers work through manual
+  review or direct integration, with explicit release and hotfix policy.
+  Developers submit review requests through their hosting provider and use separate
+  tools for deployment. Git 2.45 or newer is required. See the
+  [technical overview](docs/ENGINEERING.md#current-position-and-direction)
+  and [installation requirements](docs/USAGE.md#native-archives-and-npm-installation).
+- **Direction.** Maintain the documented workflows and their recovery guarantees
+  across the supported platforms. Judge changes by verified Git outcomes and
+  reliable recovery after partial failure. The next product milestone is open.
+- **Decisions and constraints.** Use the installed Git and honor its normal
+  configuration. Keep planning observational, verify effects and report partial
+  outcomes. Require explicit policy for release and hotfix routes. See the
+  [Git boundary](docs/ENGINEERING.md#repository-state-and-the-git-boundary) and
+  [workstream policy](docs/ENGINEERING.md#explicit-workstream-policy).
 
 ## Phase ownership
 
@@ -57,7 +79,7 @@ behavior and tooling are unchanged.
 
 Preserve unrelated changes and serialize shared-file writers and Git index
 operations. Isolated disposable repositories may perform Git operations needed by
-fixtures. Before the new release, obsolete product compatibility need not be kept.
+fixtures.
 
 ## Repository delivery
 
@@ -111,7 +133,7 @@ Escalate unresolved consequential decisions; make routine choices autonomously.
 
 Keep public files free of private coordination, task status, session summaries,
 transcripts, validation logs and backlogs. Stable repository-wide guidance belongs
-here; owner-specific execution arrangements and accepted future direction belong
-in ignored `.dev/` records. Consolidate lasting implemented knowledge into the
-existing manuals rather than adding a document for each task. Keep necessary local
-path examples home-relative, such as `~/...`, without personal usernames.
+here. Keep owner-specific execution arrangements and agreed direction for future
+phases in ignored `.dev/` records. Consolidate lasting implemented knowledge into
+the existing manuals rather than adding a document for each task. Keep necessary
+local path examples home-relative, such as `~/...`, without personal usernames.

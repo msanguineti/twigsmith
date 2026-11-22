@@ -231,8 +231,21 @@ not a maintained-runtime recommendation.
 
 To reproduce the macOS selection, set `TWIGSMITH_TEST_BASH`,
 `TWIGSMITH_TEST_ZSH` and `TWIGSMITH_TEST_FISH` to the intended absolute runtime
-paths and run `./dev test-shells --require-all`. Repeat with
-`TWIGSMITH_TEST_BASH=/bin/bash` for stock Bash. On Windows, build
+paths and run `./dev test --test native_completion` and
+`./dev test-shells --require-all`. With Homebrew Bash selected, this runs the
+shared adapter checks and the Bash, Fish and Zsh suites. Then run the Bash cases
+with the system executable:
+
+```sh
+(
+    export TWIGSMITH_TEST_BASH=/bin/bash
+    ./dev test --test bash_completion -- --nocapture
+    ./dev test --test completion_shells bash -- --nocapture
+    ./dev test --test native_completion --test completion_shells bash -- --ignored --nocapture
+)
+```
+
+On Windows, build
 `cargo build --locked --example native_argument_fixture`, then run
 `cargo test --locked --test native_shell_windows -- --ignored --nocapture`.
 Set `TWIGSMITH_TEST_PWSH`, `TWIGSMITH_TEST_CMD` and `TWIGSMITH_TEST_BASH`
@@ -584,7 +597,9 @@ fixtures use disposable loopback services and real npm, never public publication
 credentials are forbidden with fixture endpoints. `./dev test-packaging` requires
 Node/npm, a C compiler, loopback sockets and full canonical Git history for source
 eligibility checks. It covers archive and npm integrity, acquisition, recovery,
-public-consumption gates and site generation.
+public-consumption gates and site generation. The launcher discovers `test_*.py`
+in `tools/` and `site/` separately and forwards unittest options such as `-v`
+to both runs.
 
 For read-only inspection from a full checkout, with an already reviewed request
 and locally staged bundle:
@@ -699,11 +714,9 @@ only repository-read and Pages deployment permissions. It accepts the current
 single-installer descriptor format, resolves the public stable GitHub release and
 npm `latest`, and verifies their exact identities, native manifests, original
 checksum sidecar bytes and records, and npm tarball.
-Prereleases and obsolete descriptor formats are refused. The already deployed site
-and published 0.1.0 assets remain external history; preparing new Pages source does
-not deploy it or change `latest`. New stable-site deployment requires a reviewed
-current-format descriptor and separately authorized public release and deployment.
-Publication and channel-promotion workflows never invoke Pages.
+Deployment uses the reviewed descriptor for the agreed stable version and requires
+separate authorization. Publication, channel promotion and Pages deployment are
+independent operations.
 
 For a stable release, prepare the versioned implementation on reviewed eligible
 source, then build and independently qualify the exact candidate set. Derive its

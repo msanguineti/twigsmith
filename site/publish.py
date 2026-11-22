@@ -101,10 +101,8 @@ def artifact_hash(output):
     return digest.hexdigest()
 
 
-def prepare(output, snapshot, expected_version=None):
+def prepare(output, snapshot):
     state = observe()
-    if expected_version and state['model']['version'] != expected_version:
-        raise ValueError('latest release differs from published version')
     build.build_resolved(output, state['model'])
     state['artifact_sha256'] = artifact_hash(output)
     state['output'] = str(Path(output).absolute())
@@ -126,13 +124,12 @@ def main():
     p = commands.add_parser('prepare')
     p.add_argument('--output', required=True)
     p.add_argument('--snapshot', required=True)
-    p.add_argument('--expected-version')
     p = commands.add_parser('recheck')
     p.add_argument('--snapshot', required=True)
     args = parser.parse_args()
     try:
         if args.command == 'prepare':
-            prepare(args.output, args.snapshot, args.expected_version)
+            prepare(args.output, args.snapshot)
         else:
             recheck(args.snapshot)
     except (ValueError, KeyError, TypeError, OSError, tarfile.TarError, subprocess.SubprocessError) as error:
