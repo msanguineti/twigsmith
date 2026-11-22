@@ -9,9 +9,9 @@
   implementation diagnosis. For implementation, read the architecture and Git
   boundary, then the sections relevant to the affected behavior.
 
-Use `.dev/scratch/` for programmes, increment briefs, exploration, experiments
-and temporary notes. The repository ignores `.dev/`. Create the scratch directory
-when needed in a fresh checkout.
+Use the Git-ignored `.dev/` directory for programmes, increment briefs,
+exploration, experiments and temporary notes. It also holds repository-local
+development tools and caches. Create `.dev/` when needed in a fresh checkout.
 
 Verify relevant claims against source, tests and Git history. Read only the context
 needed for the task. Keep public documentation usable without private notes.
