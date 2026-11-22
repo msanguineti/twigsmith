@@ -584,7 +584,9 @@ fixtures use disposable loopback services and real npm, never public publication
 credentials are forbidden with fixture endpoints. `./dev test-packaging` requires
 Node/npm, a C compiler, loopback sockets and full canonical Git history for source
 eligibility checks. It covers archive and npm integrity, acquisition, recovery,
-public-consumption gates and site generation.
+public-consumption gates and site generation. The launcher discovers `test_*.py`
+in `tools/` and `site/` separately and forwards unittest options such as `-v`
+to both runs.
 
 For read-only inspection from a full checkout, with an already reviewed request
 and locally staged bundle:
@@ -699,11 +701,9 @@ only repository-read and Pages deployment permissions. It accepts the current
 single-installer descriptor format, resolves the public stable GitHub release and
 npm `latest`, and verifies their exact identities, native manifests, original
 checksum sidecar bytes and records, and npm tarball.
-Prereleases and obsolete descriptor formats are refused. The already deployed site
-and published 0.1.0 assets remain external history; preparing new Pages source does
-not deploy it or change `latest`. New stable-site deployment requires a reviewed
-current-format descriptor and separately authorized public release and deployment.
-Publication and channel-promotion workflows never invoke Pages.
+Deployment uses the reviewed descriptor for the agreed stable version and requires
+separate authorization. Publication, channel promotion and Pages deployment are
+independent operations.
 
 For a stable release, prepare the versioned implementation on reviewed eligible
 source, then build and independently qualify the exact candidate set. Derive its

@@ -13,37 +13,12 @@ release/hotfix workflows through the same two native command names, `twigsmith`
 and `tgi`. Git owns history editing, hooks, signing and transport; the application
 owns planning, effect boundaries, verification and recovery.
 
-The 1.0 distribution includes Linux x86_64 GNU, Windows x64 MSVC and macOS
-ARM64/Intel native archives, plus one npm installer that selects and verifies a
-matching archive. Linux requires glibc 2.35+; all targets require Git 2.45+.
-Selected support targets and observed qualification hosts remain distinct:
-Windows 11 is the target and Server 2025 is the CI host; macOS targets Sequoia 15.
-Windows/macOS archives are unsigned and macOS archives are not notarized. The
-[user installation guide](USAGE.md#native-archives-and-npm-installation) owns runtime,
-shell, installer-policy and host-security qualifications.
-
-The focused [native Git journey](DEVELOPMENT.md#native-git-journey) checks both
-command names, observational status and ordinary start against an advanced local
-remote, save/review delivery and direct candidate retry, with independent ref,
-index and worktree assertions. Native prompt tests cover guided configuration and
-representative save/finish keyboard interaction, fallback and terminal restoration.
-Companion native process and guard suites exercise
-managed checks and refusal boundaries. Tagged/direct and hosted CLI suites exercise
-version identity, partial publication and fresh-process retry; native recovery
-fixtures cover filesystem and linked-worktree guards. The four-platform
-pull-request matrix is separate from completion coverage and distribution
-qualification; only actual successful native jobs establish that slice on an OS.
-
-The repository includes independent manual website publishing. Release-bound
-metadata supplies versions, links, commands and requirements independently of page
-layout. Hosted deployment is a separate operation from implementing this workflow;
-source and local fixture validation do not establish its live execution.
-
-Native assets, npm coverage and public consumption have separate verification
-boundaries. Each platform needs its own runtime/editor/process behavior, package
-format and same-artifact qualification; a descriptor alone supplies no execution
-proof. These boundaries preserve literal arguments, developer work, Git
-configuration and recovery semantics.
+The [installation guide](USAGE.md#native-archives-and-npm-installation) lists
+runtime requirements and support targets. The
+[native Git journey](DEVELOPMENT.md#native-git-journey) describes source validation.
+The [native package boundary](#native-package-boundary) explains verification of
+shipped artifacts and public installs. [Website publication](#release-data-and-website-publication)
+uses release-bound data and has its own deployment workflow.
 
 Read the architecture and Git boundary first, then follow the relevant workflow:
 
