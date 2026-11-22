@@ -231,8 +231,21 @@ not a maintained-runtime recommendation.
 
 To reproduce the macOS selection, set `TWIGSMITH_TEST_BASH`,
 `TWIGSMITH_TEST_ZSH` and `TWIGSMITH_TEST_FISH` to the intended absolute runtime
-paths and run `./dev test-shells --require-all`. Repeat with
-`TWIGSMITH_TEST_BASH=/bin/bash` for stock Bash. On Windows, build
+paths and run `./dev test --test native_completion` and
+`./dev test-shells --require-all`. With Homebrew Bash selected, this runs the
+shared adapter checks and the Bash, Fish and Zsh suites. Then run the Bash cases
+with the system executable:
+
+```sh
+(
+    export TWIGSMITH_TEST_BASH=/bin/bash
+    ./dev test --test bash_completion -- --nocapture
+    ./dev test --test completion_shells bash -- --nocapture
+    ./dev test --test native_completion --test completion_shells bash -- --ignored --nocapture
+)
+```
+
+On Windows, build
 `cargo build --locked --example native_argument_fixture`, then run
 `cargo test --locked --test native_shell_windows -- --ignored --nocapture`.
 Set `TWIGSMITH_TEST_PWSH`, `TWIGSMITH_TEST_CMD` and `TWIGSMITH_TEST_BASH`
